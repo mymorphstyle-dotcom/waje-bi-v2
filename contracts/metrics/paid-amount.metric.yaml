@@ -92,14 +92,15 @@ semantic_boundary:
     report_currency: NGN
     report_currency_name: Nigerian Naira
     business_decision_status: accepted
-    decided_on: "2026-07-04"
-    conversion_source_contract: pending_contract
+    decided_on: "2026-07-05"
+    source_amount_currency: NGN
+    conversion_source_contract: out_of_scope_for_now
   refund_or_reversal_policy:
     paid_amount_basis: gross_successful_paid_amount
-    adjustment_treatment: report_refunds_reversals_chargebacks_as_separate_adjustment_items
+    adjustment_treatment: no_adjustment_proxy_current_phase
     business_decision_status: accepted
-    decided_on: "2026-07-04"
-    adjustment_source_contract: pending_contract
+    decided_on: "2026-07-05"
+    adjustment_source_contract: missing_contract_for_net_revenue_adjustment_risk
   timezone_policy:
     business_timezone: Africa/Lagos
     business_day_boundary: "[00:00, 24:00)"
@@ -124,6 +125,12 @@ semantic_boundary:
     decided_on: "2026-07-05"
     source_profile: paid_order_success_clean_2026_h1
     rule: Use the threshold for the user's query grain and comparison mode; if comparable windows are sparse, degrade to descriptive wording.
+    runtime_usage:
+      below_reportable_movement: low_priority_background_only_not_main_conclusion_driver_or_anomaly
+      reportable_movement: visible_change_allowed
+      material_driver: eligible_for_primary_explanation_candidate_set
+      strong_anomaly: required_for_strong_anomaly_wording
+      llm_override: forbidden_clarify_degrade_or_follow_up_only
     thresholds:
       - grain: hourly_same_lagos_hour
         reportable_movement: ">=2M NGN or >=15%"
@@ -448,7 +455,7 @@ quality_guards:
     description: Each analysis uses the currently available data at run time and must preserve historical answer artifacts when later data updates arrive.
     severity: targeted_repair
   - guard_id: materiality_guard
-    description: Pattern, anomaly, and health wording must use a reviewed business materiality threshold or degrade the claim.
+    description: Pattern, anomaly, health, and driver wording must use reviewed business materiality thresholds. Below-reportable changes stay background only; material-driver and strong-anomaly wording require their respective thresholds.
     severity: degrade_or_block
   - guard_id: payment_status_dedup_guard
     description: paid_amount must use final successful payment records and one successful record per order ID; failed, pending, processing, and retry-only records stay in payment-quality analysis.
@@ -463,11 +470,11 @@ known_gaps:
     data_contract_state: contract_backed
     expected_owner: data_owner
   - gap_id: currency_policy
-    description: Business currency basis is accepted as unified NGN reporting currency; exchange-rate source, conversion timing, and original-currency validation still need data contract review.
-    data_contract_state: missing_contract
+    description: Current runtime raw amount data is provided in NGN; cross-currency conversion, exchange-rate source, conversion timing, and original-currency validation are deferred to a later contract review.
+    data_contract_state: out_of_scope_for_now
     expected_owner: data_owner
   - gap_id: refund_or_reversal_policy
-    description: Business basis is accepted as gross successful paid amount; refund, chargeback, cancellation, and reversal source contracts are still needed for separate adjustment and risk reporting.
+    description: Business basis is accepted as gross successful paid amount; refund, chargeback, cancellation, and reversal source contracts are still needed only for net revenue, adjusted revenue, or adjustment-risk claims.
     data_contract_state: missing_contract
     expected_owner: data_owner
   - gap_id: timezone_policy
@@ -483,7 +490,7 @@ known_gaps:
     data_contract_state: missing_contract
     expected_owner: data_owner
   - gap_id: materiality_policy
-    description: Initial grain-aware materiality thresholds are accepted for the 2026 H1 paid_order_success_clean profile; future tuning should create a new policy version.
+    description: Initial grain-aware materiality thresholds and runtime claim-strength gates are accepted for the 2026 H1 paid_order_success_clean profile; future tuning should create a new policy version.
     data_contract_state: contract_backed
     expected_owner: business_owner_and_data_owner_joint_review
 

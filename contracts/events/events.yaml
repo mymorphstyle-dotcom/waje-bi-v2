@@ -116,7 +116,7 @@ events:
       - SEO 排名
       - GEO 排名
       - 用户推荐活动
-    aggregate_source_note: market_dashboard_2024_2026 exposes 投放成本 only at aggregate dashboard grain.
+    aggregate_source_note: market_dashboard_2024_2026 exposes 投放成本 only at aggregate dashboard grain; it can provide context but cannot proxy spend, exposure, control, ROI, ROAS, CPA, or net impact.
     owner: pending_data_owner_confirmation
     review_status: draft_pending_owner_review
 
@@ -181,8 +181,10 @@ events:
       - old WAJE BI external event workbook was imported as external_events_2024_2026.
       - Covered sheets include macro inflation/fx, payday, sports, power, network, media policy, weather, social stability, and holidays.
       - old WAJE BI competitor ranking CSV was imported as competitor_ranking_2024_2026.
+      - current version has no AnySearch or live external evidence connector.
     unavailable_without_new_source:
       - stronger_gambling_policy_feed
+      - AnySearch_external_evidence_connector
       - live_weather_or_news_crawl
     known_gaps:
       - external_context_event_contracts

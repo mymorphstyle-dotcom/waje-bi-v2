@@ -92,6 +92,42 @@ expectation_packages:
       - tested_windows_and_exceptions_have_evidence_refs
       - candidate_mechanisms_keep_candidate_wording
       - degraded_or_blocked_paths_are_visible
+    semantic_evidence_expectations:
+      semantic_query_records:
+        - capability: pattern_scan
+          support_id: pattern_month_phase_paid_amount
+          semantic_query_status: degraded_or_accepted_with_limits
+          required_bindings:
+            - metric_scope_grain_time_window_baseline
+            - contract_version_pins
+            - current_data_snapshot
+            - materiality_guard
+            - cumulative_value_guard
+            - data_quality_handoff
+        - capability: event_evidence
+          support_id: event_pattern_payday_dimension
+          semantic_query_status: accepted_with_candidate_limit
+          required_bindings:
+            - payday_static_assumption_ref
+            - event_window
+            - wording_limit_candidate
+      evidence_envelopes:
+        - support_id: pattern_month_phase_paid_amount
+          typed_payload: pattern_scan_result
+          evidence_type: statistical_association
+          strength: insufficient
+          wording_limit: insufficient
+          limitation_refs:
+            - timezone_policy
+        - support_id: event_pattern_payday_dimension
+          typed_payload: event_evidence_result
+          evidence_type: candidate_mechanism
+          strength: low
+          wording_limit: candidate
+      answer_package_handoff:
+        - pattern_claims_require_tested_window_evidence_refs
+        - cumulative_value_path_refs_block_claim
+        - payday_claim_stays_candidate_mechanism
     failure_attribution:
       business_failure_types:
         - wrong_question_family
@@ -146,8 +182,6 @@ expectation_packages:
         strength: high
         wording_limit: context
         backlog_refs:
-          - currency_policy
-          - refund_or_reversal_policy
           - timezone_policy
           - payment_status_and_dedup_contract
       - support_id: formula_paid_amount_change_order_chain
@@ -179,7 +213,7 @@ expectation_packages:
         evidence_type: statistical_association
         strength: insufficient
         wording_limit: insufficient
-        condition: missing operation/exposure contracts block stronger attribution.
+        condition: missing spend, operation, exposure, and control contracts block campaign attribution, ROI, ROAS, CPA, and net impact.
     expected_visual_blocks:
       - formula_contribution
       - segment_bridge
@@ -190,6 +224,44 @@ expectation_packages:
       - contribution_wording_is_not_causal_wording
       - formula_claim_has_evidence_refs_and_reconciliation
       - growth_operation_gaps_are_visible
+    semantic_evidence_expectations:
+      semantic_query_records:
+        - capability: formula_decompose
+          support_id: formula_paid_amount_change_order_chain
+          semantic_query_status: accepted_or_degraded_by_component_coverage
+          required_bindings:
+            - declared_metric_decomposition_path
+            - target_and_baseline_windows
+            - contract_version_pins
+            - current_data_snapshot
+            - formula_reconciliation_guard
+        - capability: segment_bridge
+          support_id: segment_paid_amount_change_payment_method
+          semantic_query_status: accepted_at_supported_grain
+          required_bindings:
+            - dimension_refs
+            - permission_handoff
+            - supported_grain
+      evidence_envelopes:
+        - support_id: formula_paid_amount_change_order_chain
+          typed_payload: formula_decompose_result
+          evidence_type: accounting_contribution
+          strength: medium
+          wording_limit: quantified
+          numeric_reconciliation: required
+        - support_id: attribution_paid_amount_change_growth_ops
+          typed_payload: joint_attribution_result
+          evidence_type: statistical_association
+          strength: insufficient
+          wording_limit: insufficient
+          limitation_refs:
+            - channel_payment_dimension_contracts
+            - product_operation_event_contracts
+            - exposure_control_contracts
+      answer_package_handoff:
+        - formula_numbers_bind_evidence_refs_and_reconciliation
+        - contribution_wording_stays_separate_from_cause_wording
+        - operation_gap_path_refs_are_visible
     failure_attribution:
       business_failure_types:
         - wrong_baseline
@@ -259,6 +331,32 @@ expectation_packages:
       - control_or_baseline_boundary_is_visible
       - impact_wording_does_not_exceed_evidence
       - missing_exposure_and_operation_contracts_are_visible
+    semantic_evidence_expectations:
+      semantic_query_records:
+        - capability: event_evidence
+          support_id: event_business_object_product_operation
+          semantic_query_status: degraded_or_blocked
+          required_bindings:
+            - business_object_identity_or_backlog_ref
+            - event_window_or_repair_request
+            - affected_scope_when_available
+            - control_or_baseline_boundary
+            - contract_version_pins
+            - current_data_snapshot
+      evidence_envelopes:
+        - support_id: event_business_object_product_operation
+          typed_payload: event_evidence_result
+          evidence_type: candidate_mechanism
+          strength: insufficient
+          wording_limit: insufficient
+          limitation_refs:
+            - product_operation_event_contracts
+            - exposure_control_contracts
+      answer_package_handoff:
+        - confirmed_net_impact_claim_is_blocked
+        - campaign_roi_roas_cpa_claims_are_blocked_without_spend_exposure_control_contracts
+        - missing_event_exposure_control_refs_enter_limitation
+        - visual_blocks_bind_event_evidence_refs
     failure_attribution:
       business_failure_types:
         - unsupported_main_conclusion
@@ -341,6 +439,40 @@ expectation_packages:
       - risk_wording_matches_strength
       - data_risk_is_separate_from_business_risk
       - missing_component_and_incident_contracts_are_visible
+    semantic_evidence_expectations:
+      semantic_query_records:
+        - capability: formula_decompose
+          support_id: formula_revenue_health_order_chain
+          semantic_query_status: degraded
+          required_bindings:
+            - recent_30_day_or_month_proxy_window
+            - historical_or_prior_comparable_baseline
+            - materiality_guard
+            - freshness_guard
+            - formula_reconciliation_guard
+        - capability: outlier_scan
+          support_id: anomaly_revenue_health_payment_quality
+          semantic_query_status: degraded
+          required_bindings:
+            - anomaly_baseline_or_definition
+            - quality_first_guard
+            - event_gap_refs
+      evidence_envelopes:
+        - support_id: formula_revenue_health_order_chain
+          typed_payload: formula_decompose_result
+          evidence_type: accounting_contribution
+          strength: insufficient
+          wording_limit: insufficient
+          numeric_reconciliation: required_with_limitation
+        - support_id: anomaly_revenue_health_payment_quality
+          typed_payload: outlier_scan_result
+          evidence_type: statistical_association
+          strength: insufficient
+          wording_limit: insufficient
+      answer_package_handoff:
+        - health_judgment_binds_baseline_and_evidence_refs
+        - data_risk_claim_group_is_separate_when_quality_limits_apply
+        - component_and_incident_gap_refs_are_visible
     failure_attribution:
       business_failure_types:
         - unsupported_main_conclusion
@@ -423,6 +555,41 @@ expectation_packages:
       - contribution_is_not_causal_wording
       - raw_identifier_output_is_absent
       - permission_limited_paths_are_visible
+    semantic_evidence_expectations:
+      semantic_query_records:
+        - capability: segment_bridge
+          support_id: segment_attribution_payment_method
+          semantic_query_status: accepted_at_supported_grain
+          required_bindings:
+            - channel_and_payment_method_dimension_refs
+            - requested_and_accepted_grain
+            - permission_handoff
+            - sparse_cell_guard
+        - capability: joint_attribution
+          support_id: joint_attribution_geo_device_permission_limited
+          semantic_query_status: blocked_or_aggregate_only_degraded
+          required_bindings:
+            - permission_handoff
+            - blocked_raw_identifier_fields
+            - limitation_refs
+      evidence_envelopes:
+        - support_id: segment_attribution_payment_method
+          typed_payload: segment_bridge_result
+          evidence_type: accounting_contribution
+          strength: medium
+          wording_limit: quantified
+          numeric_reconciliation: required
+        - support_id: joint_attribution_geo_device_permission_limited
+          typed_payload: joint_attribution_result
+          evidence_type: insufficient
+          strength: insufficient
+          wording_limit: blocked
+          limitation_refs:
+            - pii_dimension_output_limit
+      answer_package_handoff:
+        - attribution_claims_bind_scope_grain_and_evidence_refs
+        - raw_user_ip_device_output_is_blocked
+        - permission_limited_path_refs_are_visible
     failure_attribution:
       business_failure_types:
         - permission_leak
@@ -467,7 +634,7 @@ expectation_packages:
       - outcome: degrade
         reason: external events can support context or candidate mechanisms only.
       - outcome: block
-        reason: raw web, news, forum, or media crawling is outside launch scope.
+        reason: raw web, news, forum, media crawling, and live AnySearch-like connectors are outside launch scope.
     expected_evidence_contract_states:
       - support_id: outlier_black_swan_external_context
         business_evidence_state: contextual_evidence
@@ -495,7 +662,7 @@ expectation_packages:
         evidence_type: insufficient
         strength: insufficient
         wording_limit: blocked
-        condition: raw external ingestion remains out of scope.
+        condition: raw external ingestion and live AnySearch-style lookup remain out of scope.
     expected_visual_blocks:
       - anomaly_scope
       - event_context_timeline
@@ -506,6 +673,38 @@ expectation_packages:
       - black_swan_wording_stays_candidate_or_context
       - raw_external_ingestion_is_blocked
       - data_quality_flags_are_visible
+    semantic_evidence_expectations:
+      semantic_query_records:
+        - capability: outlier_scan
+          support_id: outlier_black_swan_external_context
+          semantic_query_status: degraded_with_context_limit
+          required_bindings:
+            - anomaly_definition_or_baseline
+            - data_quality_handoff
+            - current_data_snapshot
+        - capability: event_evidence
+          support_id: event_black_swan_raw_external_ingestion_scope
+          semantic_query_status: blocked
+          required_bindings:
+            - raw_external_ingestion_scope_block
+            - limitation_refs
+      evidence_envelopes:
+        - support_id: outlier_black_swan_external_context
+          typed_payload: outlier_scan_result
+          evidence_type: candidate_mechanism
+          strength: low
+          wording_limit: context
+        - support_id: event_black_swan_raw_external_ingestion_scope
+          typed_payload: event_evidence_result
+          evidence_type: insufficient
+          strength: insufficient
+          wording_limit: blocked
+          limitation_refs:
+            - raw_external_ingestion_phase1_scope
+      answer_package_handoff:
+        - anomaly_claims_bind_baseline_and_quality_refs
+        - black_swan_claim_stays_candidate_or_context
+        - raw_external_path_refs_block_final_claim_and_visual
     failure_attribution:
       business_failure_types:
         - over_strong_weak_evidence
@@ -588,6 +787,42 @@ expectation_packages:
       - cumulative_value_misuse_is_repaired_or_blocked
       - formula_claims_have_reconciliation_or_limitation
       - time_semantics_gap_is_visible
+    semantic_evidence_expectations:
+      semantic_query_records:
+        - capability: pattern_scan
+          support_id: pattern_custom_baseline_paid_amount
+          semantic_query_status: accepted_or_degraded_by_time_semantics
+          required_bindings:
+            - user_specified_target_window
+            - user_specified_baseline_window
+            - timezone_and_inclusivity
+            - cumulative_value_guard
+            - current_data_snapshot
+        - capability: formula_decompose
+          support_id: formula_custom_baseline_order_chain
+          semantic_query_status: degraded
+          required_bindings:
+            - declared_metric_decomposition_path
+            - target_and_baseline_windows
+            - formula_reconciliation_guard
+      evidence_envelopes:
+        - support_id: pattern_custom_baseline_paid_amount
+          typed_payload: pattern_scan_result
+          evidence_type: statistical_association
+          strength: insufficient
+          wording_limit: insufficient
+          limitation_refs:
+            - timezone_policy
+        - support_id: formula_custom_baseline_order_chain
+          typed_payload: formula_decompose_result
+          evidence_type: accounting_contribution
+          strength: insufficient
+          wording_limit: insufficient
+          numeric_reconciliation: required_with_limitation
+      answer_package_handoff:
+        - baseline_windows_bind_semantic_query_refs
+        - cumulative_value_misuse_blocks_or_repairs_before_claim
+        - formula_numbers_require_reconciliation_or_visible_limitation
     failure_attribution:
       business_failure_types:
         - wrong_baseline
@@ -637,7 +872,6 @@ expectation_packages:
         strength: high
         wording_limit: blocked
         backlog_refs:
-          - currency_policy
           - refund_or_reversal_policy
           - timezone_policy
           - component_contracts
@@ -667,7 +901,7 @@ expectation_packages:
         evidence_type: statistical_association
         strength: medium
         wording_limit: quantified
-        condition: initial materiality policy is accepted for supported grains.
+        condition: initial materiality policy is accepted for supported grains and gates main conclusion, driver, anomaly, and display-priority wording.
       - claim_type: permission_and_dedup_boundary
         evidence_type: insufficient
         strength: insufficient
@@ -684,6 +918,44 @@ expectation_packages:
       - missing_contracts_are_named_with_backlog_refs
       - permission_limits_are_visible
       - upgrade_paths_do_not_promote_gaps
+    semantic_evidence_expectations:
+      semantic_query_records:
+        - capability: data_quality_check
+          support_id: dq_contract_coverage_review
+          semantic_query_status: accepted_against_existing_graph_or_claim
+          required_bindings:
+            - referenced_claim_group_or_current_thread
+            - contract_version_pins
+            - current_data_snapshot
+            - disabled_degraded_blocked_path_refs
+        - capability: data_quality_check
+          support_id: dq_permission_sensitive_identifiers
+          semantic_query_status: accepted_with_permission_limit
+          required_bindings:
+            - permission_handoff
+            - blocked_raw_identifier_fields
+      evidence_envelopes:
+        - support_id: dq_contract_coverage_review
+          typed_payload: data_quality_result
+          evidence_type: insufficient
+          strength: high
+          wording_limit: blocked
+        - support_id: dq_materiality_threshold_policy
+          typed_payload: data_quality_result
+          evidence_type: statistical_association
+          strength: medium
+          wording_limit: quantified
+        - support_id: dq_permission_sensitive_identifiers
+          typed_payload: data_quality_result
+          evidence_type: insufficient
+          strength: insufficient
+          wording_limit: context
+          limitation_refs:
+            - pii_dimension_output_limit
+      answer_package_handoff:
+        - every_reviewed_claim_binds_evidence_refs
+        - blocked_claim_paths_do_not_publish
+        - missing_contract_and_permission_limits_are_visible_without_promoting_gaps
     failure_attribution:
       business_failure_types:
         - hidden_data_gap

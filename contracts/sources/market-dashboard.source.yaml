@@ -101,7 +101,7 @@ coverage:
     source_field: absent
     assumed_from_current_paid_order_contract: NGN
     policy_status: accepted_under_global_NGN_reporting_policy
-    remaining_gap: Original-currency validation source is absent; do not make cross-currency conversion claims from this dashboard source alone.
+    remaining_gap: Cross-currency conversion and original-currency validation are out of scope for this phase; do not make cross-currency conversion claims from this dashboard source.
 
 semantic_notes:
   paid_active_definition:
@@ -166,6 +166,14 @@ semantic_notes:
       - user_level_first_pay_lifetime_reconstruction
   marketing_boundary:
     aggregate_cost_available: 投放成本
+    allowed_use:
+      - background_context_when_date_scope_match
+      - candidate_mechanism_with_missing_contract_limitation
+    blocked_use:
+      - campaign_spend_proxy
+      - exposure_or_control_proxy
+      - roi_roas_cpa_claims
+      - net_impact_or_confirmed_campaign_impact
     unavailable_without_new_source:
       - 投放预算
       - 出价
@@ -177,14 +185,15 @@ semantic_notes:
       - 用户推荐活动
   adjustment_boundary:
     refund_reversal_source: unavailable_without_new_source
-    note: 提现字段不能替代 refund, reversal, chargeback, or cancellation adjustment contracts.
+    note: 提现字段不能替代 refund, reversal, chargeback, or cancellation adjustment contracts; current phase allows limitation wording only, not adjustment proxy.
 
 known_limits:
   - pending_owner_confirmation_for_dashboard_field_meanings
-  - original_currency_validation_source_absent
+  - cross_currency_conversion_out_of_scope
   - channel_dimension_is_inferred_from_filename_for_channel_dashboard_files_with_literal_merge_only
   - dashboard_has_daily_and_channel_daily_aggregates_but_no_joint_grain
   - aggregate_marketing_cost_is_not_campaign_budget_bid_or_spend_detail
+  - aggregate_marketing_cost_cannot_support_roi_roas_cpa_or_net_impact
   - no_creative_ctr_cvr_fields
   - no_seo_geo_ranking_fields
   - no_referral_activity_fields

@@ -52,11 +52,9 @@ support_records:
     strength: high
     wording_limit: context
     backlog_refs:
-      - currency_policy
-      - refund_or_reversal_policy
       - timezone_policy
       - payment_status_and_dedup_contract
-    wording_limit_reason: Current paid-order source binding, status boundary, and dedup policy are accepted; remaining policy gaps must still be surfaced before strong claims.
+    wording_limit_reason: Current paid-order source binding, gross paid_amount basis, status boundary, and dedup policy are accepted; remaining time/status policy gaps must still be surfaced before strong claims.
     review_status: draft_pending_owner_review
 
   - support_id: formula_paid_amount_change_order_chain
@@ -116,7 +114,7 @@ support_records:
       - channel_payment_dimension_contracts
       - product_operation_event_contracts
       - exposure_control_contracts
-    wording_limit_reason: Current channel field is confirmed; spend, operation, exposure, and channel-history contracts are required before attribution claims.
+    wording_limit_reason: Current channel field and aggregate 投放成本 can provide limited context; spend, operation, exposure, control, and channel-history contracts are required before campaign attribution, ROI, ROAS, CPA, net impact, or confirmed spend-impact claims.
     review_status: draft_pending_owner_review
 
   - support_id: pattern_month_phase_paid_amount
@@ -213,7 +211,7 @@ support_records:
     backlog_refs:
       - product_operation_event_contracts
       - exposure_control_contracts
-    wording_limit_reason: Event timing, affected scope, exposure, and controls are required before impact wording.
+    wording_limit_reason: Event timing, affected scope, exposure, and controls are required before impact wording; aggregate 投放成本 cannot proxy campaign impact.
     review_status: draft_pending_owner_review
 
   - support_id: formula_business_object_metric_driver
@@ -312,7 +310,7 @@ support_records:
     wording_limit: stable_pattern
     backlog_refs:
       - gameplay_metric_contracts
-    wording_limit_reason: Gameplay files support bet count, bet amount, average bet amount, gameplay users, and GGR. Payout rate is deferred by business decision; channel filename mapping still needs owner confirmation.
+    wording_limit_reason: Gameplay files support bet count, bet amount, average bet amount, gameplay users, and GGR as activity or betting-structure evidence. They cannot be relabeled as gameplay payment ARPU or paid_amount contribution; payout rate is deferred and channel filename mapping still needs owner confirmation.
     review_status: draft_pending_owner_review
 
   - support_id: formula_gameplay_paid_amount_linkage_blocked
@@ -331,7 +329,7 @@ support_records:
     backlog_refs:
       - gameplay_metric_contracts
       - exposure_control_contracts
-    wording_limit_reason: Current gameplay files do not contain icon exposure, icon click, gameplay paid rate, gameplay payment amount, or payment-order-to-gameplay linkage.
+    wording_limit_reason: Current gameplay files do not contain icon exposure, icon click, gameplay paid rate, gameplay payment amount, gameplay payment frequency, single-payment amount, or payment-order-to-gameplay linkage. Available gameplay activity and betting fields may stay as context only.
     review_status: draft_pending_owner_review
 
   - support_id: joint_attribution_geo_device_permission_limited
@@ -412,7 +410,7 @@ support_records:
       - raw_external_evidence_ingestion_scope
     limitation_refs:
       - raw_external_ingestion_phase1_scope
-    wording_limit_reason: Raw external crawling is outside Phase 1; launch claims require reviewed event or evidence contracts.
+    wording_limit_reason: Raw external crawling and live AnySearch-like connectors are outside the current version; launch claims require reviewed event or evidence contracts.
     review_status: draft_pending_owner_review
 
   - support_id: pattern_custom_baseline_paid_amount
@@ -471,7 +469,6 @@ support_records:
     strength: high
     wording_limit: blocked
     backlog_refs:
-      - currency_policy
       - refund_or_reversal_policy
       - timezone_policy
       - component_contracts
@@ -491,7 +488,7 @@ support_records:
     evidence_type: statistical_association
     strength: medium
     wording_limit: quantified
-    wording_limit_reason: Initial grain-aware materiality thresholds are accepted; sparse comparable windows still degrade to descriptive wording.
+    wording_limit_reason: Initial grain-aware materiality thresholds are accepted as claim-strength and display-priority gates; below-reportable changes stay background only, material-driver thresholds gate primary explanation candidates, and strong-anomaly thresholds gate strong anomaly wording.
     review_status: reviewed_confirmed_2026-07-05
 
   - support_id: dq_permission_sensitive_identifiers
@@ -557,7 +554,7 @@ support_records:
     evidence_type: insufficient
     strength: insufficient
     wording_limit: blocked
-    wording_limit_reason: answer_verify blocks impact or causal wording without event, exposure, control, and evidence support.
+    wording_limit_reason: answer_verify blocks impact, ROI, ROAS, CPA, net impact, and causal wording without event, spend, exposure, control, and evidence support.
     review_status: draft_pending_owner_review
 
   - support_id: verify_revenue_health

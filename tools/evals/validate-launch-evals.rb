@@ -87,11 +87,20 @@ errors = []
 eval_doc = YAML.safe_load(File.read(EVAL_PATH), permitted_classes: [Date], aliases: false)
 support_doc = YAML.safe_load(File.read(File.join(ROOT, "contracts/ledger/capability-support.yaml")), aliases: false)
 backlog_doc = YAML.safe_load(File.read(File.join(ROOT, "contracts/backlog/missing-contracts.yaml")), aliases: false)
+factor_doc = YAML.safe_load(File.read(File.join(ROOT, "contracts/ledger/factor-ledger.yaml")), aliases: false)
 
 question_families = support_doc.fetch("question_families").to_set
 capabilities = support_doc.fetch("capabilities").to_set
-support_ids = support_doc.fetch("support_records").map { |record| record.fetch("support_id") }.to_set
+support_records = support_doc.fetch("support_records")
+support_ids = support_records.map { |record| record.fetch("support_id") }.to_set
+capability_by_support_id = support_records.to_h { |record| [record.fetch("support_id"), record.fetch("capability")] }
 backlog_ids = backlog_doc.fetch("backlog").map { |record| record.fetch("backlog_id") }.to_set
+limitation_ids = list(factor_doc["review_limitations"]).map { |record| record.fetch("limitation_id") }.to_set
+known_limitation_refs = backlog_ids | limitation_ids
+typed_payload_by_capability = Dir.glob(File.join(ROOT, "contracts/capabilities/*.yaml")).each_with_object({}) do |path, acc|
+  card = YAML.safe_load(File.read(path), aliases: false)
+  acc[card.fetch("capability_id")] = card.dig("evidence_outputs", "typed_payload")
+end
 
 packages = list(eval_doc["expectation_packages"])
 errors << "expectation_packages: must not be empty" if packages.empty?
@@ -144,6 +153,35 @@ packages.each do |pkg|
     require_in(errors, claim_owner, "strength", claim["strength"], STRENGTHS)
     require_in(errors, claim_owner, "wording_limit", claim["wording_limit"], WORDING_LIMITS)
   end
+
+  semantic = pkg["semantic_evidence_expectations"]
+  require_present(errors, owner, "semantic_evidence_expectations", semantic)
+  list(semantic && semantic["semantic_query_records"]).each do |record|
+    record_owner = "#{owner}/semantic_query/#{record["support_id"] || "missing_support"}"
+    require_in(errors, record_owner, "capability", record["capability"], capabilities)
+    require_in(errors, record_owner, "support_id", record["support_id"], support_ids)
+  end
+  list(semantic && semantic["evidence_envelopes"]).each do |envelope|
+    envelope_owner = "#{owner}/evidence_envelope/#{envelope["support_id"] || "missing_support"}"
+    support_id = envelope["support_id"]
+    require_in(errors, envelope_owner, "support_id", support_id, support_ids)
+    require_in(errors, envelope_owner, "evidence_type", envelope["evidence_type"], EVIDENCE_TYPES)
+    require_in(errors, envelope_owner, "strength", envelope["strength"], STRENGTHS)
+    require_in(errors, envelope_owner, "wording_limit", envelope["wording_limit"], WORDING_LIMITS)
+
+    expected_payload = typed_payload_by_capability[capability_by_support_id[support_id]]
+    typed_payload = envelope["typed_payload"]
+    next if blank?(typed_payload) || blank?(expected_payload) || typed_payload == expected_payload
+
+    errors << "#{envelope_owner}: invalid typed_payload #{typed_payload.inspect}, expected #{expected_payload.inspect}"
+  end
+  list(semantic && semantic["evidence_envelopes"]).each do |envelope|
+    envelope_owner = "#{owner}/evidence_envelope/#{envelope["support_id"] || "missing_support"}"
+    list(envelope["limitation_refs"]).each do |ref|
+      require_in(errors, envelope_owner, "limitation_ref", ref, known_limitation_refs)
+    end
+  end
+  require_present(errors, owner, "semantic_evidence_expectations.answer_package_handoff", semantic && semantic["answer_package_handoff"])
 
   attribution = pkg["failure_attribution"] || {}
   list(attribution["business_failure_types"]).each do |value|

@@ -89,16 +89,20 @@ coverage:
         - 玩法盈利
       status: confirmed_metric_mapping
       wording_limit: quantified
-    gameplay_arpu:
+    per_user_betting_or_ggr_context:
       available_fields:
         - 游戏人数
         - 玩法盈利
         - 玩家下注总额
-      status: proxy_pending_owner_definition
+      status: context_only_not_payment_arpu
       candidate_formulas:
         - 玩法盈利 / 游戏人数
         - 玩家下注总额 / 游戏人数
       wording_limit: candidate
+      blocked_labels:
+        - gameplay_payment_arpu
+        - gameplay_paid_amount
+        - paid_amount_contribution
   unavailable_without_new_source:
     - 玩法icon曝光数
     - 玩法icon点击率
@@ -115,4 +119,5 @@ known_limits:
   - robot_cash_lost_raw_column_has_source_typo_chah_map_as_robot_cash_lost_raw
   - no_icon_exposure_or_click_fields
   - no_direct_payment_linkage_to_gameplay
+  - no_hard_guess_for_missing_gameplay_payment_fields
   - payout_rate_deferred_by_business_decision

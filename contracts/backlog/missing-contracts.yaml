@@ -98,8 +98,8 @@ backlog:
     upgrade_path: Expand production runtime mirror schema and future snapshot versioning rules in later phases.
 
   - backlog_id: currency_policy
-    title: Define NGN report-currency conversion and validation contract.
-    data_contract_state: missing_contract
+    title: Define later-phase cross-currency conversion and exchange-rate contract.
+    data_contract_state: out_of_scope_for_now
     metric_known_gap_id: currency_policy
     affected_factor_groups:
       - paid_amount_metric_source
@@ -121,14 +121,14 @@ backlog:
         - 支付发起金额
     business_decision:
       status: accepted
-      decided_on: "2026-07-04"
+      decided_on: "2026-07-05"
       analysis_basis: unified_report_currency
       report_currency: NGN
       report_currency_name: Nigerian Naira
     expected_owner: data_owner
-    review_need: Confirm exchange-rate source, conversion timing, original-currency validation, and whether source amounts are already normalized to NGN.
-    launch_impact: Blocks cross-currency quantified contribution and amount-tier comparison claims until conversion source and validation rules are accepted.
-    upgrade_path: Add NGN conversion source, rate timing, and validation rules to the paid_amount source contract.
+    review_need: Current runtime raw amount data is provided in NGN. Exchange-rate source, conversion timing, and original-currency validation are deferred to a later contract review.
+    launch_impact: Does not block NGN paid_amount, amount-tier, pattern, anomaly, formula, or contribution claims. Blocks cross-currency and original-currency conversion claims.
+    upgrade_path: Add exchange-rate source, rate timing, original-currency fields, and conversion validation rules when cross-currency analysis enters scope.
 
   - backlog_id: refund_or_reversal_policy
     title: Define separate refund, chargeback, cancellation, and reversal adjustment contracts.
@@ -151,16 +151,16 @@ backlog:
         - 支付成功金额
     business_decision:
       status: accepted
-      decided_on: "2026-07-04"
+      decided_on: "2026-07-05"
       paid_amount_basis: gross_successful_paid_amount
-      adjustment_treatment: separate_adjustment_and_risk_reporting
+      adjustment_treatment: no_adjustment_proxy_current_phase
     reviewed_progress:
       decided_on: "2026-07-05"
       current_source_status: unavailable_without_new_source
-      note: Business owner confirmed current analysis should use paid_amount directly; refund, reversal, chargeback, and cancellation sources remain explicit gaps.
+      note: Business owner confirmed option A; current analysis uses gross paid_amount directly, nearby fields cannot proxy adjustments, and refund, reversal, chargeback, and cancellation sources remain explicit gaps.
     expected_owner: data_owner
     review_need: Confirm refund, chargeback, cancellation, and reversal source fields, event time, order linkage, adjustment amount, and reporting window.
-    launch_impact: Gross paid_amount claims can use successful payment amount once source binding is accepted; net revenue or adjustment-risk claims wait for adjustment contracts.
+    launch_impact: Does not block gross successful paid_amount claims. Blocks net revenue, adjusted revenue, and adjustment-risk quantified claims.
     upgrade_path: Add separate adjustment evidence fields and linkage rules to source contracts.
 
   - backlog_id: timezone_policy
@@ -267,7 +267,7 @@ backlog:
       still_missing_or_pending:
         - Lifetime first-pay computation requires full historical paid-order imports; current H1 2026 source is not enough for complete lifetime first-pay history.
         - Paid active retention needs a cohort/retention contract.
-        - Dashboard source owner still needs to confirm field meanings for 2024-2026 aggregate rows; reporting currency follows the accepted NGN policy, while original-currency validation remains a separate currency-policy gap.
+        - Dashboard source owner still needs to confirm field meanings for 2024-2026 aggregate rows; reporting currency follows the accepted NGN policy, while cross-currency conversion remains out of scope for this phase.
     expected_owner: data_owner
     review_need: Promote reviewed component metric contracts for paid users, paid orders, frequency, ticket size, success rate, DAU-to-paid conversion, first-pay, and retention with the confirmed paid_dau definition.
     launch_impact: Current paid-order snapshot can support the core order-chain formula; funnel, retention, and ambiguous conversion paths still degrade or block.
@@ -477,6 +477,7 @@ backlog:
     reviewed_progress:
       decided_on: "2026-07-05"
       current_source_status: unavailable_without_new_source
+      campaign_spend_exposure_control_policy: context_or_candidate_only_without_contracts
       unavailable_without_new_information:
         - 投放预算
         - 出价
@@ -496,7 +497,7 @@ backlog:
         - market_dashboard_2024_2026.投放成本
     expected_owner: data_owner
     review_need: Add maintained internal event records with event timing, affected scope, source authority, exposure, and controls before impact wording.
-    launch_impact: Product, campaign, creative, SEO/GEO, referral, server, Grafana, payment-incident, first-pay package, and recharge-activity impact claims stay unavailable or insufficient until new source information is provided.
+    launch_impact: Product, campaign, creative, SEO/GEO, referral, server, Grafana, payment-incident, first-pay package, and recharge-activity impact claims stay unavailable or insufficient until new source information is provided. Aggregate 投放成本 can support context only and cannot support ROI, ROAS, CPA, net impact, or confirmed spend-impact claims.
     upgrade_path: Add maintained event contracts and exposure/control fields.
 
   - backlog_id: external_context_event_contracts
@@ -542,7 +543,7 @@ backlog:
       competitor_ranking_source:
         - contracts/sources/competitor-ranking.source.yaml
     review_need: Confirm accepted sources, confidence, timing, affected scope, refresh rules, and whether stronger official policy feeds need separate contracts.
-    launch_impact: Imported external events and competitor ranking can support contextual evidence and candidate mechanisms; confirmed cause wording remains blocked.
+    launch_impact: Imported external events and competitor ranking can support contextual evidence and candidate mechanisms; current version has no AnySearch or live external connector; confirmed cause wording remains blocked.
     upgrade_path: Add typed event contracts, evidence-linked external source records, confidence fields, affected scope, and stronger evidence rules.
 
   - backlog_id: gameplay_metric_contracts
@@ -572,6 +573,9 @@ backlog:
       source_contract: contracts/sources/gameplay.source.yaml
     reviewed_progress:
       profiled_on: "2026-07-05"
+      business_decision:
+        decided_on: "2026-07-05"
+        current_phase_policy: use_directly_covered_gameplay_fields_only_no_hard_guess
       covered_by_gameplay_files:
         - 玩法
         - 游戏人数
@@ -598,7 +602,7 @@ backlog:
         - 支付订单到玩法的明细归因链路
     expected_owner: data_owner
     review_need: Confirm gameplay metric meanings, filename-to-channel mapping, exposure/click source, and payment linkage. Use the first 服务费抽水 column because duplicate columns matched in the profiled file; map 机器人输的chah as robot_cash_lost_raw.
-    launch_impact: Gameplay activity, betting-structure, and GGR claims can use profiled evidence; gameplay paid_amount attribution and icon funnel remain blocked.
+    launch_impact: Gameplay activity, betting-structure, and GGR claims can use profiled evidence. Per-user betting or GGR indicators can be context only. Gameplay paid_amount attribution, gameplay payment ARPU, payment frequency, single-payment amount, payment linkage, and icon funnel remain blocked.
     upgrade_path: Add gameplay metric and dimension contracts.
 
   - backlog_id: exposure_control_contracts
@@ -620,9 +624,20 @@ backlog:
         - f31f9a467e7ad5a05c976d1ca0e5bba5
         - 0b8da29a768645fcb6ad6824de418608
         - c8cbb988206d2fd86a8a7030e54f7ba9
+    business_decision:
+      status: accepted
+      decided_on: "2026-07-05"
+      current_phase_policy: context_or_candidate_only_without_spend_exposure_control_contracts
+      blocked_claims_without_contracts:
+        - roi
+        - roas
+        - cpa
+        - net_impact
+        - confirmed_campaign_impact
+        - causal_lift
     expected_owner: data_owner
     review_need: Define exposure, control, affected scope, and comparison baseline for impact review.
-    launch_impact: Net impact and causal wording are blocked without reviewed controls or stronger evidence.
+    launch_impact: Net impact, ROI, ROAS, CPA, confirmed campaign impact, and causal wording are blocked without reviewed spend, exposure, controls, or stronger evidence.
     upgrade_path: Add exposure/control fields to event or operation contracts.
 
   - backlog_id: materiality_policy
@@ -646,11 +661,11 @@ backlog:
         - docs/prd.md#pattern-launch-regression-thresholds
     decision_status: accepted_initial_policy
     owner_position:
-      decided_on: "2026-07-05"
-      note: Use the data-assisted grain-aware threshold table as the initial policy; adjust later only when business feedback or new data requires it.
+      decided_on: "2026-07-06"
+      note: Use the data-assisted grain-aware threshold table as the initial policy and use thresholds as claim-strength and display-priority gates; adjust later only when business feedback or new data requires it.
     expected_owner: business_owner_and_data_owner_joint_review
     review_need: Keep this as the current accepted policy and version any future tuning.
-    launch_impact: Strong pattern, anomaly, or health wording can use the accepted grain-aware thresholds when comparable windows are sufficient; sparse windows still degrade.
+    launch_impact: Below-reportable changes cannot enter main conclusion, main driver list, or anomaly wording. Reportable movement can be visible; material-driver movement can enter primary explanation candidates; strong-anomaly movement is required for strong anomaly wording. Sparse windows still degrade.
     upgrade_path: Add question-family overrides only after observed business need.
 
   - backlog_id: amount_bucket_policy
@@ -747,11 +762,13 @@ backlog:
         - 33d3d75aef26b100741b15f34e0c702f
     product_decision:
       status: accepted
-      decided_on: "2026-07-04"
-      launch_boundary: raw_external_crawling_excluded
+      decided_on: "2026-07-05"
+      launch_boundary: raw_external_crawling_and_anysearch_excluded_current_version
+      current_version_policy: use_reviewed_imported_external_events_and_competitor_ranking_only
+      user_extra_external_info_request: record_as_later_phase_anysearch_or_external_evidence_contract_need
       future_connector_examples:
         - AnySearch-like external evidence connector
     expected_owner: data_owner
     review_need: Define future accepted external evidence sources, connector boundary, refresh, provenance, permission model, and verifier wording rules before ingestion work starts.
-    launch_impact: Raw crawling cannot support launch claims; reviewed event/evidence records can still support context or candidate wording.
+    launch_impact: Raw crawling, live AnySearch, and unreviewed external feeds cannot support launch claims; reviewed event/evidence records and competitor ranking can still support context or candidate wording.
     upgrade_path: Add external evidence connector contracts, such as AnySearch-like capability contracts, or manual event records in a later phase.

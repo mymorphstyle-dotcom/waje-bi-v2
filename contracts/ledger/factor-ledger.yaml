@@ -74,15 +74,13 @@ factor_groups:
       - insufficient
       - blocked
     known_gaps:
-      - currency_policy
-      - refund_or_reversal_policy
       - timezone_policy
       - payment_status_and_dedup_contract
     reviewed_progress:
       - current_paid_order_detail_source_contract_accepted
       - grain_aware_materiality_policy_accepted_initial_version
       - market_dashboard_source_profiled_for_2024_01_01_through_2026_06_02_pending_owner_review
-    upgrade_path: Add remaining policy contracts for conversion validation, adjustment sources, and time semantics; version materiality only when tuning is needed.
+    upgrade_path: Add remaining policy contracts for time semantics and payment status semantics; version materiality only when tuning is needed.
     launch_priority: p0
 
   - factor_group_id: payment_order_metric_chain
@@ -357,8 +355,9 @@ factor_groups:
       - exposure_control_contracts
     reviewed_progress:
       - market_dashboard_source_candidate_has_aggregate_投放成本
+      - aggregate_投放成本_context_only_without_campaign_spend_exposure_control_contracts
       - no_current_source_for_budget_bid_campaign_spend_creative_ctr_cvr_seo_geo_ranking_or_referral_activity
-    upgrade_path: Add channel dimensions, operation event records, exposure/control fields, and spend metrics.
+    upgrade_path: Add channel dimensions, operation event records, campaign spend, exposure/control fields, and comparison contracts.
     launch_priority: p0
 
   - factor_group_id: geo_device_environment
@@ -582,6 +581,7 @@ factor_groups:
       - external_events_2024_2026_imported_from_old_WAJE_BI_project
       - covered_contexts_include_macro_fx_inflation_payday_sports_power_network_media_policy_weather_social_stability_and_holidays
       - competitor_ranking_2024_2026_imported_from_old_WAJE_BI_project
+      - current_version_has_no_AnySearch_or_live_external_connector
       - stronger_official_policy_feeds_remain_missing
     disallowed_wording:
       - confirmed_cause_without_stronger_contracts_and_evidence
@@ -590,7 +590,7 @@ factor_groups:
 
   - factor_group_id: gameplay_engagement_and_arpu
     business_name: 玩法曝光、点击、付费率、频次与玩法 ARPU
-    business_meaning: Gameplay engagement and payment factors that can explain paid_amount through game exposure, click-through, paid rate, frequency, and average payment.
+    business_meaning: Gameplay engagement and payment factors that require direct exposure, click, payment, and order-linkage contracts before they can explain paid_amount through gameplay.
     source_refs:
       ssot_nodes:
         - id: 60908a59f4bdaf00675716ca1d9f4b4a
@@ -634,12 +634,13 @@ factor_groups:
       - gameplay_source_profiled_for_2024_01_01_through_2026_06_02
       - gameplay_files_cover_gameplay_users_penetration_rounds_and_betting_activity
       - icon_exposure_icon_click_direct_gameplay_payment_rate_and_payment_linkage_are_unavailable_without_new_source
-    upgrade_path: Add gameplay identity, exposure, click, activity, payment, and ARPU contracts.
+      - current_gameplay_fields_can_be_context_or_candidate_mechanism_only_for_paid_amount_questions
+    upgrade_path: Add gameplay identity, exposure, click, activity, payment, and order-linkage contracts before paid_amount attribution.
     launch_priority: p1
 
   - factor_group_id: gameplay_ggr_and_betting
     business_name: 玩法流水、人均下注、下注金额与返奖率
-    business_meaning: Gameplay revenue and betting-structure factors that may explain related revenue paths and paid_amount-adjacent questions.
+    business_meaning: Gameplay revenue and betting-structure factors that can describe gameplay activity and GGR context, without inferring payment-order linkage or paid_amount contribution.
     source_refs:
       ssot_nodes:
         - id: a62e46ceb33a86af098d5f2b3149cff0
@@ -689,6 +690,7 @@ factor_groups:
     reviewed_progress:
       - gameplay_source_covers_bet_count_bet_amount_avg_bet_amount_and_GGR
       - 玩法盈利_confirmed_as_GGR
+      - per_user_betting_or_GGR_indicators_are_context_only_not_gameplay_payment_ARPU
       - payout_rate_deferred_by_business_decision
     upgrade_path: Add gameplay payment-linkage contracts before玩法付费 attribution claims.
     launch_priority: p1
@@ -781,5 +783,5 @@ review_limitations:
     backlog_ref: sensitive_identifier_permission_policy
   - limitation_id: raw_external_ingestion_phase1_scope
     data_contract_state: out_of_scope_for_now
-    description: Raw news, forum, media, or website crawling is outside the launch baseline; future AnySearch-like external evidence connectors require reviewed source contracts and verifier wording rules.
+    description: Raw news, forum, media, website crawling, and live AnySearch-like connectors are outside the current version; future AnySearch-style external evidence connectors require reviewed source contracts and verifier wording rules.
     backlog_ref: raw_external_evidence_ingestion_scope

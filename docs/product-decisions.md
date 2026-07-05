@@ -9,27 +9,35 @@ This file records confirmed product and architecture decisions from planning dis
 - `paid_amount` analysis uses a unified report-currency basis.
 - The report currency is Nigerian Naira (`NGN`).
 - This confirms the business currency basis for metric comparison, contribution, pattern, anomaly, and amount-tier analysis.
-- Data/engineering still needs to confirm exchange-rate source, conversion timing, original-currency validation, and whether source amounts are already normalized to NGN before executable cross-currency claims can be quantified.
+- System raw amount data for the current runtime is provided in NGN. Exchange-rate conversion, original-currency validation, and cross-currency claims are out of scope for this phase and should be handled in a later contract review.
 
-### 2026-07-04: `paid_amount` Refund And Reversal Policy
+### 2026-07-05: `paid_amount` Refund And Reversal Policy
 
 - `paid_amount` uses gross successful paid amount for operating analysis.
-- Refunds, chargebacks, cancellations, and reversals are reported as separate adjustment items and risk explanations.
-- This keeps payment behavior, payment-chain, pattern, and operating-review analysis anchored on successful payment amount.
-- Data/engineering still needs separate adjustment contracts for adjustment source fields, event time, order linkage, adjustment amount, and reporting window before net revenue or adjustment-risk claims can be quantified.
+- Refunds, chargebacks, cancellations, and reversals are not proxied from nearby fields in this phase.
+- Without dedicated adjustment contracts, they can appear only as missing-contract or scope limitations.
+- This keeps payment behavior, payment-chain, pattern, and operating-review analysis anchored on successful payment amount; gross `paid_amount` claims do not wait for adjustment contracts.
+- Data/engineering still needs separate adjustment contracts for adjustment source fields, event time, order linkage, adjustment amount, and reporting window before net revenue, adjusted revenue, or adjustment-risk claims can be quantified.
 
 ### 2026-07-04: `paid_amount` Timezone And Day Boundary
 
 - `paid_amount` analysis uses Nigerian local business time: `Africa/Lagos`.
 - Business-day windows use `[00:00, 24:00)` in `Africa/Lagos`.
 - Month-start, month-phase, holiday, payday, hourly, event-window, and anomaly analysis should use this local business-day boundary.
-- Data/engineering still needs source timestamp mapping, derived date-field validation, and current-data cutoff or watermark before executable time-window claims can be quantified.
+- Runtime business-date binding uses `支付完成时间` converted to `Africa/Lagos`; the raw `日期` column is not the authority for `paid_amount` business-day analysis.
+- If `支付完成时间` has no timezone marker, parse it as `Africa/Lagos` local time; if it carries UTC or offset, parse the explicit timezone first, then convert to `Africa/Lagos`.
+- Runtime must compare the derived `Africa/Lagos` date with raw `日期`; mismatches create data-quality warning or block based on claim impact.
+- Data/engineering still needs runtime validator and snapshot-pin enforcement before executable time-window claims can be quantified.
 
 ### 2026-07-05: `paid_amount` Materiality Policy
 
 - Initial materiality policy is accepted from the 2026 H1 paid-order profile.
 - The policy is grain-aware: hourly, daily, 3-day, 7-day, 14-day, 30-day, calendar-month, quarter, and custom-window questions use their own comparable-window logic.
 - Calendar-month claims use the 30-day proxy with low-confidence wording until more months exist. Quarter claims stay descriptive on the current dataset.
+- Runtime uses thresholds as claim-strength and display-priority gates.
+- Movement below `reportable_movement` cannot enter the main conclusion, main driver list, or anomaly wording; it can appear only as low-priority background when the user asks for detail.
+- Movement at or above `reportable_movement` can be reported as a visible change. Movement at or above `material_driver` can enter the primary explanation candidate set. Movement at or above `strong_anomaly` is required for strong anomaly wording.
+- The LLM cannot override materiality gates. If business context suggests the threshold may be inappropriate, runtime can clarify, degrade wording, or record a follow-up, but the verifier remains the publish authority.
 - Future business feedback or new distributions should create a new materiality policy version.
 
 ### 2026-07-04: Payday Dimension Boundary
@@ -67,6 +75,19 @@ This file records confirmed product and architecture decisions from planning dis
 - Current competitor ranking CSV can provide daily competitor-ranking context for 2024-01-01 through 2026-06-07. It supports candidate/context wording only.
 - Unless new source information is provided, the following remain unavailable: 投放预算、出价、campaign 消耗、素材 CTR/CVR、SEO/GEO 排名、用户推荐活动、服务器稳定性、Grafana、支付事故、产品更新、首充礼包、充值活动、refund/reversal/chargeback/cancellation, gameplay icon exposure/click, gameplay paid rate, gameplay payment amount, gameplay payment frequency, gameplay single-payment amount, and payment-order-to-gameplay linkage. 返奖率 is deferred for now.
 
+### 2026-07-05: Campaign Spend, Exposure, And Control Policy
+
+- Without campaign spend, exposure, and control contracts, campaign and paid-growth evidence can enter answers only as context, candidate mechanism, or missing-contract limitation.
+- 大盘 aggregate `投放成本` may be used as background context when its date and scope match the analysis, but it cannot proxy campaign spend, exposure, control, ROI, ROAS, CPA, net impact, or confirmed campaign impact.
+- Runtime must block ROI, ROAS, CPA, net impact, causal lift, and confirmed spend-impact wording until maintained campaign/operation event records, spend, exposure, affected scope, and control/comparison contracts exist.
+
+### 2026-07-05: Gameplay Coverage And Linkage Policy
+
+- Current gameplay data should be used where it is directly covered: gameplay users, penetration, rounds, bet count, bet amount, average bet amount, system rake rate, GGR/gameplay profit, and filename-derived channel-day context.
+- Available gameplay fields can support gameplay activity, betting-structure, GGR, stable-pattern, and candidate-mechanism explanations when date, gameplay, service scope, channel mapping, sparse-cell, and permission gates pass.
+- Missing gameplay fields must not be guessed from adjacent metrics. Runtime blocks gameplay paid_amount attribution, gameplay paid rate, gameplay paid amount, gameplay payment frequency, gameplay single-payment amount, icon exposure/click funnel, and payment-order-to-gameplay linkage until dedicated contracts exist.
+- Per-user betting or GGR indicators may be described as gameplay activity or betting-value context only; they cannot be relabeled as gameplay payment ARPU or paid_amount contribution.
+
 ### 2026-07-04: External Context Claim Boundary
 
 - External environment, competitors, policy, weather, sports, social events, and black-swan candidates default to `contextual_evidence` or `candidate_mechanism`.
@@ -77,7 +98,9 @@ This file records confirmed product and architecture decisions from planning dis
 ### 2026-07-04: Raw External Evidence Ingestion Boundary
 
 - Raw external crawling is excluded from the launch baseline.
+- The current version does not connect AnySearch or other live external evidence connectors.
 - Runtime should not use ad hoc web/news/forum/media crawling as direct evidence.
+- If a user asks for extra external information, the answer should state that external connector support is a later-phase AnySearch-style integration item; the request can be recorded as a missing external-evidence need, not used as evidence in the current run.
 - Future AnySearch-like external evidence connectors can be added after source contracts, provenance, refresh, permission, affected-scope, confidence, and verifier wording rules are reviewed.
 - Until then, external context should come from reviewed event/evidence records or manual event records.
 
@@ -85,7 +108,7 @@ This file records confirmed product and architecture decisions from planning dis
 
 - User ID, IP, and device ID may be used for aggregate analysis, internal data-quality checks, and deduplication.
 - Answers and visualizations must not output raw user IDs, raw IPs, or raw device IDs.
-- Individual-user claims are blocked unless a later reviewed policy explicitly allows them.
+- Individual-user claims are blocked in the WAJE BI v2 baseline.
 - Data/engineering still needs to enforce field sensitivity tags, masking, role access, sparse-cell thresholds, audit requirements, and verifier checks.
 
 ### 2026-07-04: `paid_amount` Payment Status And Dedup Policy
@@ -99,11 +122,12 @@ This file records confirmed product and architecture decisions from planning dis
 
 ### 2026-07-04: Current Data Snapshot Policy
 
-- Analysis uses the currently available data at run time by default.
-- Answers should state the data cutoff, source watermark, or current-data basis when that metadata is available.
+- First runtime uses the accepted 2026-07-04 export snapshot by default.
+- That snapshot covers 2026-01-01 through 2026-06-30; answers using it must state data cutoff: 2026-06-30.
 - Later data updates do not rewrite prior answer artifacts.
 - Updated data should produce a new run or new artifact version when the analysis is rerun.
-- First real-data snapshot: exported on 2026-07-04, complete January through June 2026 dataset, with no late-arriving records or status backfill recorded for this snapshot.
+- Prior Answer Package artifacts remain readable and auditable as old-snapshot artifacts. Opening an old artifact should show its snapshot id and cutoff, and runtime must not silently refresh its conclusions with newer data.
+- The 2026-07-04 snapshot has no late-arriving records or status backfill recorded for this snapshot.
 
 ### 2026-07-04: Source Template And Real Data Binding
 
@@ -111,6 +135,20 @@ This file records confirmed product and architecture decisions from planning dis
 - First real paid-order detail data was received and profiled as `data/raw/2026-01-01_2026-06-30.csv`.
 - The first real-data source contract is accepted for the 2026-01-01 through 2026-06-30 snapshot.
 - Dev Postgres contract mirror is initialized for contract artifacts; future snapshots must bind to versioned source contracts.
+
+### 2026-07-05: `paid_amount` Source Precedence
+
+- `dashboard` means `经营大盘` / 大盘 source.
+- `paid_order_detail` is the primary fact source for `paid_amount` in the first runtime.
+- 大盘 is first cut to the `paid_order_detail` requested window, then only the actual overlapping dates can support auxiliary formula components, trend cross-checks, and structure explanations.
+- If 大盘 covers `< 80%` of the requested `paid_order_detail` window after this cut-off, 大盘 auxiliary formula paths can only appear as context.
+- Runtime must not extrapolate or fill 大盘 missing dates to match the `paid_order_detail` window.
+- If 大盘 `付费金额`, `付费人数`, or `日活历史付费人数` conflicts with values derived from `paid_order_detail`, runtime uses `paid_order_detail` for the main quantified `paid_amount` conclusion and records the difference as a data-quality warning.
+- 大盘 cannot override the main `paid_amount` quantified conclusion.
+- Overlap reconciliation thresholds compare the relevant overlapping date window:
+  - Difference `<= 3%` or amount difference `<= 10M NGN`: keep 大盘 auxiliary formula path with data-quality warning.
+  - Difference `> 3%` and amount difference `> 10M NGN`: 大盘 path can only appear as context and cannot enter `primary_formula` or `auxiliary_formulas` scoring.
+  - Difference `> 10%` or amount difference `> 30M NGN`: block 大盘 auxiliary formula paths and explain that source reconciliation gap.
 
 ### 2026-07-04: Real Data First Profiling Scope
 
@@ -135,8 +173,35 @@ This file records confirmed product and architecture decisions from planning dis
 ### 2026-07-05: Raw Identifier Scope For Operations Analysis
 
 - Raw `IP` and `设备ID` are not required for the current operations-analysis scope.
+- Confirmed permission choice: raw user ID, raw IP, and raw device ID are never shown in answers or visualizations. They may only be used internally for data-quality checks, deduplication, permission-safe joins, and aggregate analysis.
 - Aggregate analysis can still use available region, device brand/model, operating system, and network type fields.
 - Device-level deduplication, single-device tracking, raw-IP location checks, and device-level risk analysis are outside the current BI operations-analysis scope.
+
+### 2026-07-05: Sparse Cell And Aggregate Fallback Policy
+
+- Low-sample segment cells should not show detailed values, labels, ranks, amounts, counts, or raw rows in answers or visualizations.
+- First-runtime sparse-cell threshold is `n < 10`: order metrics count paid orders, user metrics count distinct users.
+- Runtime should roll low-sample cells up to an approved higher aggregate grain when that grain is meaningful and permission-safe.
+- If a low-sample observation may help business readers understand uncertainty, the answer may mention that a similar signal was observed in a small sample, with no detailed cell output.
+- Low-sample observations cannot support main conclusions, quantified claims, rankings, or causal wording.
+- Candidate screening may keep noisier cells above this red line for local scoring and LLM business judgment; sample size, stability, and evidence strength still constrain promotion.
+- Data/engineering still needs to enforce this threshold in permission, artifact filtering, verifier, and visualization checks.
+
+### 2026-07-05: Role Visibility And LangGraph Runtime Baseline
+
+- First runtime baseline uses three visibility roles: `business_reader`, `analyst`, and `data_owner_admin`.
+- `business_reader` can see business conclusions, visible limitations, and permission-safe aggregate visual blocks.
+- `analyst` can additionally see aggregate evidence, process summaries, path records, degraded or blocked route reasons, and non-sensitive diagnostic detail.
+- `data_owner_admin` can additionally see contract state, validator outputs, audit metadata, runtime debug detail, and owner-review queues.
+- No role can see raw user ID, raw IP, or raw device ID in answers or visualizations.
+- Runtime stores one complete Answer Package. Artifact sections should use visibility tags such as `business_summary`, `aggregate_evidence`, `diagnostic_detail`, and `admin_audit`; runtime filters sections by role before rendering, sharing, or export.
+- Artifact audit records actor, role, artifact id, action, and visible section ids for every open, share, or export action.
+- Bootstrap access uses a backend allowlist and public registration is disabled in the first runtime.
+- Bootstrap access starts with one default principal per role: `bootstrap_business_reader`, `bootstrap_analyst`, and `bootstrap_data_owner_admin`.
+- Real identity-provider mapping can replace the allowlist when auth is connected.
+- First production runtime must integrate LangGraph workflow execution. LangGraph carries visible workflow, checkpoints, branches, loops, retries, interrupts, trace, and node progress; WAJE-owned contracts, validators, evidence state, permissions, and verifier remain the BI authority.
+- LangGraph node ids should link to WAJE run/node ids so product views can join workflow progress with evidence refs, path records, verifier results, and Answer Package artifacts.
+- If LangGraph execution fails, runtime must fail the run or affected branch visibly and must not produce a local business-conclusion fallback. It may show failed node, reason, retry/recovery option, and preserved evidence state, but no business conclusion or action recommendation can be published from fallback logic.
 
 ### 2026-07-05: First Dataset Paid Amount Cleaning Boundary
 
@@ -165,9 +230,13 @@ This file records confirmed product and architecture decisions from planning dis
 - Default graph strategy: use an operating-review full-context graph as the main spine, then let the orchestrator compile an accepted graph from user intent, scope, baseline, time semantics, available contracts, and evidence needs.
 - The default spine should cover scope/baseline/time binding, data quality checks, formula decomposition, pattern checks, anomaly review, attribution, event evidence, synthesis, and answer verification as needed by the concrete question.
 - User-provided hypotheses such as activity, channel, version, holiday, or abnormal day should route into the same accepted graph as targeted branches rather than replacing the operating-review spine.
-- Baseline handling: when the user does not specify a comparison baseline, LLM should recommend one or more business-plausible baselines such as month-over-month, year-over-year, trend window, event-relative window, or business-context-specific baseline.
+- Baseline handling: when the user does not specify a comparison baseline, choose by question family. Change/rise/drop questions default to the previous equal-length window; intra-period pattern questions default to full-sample same-phase or same-day-index structure; operating review questions may run both previous equal-length and comparable-calendar baselines when useful.
+- LLM can propose additional baseline candidates such as month-over-month, year-over-year, same weekday, seasonality, event-relative window, activity/holiday context, trend window, or business-context-specific baseline. Local policy, data coverage, contracts, budget, and verifier decide which candidates execute and what claim strength they can support.
+- If a proposed baseline lacks enough data, comparable windows, or contract support, runtime should execute the supported baselines and record the unsupported one as a skipped or degraded path in the accepted graph and Answer Package.
+- The final conclusion boundary should state when current data cannot support year-over-year, month-over-month, comparable-calendar, or another candidate baseline.
 - Baseline choice should be represented in LangGraph as an explicit intent/baseline binding step. This step can emit a recommended default, multiple accepted baseline branches, or a clarification question.
 - If multiple baselines are useful and affordable, the accepted graph can run them together and synthesize whether conclusions are stable across baselines. If baseline choice could change the answer materially, the graph can insert a question-tool clarification while keeping a recommended inference available.
+- If executed baselines disagree, the main conclusion may use the baseline that best matches the user question, but the answer must show baseline disagreement and lower claim strength. If the disagreement would change the recommended business action, runtime should trigger clarification.
 - The accepted graph and final Answer Package must record the selected or inferred baseline, any skipped baseline options, and the claim boundary created by that choice.
 - First-screen answer structure should be dynamically generated from verified claim groups and a validated visualization plan. It should not use a fixed number of cards or a fixed card order.
 - Stable information hierarchy: main conclusion, key quantification, main drivers, exceptions or disagreements, and evidence boundaries.
@@ -178,6 +247,7 @@ This file records confirmed product and architecture decisions from planning dis
 - Each conclusion should still carry evidence strength and claim boundaries so high-explanatory but weak-evidence candidates are not stated as confirmed causes.
 - Default explanation coverage for `paid_amount_change_explanation`: use a complete operating explanation package covering formula decomposition, baseline stability, dimension/combination attribution, periodic or pattern evidence, business object impact, anomaly/black-swan review, data quality, and evidence boundaries.
 - The accepted graph can dynamically adjust depth by budget and evidence need, but it must record which explanation types were verified, skipped, degraded, or blocked.
+- If budget or timeout stops part of the graph, only completed and verifier-passed claims can be published. Unfinished paths must be recorded as skipped or degraded. If an unfinished path could change the main conclusion, the main conclusion is degraded or runtime triggers clarification; runtime must not fill the gap with guessed business conclusions.
 - Execution depth should be evidence-driven and layered. The graph should first run evidence needed to establish the main business conclusion, then deepen into attribution, events, combinations, anomaly review, or additional baselines when residuals, disagreements, candidate signals, or verifier requirements justify it.
 - The product should avoid fixed-depth full scans for every question and avoid pushing depth selection onto users by default.
 - The graph should deepen when the main conclusion is not stable enough: large unexplained residuals, baseline disagreement, unstable main contribution, concentrated exception periods, strong event-window overlap, or verifier risk that could change the allowed claim/evidence type or wording limit.
@@ -200,6 +270,7 @@ This file records confirmed product and architecture decisions from planning dis
 - Clarification UX should follow the Codex/Claude Code style: one clarification turn can include up to 3-4 short questions, each with up to 3 concrete options and one recommended option when appropriate.
 - Each clarification turn should also include a fixed "tell the agent to do differently" escape option so users can override the framing, supply their own instruction, or ask the agent to proceed another way.
 - The system should avoid asking for every missing parameter. Low-risk gaps should use the recommended inference and continue without opening a question tool. If a question tool is opened, one of the options should allow continuing with the recommended inference.
+- Runtime should block for clarification only when ambiguity could change the business conclusion, baseline, time semantics, permission boundary, claim strength, or execution cost. Other assumptions should continue as recommended inferences and be recorded in accepted graph, Answer Package, and verifier checks.
 
 ### 2026-07-03: First Vertical Slice - Intra-Month Payment Pattern
 
@@ -512,6 +583,7 @@ Visualization plan:
 - Visualization blocks should declare block type, evidence reference, placement, purpose, metric/scope, supported claim, and any limitations.
 - Common block types include pattern comparison charts, formula contribution tables, attribution ranking tables, event-window timelines, exception lists, evidence-strength indicators, and data-gap summaries.
 - The verifier should ensure visual blocks do not overstate evidence or appear under unsupported claims.
+- Visual blocks can show only verifier-allowed claims and visible grain. If evidence is insufficient, show a limitation or empty state rather than a misleading chart. If permission is limited, aggregate, mask, or hide the affected visual content.
 
 Visualization layer:
 
@@ -573,6 +645,12 @@ Evidence strength:
 - Segment contribution: varies by combination
 - Exception months: listed separately
 ```
+
+Action recommendation policy:
+
+- The final answer may include operational recommendations, but they must be separated from factual conclusions.
+- Factual conclusions state what the evidence supports.
+- Recommendations should use check, validate, monitor, or follow-up wording and must not promise causal lift, revenue gain, or strategy outcome unless causal evidence exists.
 
 ## Question Compilation
 
@@ -649,6 +727,7 @@ Foundational evidence capability set:
 - It should validate whether analysis uses payment initiation time, payment completion time, or another declared time semantics.
 - It should verify metric identity such as initiated amount, paid/success amount, paid order count, success rate, and average paid amount.
 - It should surface quality flags into evidence envelopes and Answer Package limitations.
+- Data quality impact should be evaluated per affected claim. Issues that can change metric facts or the main conclusion block the affected claim; issues that only affect local explanation degrade that path and show a limitation; minor gaps remain warnings.
 
 Composite analysis subgraphs:
 
@@ -730,8 +809,8 @@ Thread-scoped result reuse:
 
 - Confirmed choice: investigation threads can reuse prior `result_ref` values through a thread-scoped cache with validation.
 - Reusable results should be keyed or validated by thread id, run id, contract versions, data snapshot/freshness, scope, filters, grain, metric, dimensions, window definitions, baseline definitions, and semantic query hash.
-- Follow-up questions should let the graph compiler search prior result refs and reuse them when contracts, data freshness, and semantic scope match.
-- If validation fails, the query should rerun or the prior result should be marked not reusable.
+- Follow-up questions should let the graph compiler search prior result refs and reuse them only when data snapshot, contract versions, permission scope, and semantic scope match. Same or narrower scope may reuse; wider or changed scope must rerun affected nodes.
+- If validation fails, the query should rerun or the prior result should be marked context-only. Context-only prior results cannot support a new claim.
 - Reused results should still produce new evidence envelopes for the current run/claim when they support a new answer.
 - The Answer Package should record when evidence reused prior result refs.
 
@@ -818,21 +897,62 @@ Generic `formula_decompose` principle:
 
 - Formula decomposition should be driven by metric contracts, not hard-coded in recipes and not invented by the LLM at runtime.
 - Metric contracts should declare valid decomposition paths, required fields, grains, filters, and numerical reconciliation rules.
-- The LLM may choose which declared decomposition path fits the business question and may explain the result, but formula legality, SQL compilation, execution, and reconciliation belong to local capabilities and validators.
-- `formula_decompose` should return structured evidence showing each component's level, delta, contribution, residual, and reconciliation status.
+- Runtime should evaluate every current-data-covered decomposition path in the metric contract that passes field, grain, permission, sparse-cell, and budget gates for the question.
+- The system should select a `primary_formula` after scoring the eligible paths, and keep useful `auxiliary_formulas` for supporting business interpretation or explaining disagreement.
+- Formula scoring should consider explanatory power, residual reduction, fit, stability, coverage, sample size, sparse-cell risk, component contract strength, and business readability.
+- `formula_decompose` should return structured evidence for every evaluated path: component level, delta, contribution, residual, fit, reconciliation status, and whether the path is primary, auxiliary, degraded, or blocked.
+- Quantified decomposition uses reviewed formula components only. Residual is kept as `residual / unexplained` and is not force-allocated into reviewed components.
+- If residual is high or fit is weak, runtime should try higher-order attribution or segment decomposition when contracts, permissions, sparse-cell rules, and budget allow it.
+- After useful promotion loops, quantified contribution can publish when residual is `<= 10%` of total change and fit is acceptable. If residual remains `> 10%` or fit stays weak, the answer degrades to leading candidate factors plus visible unexplained residual.
 
-Example decomposition paths for `paid_amount`:
+Current-data-covered `paid_amount` decomposition candidates from `contracts/metrics/paid-amount.metric.yaml`:
 
 ```text
-payment_chain:
-  paid_amount = initiated_count * payment_success_rate * avg_paid_order_amount
+paid_dau_arpu:
+  paid_amount = paid_dau * paid_dau_arpu
 
-order_chain:
-  paid_amount = paid_order_count * avg_paid_order_amount
+paid_user_arppu:
+  paid_amount = paid_dau * paid_user_conversion_rate * paid_amount_per_paid_user
 
-user_chain:
-  paid_amount = paid_user_count * paid_frequency_per_user * avg_paid_order_amount
+new_user_funnel_dashboard:
+  dashboard_funnel_components = new_users, registrations, registration_rate_new_base,
+  first_pay_users, first_pay_rate_new_base, same_day_new_paid_users, same_day_new_paid_rate
+
+frequency_ticket_size:
+  paid_amount = paid_user_count * payment_frequency_per_paid_user * avg_paid_amount_per_payment
+
+region_sum:
+  paid_amount = sum(paid_amount by region)
+
+device_sum:
+  paid_amount = sum(paid_amount by device_model)
 ```
+
+- `paid_dau_arpu` and `frequency_ticket_size` are first-runtime quantitative candidates where current paid-order snapshot contracts support the needed components.
+- `paid_user_arppu` and `new_user_funnel_dashboard` enter as dashboard daily auxiliary candidates with evidence-linked strength until dashboard field meanings and component contracts are fully reviewed.
+- `region_sum` and `device_sum` enter as dimension bridge candidates when dimension, masking, sparse-cell, and permission gates allow the visible grain.
+- Runtime should not limit first-runtime formula exploration to three hard-coded paths.
+- First-runtime primary-claim eligibility: `paid_dau_arpu` and `frequency_ticket_size` can become quantified primary formulas when reconciliation passes, residual is `<= 10%`, and fit is acceptable.
+- `paid_user_arppu` and `new_user_funnel_dashboard` can support directional or structural auxiliary explanation until dashboard component contracts are fully reviewed.
+- `region_sum` and `device_sum` can support segment primary conclusions only when dimension contracts, masking, sparse-cell, permission, and visible-grain gates all pass.
+- Dashboard auxiliary paths cannot override `paid_order_detail` as the main `paid_amount` fact source in overlapping dates.
+
+Dimension bridge visible-grain policy:
+
+- All contracted aggregate dimensions are equal primary candidates when contract, sparse-cell, masking, missing-value, and permission gates pass.
+- This includes channel, payment method, amount bucket, geo/city aggregates, device brand/model, OS, and network type.
+- Raw user ID, raw IP, and raw device ID remain internal-only and cannot be answer-visible dimensions.
+
+Dimension bridge missing-value policy:
+
+- Unknown, blank, null, missing, or unavailable dimension values remain explicit data-quality buckets in dimension bridges such as `region_sum`, `device_sum`, and channel bridge paths.
+- Runtime must not drop these buckets from reconciliation and must not redistribute their amount into known buckets.
+- If the missing-value bucket is material by amount or share, the answer should surface it as a data-quality limitation or attribution boundary.
+- Missing-value buckets cannot be described as a real region, device, channel, or business segment.
+- Missing-value impact thresholds:
+  - Missing bucket `< 5%` and amount `< 30M NGN`: dimension bridge primary conclusion is allowed with warning.
+  - Missing bucket `5%-20%` or amount `30M-150M NGN`: dimension bridge can support auxiliary explanation only, not global primary attribution.
+  - Missing bucket `> 20%` or amount `> 150M NGN`: block that dimension bridge as a primary conclusion and state the missing-value limitation.
 
 ## Evidence Model
 
@@ -850,6 +970,12 @@ Initial evidence types:
 - `candidate_mechanism`: plausible business mechanism with temporal or structural alignment.
 - `causal_evidence`: stronger historical evidence with control, counterfactual, treated/control split, or intervention design.
 - `insufficient`: route exists conceptually, but data, coverage, stability, or method quality is not enough.
+
+Causal wording policy:
+
+- Confirmed causal wording is allowed only when the claim has `causal_evidence` backed by experiment/control, exposure-control data, quasi-experimental design, or an owner-reviewed causal contract.
+- Trend, association, formula decomposition, and dimension contribution evidence should use wording such as related to, overlaps with, candidate explanation, or possible influence path.
+- The verifier should block causal wording for `accounting_contribution`, `statistical_association`, `candidate_mechanism`, contextual evidence, or `insufficient` claims.
 
 Initial strengths:
 
@@ -908,8 +1034,12 @@ Confirmed choice: LLM-guided evidence-driven high-order exploration.
 
 - Multi-dimensional attribution starts with lower-order dimensions for interpretability.
 - The LLM decides whether to promote the search to higher-order combinations based on the business question, current residuals, observed fit, candidate mechanisms, and previous evidence.
+- Residual or weak-fit findings from formula decomposition should trigger this promotion path before the answer degrades.
 - Local validators enforce hard constraints: data contracts, permissions, sample size, sparse-cell limits, metric compatibility, statistical guardrails, runtime budget, and evidence output.
 - Higher-order exploration has no fixed product-level dimension cap, but every promotion must record why it was attempted and what explanatory value it added.
+- Runtime should stop promotion once the lowest-complexity combination explains the question with acceptable fit, residual, stability, and business readability.
+- If multiple combinations fit, the main conclusion should use the lowest-complexity sufficient combination; higher-order combinations stay as auxiliary detail unless they materially change the business interpretation.
+- When multiple explanations pass evidence gates, main-conclusion ranking should prefer business-actionable explanations such as channel, payment method, user type, activity, and operation event. Descriptive dimensions such as city or device model rank lower unless their explanatory power is materially stronger.
 - If a lower-order combination does not fit but a higher-order combination does, the answer must describe the more specific business segment instead of over-attributing to a broad dimension.
 - If no stable higher-order structure is found, the Answer Package must list what was tested and why evidence remained insufficient.
 
@@ -947,6 +1077,12 @@ Confirmed choice: hypothesized candidates use three evidence states with a pre-l
 - `unresolved`: a user or LLM hypothesis exists, but it has no event record, external evidence, data contract, or agreed static assumption. It can be discussed only as an unverified hypothesis or missing evidence.
 - `evidence_linked`: the hypothesis is connected to a source, manual event record, external evidence, or agreed static assumption. It can support candidate-mechanism analysis such as temporal overlap and exception explanation.
 - `contract_backed`: the hypothesis is backed by a maintained data contract, event table, static dimension table, or source pipeline. It can enter local screening, window scan, and joint attribution.
+
+Event evidence policy:
+
+- Reviewed event records, static assumptions, or source contracts can support contextual explanation or candidate-mechanism claims.
+- Without exposure/control data, quasi-experimental design, or an owner-reviewed causal contract, event evidence cannot support confirmed impact or causal wording.
+- Strong time/scope match may enter auxiliary explanation. It can enter the main conclusion only when evidence type, strength, coverage, and verifier gates allow it.
 
 Pre-launch requirement:
 
@@ -1059,6 +1195,7 @@ Investigation artifact:
 - Confirmed choice: save analysis results as shareable investigation artifacts, with optional static export.
 - A thread is the working process; an artifact is the reusable result.
 - Artifacts should include answer narrative, visualization plan, rendered visual blocks, process summary, evidence strength, limitations, follow-up context, and contract/data snapshot info.
+- Data refresh creates a new run or artifact version. Existing artifacts keep their original snapshot/cutoff and remain readable/auditable with an old-snapshot notice.
 - Users should be able to reopen an artifact, continue the investigation, share a read-only view, and export to static formats such as PDF or Markdown.
 - Static export should not replace the interactive artifact because follow-up context and visual interactions are part of the product value.
 - First production baseline can keep collaboration simple, but artifact persistence should be part of the product model.
@@ -1066,7 +1203,9 @@ Investigation artifact:
 Artifact sharing and permissions:
 
 - Confirmed choice: artifacts are permission-controlled read-only objects, not public unrestricted links.
+- The stored artifact is one complete Answer Package with section-level visibility tags.
 - Opening an artifact should check the current user's permissions and apply visibility filtering to answer sections, visual blocks, dimensions, metrics, segments, evidence, and follow-up context.
+- Rendering, sharing, and static export apply the same role filter and write audit records with actor, role, artifact id, action, and visible section ids.
 - Artifacts should carry sensitivity tags, required permissions, contract/data snapshot info, and evidence refs for permission evaluation.
 - If some content is not visible, the UI should show a business-readable message such as `部分细分结果因权限不可见`.
 - Static exports such as PDF/Markdown should be generated according to the exporter's current permissions.
