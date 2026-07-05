@@ -1,6 +1,8 @@
+import tempfile
 import unittest
 
 from bi_agent.runtime.compiler import SUPPORTED_CAPABILITIES, compile_graph
+from bi_agent.runtime.contracts import load_contract
 from bi_agent.runtime.models import RecipeEntry
 from bi_agent.runtime.recipe_registry import load_recipe_registry
 
@@ -58,6 +60,26 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
             any(item.action == "auto_added" for item in compiled.mutations.records)
         )
 
+    def test_explicit_empty_registry_rejects_known_question_family(self):
+        compiled = compile_graph(
+            question_family="pattern_explanation",
+            target_metric="paid_amount",
+            requested_nodes=["pattern_scan"],
+            registry={},
+        )
+
+        self.assertEqual(compiled.status, "rejected")
+        self.assertFalse(compiled.accepted_nodes)
+        self.assertIn("pattern_explanation", compiled.mutations.rejected_or_degraded)
+        self.assertTrue(
+            any(
+                item.action == "rejected"
+                and item.capability == "pattern_explanation"
+                and item.reason == "unknown_question_family"
+                for item in compiled.mutations.records
+            )
+        )
+
     def test_pattern_compile_rejects_unknown_without_degrading_required_paths(self):
         registry = load_recipe_registry()
         compiled = compile_graph(
@@ -113,3 +135,34 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
                 for item in compiled.mutations.records
             )
         )
+
+    def test_non_pattern_recipe_records_supported_proposed_nodes_outside_skeleton(self):
+        registry = load_recipe_registry()
+        compiled = compile_graph(
+            question_family="paid_amount_change_explanation",
+            target_metric="paid_amount",
+            requested_nodes=["joint_attribution"],
+            registry=registry,
+        )
+
+        self.assertEqual(compiled.status, "degraded")
+        self.assertIn("joint_attribution", compiled.mutations.proposed_graph)
+        self.assertNotIn("joint_attribution", compiled.mutations.accepted_graph)
+        self.assertIn("joint_attribution", compiled.mutations.rejected_or_degraded)
+        self.assertTrue(
+            any(
+                item.action == "degraded"
+                and item.capability == "joint_attribution"
+                and item.reason == "non_pattern_recipe_skeleton_scope"
+                for item in compiled.mutations.records
+            )
+        )
+
+    def test_contract_loader_rejects_non_mapping_yaml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/bad.yaml"
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("- unsupported\n")
+
+            with self.assertRaisesRegex(ValueError, path):
+                load_contract(path)

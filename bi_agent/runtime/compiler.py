@@ -32,7 +32,7 @@ def compile_graph(
     requested_nodes: Iterable[str] = (),
     registry: Optional[Mapping[str, RecipeEntry]] = None,
 ) -> CompiledGraph:
-    registry = registry or load_recipe_registry()
+    registry = load_recipe_registry() if registry is None else registry
     proposed_graph = tuple(requested_nodes)
     recipe = registry.get(question_family)
 
@@ -90,6 +90,7 @@ def compile_graph(
         )
 
     accepted = tuple(node for node in recipe.subgraph_nodes if node in SUPPORTED_CAPABILITIES)
+    skipped_supported = tuple(node for node in known_requested if node not in accepted)
     records = (
         *records,
         *(
@@ -100,13 +101,21 @@ def compile_graph(
             )
             for node in accepted
         ),
+        *(
+            MutationRecord(
+                action="degraded",
+                capability=node,
+                reason="non_pattern_recipe_skeleton_scope",
+            )
+            for node in skipped_supported
+        ),
     )
     return _compiled(
         status="degraded",
         target_metric=target_metric,
         accepted=accepted,
         proposed=proposed_graph,
-        rejected_or_degraded=(*unknown, *accepted),
+        rejected_or_degraded=_dedupe((*unknown, *accepted, *skipped_supported)),
         records=records,
         node_status="degraded",
     )
