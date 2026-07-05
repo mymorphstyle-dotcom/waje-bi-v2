@@ -1,0 +1,201 @@
+contract_version: "0.1"
+source_id: paid_order_detail_2026_h1
+business_name: 付费订单明细真实数据源合同
+review_status: accepted_current_snapshot_2026-07-05
+data_contract_state: contract_backed
+business_evidence_state: quantifiable
+
+source_file:
+  path: data/raw/2026-01-01_2026-06-30.csv
+  bytes: 8337257507
+  encoding: utf-8
+  rows_profiled: 38941583
+  columns_profiled: 23
+  malformed_rows: 0
+  date_range:
+    start: "2026-01-01"
+    end: "2026-06-30"
+
+source_snapshot:
+  exported_on: "2026-07-04"
+  export_time_precision: date_only
+  coverage:
+    basis: complete_2026_january_through_june_dataset
+    business_date_basis: 支付完成时间 converted to Africa/Lagos
+    start: "2026-01-01"
+    end: "2026-06-30"
+  late_arrivals_or_status_backfill:
+    decision_status: confirmed_none
+    owner_confirmation_date: "2026-07-05"
+  update_policy:
+    later_data_updates: new_dataset_run_or_artifact_version
+    historical_answers: do_not_rewrite_prior_answers
+
+owner_acceptance:
+  accepted_on: "2026-07-05"
+  accepted_by:
+    - business_owner
+    - data_owner
+  acceptance_scope: current 2026-01-01 through 2026-06-30 paid_order_detail snapshot
+  acceptance_status: accepted_for_phase_1_review_and_phase_2_compiler_prep
+
+storage_boundary:
+  analytical_store: ClickHouse
+  product_state_store: Postgres runtime mirror
+  dev_clickhouse_container: waje-bi-clickhouse
+  dev_clickhouse_http_port: 18123
+  dev_clickhouse_native_port: 19000
+  analytical_database: waje_bi
+  raw_table: paid_order_detail_raw
+  clean_table: paid_order_success_clean
+  metadata_table: load_metadata
+  active_parts_size: 3.57 GiB
+  analytical_fact_table: dev_clickhouse_fact_table_loaded
+  runtime_contract_record: dev_postgres_runtime_mirror_initialized
+  status: dev_clickhouse_loaded_and_dev_postgres_mirror_initialized
+  note: Local SQLite scratch files are not part of the WAJE BI v2 technical stack or source contract.
+
+field_mapping:
+  order_id: 订单id
+  user_id: 用户id
+  business_date_raw: 日期
+  payment_started_at: 支付发起时间
+  payment_completed_at: 支付完成时间
+  payment_status: 支付状态
+  initiated_amount: 支付发起金额
+  paid_amount: 支付成功金额
+  currency: 币种
+  channel: 分包渠道
+  payment_method: 支付方式
+  country: 国家
+  region: 州/地区
+  city: 城市
+  device_brand: 设备品牌
+  device_model: 设备型号
+  os: 操作系统
+  network_type: 网络类型
+  registered_at: 注册时间
+  first_paid_at: 首充时间
+  payment_latency_seconds: 支付耗时秒
+
+dimension_value_profiles:
+  payment_method:
+    decided_on: "2026-07-05"
+    rule: Current snapshot values are accepted as source enum values; do not merge methods unless a later owner-reviewed taxonomy says to.
+    distinct_values: 5
+    values:
+      - value: OPAY
+        rows: 18263292
+        paid_amount_ngn: 33956364039
+      - value: APP_PALMPAY
+        rows: 2024276
+        paid_amount_ngn: 4650842783
+      - value: PALMPAY_BANK
+        rows: 1911211
+        paid_amount_ngn: 7433030679
+      - value: MERCHANT_OPAY
+        rows: 1476114
+        paid_amount_ngn: 4425466258
+      - value: PALM
+        rows: 183954
+        paid_amount_ngn: 706311549
+  channel:
+    decided_on: "2026-07-05"
+    rule: Use paid-order detail channel values as canonical for paid-order joint analysis. Preserve Unknown and blank as separate quality buckets. Do not force-merge dashboard or gameplay filename channels with paid-order channels without an owner-reviewed mapping.
+    distinct_non_blank_values: 44
+    blank_rows: 2913
+    unknown_rows: 17768
+    top_values_by_rows:
+      - value: WajeSpecial
+        rows: 16147518
+      - value: PAWAJEIOS
+        rows: 2279607
+      - value: PAWAJEPALM2
+        rows: 1574720
+      - value: PAWAJEBETH5
+        rows: 1400383
+      - value: PAWAJEH5
+        rows: 591665
+      - value: PAWAJEH5OP
+        rows: 508899
+      - value: PAPAWAJEH5GA
+        rows: 280668
+      - value: PAWAJEH5PWW
+        rows: 277536
+      - value: PAWAJEH5OP3
+        rows: 118342
+      - value: PAWAJEH5OP2
+        rows: 106190
+
+paid_amount_boundary:
+  report_currency: NGN
+  final_success_status: pay_success
+  non_paid_status: order_success
+  business_date_basis: 支付完成时间 converted to Africa/Lagos
+  dedup_key: 订单id
+  duplicate_success_rule: keep latest 支付完成时间
+  overlap_rule: ignore order_success when same 订单id has pay_success
+  cleaned_profile:
+    paid_records: 23858847
+    paid_amount_ngn: 51172015308.0
+    duplicate_success_rows_removed: 14
+
+reviewed_field_decisions:
+  channel_field:
+    source_field: 分包渠道
+    semantic_dimension: channel
+    decision_status: confirmed_by_business_and_data_owner
+  payment_latency:
+    source_fields:
+      - 支付发起时间
+      - 支付耗时秒
+    decision_status: not_required_for_paid_amount_operations_analysis
+    wording_limit: context
+    wording_limit_reason: Latency-specific analysis must carry coverage limits; paid_amount amount, channel, time-window, and segment analysis should not be blocked by latency missingness.
+
+amount_bucket_policy:
+  report_currency: NGN
+  decision_status: confirmed_by_business_and_data_owner
+  source_basis: paid_order_success_clean distribution from 2026-01-01 through 2026-06-30
+  buckets:
+    - bucket_id: ngn_lte_500
+      label: <=500
+      min_inclusive: 0
+      max_inclusive: 500
+    - bucket_id: ngn_501_1000
+      label: 501-1000
+      min_inclusive: 501
+      max_inclusive: 1000
+    - bucket_id: ngn_1001_2000
+      label: 1001-2000
+      min_inclusive: 1001
+      max_inclusive: 2000
+    - bucket_id: ngn_2001_5000
+      label: 2001-5000
+      min_inclusive: 2001
+      max_inclusive: 5000
+    - bucket_id: ngn_5001_10000
+      label: 5001-10000
+      min_inclusive: 5001
+      max_inclusive: 10000
+    - bucket_id: ngn_10001_20000
+      label: 10001-20000
+      min_inclusive: 10001
+      max_inclusive: 20000
+    - bucket_id: ngn_20001_50000
+      label: 20001-50000
+      min_inclusive: 20001
+      max_inclusive: 50000
+    - bucket_id: ngn_50001_100000
+      label: 50001-100000
+      min_inclusive: 50001
+      max_inclusive: 100000
+    - bucket_id: ngn_gt_100000
+      label: ">100000"
+      min_exclusive: 100000
+      max_inclusive: null
+
+known_limits:
+  - payment_latency_missing_on_5247_success_rows_for_latency_specific_analysis
+  - network_type_missing_on_5895702_clean_paid_rows
+  - device_brand_and_model_missing_on_1737237_clean_paid_rows

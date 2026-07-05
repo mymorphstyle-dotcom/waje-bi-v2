@@ -1,0 +1,85 @@
+contract_version: "0.1"
+capability_id: segment_bridge
+business_name: Segment bridge
+review_status: draft
+
+responsibilities:
+  - Compare metric changes across a single dimension or segment bridge under supported grain.
+  - Quantify mix shift, segment contribution, local exception, or blocked segment paths.
+  - Feed eligible segment candidates into joint attribution when additional combination search is justified.
+
+parameters:
+  required:
+    - metric
+    - dimension
+    - scope
+    - time_range
+    - baseline
+    - grain
+    - contract_versions
+  optional:
+    - filters
+    - top_k
+    - sparse_limits
+    - permission_context
+    - bridge_method
+
+non_uses:
+  - Does not run on dimensions without reviewed contract, backlog, or permission treatment.
+  - Does not expose raw identifiers.
+  - Does not explain multi-factor interactions without joint attribution.
+
+evidence_outputs:
+  typed_payload: segment_bridge_result
+  envelope_fields:
+    - evidence_type
+    - strength
+    - wording_limit
+    - scope
+    - metric
+    - dimension
+    - contract_versions
+    - limitations
+  payload_fields:
+    - segment_contributions
+    - mix_shift
+    - coverage
+    - sparse_warnings
+    - permission_blocks
+    - unsupported_segments
+    - recommended_next_capabilities
+
+limitations:
+  - Quantified segment claims require dimension contract and compatible metric grain.
+  - Permission-limited dimensions can support internal checks while blocking visible outputs.
+  - Sparse segments degrade to local exception or insufficient wording.
+
+degradation_rules:
+  - when: dimension_missing_contract
+    output: missing-contract limitation and backlog refs.
+  - when: permission_limited
+    output: masked aggregate or blocked visible claim.
+  - when: unsupported_grain
+    output: downgrade to supported grain or block.
+
+lint_rules:
+  - rule_id: dimension_contract_required
+    severity: block
+    check: Dimension must be declared in dimension or factor ledger source.
+  - rule_id: permission_context_required
+    severity: block
+    check: Sensitive dimensions require permission context.
+  - rule_id: sparse_cell_guard
+    severity: degrade
+    check: Sparse cells cannot support strong segment claims.
+
+verifier_hooks:
+  - segment_claim_must_state_dimension_and_grain
+  - raw_identifier_output_is_forbidden
+  - unsupported_segments_must_be_reported
+
+typical_question_families:
+  - segment_or_factor_attribution
+  - paid_amount_change_explanation
+  - revenue_health_review
+  - custom_baseline_comparison

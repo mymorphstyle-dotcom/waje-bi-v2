@@ -1,0 +1,84 @@
+contract_version: "0.1"
+capability_id: outlier_scan
+business_name: Outlier scan
+review_status: draft
+
+responsibilities:
+  - Identify abnormal periods, windows, segments, factor candidates, and exception scopes.
+  - Distinguish true anomalies from metric, contract, data-quality, timezone, or permission issues.
+  - Produce candidate explanation paths for event evidence, segment bridge, joint attribution, or data-quality review.
+
+parameters:
+  required:
+    - metric
+    - scope
+    - time_range
+    - grain
+    - anomaly_definition
+    - contract_versions
+  optional:
+    - baseline
+    - dimensions
+    - candidate_events
+    - materiality_threshold
+    - filters
+    - budget
+
+non_uses:
+  - Does not diagnose root cause without supporting factor, event, or segment evidence.
+  - Does not label black-swan causes without reviewed external evidence.
+  - Does not bypass data-quality checks for abnormal values.
+
+evidence_outputs:
+  typed_payload: outlier_scan_result
+  envelope_fields:
+    - evidence_type
+    - strength
+    - wording_limit
+    - scope
+    - metric
+    - contract_versions
+    - limitations
+  payload_fields:
+    - outlier_periods
+    - outlier_segments
+    - affected_metric_components
+    - candidate_explanations
+    - ruled_out_paths
+    - quality_flags
+    - recommended_next_capabilities
+
+limitations:
+  - Strong anomaly wording needs reviewed metric, time, and materiality contracts.
+  - Segment outliers must pass permission and sparse-cell limits.
+  - External black-swan candidates stay contextual or candidate unless evidence supports more.
+
+degradation_rules:
+  - when: data_quality_issue_possible
+    output: route to data_quality_check or degrade anomaly claim.
+  - when: missing_external_event_contract
+    output: contextual candidate only.
+  - when: sparse_or_permission_limited_segment
+    output: blocked or aggregate exception wording.
+
+lint_rules:
+  - rule_id: anomaly_definition_required
+    severity: targeted_repair
+    check: Outlier scan must declare baseline or anomaly rule.
+  - rule_id: materiality_guard
+    severity: degrade
+    check: Strong anomaly wording needs reviewed threshold.
+  - rule_id: quality_first_guard
+    severity: auto_add
+    check: Data-quality check is required for first-screen anomaly claims.
+
+verifier_hooks:
+  - anomaly_claim_must_state_baseline
+  - black_swan_wording_must_stay_candidate
+  - data_quality_flags_must_be_visible
+
+typical_question_families:
+  - anomaly_or_black_swan_review
+  - revenue_health_review
+  - pattern_explanation
+  - paid_amount_change_explanation

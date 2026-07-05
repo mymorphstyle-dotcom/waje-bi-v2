@@ -1,0 +1,696 @@
+version: "0.1"
+artifact: launch_eval_expectation_packages
+scope: Phase 2 launch eval design input for graph compiler, Answer Package, verifier, and Phase 3 semantic evidence prep.
+source_refs:
+  - docs/prd.md
+  - docs/product-decisions.md
+  - docs/phase-2-graph-compiler-prep.md
+  - contracts/ledger/capability-support.yaml
+  - contracts/backlog/missing-contracts.yaml
+source_pools:
+  - real_user_questions
+  - historical_failure_cases
+  - matrix_generated_boundary_cases
+compiler_outcomes:
+  - accept
+  - auto_repair
+  - targeted_repair
+  - degrade
+  - block
+
+expectation_packages:
+  - case_id: LE-001
+    title: Full-sample month-start paid_amount pattern
+    source_pool: historical_failure_cases
+    natural_user_wording: 全量样本看，为什么从 2024 年 1 月开始到 2026 年 5 月结束，为什么每个月月初的付费金额都比月中/月末高一些
+    expected_question_family: pattern_explanation
+    merged_question_families:
+      - data_quality_or_evidence_review
+      - segment_or_factor_attribution
+    intent:
+      target_metric: paid_amount
+      scope: full_sample
+      time_range: "2024-01 through 2026-05"
+      grain: month_phase
+      pattern_family: intra_period
+      window_definition: month_start_1_10_mid_11_20_end_21_month_end
+      baseline: same_month_phase
+    required_capabilities:
+      - data_quality_check
+      - pattern_scan
+      - event_evidence
+      - outlier_scan
+      - answer_verify
+    optional_capabilities:
+      - formula_decompose
+      - segment_bridge
+      - joint_attribution
+    forbidden_capabilities: []
+    expected_compiler_actions:
+      - outcome: auto_repair
+        reason: add data_quality_check, contract pins, current-data snapshot, cumulative-value guard, materiality guard, and answer_verify.
+      - outcome: degrade
+        reason: time-boundary and current-data limitations must flow through timezone_policy until fully executable source-time rules are reviewed.
+      - outcome: block
+        reason: cumulative month-to-date values cannot support month-phase shape claims.
+    expected_evidence_contract_states:
+      - support_id: pattern_month_phase_paid_amount
+        business_evidence_state: insufficient
+        data_contract_state: missing_contract
+        evidence_type: statistical_association
+        strength: insufficient
+        wording_limit: insufficient
+        backlog_refs:
+          - timezone_policy
+      - support_id: event_pattern_payday_dimension
+        business_evidence_state: candidate_mechanism
+        data_contract_state: static_assumption
+        evidence_type: candidate_mechanism
+        strength: low
+        wording_limit: candidate
+        backlog_refs: []
+    allowed_claims:
+      - claim_type: recurring_pattern_existence
+        evidence_type: statistical_association
+        strength: medium
+        wording_limit: stable_pattern
+        condition: recurrence, effect size, stability, exceptions, and data-quality checks pass.
+      - claim_type: payday_dimension_candidate_mechanism
+        evidence_type: candidate_mechanism
+        strength: low
+        wording_limit: candidate
+        condition: payday is framed as candidate mechanism only.
+    expected_visual_blocks:
+      - phase_comparison
+      - exception_list
+      - candidate_explanation_ranking
+      - evidence_boundary
+    verifier_checks:
+      - question_family_is_pattern_explanation
+      - no_period_over_period_or_cost_period_misclassification
+      - cumulative_value_misuse_is_blocked
+      - tested_windows_and_exceptions_have_evidence_refs
+      - candidate_mechanisms_keep_candidate_wording
+      - degraded_or_blocked_paths_are_visible
+    failure_attribution:
+      business_failure_types:
+        - wrong_question_family
+        - wrong_baseline
+        - over_strong_weak_evidence
+        - hidden_data_gap
+      system_responsibility_points:
+        - LLM_reasoner
+        - graph_compiler
+        - answer_verifier
+        - visualization_planner
+
+  - case_id: LE-002
+    title: Weekly operating paid_amount change explanation
+    source_pool: real_user_questions
+    natural_user_wording: 上周付费金额为什么下降，主要驱动是什么？
+    expected_question_family: paid_amount_change_explanation
+    merged_question_families:
+      - segment_or_factor_attribution
+      - data_quality_or_evidence_review
+    intent:
+      target_metric: paid_amount
+      scope: overall_business
+      time_range: last_complete_week
+      grain: day
+      baseline: prior_comparable_week_or_question_tool_if_material
+    required_capabilities:
+      - data_quality_check
+      - formula_decompose
+      - segment_bridge
+      - answer_verify
+    optional_capabilities:
+      - pattern_scan
+      - joint_attribution
+      - event_evidence
+      - outlier_scan
+    forbidden_capabilities: []
+    expected_compiler_actions:
+      - outcome: accept
+        reason: metric source quality, formula, and supported segment paths are legitimate compile routes when params bind to contracts.
+      - outcome: auto_repair
+        reason: add current-data snapshot, contract pins, materiality guard, and verifier node.
+      - outcome: targeted_repair
+        reason: unclear baseline or target claim gets bounded repair or question tool.
+      - outcome: degrade
+        reason: growth-operation attribution remains limited by missing operation, spend, and exposure/control contracts.
+    expected_evidence_contract_states:
+      - support_id: dq_paid_amount_change_metric_source
+        business_evidence_state: quantifiable
+        data_contract_state: contract_backed
+        evidence_type: insufficient
+        strength: high
+        wording_limit: context
+        backlog_refs:
+          - currency_policy
+          - refund_or_reversal_policy
+          - timezone_policy
+          - payment_status_and_dedup_contract
+      - support_id: formula_paid_amount_change_order_chain
+        business_evidence_state: quantifiable
+        data_contract_state: evidence_linked
+        evidence_type: accounting_contribution
+        strength: medium
+        wording_limit: quantified
+        backlog_refs:
+          - component_contracts
+          - payment_status_and_dedup_contract
+      - support_id: attribution_paid_amount_change_growth_ops
+        business_evidence_state: insufficient
+        data_contract_state: missing_contract
+        evidence_type: statistical_association
+        strength: insufficient
+        wording_limit: insufficient
+        backlog_refs:
+          - channel_payment_dimension_contracts
+          - product_operation_event_contracts
+          - exposure_control_contracts
+    allowed_claims:
+      - claim_type: formula_component_contribution
+        evidence_type: accounting_contribution
+        strength: medium
+        wording_limit: quantified
+        condition: declared decomposition path and reconciliation are present.
+      - claim_type: multi_factor_operating_explanation
+        evidence_type: statistical_association
+        strength: insufficient
+        wording_limit: insufficient
+        condition: missing operation/exposure contracts block stronger attribution.
+    expected_visual_blocks:
+      - formula_contribution
+      - segment_bridge
+      - baseline_stability
+      - limitation
+    verifier_checks:
+      - baseline_is_bound_or_clarified
+      - contribution_wording_is_not_causal_wording
+      - formula_claim_has_evidence_refs_and_reconciliation
+      - growth_operation_gaps_are_visible
+    failure_attribution:
+      business_failure_types:
+        - wrong_baseline
+        - missed_key_factor
+        - over_strong_weak_evidence
+        - hidden_data_gap
+      system_responsibility_points:
+        - LLM_reasoner
+        - graph_compiler
+        - semantic_compiler
+        - evidence_reducer
+        - answer_verifier
+
+  - case_id: LE-003
+    title: Recharge activity impact review with missing operation contracts
+    source_pool: matrix_generated_boundary_cases
+    natural_user_wording: 6 月充值活动对付费金额影响多大？
+    expected_question_family: business_object_impact_review
+    merged_question_families:
+      - custom_baseline_comparison
+      - data_quality_or_evidence_review
+    intent:
+      target_metric: paid_amount
+      scope: named_business_object
+      time_range: "2026-06"
+      grain: event_window_when_contract_exists
+      business_object: recharge_activity
+      baseline: pre_post_or_control_window_requires_contract_review
+    required_capabilities:
+      - event_evidence
+      - data_quality_check
+      - answer_verify
+    optional_capabilities:
+      - formula_decompose
+      - segment_bridge
+      - joint_attribution
+    forbidden_capabilities: []
+    expected_compiler_actions:
+      - outcome: targeted_repair
+        reason: missing event identity, affected scope, or control window requires bounded repair.
+      - outcome: degrade
+        reason: recharge activity has missing product-operation and exposure/control contracts.
+      - outcome: block
+        reason: confirmed net impact wording is blocked without event timing, exposure, affected scope, and control evidence.
+    expected_evidence_contract_states:
+      - support_id: event_business_object_product_operation
+        business_evidence_state: insufficient
+        data_contract_state: missing_contract
+        evidence_type: candidate_mechanism
+        strength: insufficient
+        wording_limit: insufficient
+        backlog_refs:
+          - product_operation_event_contracts
+          - exposure_control_contracts
+    allowed_claims:
+      - claim_type: business_object_candidate_impact
+        evidence_type: candidate_mechanism
+        strength: insufficient
+        wording_limit: insufficient
+        condition: activity path remains a visible missing-contract limitation.
+    expected_visual_blocks:
+      - business_object_view
+      - event_timeline_view
+      - evidence_boundary
+    verifier_checks:
+      - named_object_maps_to_event_or_backlog
+      - control_or_baseline_boundary_is_visible
+      - impact_wording_does_not_exceed_evidence
+      - missing_exposure_and_operation_contracts_are_visible
+    failure_attribution:
+      business_failure_types:
+        - unsupported_main_conclusion
+        - hidden_data_gap
+        - wrong_scope
+        - over_strong_weak_evidence
+      system_responsibility_points:
+        - LLM_reasoner
+        - graph_compiler
+        - semantic_compiler
+        - answer_verifier
+
+  - case_id: LE-004
+    title: Recent paid_amount health review
+    source_pool: real_user_questions
+    natural_user_wording: 最近 30 天付费金额健康吗，风险在哪里？
+    expected_question_family: revenue_health_review
+    merged_question_families:
+      - anomaly_or_black_swan_review
+      - data_quality_or_evidence_review
+    intent:
+      target_metric: paid_amount
+      scope: overall_business
+      time_range: recent_30_day_window
+      grain: thirty_day_rolling_or_month_proxy
+      baseline: historical_or_prior_comparable_window
+    required_capabilities:
+      - data_quality_check
+      - formula_decompose
+      - outlier_scan
+      - answer_verify
+    optional_capabilities:
+      - segment_bridge
+      - joint_attribution
+      - pattern_scan
+    forbidden_capabilities: []
+    expected_compiler_actions:
+      - outcome: auto_repair
+        reason: add materiality, freshness, permission, and verifier checks.
+      - outcome: degrade
+        reason: health risk wording degrades when component, payment-quality, incident, or comparable-window evidence is insufficient.
+    expected_evidence_contract_states:
+      - support_id: formula_revenue_health_order_chain
+        business_evidence_state: insufficient
+        data_contract_state: missing_contract
+        evidence_type: accounting_contribution
+        strength: insufficient
+        wording_limit: insufficient
+        backlog_refs:
+          - component_contracts
+          - payment_status_and_dedup_contract
+      - support_id: anomaly_revenue_health_payment_quality
+        business_evidence_state: insufficient
+        data_contract_state: missing_contract
+        evidence_type: statistical_association
+        strength: insufficient
+        wording_limit: insufficient
+        backlog_refs:
+          - payment_status_and_dedup_contract
+          - product_operation_event_contracts
+          - external_context_event_contracts
+    allowed_claims:
+      - claim_type: health_driver_decomposition
+        evidence_type: accounting_contribution
+        strength: insufficient
+        wording_limit: insufficient
+        condition: component and reconciliation gaps are visible.
+      - claim_type: payment_chain_risk_or_anomaly
+        evidence_type: statistical_association
+        strength: insufficient
+        wording_limit: insufficient
+        condition: incident/event gaps limit risk wording.
+    expected_visual_blocks:
+      - trend
+      - formula_view
+      - anomaly_view
+      - data_quality_view
+    verifier_checks:
+      - health_judgment_names_baseline
+      - risk_wording_matches_strength
+      - data_risk_is_separate_from_business_risk
+      - missing_component_and_incident_contracts_are_visible
+    failure_attribution:
+      business_failure_types:
+        - unsupported_main_conclusion
+        - hidden_data_gap
+        - misleading_visualization
+      system_responsibility_points:
+        - graph_compiler
+        - semantic_compiler
+        - evidence_reducer
+        - answer_verifier
+        - visualization_planner
+
+  - case_id: LE-005
+    title: Channel and payment-method segment attribution
+    source_pool: matrix_generated_boundary_cases
+    natural_user_wording: 哪些渠道和支付方式解释了这段时间付费金额变化？
+    expected_question_family: segment_or_factor_attribution
+    merged_question_families:
+      - paid_amount_change_explanation
+      - data_quality_or_evidence_review
+    intent:
+      target_metric: paid_amount
+      scope: selected_time_window
+      time_range: user_selected_or_recent_complete_window
+      grain: channel_and_payment_method
+      baseline: prior_comparable_window
+    required_capabilities:
+      - data_quality_check
+      - segment_bridge
+      - joint_attribution
+      - answer_verify
+    optional_capabilities:
+      - formula_decompose
+    forbidden_capabilities: []
+    expected_compiler_actions:
+      - outcome: accept
+        reason: channel and payment-method segment bridge can use current contract-backed dimensions at supported grains.
+      - outcome: targeted_repair
+        reason: joint_attribution candidate pool must resolve to ledger, contracts, evidence, or backlog refs.
+      - outcome: degrade
+        reason: campaign, spend, creative, SEO/GEO, referral, and exposure paths remain missing-contract limitations.
+      - outcome: block
+        reason: raw user, IP, device, or individual-user output is forbidden.
+    expected_evidence_contract_states:
+      - support_id: segment_attribution_payment_method
+        business_evidence_state: quantifiable
+        data_contract_state: contract_backed
+        evidence_type: accounting_contribution
+        strength: medium
+        wording_limit: quantified
+        backlog_refs:
+          - channel_payment_dimension_contracts
+      - support_id: joint_attribution_geo_device_permission_limited
+        business_evidence_state: permission_limited
+        data_contract_state: permission_limited
+        evidence_type: insufficient
+        strength: insufficient
+        wording_limit: blocked
+        backlog_refs:
+          - geo_device_environment_dimension_contracts
+          - sensitive_identifier_permission_policy
+    allowed_claims:
+      - claim_type: segment_contribution_or_mix_shift
+        evidence_type: accounting_contribution
+        strength: medium
+        wording_limit: quantified
+        condition: supported segment grain, coverage, and sparse limits pass.
+      - claim_type: geo_device_combination_attribution
+        evidence_type: insufficient
+        strength: insufficient
+        wording_limit: blocked
+        condition: raw identifier and permission-limited outputs are blocked.
+    expected_visual_blocks:
+      - attribution_ranking
+      - combination_path
+      - stability_coverage
+      - permission_limit
+    verifier_checks:
+      - attribution_claim_states_scope_and_grain
+      - contribution_is_not_causal_wording
+      - raw_identifier_output_is_absent
+      - permission_limited_paths_are_visible
+    failure_attribution:
+      business_failure_types:
+        - permission_leak
+        - unsupported_main_conclusion
+        - over_strong_weak_evidence
+        - misleading_visualization
+      system_responsibility_points:
+        - graph_compiler
+        - semantic_compiler
+        - permission_policy
+        - answer_verifier
+        - visualization_planner
+
+  - case_id: LE-006
+    title: Anomaly and black-swan review without raw external crawling
+    source_pool: historical_failure_cases
+    natural_user_wording: 6 月这几天异常吗，可能和外部黑天鹅有关吗？
+    expected_question_family: anomaly_or_black_swan_review
+    merged_question_families:
+      - data_quality_or_evidence_review
+      - business_object_impact_review
+    intent:
+      target_metric: paid_amount
+      scope: suspected_anomaly_window
+      time_range: "2026-06 selected days"
+      grain: day
+      baseline: expected_baseline_or_targeted_repair
+    required_capabilities:
+      - data_quality_check
+      - outlier_scan
+      - event_evidence
+      - answer_verify
+    optional_capabilities:
+      - segment_bridge
+      - joint_attribution
+    forbidden_capabilities: []
+    expected_compiler_actions:
+      - outcome: auto_repair
+        reason: data_quality_check is required before anomaly claims.
+      - outcome: targeted_repair
+        reason: outlier_scan must declare baseline or anomaly definition.
+      - outcome: degrade
+        reason: external events can support context or candidate mechanisms only.
+      - outcome: block
+        reason: raw web, news, forum, or media crawling is outside launch scope.
+    expected_evidence_contract_states:
+      - support_id: outlier_black_swan_external_context
+        business_evidence_state: contextual_evidence
+        data_contract_state: evidence_linked
+        evidence_type: candidate_mechanism
+        strength: low
+        wording_limit: context
+        backlog_refs:
+          - external_context_event_contracts
+      - support_id: event_black_swan_raw_external_ingestion_scope
+        business_evidence_state: out_of_scope
+        data_contract_state: out_of_scope_for_now
+        evidence_type: insufficient
+        strength: insufficient
+        wording_limit: blocked
+        backlog_refs:
+          - raw_external_evidence_ingestion_scope
+    allowed_claims:
+      - claim_type: external_shock_candidate_or_anomaly
+        evidence_type: candidate_mechanism
+        strength: low
+        wording_limit: context
+        condition: reviewed event/evidence records support context only.
+      - claim_type: raw_external_crawl_claim
+        evidence_type: insufficient
+        strength: insufficient
+        wording_limit: blocked
+        condition: raw external ingestion remains out of scope.
+    expected_visual_blocks:
+      - anomaly_scope
+      - event_context_timeline
+      - ruled_out_paths
+      - evidence_boundary
+    verifier_checks:
+      - anomaly_claim_states_baseline
+      - black_swan_wording_stays_candidate_or_context
+      - raw_external_ingestion_is_blocked
+      - data_quality_flags_are_visible
+    failure_attribution:
+      business_failure_types:
+        - over_strong_weak_evidence
+        - hidden_data_gap
+        - unsupported_main_conclusion
+      system_responsibility_points:
+        - LLM_reasoner
+        - graph_compiler
+        - semantic_compiler
+        - answer_verifier
+
+  - case_id: LE-007
+    title: Custom first-ten-days baseline comparison
+    source_pool: matrix_generated_boundary_cases
+    natural_user_wording: 6 月前 10 天和 5 月前 10 天相比为什么变化？
+    expected_question_family: custom_baseline_comparison
+    merged_question_families:
+      - paid_amount_change_explanation
+      - data_quality_or_evidence_review
+    intent:
+      target_metric: paid_amount
+      scope: overall_business
+      time_range: "2026-06-01 through 2026-06-10"
+      grain: custom_window
+      baseline: "2026-05-01 through 2026-05-10"
+    required_capabilities:
+      - data_quality_check
+      - pattern_scan
+      - formula_decompose
+      - answer_verify
+    optional_capabilities:
+      - segment_bridge
+      - joint_attribution
+      - event_evidence
+    forbidden_capabilities: []
+    expected_compiler_actions:
+      - outcome: accept
+        reason: user-specified compatible baseline wins after time-boundary validation.
+      - outcome: auto_repair
+        reason: add timezone, snapshot, and contract pins.
+      - outcome: targeted_repair
+        reason: cumulative month-to-date versus daily/window semantics must be repaired before compile can continue.
+      - outcome: degrade
+        reason: unresolved time semantics or missing component contracts lower claim strength.
+    expected_evidence_contract_states:
+      - support_id: pattern_custom_baseline_paid_amount
+        business_evidence_state: insufficient
+        data_contract_state: missing_contract
+        evidence_type: statistical_association
+        strength: insufficient
+        wording_limit: insufficient
+        backlog_refs:
+          - timezone_policy
+      - support_id: formula_custom_baseline_order_chain
+        business_evidence_state: insufficient
+        data_contract_state: missing_contract
+        evidence_type: accounting_contribution
+        strength: insufficient
+        wording_limit: insufficient
+        backlog_refs:
+          - component_contracts
+          - payment_status_and_dedup_contract
+    allowed_claims:
+      - claim_type: baseline_stability_or_window_pattern
+        evidence_type: statistical_association
+        strength: insufficient
+        wording_limit: insufficient
+        condition: time-boundary gaps lower strong comparison wording.
+      - claim_type: baseline_formula_contribution
+        evidence_type: accounting_contribution
+        strength: insufficient
+        wording_limit: insufficient
+        condition: component contracts and reconciliation are incomplete.
+    expected_visual_blocks:
+      - baseline_comparison
+      - formula_view
+      - evidence_boundary
+    verifier_checks:
+      - baseline_windows_are_explicit
+      - cumulative_value_misuse_is_repaired_or_blocked
+      - formula_claims_have_reconciliation_or_limitation
+      - time_semantics_gap_is_visible
+    failure_attribution:
+      business_failure_types:
+        - wrong_baseline
+        - hidden_data_gap
+        - over_strong_weak_evidence
+      system_responsibility_points:
+        - LLM_reasoner
+        - graph_compiler
+        - semantic_compiler
+        - answer_verifier
+
+  - case_id: LE-008
+    title: Evidence trust and contract coverage review
+    source_pool: real_user_questions
+    natural_user_wording: 这个付费金额结论证据够不够，哪些数据缺口会影响结论？
+    expected_question_family: data_quality_or_evidence_review
+    merged_question_families: []
+    intent:
+      target_metric: paid_amount
+      scope: referenced_claim_or_current_thread
+      time_range: inherited_from_claim_or_user_question
+      grain: claim_group
+      baseline: inherited_when_claim_is_comparative
+    required_capabilities:
+      - data_quality_check
+      - answer_verify
+    optional_capabilities:
+      - pattern_scan
+      - formula_decompose
+      - segment_bridge
+      - event_evidence
+      - outlier_scan
+      - joint_attribution
+    forbidden_capabilities: []
+    expected_compiler_actions:
+      - outcome: accept
+        reason: quality and verifier review can compile directly against accepted graph, contracts, and evidence refs.
+      - outcome: block
+        reason: missing evidence refs, missing-contract without backlog, raw identifiers, and unsupported main claims cannot publish.
+      - outcome: degrade
+        reason: permission-limited, stale, incomplete, or weak evidence lowers trust judgment wording.
+    expected_evidence_contract_states:
+      - support_id: dq_contract_coverage_review
+        business_evidence_state: quantifiable
+        data_contract_state: contract_backed
+        evidence_type: insufficient
+        strength: high
+        wording_limit: blocked
+        backlog_refs:
+          - currency_policy
+          - refund_or_reversal_policy
+          - timezone_policy
+          - component_contracts
+      - support_id: dq_materiality_threshold_policy
+        business_evidence_state: quantifiable
+        data_contract_state: contract_backed
+        evidence_type: statistical_association
+        strength: medium
+        wording_limit: quantified
+        backlog_refs: []
+      - support_id: dq_permission_sensitive_identifiers
+        business_evidence_state: permission_limited
+        data_contract_state: permission_limited
+        evidence_type: insufficient
+        strength: insufficient
+        wording_limit: context
+        backlog_refs:
+          - sensitive_identifier_permission_policy
+          - payment_status_and_dedup_contract
+    allowed_claims:
+      - claim_type: contract_coverage_and_trust_boundary
+        evidence_type: insufficient
+        strength: high
+        wording_limit: blocked
+        condition: review can name blocked claim paths and upgrade needs.
+      - claim_type: materiality_threshold_coverage
+        evidence_type: statistical_association
+        strength: medium
+        wording_limit: quantified
+        condition: initial materiality policy is accepted for supported grains.
+      - claim_type: permission_and_dedup_boundary
+        evidence_type: insufficient
+        strength: insufficient
+        wording_limit: context
+        condition: raw identifier output remains blocked.
+    expected_visual_blocks:
+      - trust_summary
+      - data_quality_view
+      - evidence_boundary
+      - permission_limit
+    verifier_checks:
+      - every_claim_has_evidence_ref
+      - blocked_claim_paths_do_not_publish
+      - missing_contracts_are_named_with_backlog_refs
+      - permission_limits_are_visible
+      - upgrade_paths_do_not_promote_gaps
+    failure_attribution:
+      business_failure_types:
+        - hidden_data_gap
+        - unsupported_main_conclusion
+        - permission_leak
+      system_responsibility_points:
+        - graph_compiler
+        - evidence_reducer
+        - answer_verifier
+        - permission_policy

@@ -1,0 +1,82 @@
+contract_version: "0.1"
+capability_id: formula_decompose
+business_name: Formula decomposition
+review_status: draft
+
+responsibilities:
+  - Decompose metric change through reviewed formula paths declared by metric contracts.
+  - Report component coverage, contribution, residual, and reconciliation status.
+  - Identify unsupported formula paths and missing component contracts.
+
+parameters:
+  required:
+    - metric
+    - decomposition_path
+    - scope
+    - time_range
+    - baseline
+    - contract_versions
+  optional:
+    - filters
+    - grain
+    - residual_policy
+    - component_override_request
+
+non_uses:
+  - Does not invent formula components that are absent from metric contracts.
+  - Does not rank unrelated dimensions without segment or attribution evidence.
+  - Does not bypass reconciliation before quantified wording.
+
+evidence_outputs:
+  typed_payload: formula_decompose_result
+  envelope_fields:
+    - evidence_type
+    - strength
+    - wording_limit
+    - metric
+    - scope
+    - baseline
+    - contract_versions
+    - limitations
+  payload_fields:
+    - formula_path
+    - component_contributions
+    - residual
+    - reconciliation_status
+    - missing_components
+    - unsupported_paths
+
+limitations:
+  - Quantified contribution requires reviewed component contracts and reconciliation.
+  - Missing component contracts degrade to insufficient or review-only wording.
+  - Formula output does not prove mechanism or causality.
+
+degradation_rules:
+  - when: component_contract_missing
+    output: report blocked component and backlog refs.
+  - when: reconciliation_failed
+    output: downgrade quantified contribution and expose residual.
+  - when: unsupported_formula_path
+    output: block path and request contract extension.
+
+lint_rules:
+  - rule_id: declared_path_required
+    severity: block
+    check: Decomposition path must exist in metric contract.
+  - rule_id: reconciliation_required
+    severity: block
+    check: Quantified output requires residual and reconciliation status.
+  - rule_id: cumulative_period_guard
+    severity: targeted_repair
+    check: Baseline and target windows must use compatible period semantics.
+
+verifier_hooks:
+  - quantified_formula_claim_requires_reconciliation
+  - missing_components_must_appear_in_limitations
+  - formula_claim_cannot_be_stated_as_cause
+
+typical_question_families:
+  - paid_amount_change_explanation
+  - revenue_health_review
+  - business_object_impact_review
+  - custom_baseline_comparison

@@ -1,0 +1,191 @@
+contract_version: "0.1"
+artifact: events
+review_status: draft
+scope: Phase 1 review source for event and business-object candidates used by paid_amount analysis.
+storage_design: deferred_to_later_phase
+
+source_refs:
+  ssot_file: contracts/ssot/付费金额影响因子分析.mm
+  ssot_extract: contracts/ssot/paid-amount-factors.extract.md
+  factor_ledger: contracts/ledger/factor-ledger.yaml
+  assumption_source: contracts/assumptions/payday.assumption.yaml
+
+events:
+  - event_id: payday_window
+    business_name: 发薪日窗口
+    business_meaning: Monthly 25..30 payday dimension used as a candidate mechanism for relevant paid_amount analysis scenarios.
+    event_type: static_assumption_event_window
+    data_contract_state: static_assumption
+    business_evidence_state: candidate_mechanism
+    default_window:
+      anchor: month_day_25_to_30
+      tested_relation: next_month_start_or_month_phase
+    supported_grains:
+      - full_sample
+      - aggregate_daily
+      - month_phase
+      - event_window
+    assumption_ref: aggregate_payday_window_25_30
+    known_gaps:
+      - timezone_policy
+    owner: pending_business_owner_confirmation
+    review_status: draft_pending_owner_review
+
+  - event_id: calendar_holiday_or_sports
+    business_name: 节假日与重大赛事
+    business_meaning: Calendar events that can align with paid_amount patterns, exceptions, or business-object impact review.
+    event_type: maintained_calendar_or_event_source
+    data_contract_state: evidence_linked
+    business_evidence_state: contextual_evidence
+    supported_grains:
+      - event_window_when_contract_exists
+      - country_or_region_when_source_supports
+      - day
+    source_nodes:
+      - d4407c92b2d583de330ababd491b84fa
+      - 1f8897932c3a56b55b06b054bbe7700e
+      - d2cdcf8b691fda273cf1b130ecd07e7a
+    known_gaps:
+      - calendar_event_contracts
+      - external_context_event_contracts
+    source_refs:
+      - contracts/sources/external-events.source.yaml
+      - contracts/sources/competitor-ranking.source.yaml
+    reviewed_progress:
+      - external_events_2024_2026 has 节假日 and 重大赛事 sheets covering 2024-01-01 through 2026-06-08.
+      - This supports event-window context and candidate mechanisms, with confirmed cause wording blocked.
+    owner: pending_business_owner_confirmation
+    review_status: draft_pending_owner_review
+
+  - event_id: product_operation_event
+    business_name: 产品、运营、活动与版本事件
+    business_meaning: Internal actions such as product update, campaign operation, recharge activity, server incident, or payment-flow change.
+    event_type: internal_business_object
+    data_contract_state: missing_contract
+    business_evidence_state: insufficient
+    supported_grains:
+      - event_window_when_contract_exists
+      - affected_scope_when_contract_exists
+      - day
+    source_nodes:
+      - b22d74d8296870e552cf15f3c35108bf
+      - e8a70aeae28440a3097a781dc8487bfd
+      - ff4f39c6c6bc589a5e44078b32e3cdc9
+      - 576fd648b7d8e8844c98f46b9a0e9956
+      - 90c64ec6d6384faa8234d85ac6dce1e0
+    known_gaps:
+      - product_operation_event_contracts
+      - exposure_control_contracts
+    unavailable_without_new_source:
+      - 产品更新
+      - 首充礼包
+      - 充值活动
+      - 服务器稳定性
+      - Grafana
+      - 支付事故
+    owner: pending_data_owner_confirmation
+    review_status: draft_pending_owner_review
+
+  - event_id: marketing_operation_event
+    business_name: 投放、素材、渠道与拉新运营事件
+    business_meaning: Marketing and growth actions that can affect new users, first payment, channel mix, and paid_amount.
+    event_type: internal_growth_operation
+    data_contract_state: missing_contract
+    business_evidence_state: insufficient
+    supported_grains:
+      - campaign_when_contract_exists
+      - channel_when_contract_exists
+      - event_window_when_contract_exists
+    source_nodes:
+      - 4b14a3c567d773b1f7fee0bcc8795df6
+      - 69a8deabeea9912b805cbc592b9dace8
+      - b4e51c09ac5087a8d7f3026648396b51
+      - e5d8cfdccdcc22071508cd1bb92c784f
+      - e247aaac1c9c03989b8ac1354ac37d37
+      - caea77d50c306f78a10cbfc075a314f6
+    known_gaps:
+      - product_operation_event_contracts
+      - channel_payment_dimension_contracts
+      - exposure_control_contracts
+    unavailable_without_new_source:
+      - 投放预算
+      - 出价
+      - campaign 消耗
+      - 素材 CTR
+      - 素材 CVR
+      - SEO 排名
+      - GEO 排名
+      - 用户推荐活动
+    aggregate_source_note: market_dashboard_2024_2026 exposes 投放成本 only at aggregate dashboard grain.
+    owner: pending_data_owner_confirmation
+    review_status: draft_pending_owner_review
+
+  - event_id: payment_quality_incident
+    business_name: 支付、银行、网络、电力与服务器稳定性事件
+    business_meaning: Stability events that can explain payment success, latency, failed payments, and local exceptions.
+    event_type: quality_or_incident_event
+    data_contract_state: missing_contract
+    business_evidence_state: insufficient
+    supported_grains:
+      - event_window_when_contract_exists
+      - payment_method
+      - country_or_region_when_source_supports
+    source_nodes:
+      - bb6457f18917276042f78e7b4db18552
+      - 32448538a6a1b5cf03204858afac6520
+      - 4af76d7e16e17313d479eb44cf68b87c
+      - 1a7a86e60a30f0fe566f494a20603f25
+      - f835c7006369ab2a1ddf5639253ec810
+    known_gaps:
+      - payment_status_and_dedup_contract
+      - product_operation_event_contracts
+      - external_context_event_contracts
+    source_refs:
+      - contracts/sources/external-events.source.yaml
+      - contracts/sources/paid-order-detail.source.yaml
+    reviewed_progress:
+      - paid_order_detail_2026_h1 supports payment status and success-rate review for the accepted snapshot.
+      - external_events_2024_2026 supports network and electricity context as candidate background.
+    unavailable_without_new_source:
+      - 服务器稳定性
+      - Grafana
+      - 支付事故
+      - bank_or_processor_incident_log
+    owner: pending_data_owner_confirmation
+    review_status: draft_pending_owner_review
+
+  - event_id: external_context_or_black_swan
+    business_name: 外部环境、竞品、政策、天气与黑天鹅候选
+    business_meaning: External context used for contextual evidence, candidate explanations, exception review, and anomaly framing.
+    event_type: external_context_candidate
+    data_contract_state: evidence_linked
+    business_evidence_state: contextual_evidence
+    supported_grains:
+      - event_window_when_evidence_linked
+      - country_or_region_when_source_supports
+      - day
+    unsupported_grains:
+      - raw_news_unreviewed_as_causal_claim
+    disallowed_wording:
+      - confirmed_cause_without_stronger_contracts_and_evidence
+    source_nodes:
+      - 367e0c8e77f4b2874bf4798c2a7d12b3
+      - 866a916312726fdaf8334e63da0244af
+      - 1ed671c037a28c0b83112b826d0fd340
+      - b27e065d01e6e6ae0d0bc4dc2f967f8c
+      - c3e7618e594e7f4aaceda90226edca02
+      - 6c8e58a8d85aceaf679665e9fe894338
+    source_refs:
+      - contracts/sources/external-events.source.yaml
+    reviewed_progress:
+      - old WAJE BI external event workbook was imported as external_events_2024_2026.
+      - Covered sheets include macro inflation/fx, payday, sports, power, network, media policy, weather, social stability, and holidays.
+      - old WAJE BI competitor ranking CSV was imported as competitor_ranking_2024_2026.
+    unavailable_without_new_source:
+      - stronger_gambling_policy_feed
+      - live_weather_or_news_crawl
+    known_gaps:
+      - external_context_event_contracts
+      - raw_external_evidence_ingestion_scope
+    owner: pending_business_owner_confirmation
+    review_status: draft_pending_owner_review

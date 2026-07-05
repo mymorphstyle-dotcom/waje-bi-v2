@@ -1,0 +1,86 @@
+contract_version: "0.1"
+capability_id: joint_attribution
+business_name: Joint attribution
+review_status: draft
+
+responsibilities:
+  - Screen registered, discoverable, and validated hypothesized candidates for explanatory power.
+  - Evaluate one-dimensional and higher-order factor combinations within grain, permission, sparsity, and budget limits.
+  - Return local contribution, association, residual reduction, stability, and candidate promotion evidence.
+
+parameters:
+  required:
+    - target_claim
+    - metric
+    - scope
+    - time_range
+    - baseline
+    - candidate_pool
+    - contract_versions
+  optional:
+    - max_depth
+    - budget
+    - sparse_limits
+    - filters
+    - required_dimensions
+    - event_context
+
+non_uses:
+  - Does not use raw identifiers or forbidden grains.
+  - Does not promote weak local fit into global explanation.
+  - Does not run when candidate pool cannot be connected to ledger, contracts, evidence, or missing-contract records.
+
+evidence_outputs:
+  typed_payload: joint_attribution_result
+  envelope_fields:
+    - evidence_type
+    - strength
+    - wording_limit
+    - scope
+    - metric
+    - contract_versions
+    - limitations
+  payload_fields:
+    - tested_candidates
+    - candidate_ranking
+    - selected_combinations
+    - residual_reduction
+    - coverage
+    - stability
+    - sparse_warnings
+    - permission_blocks
+
+limitations:
+  - Permission and sparse-cell rules can block visible segment claims.
+  - Statistical attribution cannot produce confirmed causal wording by itself.
+  - Higher-order search must stop on budget, weak fit, sparsity, or insufficient evidence.
+
+degradation_rules:
+  - when: permission_limited
+    output: aggregate-only or blocked attribution path.
+  - when: unsupported_grain
+    output: downgrade to supported grain or limitation.
+  - when: weak_incremental_power
+    output: stop with insufficient or local exception wording.
+
+lint_rules:
+  - rule_id: candidate_pool_must_be_resolved
+    severity: targeted_repair
+    check: Every candidate must be registered, discoverable, or linked to evidence/backlog.
+  - rule_id: forbidden_grain_block
+    severity: block
+    check: Raw identifier, raw IP, or forbidden fine grain is blocked.
+  - rule_id: sparse_cell_guard
+    severity: degrade
+    check: Sparse cells prevent strong segment claims.
+
+verifier_hooks:
+  - attribution_claim_must_state_scope_and_grain
+  - local_exception_cannot_be_globalized
+  - permission_blocks_must_be_visible
+
+typical_question_families:
+  - segment_or_factor_attribution
+  - paid_amount_change_explanation
+  - revenue_health_review
+  - anomaly_or_black_swan_review

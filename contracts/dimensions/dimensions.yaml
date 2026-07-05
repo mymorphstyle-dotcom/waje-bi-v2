@@ -1,0 +1,216 @@
+contract_version: "0.1"
+artifact: dimensions
+review_status: draft
+scope: Phase 1 review source for dimensions that can constrain paid_amount analysis.
+storage_design: deferred_to_later_phase
+
+source_refs:
+  ssot_file: contracts/ssot/付费金额影响因子分析.mm
+  ssot_extract: contracts/ssot/paid-amount-factors.extract.md
+  source_template_extract: contracts/source-templates/paid-order-detail-template.extract.md
+  factor_ledger: contracts/ledger/factor-ledger.yaml
+
+dimensions:
+  - dimension_id: business_date
+    business_name: 业务日期
+    business_meaning: Calendar date used to aggregate paid_amount and compare windows.
+    source_fields:
+      - 日期
+      - 支付完成时间
+      - market_dashboard_2024_2026.日期
+      - gameplay_2024_2026.日期
+    data_contract_state: contract_backed
+    business_evidence_state: quantifiable
+    supported_grains:
+      - day
+      - month
+      - month_phase
+      - custom_window
+    known_gaps:
+      - timezone_policy
+    reviewed_progress:
+      - paid_order_detail uses 支付完成时间 converted to Africa/Lagos for business-date analysis.
+      - market dashboard and gameplay files expose a direct 日期 field pending source-owner confirmation.
+    owner: data_owner
+    review_status: reviewed_confirmed_for_paid_order_snapshot_pending_other_sources
+
+  - dimension_id: payment_method
+    business_name: 支付方式
+    business_meaning: Payment method or channel used to segment payment success, latency, and paid_amount mix.
+    source_fields:
+      - 支付方式
+      - 支付状态
+    data_contract_state: contract_backed
+    business_evidence_state: quantifiable
+    supported_grains:
+      - payment_method
+      - payment_method_day
+      - payment_method_x_channel
+      - day
+    value_policy:
+      decided_on: "2026-07-05"
+      source: contracts/sources/paid-order-detail.source.yaml
+      accepted_snapshot_values:
+        - OPAY
+        - APP_PALMPAY
+        - PALMPAY_BANK
+        - MERCHANT_OPAY
+        - PALM
+      merge_rule: Preserve source values as separate payment methods unless a later owner-reviewed taxonomy says to merge them.
+      anomaly_rule: Any new value outside the accepted snapshot enum is a data-quality warning and can still be profiled as an unknown_new_payment_method bucket until reviewed.
+    known_gaps:
+      - channel_payment_dimension_contracts
+    owner: business_owner_and_data_owner_joint_review
+    review_status: reviewed_confirmed_2026-07-05
+
+  - dimension_id: acquisition_channel
+    business_name: 渠道
+    business_meaning: Acquisition or operating channel used for mix, attribution, and campaign review.
+    source_fields:
+      - 一级渠道
+      - 分包渠道
+      - gameplay channel inferred from filename prefix
+      - market dashboard channel inferred from filename prefix
+    data_contract_state: contract_backed
+    business_evidence_state: quantifiable
+    supported_grains:
+      - channel
+      - campaign_when_contract_exists
+      - day
+    value_policy:
+      decided_on: "2026-07-05"
+      paid_order_rule: Use paid-order detail 分包渠道 values as canonical for paid-order joint analysis. Preserve blank and Unknown as data-quality buckets.
+      filename_channel_rule: For market-dashboard and gameplay channel files, use the filename prefix before `_YYYY-MM-DD_YYYY-MM-DD.csv` as the channel value.
+      cross_source_merge_rule: Only merge channel values across sources when normalized literal values match; do not infer historical aliases or package-family merges without a later owner-reviewed mapping.
+      profiled_counts:
+        paid_order_nonblank_values: 44
+        paid_order_blank_rows: 2913
+        paid_order_unknown_rows: 17768
+        filename_channel_files: 183
+        filename_channel_values_all_files: 61
+        market_dashboard_nonempty_channel_values: 49
+        gameplay_nonempty_channel_values: 45
+    known_gaps:
+      - exposure_control_contracts
+      - gameplay_metric_contracts
+    owner: business_owner_and_data_owner_joint_review
+    review_status: reviewed_confirmed_2026-07-05
+
+  - dimension_id: user_payment_stage
+    business_name: 新老用户与首充标记
+    business_meaning: User payment-stage flags used for first-payment, retention, and user-structure explanations.
+    source_fields:
+      - 是否新用户
+      - 是否首充
+      - 注册时间
+      - 首充时间
+      - market_dashboard_2024_2026.首充人数
+      - market_dashboard_2024_2026.首充率
+      - market_dashboard_2024_2026.新增付费人数
+      - market_dashboard_2024_2026.新增付费率
+      - market_dashboard_2024_2026.新增
+      - market_dashboard_2024_2026.注册人数
+    data_contract_state: evidence_linked
+    business_evidence_state: quantifiable
+    supported_grains:
+      - aggregate_user_stage
+      - cohort_when_contract_exists
+      - day
+    known_gaps:
+      - component_contracts
+      - sensitive_identifier_permission_policy
+    reviewed_progress:
+      - market_dashboard_2024_2026 covers aggregate first-pay and new-paid metrics at daily and filename-channel daily grain.
+      - v2 rates for registration, first-pay, and same-day new paid use 新增 as denominator and should be derived from count fields.
+      - paid_order_detail can calculate first observed pay_success when full historical paid-order data is loaded; current H1 2026 snapshot alone should not be used as complete lifetime first-pay history.
+    owner: pending_data_owner_confirmation
+    review_status: draft_pending_owner_review
+
+  - dimension_id: geo
+    business_name: 地理层级
+    business_meaning: Country, region, and city fields used to localize segment patterns and permission-limited attribution.
+    source_fields:
+      - 国家
+      - 州/地区
+      - 城市
+      - IP
+    data_contract_state: permission_limited
+    business_evidence_state: permission_limited
+    supported_grains:
+      - country_when_contract_exists
+      - city_when_permission_allows
+      - aggregate_only_with_sensitive_output_policy
+    unsupported_grains:
+      - raw_ip_output_without_permission
+    known_gaps:
+      - geo_device_environment_dimension_contracts
+      - sensitive_identifier_permission_policy
+    owner: pending_data_owner_confirmation
+    review_status: draft_pending_owner_review
+
+  - dimension_id: device_environment
+    business_name: 设备、系统与网络
+    business_meaning: Device and network attributes used for quality, segment, and anomaly review.
+    source_fields:
+      - 设备ID
+      - 设备品牌
+      - 设备型号
+      - 操作系统
+      - 网络类型
+    data_contract_state: permission_limited
+    business_evidence_state: permission_limited
+    supported_grains:
+      - device_model_when_contract_exists
+      - network_type_when_contract_exists
+      - aggregate_only_with_sensitive_output_policy
+    unsupported_grains:
+      - raw_device_id_output_without_permission
+    known_gaps:
+      - geo_device_environment_dimension_contracts
+      - sensitive_identifier_permission_policy
+    owner: pending_data_owner_confirmation
+    review_status: draft_pending_owner_review
+
+  - dimension_id: amount_bucket
+    business_name: 充值档位
+    business_meaning: Reviewed NGN amount tiers used to explain ticket-size mix and value distribution.
+    source_fields:
+      - 支付成功金额
+      - 支付发起金额
+      - 币种
+    data_contract_state: contract_backed
+    business_evidence_state: quantifiable
+    supported_grains:
+      - amount_bucket
+      - day
+      - segment_when_dimension_contract_exists
+    known_gaps:
+      - component_contracts
+      - materiality_policy
+    owner: business_owner_and_data_owner_joint_review
+    review_status: reviewed_confirmed_2026-07-05
+
+  - dimension_id: gameplay
+    business_name: 玩法
+    business_meaning: Gameplay identity and gameplay activity/betting grouping used for paid_amount-adjacent review.
+    source_fields:
+      - gameplay_2024_2026.玩法
+      - gameplay_2024_2026.区服
+      - gameplay_2024_2026.游戏人数
+      - gameplay_2024_2026.玩家下注次数
+      - gameplay_2024_2026.玩家下注总额
+    data_contract_state: evidence_linked
+    business_evidence_state: quantifiable
+    supported_grains:
+      - day
+      - gameplay
+      - service_scope
+      - channel_from_filename
+    known_gaps:
+      - gameplay_metric_contracts
+      - exposure_control_contracts
+    reviewed_progress:
+      - gameplay overall and gameplay by-channel files are parseable and share the same header.
+      - gameplay by-channel source uses the filename prefix as the channel value.
+    owner: pending_data_owner_confirmation
+    review_status: draft_pending_owner_review

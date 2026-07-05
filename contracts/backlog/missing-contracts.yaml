@@ -1,0 +1,757 @@
+contract_version: "0.1"
+artifact: missing_contract_backlog
+review_status: draft
+scope: Phase 1 review source for paid_amount factor ledger gaps and limitations.
+storage_design: deferred_to_later_phase
+
+source_refs:
+  metric_contract: contracts/metrics/paid-amount.metric.yaml
+  ssot_extract: contracts/ssot/paid-amount-factors.extract.md
+  source_template_extract: contracts/source-templates/paid-order-detail-template.extract.md
+
+allowed_data_contract_states:
+  - contract_backed
+  - evidence_linked
+  - static_assumption
+  - missing_contract
+  - permission_limited
+  - unsupported_grain
+  - out_of_scope_for_now
+
+backlog:
+  - backlog_id: physical_source_binding
+    title: Bind paid_amount to an accepted semantic source contract.
+    data_contract_state: contract_backed
+    metric_known_gap_id: physical_source_binding
+    affected_factor_groups:
+      - paid_amount_metric_source
+      - payment_order_metric_chain
+      - payment_status_latency_and_quality
+    affected_capabilities:
+      - pattern_scan
+      - formula_decompose
+      - outlier_scan
+      - segment_bridge
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - paid_amount_change_explanation
+      - pattern_explanation
+      - revenue_health_review
+      - custom_baseline_comparison
+      - data_quality_or_evidence_review
+    source_refs:
+      candidate_template: contracts/source-templates/paid-order-detail-template.extract.md
+      template_fields:
+        - 日期
+        - 支付完成时间
+        - 订单ID
+        - 支付状态
+        - 支付成功金额
+    business_decision:
+      status: accepted
+      decided_on: "2026-07-04"
+      analysis_basis: currently_available_data_at_run_time
+      historical_artifact_policy: do_not_rewrite_prior_answers_after_data_updates
+      update_handling: new_data_requires_new_run_or_new_artifact_version
+      source_template_role: candidate_review_input_only
+      real_data_expected_on: "2026-07-05"
+      runtime_source_status: current_snapshot_source_contract_accepted
+    reviewed_progress:
+      decided_on: "2026-07-05"
+      export_date: "2026-07-04"
+      coverage: complete_2026_january_through_june_dataset
+      late_arrivals_or_status_backfill: none_recorded_for_this_snapshot
+      update_policy: later_updates_create_new_run_or_artifact_version
+      accepted_source_contract: contracts/sources/paid-order-detail.source.yaml
+    expected_owner: data_owner
+    review_need: Keep future snapshots versioned and keep the Postgres contract mirror bound to accepted source contracts.
+    first_real_data_review:
+      review_artifact: docs/reviews/phase-1-real-data-intake-review.md
+      draft_source_contract: contracts/sources/paid-order-detail.source.yaml
+      rule: minimal_profiling_only_no_business_conclusions
+      confirmation_order:
+        - data_owner_checks_fields_watermark_status_uniqueness_permissions
+        - business_owner_and_data_owner_review_amount_buckets_materiality_anomaly_importance
+        - draft_source_contract_prepared_or_backlog_blockers_recorded
+      promotion_rule:
+        profiling_pass_target: draft_source_contract_pending_owner_review
+        contract_backed_requires:
+          - data_owner_confirms_field_meanings
+          - data_owner_confirms_source_watermark
+          - data_owner_confirms_permissions
+          - data_owner_confirms_status_enum
+          - data_owner_confirms_order_id_uniqueness
+        forbidden_promotion:
+          - real_data_sample_directly_to_contract_backed
+      checks:
+        - field_alignment
+        - row_count
+        - time_range
+        - current_data_watermark
+        - payment_status_distribution
+        - order_id_uniqueness
+        - amount_and_currency_distribution
+        - refund_or_status_backfill_signals
+        - masked_sensitive_field_statistics
+    launch_impact: Current 2026-01-01 through 2026-06-30 paid_amount source binding is accepted for Phase 1 review and Phase 2 compiler prep; dev Postgres contract mirror is initialized.
+    upgrade_path: Expand production runtime mirror schema and future snapshot versioning rules in later phases.
+
+  - backlog_id: currency_policy
+    title: Define NGN report-currency conversion and validation contract.
+    data_contract_state: missing_contract
+    metric_known_gap_id: currency_policy
+    affected_factor_groups:
+      - paid_amount_metric_source
+      - amount_tier_and_user_value
+    affected_capabilities:
+      - formula_decompose
+      - segment_bridge
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - paid_amount_change_explanation
+      - revenue_health_review
+      - custom_baseline_comparison
+      - data_quality_or_evidence_review
+    source_refs:
+      template_fields:
+        - 币种
+        - 支付成功金额
+        - 支付发起金额
+    business_decision:
+      status: accepted
+      decided_on: "2026-07-04"
+      analysis_basis: unified_report_currency
+      report_currency: NGN
+      report_currency_name: Nigerian Naira
+    expected_owner: data_owner
+    review_need: Confirm exchange-rate source, conversion timing, original-currency validation, and whether source amounts are already normalized to NGN.
+    launch_impact: Blocks cross-currency quantified contribution and amount-tier comparison claims until conversion source and validation rules are accepted.
+    upgrade_path: Add NGN conversion source, rate timing, and validation rules to the paid_amount source contract.
+
+  - backlog_id: refund_or_reversal_policy
+    title: Define separate refund, chargeback, cancellation, and reversal adjustment contracts.
+    data_contract_state: missing_contract
+    metric_known_gap_id: refund_or_reversal_policy
+    affected_factor_groups:
+      - paid_amount_metric_source
+      - payment_status_latency_and_quality
+    affected_capabilities:
+      - formula_decompose
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - paid_amount_change_explanation
+      - revenue_health_review
+      - data_quality_or_evidence_review
+    source_refs:
+      template_fields:
+        - 支付状态
+        - 支付成功金额
+    business_decision:
+      status: accepted
+      decided_on: "2026-07-04"
+      paid_amount_basis: gross_successful_paid_amount
+      adjustment_treatment: separate_adjustment_and_risk_reporting
+    reviewed_progress:
+      decided_on: "2026-07-05"
+      current_source_status: unavailable_without_new_source
+      note: Business owner confirmed current analysis should use paid_amount directly; refund, reversal, chargeback, and cancellation sources remain explicit gaps.
+    expected_owner: data_owner
+    review_need: Confirm refund, chargeback, cancellation, and reversal source fields, event time, order linkage, adjustment amount, and reporting window.
+    launch_impact: Gross paid_amount claims can use successful payment amount once source binding is accepted; net revenue or adjustment-risk claims wait for adjustment contracts.
+    upgrade_path: Add separate adjustment evidence fields and linkage rules to source contracts.
+
+  - backlog_id: timezone_policy
+    title: Define Africa/Lagos source timestamp mapping and date-field validation rules.
+    data_contract_state: missing_contract
+    metric_known_gap_id: timezone_policy
+    affected_factor_groups:
+      - paid_amount_metric_source
+      - calendar_time_and_payday
+    affected_capabilities:
+      - pattern_scan
+      - event_evidence
+      - outlier_scan
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - pattern_explanation
+      - anomaly_or_black_swan_review
+      - custom_baseline_comparison
+      - data_quality_or_evidence_review
+    source_refs:
+      template_fields:
+        - 日期
+        - 支付发起时间
+        - 支付完成时间
+        - 注册时间
+        - 首充时间
+    business_decision:
+      status: accepted
+      decided_on: "2026-07-04"
+      business_timezone: Africa/Lagos
+      business_day_boundary: "[00:00, 24:00)"
+      date_basis: local_business_day
+    expected_owner: data_owner
+    review_need: Confirm how source fields map to Africa/Lagos business day, including timestamp timezone, derived date field, inclusive/exclusive boundaries, and current-data cutoff or watermark.
+    launch_impact: Strong time-window, month-phase, event-window, hourly, and anomaly claims wait for source timestamp mapping and date-field validation.
+    upgrade_path: Add Africa/Lagos timestamp mapping and date-field validation rules to metric and source contracts.
+
+  - backlog_id: component_contracts
+    title: Add metric contracts for paid_amount decomposition components.
+    data_contract_state: missing_contract
+    metric_known_gap_id: component_contracts
+    affected_factor_groups:
+      - payment_order_metric_chain
+      - user_acquisition_and_first_payment
+    affected_capabilities:
+      - formula_decompose
+      - joint_attribution
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - paid_amount_change_explanation
+      - business_object_impact_review
+      - revenue_health_review
+      - custom_baseline_comparison
+    source_refs:
+      ssot_node_ids:
+        - 8e8e13b96d4ce78ae02ba0a2b852e412
+        - e698077a007cc840a48b96a186b19dd3
+        - 6b133335fd86eea3860cfbecd62fb9fb
+        - cb4fd88a34c601fac8693f2a0d17f764
+        - 65aee0fc9a470f7c63c6dbe8c8c8185a
+      template_fields:
+        - 用户ID
+        - 是否新用户
+        - 是否首充
+        - 支付状态
+        - 支付成功金额
+      accepted_or_profiled_sources:
+        - contracts/sources/paid-order-detail.source.yaml
+        - contracts/sources/market-dashboard.source.yaml
+    reviewed_progress:
+      decided_on: "2026-07-05"
+      user_confirmed_definition:
+        paid_dau: market dashboard 日活历史付费人数
+      covered_by_paid_order_detail_2026_h1:
+        - 付费人数 / 付费日活 at daily successful-paid-user grain
+        - 付费次数
+        - 付费频次
+        - 单笔付费金额
+        - 支付成功率
+        - 发起支付次数
+      covered_by_market_dashboard_source_candidate:
+        - 日活
+        - 日活历史付费人数 / 付费日活
+        - 新增
+        - 注册人数
+        - 注册率
+        - 首充人数
+        - 首充率 / 首次付费率
+        - 新增付费人数
+        - 新增付费率 / 新增首日付费率
+        - 付费人数
+        - 付费金额
+        - 付费ARPPU = 付费金额 / 付费人数
+        - 首充ARPPU = 首充用户金额 / 首充人数
+        - 新增付费ARPPU = 新增付费金额 / 新增付费人数
+      covered_by_market_dashboard_channel_candidate:
+        - channel daily single-dimension trend and contribution using filename-derived channel
+      dashboard_joint_limit:
+        - no channel x region x device x amount_bucket joint grain
+        - no order-level dedup or status repair
+        - no lifetime first-pay reconstruction
+      still_missing_or_pending:
+        - Lifetime first-pay computation requires full historical paid-order imports; current H1 2026 source is not enough for complete lifetime first-pay history.
+        - Paid active retention needs a cohort/retention contract.
+        - Dashboard source owner still needs to confirm field meanings for 2024-2026 aggregate rows; reporting currency follows the accepted NGN policy, while original-currency validation remains a separate currency-policy gap.
+    expected_owner: data_owner
+    review_need: Promote reviewed component metric contracts for paid users, paid orders, frequency, ticket size, success rate, DAU-to-paid conversion, first-pay, and retention with the confirmed paid_dau definition.
+    launch_impact: Current paid-order snapshot can support the core order-chain formula; funnel, retention, and ambiguous conversion paths still degrade or block.
+    upgrade_path: Add component metric contracts and reconciliation rules.
+
+  - backlog_id: payment_status_and_dedup_contract
+    title: Implement payment status taxonomy, order uniqueness, and dedup rules.
+    data_contract_state: contract_backed
+    affected_factor_groups:
+      - paid_amount_metric_source
+      - payment_status_latency_and_quality
+      - sensitive_identity_and_dedup_fields
+    affected_capabilities:
+      - formula_decompose
+      - outlier_scan
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - paid_amount_change_explanation
+      - anomaly_or_black_swan_review
+      - data_quality_or_evidence_review
+    source_refs:
+      template_fields:
+        - 订单ID
+        - 用户ID
+        - 支付状态
+        - 支付耗时秒
+    business_decision:
+      status: accepted
+      decided_on: "2026-07-04"
+      paid_amount_inclusion: final_successful_paid_orders_only
+      amount_field: 支付成功金额
+      dedup_key_candidate: 订单ID
+      dedup_rule: one_final_success_record_per_order_id
+      excluded_from_paid_amount:
+        - failed_payments
+        - pending_or_processing_payments
+        - retry_attempts_without_final_success
+      quality_analysis_scope:
+        - payment_success_rate
+        - payment_latency
+        - failure_path_review
+        - anomaly_review
+    reviewed_progress:
+      decided_on: "2026-07-05"
+      accepted_source_contract: contracts/sources/paid-order-detail.source.yaml
+      final_success_status: pay_success
+      non_paid_status: order_success
+      overlap_rule: ignore order_success when same 订单id has pay_success
+      duplicate_success_rule: keep latest 支付完成时间
+      clean_paid_records: 23858847
+    expected_owner: data_owner
+    review_need: Bind the same status taxonomy and dedup policy into the Postgres contract mirror and future source snapshots.
+    launch_impact: Current snapshot counts, paid_amount boundary, and success-rate denominator can use the accepted status/dedup policy; latency-specific analysis still carries missingness limits.
+    upgrade_path: Add status enum, dedup key policy, and freshness checks to source contract.
+
+  - backlog_id: channel_payment_dimension_contracts
+    title: Add channel and payment-method dimension contracts.
+    data_contract_state: missing_contract
+    affected_factor_groups:
+      - payment_channel_and_method
+      - marketing_channel_and_growth_ops
+    affected_capabilities:
+      - segment_bridge
+      - joint_attribution
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - paid_amount_change_explanation
+      - segment_or_factor_attribution
+      - revenue_health_review
+    source_refs:
+      template_fields:
+        - 一级渠道
+        - 分包渠道
+        - 支付方式
+      ssot_node_ids:
+        - 320a69f2188859951b60cfb30210ad7a
+        - bb6457f18917276042f78e7b4db18552
+        - 934212ab93575d5f8b0fb4d4b1599072
+    expected_owner: data_owner
+    reviewed_progress:
+      decided_on: "2026-07-05"
+      channel_field_mapping: 分包渠道 is the current semantic channel dimension.
+      payment_method_enum_values: OPAY, APP_PALMPAY, PALMPAY_BANK, MERCHANT_OPAY, PALM
+      paid_order_channel_rule: Use paid-order detail channel values as canonical for paid-order joint analysis; preserve blank and Unknown as quality buckets.
+      filename_channel_rule: Market-dashboard and gameplay channel files use filename prefix before the date range as channel.
+      cross_source_channel_merge_rule: Merge only exact normalized literal matches unless a later owner-reviewed mapping says otherwise.
+    review_need: Define channel history, campaign/exposure joins, incident links, and permission boundary.
+    launch_impact: Channel and payment-method mix analysis can use the current source fields with coverage flags; strong infrastructure, campaign, or exposure attribution claims remain limited.
+    upgrade_path: Add reviewed payment-method, campaign, exposure, and channel-history contracts.
+
+  - backlog_id: geo_device_environment_dimension_contracts
+    title: Add geo, device, OS, and network dimension contracts.
+    data_contract_state: missing_contract
+    affected_factor_groups:
+      - geo_device_environment
+    affected_capabilities:
+      - segment_bridge
+      - joint_attribution
+      - outlier_scan
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - segment_or_factor_attribution
+      - anomaly_or_black_swan_review
+      - revenue_health_review
+    source_refs:
+      template_fields:
+        - 国家
+        - 州/地区
+        - 城市
+        - 设备品牌
+        - 设备型号
+        - 操作系统
+        - 网络类型
+      ssot_node_ids:
+        - 3d78317ffcb878b1519ecf81d111d5f6
+        - 6aa393ba4e6bf9e7925e2825bd281504
+    expected_owner: data_owner
+    review_need: Define supported segment grain, sparse-cell rules, geography hierarchy, and device taxonomy.
+    launch_impact: Blocks strong geo/device/environment attribution claims.
+    upgrade_path: Add dimension contracts with grain and sparsity limits.
+
+  - backlog_id: sensitive_identifier_permission_policy
+    title: Implement permission treatment for user, IP, and device identifiers.
+    data_contract_state: permission_limited
+    affected_factor_groups:
+      - sensitive_identity_and_dedup_fields
+      - geo_device_environment
+    affected_capabilities:
+      - segment_bridge
+      - joint_attribution
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - segment_or_factor_attribution
+      - data_quality_or_evidence_review
+    source_refs:
+      template_fields:
+        - 用户ID
+        - IP
+        - 设备ID
+    expected_owner: data_owner
+    review_need: >-
+      Enforce the reviewed boundary: aggregate analysis, internal quality checks,
+      and dedup may use these fields; raw user ID, IP, and device ID must not
+      appear in answers or visualizations. Confirm field sensitivity tags, role
+      access, masking, sparse-cell thresholds, and audit requirements.
+    launch_impact: Permission-limited paths must surface in Answer Package; hidden fine-grain claims and raw identifier output stay blocked.
+    upgrade_path: Add field sensitivity tags, role-level output policy, masking rules, sparse-cell thresholds, and verifier checks.
+
+  - backlog_id: calendar_event_contracts
+    title: Add calendar, holiday, and sports event contracts.
+    data_contract_state: evidence_linked
+    affected_factor_groups:
+      - calendar_time_and_payday
+      - external_context_events
+    affected_capabilities:
+      - pattern_scan
+      - event_evidence
+      - outlier_scan
+      - answer_verify
+    affected_question_families:
+      - pattern_explanation
+      - business_object_impact_review
+      - anomaly_or_black_swan_review
+    source_refs:
+      ssot_node_ids:
+        - d4407c92b2d583de330ababd491b84fa
+        - 1f8897932c3a56b55b06b054bbe7700e
+        - d2cdcf8b691fda273cf1b130ecd07e7a
+    expected_owner: business_owner
+    reviewed_progress:
+      source_contract: contracts/sources/external-events.source.yaml
+      covered_sheets:
+        - 节假日
+        - 重大赛事
+        - 工资周期
+      coverage: 2024-01-01 through 2026-06-08
+    review_need: Confirm source authority, refresh policy, event windows, and whether the imported workbook is the maintained calendar source.
+    launch_impact: Holiday, sports, and payday mechanisms can use context or candidate wording; stronger cause wording remains blocked.
+    upgrade_path: Add event contracts for calendars and external event windows.
+
+  - backlog_id: product_operation_event_contracts
+    title: Add product update, server stability, operation, campaign, and activity event contracts.
+    data_contract_state: missing_contract
+    affected_factor_groups:
+      - product_operation_events
+      - marketing_channel_and_growth_ops
+      - amount_tier_and_user_value
+    affected_capabilities:
+      - event_evidence
+      - joint_attribution
+      - outlier_scan
+      - answer_verify
+    affected_question_families:
+      - business_object_impact_review
+      - anomaly_or_black_swan_review
+      - paid_amount_change_explanation
+    source_refs:
+      ssot_node_ids:
+        - dc319b686656919dc63718ad36f7f657
+        - 2b628bf6c129d31cbae0f72cd98659d9
+        - 30b15e62ee89f295b47adbeb334ac3b1
+        - 90c64ec6d6384faa8234d85ac6dce1e0
+    reviewed_progress:
+      decided_on: "2026-07-05"
+      current_source_status: unavailable_without_new_source
+      unavailable_without_new_information:
+        - 投放预算
+        - 出价
+        - campaign 消耗
+        - 素材 CTR
+        - 素材 CVR
+        - SEO 排名
+        - GEO 排名
+        - 用户推荐活动
+        - 服务器稳定性
+        - Grafana
+        - 支付事故
+        - 产品更新
+        - 首充礼包
+        - 充值活动
+      aggregate_only_available:
+        - market_dashboard_2024_2026.投放成本
+    expected_owner: data_owner
+    review_need: Add maintained internal event records with event timing, affected scope, source authority, exposure, and controls before impact wording.
+    launch_impact: Product, campaign, creative, SEO/GEO, referral, server, Grafana, payment-incident, first-pay package, and recharge-activity impact claims stay unavailable or insufficient until new source information is provided.
+    upgrade_path: Add maintained event contracts and exposure/control fields.
+
+  - backlog_id: external_context_event_contracts
+    title: Add external context, competitor, policy, weather, power, and network event contracts.
+    data_contract_state: evidence_linked
+    affected_factor_groups:
+      - external_context_events
+      - geo_device_environment
+      - payment_channel_and_method
+    affected_capabilities:
+      - event_evidence
+      - outlier_scan
+      - joint_attribution
+      - answer_verify
+    affected_question_families:
+      - anomaly_or_black_swan_review
+      - pattern_explanation
+      - business_object_impact_review
+    source_refs:
+      ssot_node_ids:
+        - 367e0c8e77f4b2874bf4798c2a7d12b3
+        - 866a916312726fdaf8334e63da0244af
+        - 1a7a86e60a30f0fe566f494a20603f25
+        - 4af76d7e16e17313d479eb44cf68b87c
+        - b27e065d01e6e6ae0d0bc4dc2f967f8c
+        - 6c8e58a8d85aceaf679665e9fe894338
+    expected_owner: business_owner
+    reviewed_progress:
+      source_contract: contracts/sources/external-events.source.yaml
+      covered_event_types:
+        - 尼日利亚宏观通胀汇率波动
+        - 工资周期
+        - 重大赛事
+        - 电力波动
+        - 网络波动
+        - 投放媒体政策变化
+        - 极端天气
+        - 社会稳定
+        - 节假日
+      not_covered:
+        - live AnySearch-style crawl
+        - stronger official gambling policy feed
+      competitor_ranking_source:
+        - contracts/sources/competitor-ranking.source.yaml
+    review_need: Confirm accepted sources, confidence, timing, affected scope, refresh rules, and whether stronger official policy feeds need separate contracts.
+    launch_impact: Imported external events and competitor ranking can support contextual evidence and candidate mechanisms; confirmed cause wording remains blocked.
+    upgrade_path: Add typed event contracts, evidence-linked external source records, confidence fields, affected scope, and stronger evidence rules.
+
+  - backlog_id: gameplay_metric_contracts
+    title: Add gameplay exposure, click, activity, ARPU, and payment metric contracts.
+    data_contract_state: missing_contract
+    affected_factor_groups:
+      - gameplay_engagement_and_arpu
+      - gameplay_ggr_and_betting
+    affected_capabilities:
+      - formula_decompose
+      - segment_bridge
+      - joint_attribution
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - paid_amount_change_explanation
+      - revenue_health_review
+      - segment_or_factor_attribution
+    source_refs:
+      ssot_node_ids:
+        - 60908a59f4bdaf00675716ca1d9f4b4a
+        - f05cb9601875d6aa2a86fd765394de9a
+        - 28b6759c7125178e5ef3ced357ed04c4
+        - 9efb5960237e7adbd334a06f41380578
+        - d22cf570b8e2d1ce0f6ebb3770a272eb
+        - ee45ae69d52a4e83ae0c7c7ec6c23c4d
+      source_contract: contracts/sources/gameplay.source.yaml
+    reviewed_progress:
+      profiled_on: "2026-07-05"
+      covered_by_gameplay_files:
+        - 玩法
+        - 游戏人数
+        - 玩法渗透率
+        - 游戏局数
+        - 人均局数
+        - 玩家下注次数
+        - 玩家下注总额
+        - 玩家人均下注次数
+        - 玩家次均下注额
+        - 玩家人均下注额
+        - 系统抽水率
+        - 玩法盈利
+        - 盈利占比
+        - 玩家下注额占比
+      channel_coverage: available by filename prefix pending mapping confirmation
+      still_missing:
+        - 玩法icon曝光数
+        - 玩法icon点击率
+        - 玩法付费率
+        - 玩法付费金额
+        - 玩法付费频次
+        - 玩法单笔付费金额
+        - 支付订单到玩法的明细归因链路
+    expected_owner: data_owner
+    review_need: Confirm gameplay metric meanings, filename-to-channel mapping, exposure/click source, and payment linkage. Use the first 服务费抽水 column because duplicate columns matched in the profiled file; map 机器人输的chah as robot_cash_lost_raw.
+    launch_impact: Gameplay activity, betting-structure, and GGR claims can use profiled evidence; gameplay paid_amount attribution and icon funnel remain blocked.
+    upgrade_path: Add gameplay metric and dimension contracts.
+
+  - backlog_id: exposure_control_contracts
+    title: Add exposure, control, and comparison contracts for business-object impact claims.
+    data_contract_state: missing_contract
+    affected_factor_groups:
+      - marketing_channel_and_growth_ops
+      - product_operation_events
+      - gameplay_engagement_and_arpu
+    affected_capabilities:
+      - event_evidence
+      - joint_attribution
+      - answer_verify
+    affected_question_families:
+      - business_object_impact_review
+      - custom_baseline_comparison
+    source_refs:
+      ssot_node_ids:
+        - f31f9a467e7ad5a05c976d1ca0e5bba5
+        - 0b8da29a768645fcb6ad6824de418608
+        - c8cbb988206d2fd86a8a7030e54f7ba9
+    expected_owner: data_owner
+    review_need: Define exposure, control, affected scope, and comparison baseline for impact review.
+    launch_impact: Net impact and causal wording are blocked without reviewed controls or stronger evidence.
+    upgrade_path: Add exposure/control fields to event or operation contracts.
+
+  - backlog_id: materiality_policy
+    title: Define data-assisted paid_amount materiality thresholds for pattern, anomaly, health, and baseline wording.
+    data_contract_state: contract_backed
+    affected_factor_groups:
+      - paid_amount_metric_source
+    affected_capabilities:
+      - pattern_scan
+      - outlier_scan
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - pattern_explanation
+      - revenue_health_review
+      - anomaly_or_black_swan_review
+      - custom_baseline_comparison
+    source_refs:
+      metric_contract: contracts/metrics/paid-amount.metric.yaml
+      prd_refs:
+        - docs/prd.md#pattern-launch-regression-thresholds
+    decision_status: accepted_initial_policy
+    owner_position:
+      decided_on: "2026-07-05"
+      note: Use the data-assisted grain-aware threshold table as the initial policy; adjust later only when business feedback or new data requires it.
+    expected_owner: business_owner_and_data_owner_joint_review
+    review_need: Keep this as the current accepted policy and version any future tuning.
+    launch_impact: Strong pattern, anomaly, or health wording can use the accepted grain-aware thresholds when comparable windows are sufficient; sparse windows still degrade.
+    upgrade_path: Add question-family overrides only after observed business need.
+
+  - backlog_id: amount_bucket_policy
+    title: Define data-assisted NGN payment amount buckets.
+    data_contract_state: contract_backed
+    affected_factor_groups:
+      - amount_tier_and_user_value
+    affected_capabilities:
+      - formula_decompose
+      - segment_bridge
+      - joint_attribution
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - paid_amount_change_explanation
+      - revenue_health_review
+      - segment_or_factor_attribution
+      - custom_baseline_comparison
+      - data_quality_or_evidence_review
+    source_refs:
+      template_fields:
+        - 支付成功金额
+        - 支付发起金额
+        - 币种
+      dimension_contract: contracts/dimensions/dimensions.yaml
+    decision_status: confirmed_after_real_data_profile
+    owner_position:
+      decided_on: "2026-07-05"
+      note: Business owner and data owner accepted the recommended NGN amount bucket policy after profiling real paid_order_success_clean distribution.
+      bucket_source: contracts/sources/paid-order-detail.source.yaml
+      buckets:
+        - <=500
+        - 501-1000
+        - 1001-2000
+        - 2001-5000
+        - 5001-10000
+        - 10001-20000
+        - 20001-50000
+        - 50001-100000
+        - ">100000"
+    expected_owner: business_owner_and_data_owner_joint_review
+    review_need: Keep bucket definitions versioned when future data materially changes the price-point distribution or business recharge package strategy.
+    launch_impact: Amount-tier mix and value-structure claims can use the reviewed NGN bucket policy; component metrics and recharge strategy events remain separate gaps.
+    upgrade_path: Add bucket-change handling rules when future package strategy changes.
+
+  - backlog_id: hourly_time_distribution_contracts
+    title: Add hourly paid_amount time-distribution contract.
+    data_contract_state: missing_contract
+    affected_factor_groups:
+      - calendar_time_and_payday
+      - paid_amount_metric_source
+    affected_capabilities:
+      - pattern_scan
+      - outlier_scan
+      - data_quality_check
+      - answer_verify
+    affected_question_families:
+      - pattern_explanation
+      - anomaly_or_black_swan_review
+      - data_quality_or_evidence_review
+    source_refs:
+      ssot_node_ids:
+        - 14e40e46d43d5ccbb752f2357d97633e
+        - 9de2f481297fb95286bfa2e531be42b7
+      template_fields:
+        - 支付发起时间
+        - 支付完成时间
+    expected_owner: data_owner
+    review_need: Confirm whether hour-level analysis uses payment initiation time, completion time, business timezone, and current-data cutoff or watermark.
+    launch_impact: Hourly pattern and intra-day anomaly claims stay blocked or degraded.
+    upgrade_path: Add hour-grain support to metric/source contracts after time semantics review.
+
+  - backlog_id: raw_external_evidence_ingestion_scope
+    title: Keep raw external crawling out of launch baseline and defer AnySearch-like connector contracts.
+    data_contract_state: out_of_scope_for_now
+    affected_factor_groups:
+      - external_context_events
+    affected_capabilities:
+      - event_evidence
+      - outlier_scan
+      - joint_attribution
+      - answer_verify
+    affected_question_families:
+      - anomaly_or_black_swan_review
+      - business_object_impact_review
+      - pattern_explanation
+    source_refs:
+      ssot_node_ids:
+        - 3abebd162bdd6f099d861f7391faf57e
+        - 2983f2dbc6aaf7227a676f4647713448
+        - 819c810557f99ca5cd042ef7a8463ae5
+        - 3b6a90668d63d8809c740518abd532ae
+        - eeb25e3b5adfe91baf879b62a18c3577
+        - 33d3d75aef26b100741b15f34e0c702f
+    product_decision:
+      status: accepted
+      decided_on: "2026-07-04"
+      launch_boundary: raw_external_crawling_excluded
+      future_connector_examples:
+        - AnySearch-like external evidence connector
+    expected_owner: data_owner
+    review_need: Define future accepted external evidence sources, connector boundary, refresh, provenance, permission model, and verifier wording rules before ingestion work starts.
+    launch_impact: Raw crawling cannot support launch claims; reviewed event/evidence records can still support context or candidate wording.
+    upgrade_path: Add external evidence connector contracts, such as AnySearch-like capability contracts, or manual event records in a later phase.

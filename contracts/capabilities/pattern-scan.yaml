@@ -1,0 +1,85 @@
+contract_version: "0.1"
+capability_id: pattern_scan
+business_name: Pattern scan
+review_status: draft
+
+responsibilities:
+  - Test whether a user-proposed or compiler-selected pattern exists for a metric, scope, and window family.
+  - Quantify recurrence, uplift/drop, stability, exceptions, and data-quality limitations within supported contracts.
+  - Return candidate next evidence paths such as event evidence, formula decomposition, segment bridge, or outlier review.
+
+parameters:
+  required:
+    - metric
+    - scope
+    - time_range
+    - pattern_family
+    - grain
+    - contract_versions
+  optional:
+    - window_definition
+    - baseline
+    - filters
+    - minimum_support
+    - materiality_threshold
+    - candidate_events
+    - quality_checks
+
+non_uses:
+  - Does not explain metric drivers without formula or segment evidence.
+  - Does not produce causal wording from temporal recurrence alone.
+  - Does not use cumulative month-to-date values for daily or month-phase shape comparison.
+
+evidence_outputs:
+  typed_payload: pattern_scan_result
+  envelope_fields:
+    - evidence_type
+    - strength
+    - wording_limit
+    - scope
+    - metric
+    - contract_versions
+    - limitations
+  payload_fields:
+    - tested_windows
+    - pattern_direction
+    - effect_size
+    - recurrence_coverage
+    - stability
+    - exceptions
+    - quality_flags
+    - recommended_next_capabilities
+
+limitations:
+  - Requires metric identity, time semantics, and supported grain.
+  - Materiality threshold gaps degrade strong wording.
+  - Event and mechanism explanations require separate evidence.
+
+degradation_rules:
+  - when: missing_contract
+    output: insufficient pattern wording with backlog refs.
+  - when: unsupported_grain
+    output: blocked or aggregate-only pattern wording.
+  - when: weak_or_sparse_pattern
+    output: tendency or insufficient evidence.
+
+lint_rules:
+  - rule_id: metric_contract_required
+    severity: block
+    check: Metric must be declared in metric contracts.
+  - rule_id: cumulative_value_guard
+    severity: block
+    check: Daily or phase comparison cannot use cumulative month-to-date values.
+  - rule_id: materiality_required_for_strong_wording
+    severity: degrade
+    check: Strong pattern wording needs reviewed threshold or explicit claim boundary.
+
+verifier_hooks:
+  - pattern_claim_must_reference_tested_windows
+  - exceptions_must_be_reported
+  - candidate_mechanisms_must_keep_candidate_wording
+
+typical_question_families:
+  - pattern_explanation
+  - custom_baseline_comparison
+  - paid_amount_change_explanation

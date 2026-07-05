@@ -1,0 +1,493 @@
+contract_version: "0.1"
+metric_id: paid_amount
+business_name: 付费金额
+review_status: draft
+source:
+  ssot_file: contracts/ssot/付费金额影响因子分析.mm
+  ssot_extract: contracts/ssot/paid-amount-factors.extract.md
+  ssot_root: 付费金额影响因子分析
+  source_sha256: 8c0d554fe537627e83159b53d24bc41a411895bec944372c614bbd490022c46b
+  candidate_source_templates:
+    - file: contracts/source-templates/付费订单明细模板.xlsx
+      extract: contracts/source-templates/paid-order-detail-template.extract.md
+      role: future paid order detail source template
+      review_status: superseded_by_accepted_real_data_source_contract
+      real_data_expected_on: "2026-07-05"
+      runtime_source_status: current_snapshot_source_contract_accepted
+  accepted_source_contracts:
+    - source_id: paid_order_detail_2026_h1
+      file: contracts/sources/paid-order-detail.source.yaml
+      review_status: accepted_current_snapshot_2026-07-05
+      snapshot_exported_on: "2026-07-04"
+      coverage_start: "2026-01-01"
+      coverage_end: "2026-06-30"
+  evidence_linked_source_contracts:
+    - source_id: market_dashboard_2024_2026
+      file: contracts/sources/market-dashboard.source.yaml
+      review_status: draft_pending_owner_review
+      coverage_start: "2024-01-01"
+      coverage_end: "2026-06-02"
+      role: aggregate operating dashboard source for DAU, paid users, first-pay users, registration, paid amount, and aggregate marketing cost.
+    - source_id: gameplay_2024_2026
+      file: contracts/sources/gameplay.source.yaml
+      review_status: draft_pending_owner_review
+      coverage_start: "2024-01-01"
+      coverage_end: "2026-06-02"
+      role: gameplay activity, betting, rake, and profit source; payment attribution and icon exposure/click remain gaps.
+    - source_id: external_events_2024_2026
+      file: contracts/sources/external-events.source.yaml
+      review_status: imported_from_waje_bi_pending_owner_review
+      coverage_start: "2024-01-01"
+      coverage_end: "2026-06-08"
+      role: contextual event source for candidate mechanisms and same-window background.
+    - source_id: competitor_ranking_2024_2026
+      file: contracts/sources/competitor-ranking.source.yaml
+      review_status: imported_from_waje_bi_pending_owner_review
+      coverage_start: "2024-01-01"
+      coverage_end: "2026-06-07"
+      role: competitor ranking context source for candidate mechanisms and same-window background.
+  relevant_ssot_nodes:
+    - id: 83d04615bed57847183e5c022b788af4
+      label: 公式
+    - id: e01560709518ecd63e8d093985541075
+      label: 付费金额= 付费日活 × 付费日活arpu
+    - id: 2ba635b7fc42ce997a777af0aef22d9f
+      label: 付费金额= 付费日活 × (付费人数/付费日活) × (付费金额/付费人数)
+    - id: 9b7c5bb205584cffddef346dfc54c38b
+      label: 付费金额= 付费日活 × (付费人数/付费日活) × (付费次数/付费人数) × (付费金额/付费次数)
+    - id: 34d9c39ebe6b3c9e5a4034411a58e4d6
+      label: 付费金额=sum（区域）
+    - id: 21be18da5198d1d5d012873a1fcf4808
+      label: 付费金额=sum（机型）
+
+owners:
+  business_owner: pending business owner confirmation
+  data_owner: pending data owner confirmation
+
+business_meaning: >
+  用户在指定业务 scope 和时间窗口内产生的成功付费金额，用于收入变化、
+  周期模式、归因、异常、健康度和自定义基准分析。
+
+semantic_boundary:
+  amount_basis: successful_paid_amount
+  payment_status_and_dedup_policy:
+    paid_amount_inclusion: final_successful_paid_orders_only
+    final_success_status: pay_success
+    non_paid_status: order_success
+    amount_field: 支付成功金额
+    dedup_key_candidate: 订单id
+    dedup_rule: one_latest_pay_success_record_per_order_id
+    duplicate_keep_rule: keep_latest_payment_complete_time
+    overlap_rule: if_order_success_and_pay_success_share_order_id_ignore_order_success_for_paid_amount
+    excluded_from_paid_amount:
+      - order_success_without_pay_success
+      - duplicate_older_pay_success_records
+    quality_analysis_scope: order_success records may support failed or non-paid order analysis after removing order ids that also have pay_success.
+    business_decision_status: accepted
+    decided_on: "2026-07-05"
+    pending_data_contracts:
+      - phase_3_runtime_mirror_schema_expansion
+  currency_policy:
+    analysis_basis: unified_report_currency
+    report_currency: NGN
+    report_currency_name: Nigerian Naira
+    business_decision_status: accepted
+    decided_on: "2026-07-04"
+    conversion_source_contract: pending_contract
+  refund_or_reversal_policy:
+    paid_amount_basis: gross_successful_paid_amount
+    adjustment_treatment: report_refunds_reversals_chargebacks_as_separate_adjustment_items
+    business_decision_status: accepted
+    decided_on: "2026-07-04"
+    adjustment_source_contract: pending_contract
+  timezone_policy:
+    business_timezone: Africa/Lagos
+    business_day_boundary: "[00:00, 24:00)"
+    date_basis: local_business_day
+    business_decision_status: accepted
+    decided_on: "2026-07-04"
+    source_time_mapping_contract: pending_contract
+  data_snapshot_policy:
+    analysis_basis: currently_available_data_at_run_time
+    historical_artifact_policy: do_not_rewrite_prior_answers_after_data_updates
+    update_handling: new_data_requires_new_run_or_new_artifact_version
+    answer_requirement: state_data_cutoff_or_current_data_basis_when_available
+    business_decision_status: accepted
+    decided_on: "2026-07-05"
+    accepted_snapshot:
+      source_contract: contracts/sources/paid-order-detail.source.yaml
+      exported_on: "2026-07-04"
+      coverage: complete_2026_january_through_june_dataset
+      late_arrivals_or_status_backfill: none_recorded_for_this_snapshot
+  materiality_policy:
+    decision_status: accepted_initial_policy
+    decided_on: "2026-07-05"
+    source_profile: paid_order_success_clean_2026_h1
+    rule: Use the threshold for the user's query grain and comparison mode; if comparable windows are sparse, degrade to descriptive wording.
+    thresholds:
+      - grain: hourly_same_lagos_hour
+        reportable_movement: ">=2M NGN or >=15%"
+        material_driver: ">=3M NGN or >=23%"
+        strong_anomaly: ">=4M NGN or >=30%"
+      - grain: daily
+        reportable_movement: ">=10M NGN or >=3%"
+        material_driver: ">=20M NGN or >=7%"
+        strong_anomaly: ">=30M NGN or >=10%"
+      - grain: three_day_rolling
+        reportable_movement: ">=45M NGN or >=5%"
+        material_driver: ">=65M NGN or >=7.5%"
+        strong_anomaly: ">=80M NGN or >=9%"
+      - grain: seven_day_rolling_or_week
+        reportable_movement: ">=100M NGN or >=5%"
+        material_driver: ">=150M NGN or >=8%"
+        strong_anomaly: ">=180M NGN or >=10%"
+      - grain: fourteen_day_rolling
+        reportable_movement: ">=225M NGN or >=6%"
+        material_driver: ">=340M NGN or >=9.5%"
+        strong_anomaly: ">=400M NGN or >=11%"
+      - grain: thirty_day_rolling_or_month_proxy
+        reportable_movement: ">=750M NGN or >=9%"
+        material_driver: ">=1.05B NGN or >=14%"
+        strong_anomaly: ">=1.20B NGN or >=16%"
+      - grain: calendar_month
+        reportable_movement: use_30_day_proxy_and_mark_low_confidence
+        material_driver: use_30_day_proxy_and_mark_low_confidence
+        strong_anomaly: avoid_until_more_months_exist
+      - grain: quarter
+        reportable_movement: descriptive_only
+        material_driver: descriptive_only
+        strong_anomaly: no_threshold_from_current_data
+  formula_component_policy:
+    paid_dau_definition:
+      business_definition: 付费日活 means market dashboard 日活历史付费人数; paid success users use 付费人数.
+      decided_on: "2026-07-05"
+      accepted_source_fields:
+        - market_dashboard_2024_2026.日活历史付费人数
+    formula_review_note: The SSOT term 当日付费转化率=付费人数/付费日活 is valid when 付费日活 maps to market dashboard 日活历史付费人数.
+    new_user_funnel_definition:
+      decided_on: "2026-07-05"
+      denominator: market_dashboard_2024_2026.新增
+      registration_rate: 注册人数 / 新增
+      first_pay_rate: 首充人数 / 新增
+      same_day_new_paid_rate: 新增付费人数 / 新增
+      source_rate_field_policy: Source fields 注册率, 首充率, and 新增付费率 are the v2 business metrics.
+  time_semantics:
+    logical_event_time: payment_complete_time_lagos_business_date
+    supported_window_types:
+      - day
+      - month
+      - month_phase
+      - custom_window
+      - event_window
+    guardrails:
+      - Month-phase analysis must use non-cumulative daily paid amount.
+      - Month-to-date cumulative values must be identified and blocked for intra-month shape comparison.
+      - Calendar windows must record timezone and inclusive/exclusive boundaries before execution.
+  supported_grains:
+    - full_sample
+    - day
+    - month
+    - month_phase
+    - event_window
+    - segment_when_dimension_contract_exists
+  baseline_compatibility:
+    - prior_period
+    - same_period_last_year
+    - same_month_phase
+    - event_relative_window
+    - custom_control_window
+
+supported_business_questions:
+  - paid_amount_change_explanation
+  - pattern_explanation
+  - business_object_impact_review
+  - revenue_health_review
+  - segment_or_factor_attribution
+  - anomaly_or_black_swan_review
+  - custom_baseline_comparison
+  - data_quality_or_evidence_review
+
+formula_components:
+  - component_id: paid_dau
+    business_name: 付费日活
+    ssot_node_id: 8e8e13b96d4ce78ae02ba0a2b852e412
+    business_definition: 日活历史付费人数
+    source_coverage:
+      market_dashboard_2024_2026: evidence_linked
+    contract_state: evidence_linked
+    role: driver
+  - component_id: paid_user_conversion_rate
+    business_name: 当日付费转化率
+    ssot_node_id: e698077a007cc840a48b96a186b19dd3
+    source_note: Uses market dashboard 付费人数 divided by 付费日活, where 付费日活 maps to 日活历史付费人数.
+    source_coverage:
+      paid_users_over_paid_dau: pending_formula_semantics_review
+      paid_users_over_active_users: evidence_linked_market_dashboard
+    contract_state: missing_contract
+    role: rate
+  - component_id: paid_user_count
+    business_name: 付费人数
+    source_note: Same business meaning as paid_dau at daily grain under the confirmed definition.
+    source_coverage:
+      current_paid_order_snapshot: contract_backed
+      market_dashboard_2024_2026: evidence_linked_pending_owner_review
+    contract_state: contract_backed
+    role: count
+  - component_id: paid_dau_arpu
+    business_name: 付费日活 ARPU
+    ssot_node_id: e01560709518ecd63e8d093985541075
+    business_definition: paid_amount / 付费日活 for the selected business date window.
+    source_coverage:
+      current_paid_order_snapshot: contract_backed
+      market_dashboard_2024_2026: evidence_linked_pending_owner_review
+    contract_state: contract_backed
+    role: amount
+  - component_id: daily_active_users
+    business_name: 日活
+    source_coverage:
+      market_dashboard_2024_2026: evidence_linked_pending_owner_review
+    contract_state: evidence_linked
+    role: count
+  - component_id: new_users
+    business_name: 当日新增
+    ssot_node_id: f85bf648e04f2b0d584975970e732097
+    source_coverage:
+      market_dashboard_2024_2026: evidence_linked_pending_owner_review
+    contract_state: evidence_linked
+    role: count
+  - component_id: registrations
+    business_name: 当日注册
+    ssot_node_id: 9d66917f829783475271074cefc1a51c
+    source_coverage:
+      market_dashboard_2024_2026: evidence_linked_pending_owner_review
+    contract_state: evidence_linked
+    role: count
+  - component_id: registration_rate_new_base
+    business_name: 注册率
+    ssot_node_id: 9d66917f829783475271074cefc1a51c
+    business_definition: 当日注册 / 当日新增
+    source_coverage:
+      market_dashboard_2024_2026: evidence_linked
+    contract_state: evidence_linked
+    role: rate
+  - component_id: first_pay_users
+    business_name: 当日首充
+    ssot_node_id: 79a4251989ed5587d605fa62ed653163
+    source_coverage:
+      market_dashboard_2024_2026: evidence_linked_pending_owner_review
+    contract_state: evidence_linked
+    role: count
+  - component_id: first_pay_rate_new_base
+    business_name: 首次付费率
+    ssot_node_id: 67949091e9396126d19680f2ea2eb0c6
+    business_definition: 当日首充 / 当日新增
+    source_coverage:
+      market_dashboard_2024_2026: evidence_linked
+    contract_state: evidence_linked
+    role: rate
+  - component_id: same_day_new_paid_users
+    business_name: 新增首日付费人数
+    source_coverage:
+      market_dashboard_2024_2026: evidence_linked_pending_owner_review
+    contract_state: evidence_linked
+    role: count
+  - component_id: same_day_new_paid_rate
+    business_name: 新增首日付费率
+    business_definition: 新增付费人数 / 当日新增
+    source_coverage:
+      market_dashboard_2024_2026: evidence_linked
+    contract_state: evidence_linked
+    role: rate
+  - component_id: paid_amount_per_paid_user
+    business_name: 付费金额/付费人数
+    ssot_node_id: 2ba635b7fc42ce997a777af0aef22d9f
+    source_coverage:
+      current_paid_order_snapshot: contract_backed
+      market_dashboard_2024_2026: evidence_linked_pending_owner_review
+    contract_state: contract_backed
+    role: amount
+  - component_id: payment_frequency_per_paid_user
+    business_name: 付费频次
+    ssot_node_id: 6b133335fd86eea3860cfbecd62fb9fb
+    source_coverage:
+      current_paid_order_snapshot: contract_backed
+    contract_state: contract_backed
+    role: frequency
+  - component_id: avg_paid_amount_per_payment
+    business_name: 单笔付费金额
+    ssot_node_id: cb4fd88a34c601fac8693f2a0d17f764
+    source_coverage:
+      current_paid_order_snapshot: contract_backed
+    contract_state: contract_backed
+    role: amount
+  - component_id: payment_success_rate
+    business_name: 支付成功率
+    ssot_node_id: 65aee0fc9a470f7c63c6dbe8c8c8185a
+    business_definition: unique final successful paid orders divided by unique initiated order ids after accepted overlap and dedup rules.
+    source_coverage:
+      current_paid_order_snapshot: contract_backed
+    contract_state: contract_backed
+    role: rate
+  - component_id: initiated_payment_count
+    business_name: 发起支付次数
+    ssot_node_id: ceba4f72086e02d7902722f407a673b1
+    source_coverage:
+      current_paid_order_snapshot: contract_backed
+    contract_state: contract_backed
+    role: count
+  - component_id: paid_order_count
+    business_name: 付费次数
+    ssot_node_id: 058de25c67739e82efa3e6195b1cdfda
+    source_coverage:
+      current_paid_order_snapshot: contract_backed
+    contract_state: contract_backed
+    role: count
+
+decomposition_paths:
+  - path_id: paid_dau_arpu
+    ssot_node_id: e01560709518ecd63e8d093985541075
+    expression: paid_amount = paid_dau * paid_dau_arpu
+    evidence_type: accounting_contribution
+    requires_components:
+      - paid_dau
+      - paid_dau_arpu
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: available_for_current_paid_order_snapshot
+  - path_id: paid_user_arppu
+    ssot_node_id: 2ba635b7fc42ce997a777af0aef22d9f
+    expression: paid_amount = paid_dau * paid_user_conversion_rate * paid_amount_per_paid_user
+    evidence_type: accounting_contribution
+    requires_components:
+      - paid_dau
+      - paid_user_conversion_rate
+      - paid_amount_per_paid_user
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: evidence_linked_dashboard_daily_only
+    launch_note: Uses market dashboard 付费日活 and 付费人数 components; paid-order detail remains the joint-analysis source.
+  - path_id: new_user_funnel_dashboard
+    ssot_node_id: 882c4c534d4d165796562109beb068da
+    expression: dashboard_funnel_components = new_users, registrations, registration_rate_new_base, first_pay_users, first_pay_rate_new_base, same_day_new_paid_users, same_day_new_paid_rate
+    evidence_type: accounting_contribution
+    requires_components:
+      - new_users
+      - registrations
+      - registration_rate_new_base
+      - first_pay_users
+      - first_pay_rate_new_base
+      - same_day_new_paid_users
+      - same_day_new_paid_rate
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: evidence_linked_dashboard_daily_only
+    launch_note: Use market dashboard source fields 注册率, 首充率, and 新增付费率 as the v2 business metrics confirmed by owner.
+  - path_id: frequency_ticket_size
+    ssot_node_id: 9b7c5bb205584cffddef346dfc54c38b
+    expression: paid_amount = paid_dau * paid_user_conversion_rate * payment_frequency_per_paid_user * avg_paid_amount_per_payment
+    evidence_type: accounting_contribution
+    requires_components:
+      - paid_dau
+      - paid_user_conversion_rate
+      - payment_frequency_per_paid_user
+      - avg_paid_amount_per_payment
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: available_with_paid_user_count_expression_for_current_paid_order_snapshot
+    accepted_runtime_expression: paid_amount = paid_user_count * payment_frequency_per_paid_user * avg_paid_amount_per_payment
+  - path_id: region_sum
+    ssot_node_id: 34d9c39ebe6b3c9e5a4034411a58e4d6
+    expression: paid_amount = sum(paid_amount by region)
+    evidence_type: accounting_contribution
+    requires_dimensions:
+      - region
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_dimension_contract
+  - path_id: device_sum
+    ssot_node_id: 21be18da5198d1d5d012873a1fcf4808
+    expression: paid_amount = sum(paid_amount by device_model)
+    evidence_type: accounting_contribution
+    requires_dimensions:
+      - device_model
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_dimension_contract
+
+claim_boundaries:
+  allowed_evidence_types:
+    - accounting_contribution
+    - statistical_association
+    - candidate_mechanism
+    - insufficient
+  disallowed_without_extra_contracts:
+    - causal_evidence
+  default_wording_limits:
+    accounting_contribution: quantified
+    statistical_association: stable_pattern
+    candidate_mechanism: candidate
+    insufficient: insufficient
+
+quality_guards:
+  - guard_id: cumulative_value_guard
+    description: Block or downgrade analyses that compare cumulative month-to-date paid amount as if it were daily paid amount.
+    severity: block_strong_claim
+  - guard_id: formula_reconciliation_guard
+    description: Every formula path must report residual and component coverage before quantified wording.
+    severity: block_strong_claim
+  - guard_id: time_boundary_guard
+    description: Analysis windows must record timezone, date inclusivity, and month length handling.
+    severity: targeted_repair
+  - guard_id: current_data_snapshot_guard
+    description: Each analysis uses the currently available data at run time and must preserve historical answer artifacts when later data updates arrive.
+    severity: targeted_repair
+  - guard_id: materiality_guard
+    description: Pattern, anomaly, and health wording must use a reviewed business materiality threshold or degrade the claim.
+    severity: degrade_or_block
+  - guard_id: payment_status_dedup_guard
+    description: paid_amount must use final successful payment records and one successful record per order ID; failed, pending, processing, and retry-only records stay in payment-quality analysis.
+    severity: block_strong_claim
+  - guard_id: grain_guard
+    description: Segment or event claims must stay within the grain supported by metric and dimension contracts.
+    severity: degrade_or_block
+
+known_gaps:
+  - gap_id: physical_source_binding
+    description: Current 2026-01-01 through 2026-06-30 paid_order_detail source binding is accepted and loaded into the dev Postgres contract mirror; production runtime schema expansion remains later-phase work.
+    data_contract_state: contract_backed
+    expected_owner: data_owner
+  - gap_id: currency_policy
+    description: Business currency basis is accepted as unified NGN reporting currency; exchange-rate source, conversion timing, and original-currency validation still need data contract review.
+    data_contract_state: missing_contract
+    expected_owner: data_owner
+  - gap_id: refund_or_reversal_policy
+    description: Business basis is accepted as gross successful paid amount; refund, chargeback, cancellation, and reversal source contracts are still needed for separate adjustment and risk reporting.
+    data_contract_state: missing_contract
+    expected_owner: data_owner
+  - gap_id: timezone_policy
+    description: Business timezone is accepted as Africa/Lagos with local day boundary [00:00, 24:00); source timestamp mapping and date-field validation still need data contract review.
+    data_contract_state: missing_contract
+    expected_owner: data_owner
+  - gap_id: payment_status_and_dedup_contract
+    description: Business boundary and current source status/dedup profile are accepted for paid_amount; broader payment-quality contracts still need runtime implementation detail.
+    data_contract_state: missing_contract
+    expected_owner: data_owner
+  - gap_id: component_contracts
+    description: Formula components need metric or dimension contracts before decomposition can produce quantified launch claims.
+    data_contract_state: missing_contract
+    expected_owner: data_owner
+  - gap_id: materiality_policy
+    description: Initial grain-aware materiality thresholds are accepted for the 2026 H1 paid_order_success_clean profile; future tuning should create a new policy version.
+    data_contract_state: contract_backed
+    expected_owner: business_owner_and_data_owner_joint_review
+
+review_notes:
+  - This contract is source-level and does not define final database tables or SQL.
+  - Physical fields, joins, freshness checks, and permission rules are added in later phases.
+  - "`formula_decompose` may reference only declared decomposition paths and must report unsupported paths."

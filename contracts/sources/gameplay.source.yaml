@@ -1,0 +1,118 @@
+contract_version: "0.1"
+source_id: gameplay_2024_2026
+business_name: 玩法整体与分包渠道数据源
+review_status: draft_pending_owner_review
+data_contract_state: evidence_linked
+business_evidence_state: quantifiable
+
+source_files:
+  overall:
+    path: data/raw/gameplay-overall-2024-01-01_2026-06-02
+    original_path: /Users/luka/Downloads/玩法-整体数据 （2024-01-01_2026-06-02）
+    csv_files_profiled: 3
+    rows_profiled: 195023
+  by_channel:
+    path: data/raw/gameplay-channel-2024-01-01_2026-06-02
+    original_path: /Users/luka/Downloads/玩法-分包渠道数据 （2024-01-01_2026-06-02）
+    csv_files_profiled: 183
+    rows_profiled: 740100
+    channel_derivation: infer channel from filename prefix before the date range
+    channels_profiled_all_files: 61
+    channels_profiled_nonempty_files: 45
+    filename_channel_contract:
+      decided_on: "2026-07-05"
+      parser: remove trailing `_YYYY-MM-DD_YYYY-MM-DD.csv`; remaining filename prefix is channel
+      merge_rule: Use the literal filename-derived channel for gameplay channel-day analysis. Merge with paid-order or market-dashboard channels only when normalized literal values match.
+      empty_file_rule: Empty channel files remain no-data channels for that date range, not zero-value business observations.
+  shared_profile:
+    encoding: utf-8-sig
+    malformed_rows: 0
+    date_range:
+      start: "2024-01-01"
+      end: "2026-06-02"
+    gameplay_values_profiled: 797
+    service_scope:
+      - Waje Special
+
+field_mapping:
+  business_date: 日期
+  service_scope: 区服
+  gameplay: 玩法
+  gameplay_users: 游戏人数
+  gameplay_penetration_rate: 玩法渗透率
+  gameplay_rounds: 游戏局数
+  rounds_per_user: 人均局数
+  player_match_rate: 玩家对战率
+  total_rounds: 总把数
+  service_fee_rake_raw_columns:
+    - 服务费抽水
+    - 服务费抽水
+  service_fee_rake_selected_column: 服务费抽水
+  service_fee_rake_selection_reason: The duplicate 服务费抽水 columns have identical values in the profiled 2026 gameplay file; use the first source column.
+  robot_cash_won: 机器人赢的cash
+  system_rake_rate: 系统抽水率
+  gameplay_profit: 玩法盈利
+  ggr: 玩法盈利
+  profit_share: 盈利占比
+  bet_amount_share: 玩家下注额占比
+  player_bet_amount: 玩家下注总额
+  player_bet_count: 玩家下注次数
+  player_bet_count_per_user: 玩家人均下注次数
+  player_avg_bet_amount: 玩家次均下注额
+  player_bet_amount_per_user: 玩家人均下注额
+  robot_cash_lost_raw: 机器人输的chah
+
+coverage:
+  covered_metrics:
+    - 玩法
+    - 玩法游戏人数
+    - 玩法渗透率
+    - 游戏局数
+    - 人均局数
+    - 玩家下注次数
+    - 玩家下注总额
+    - 玩家人均下注次数
+    - 玩家次均下注额
+    - 玩家人均下注额
+    - 系统抽水率
+    - 玩法盈利
+    - 盈利占比
+    - 玩家下注额占比
+  supported_grains:
+    - day
+    - gameplay
+    - service_scope
+    - channel_from_filename
+  partial_or_proxy_metrics:
+    ggr:
+      available_fields:
+        - 玩法盈利
+      status: confirmed_metric_mapping
+      wording_limit: quantified
+    gameplay_arpu:
+      available_fields:
+        - 游戏人数
+        - 玩法盈利
+        - 玩家下注总额
+      status: proxy_pending_owner_definition
+      candidate_formulas:
+        - 玩法盈利 / 游戏人数
+        - 玩家下注总额 / 游戏人数
+      wording_limit: candidate
+  unavailable_without_new_source:
+    - 玩法icon曝光数
+    - 玩法icon点击率
+    - 玩法付费率
+    - 玩法付费金额
+    - 玩法付费频次
+    - 玩法单笔付费金额
+    - 支付订单到玩法的明细归因链路
+
+known_limits:
+  - pending_owner_confirmation_for_gameplay_field_meanings
+  - channel_dimension_is_inferred_from_filename_for_by_channel_files_with_literal_merge_only
+  - duplicated_raw_header_service_fee_rake_columns_are_identical_in_profiled_2026_file_use_first_column
+  - robot_cash_lost_raw_column_has_source_typo_chah_map_as_robot_cash_lost_raw
+  - no_icon_exposure_or_click_fields
+  - no_direct_payment_linkage_to_gameplay
+  - payout_rate_deferred_by_business_decision

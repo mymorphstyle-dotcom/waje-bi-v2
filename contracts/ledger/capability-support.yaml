@@ -1,0 +1,636 @@
+contract_version: "0.1"
+artifact: capability_support
+review_status: draft
+scope: Phase 1 representative support matrix for paid_amount factor groups.
+storage_design: deferred_to_later_phase
+
+source_refs:
+  factor_ledger: contracts/ledger/factor-ledger.yaml
+  backlog: contracts/backlog/missing-contracts.yaml
+  metric_contract: contracts/metrics/paid-amount.metric.yaml
+  prd_launch_matrix: docs/prd.md#21-launch-acceptance-matrix
+
+question_families:
+  - paid_amount_change_explanation
+  - pattern_explanation
+  - business_object_impact_review
+  - revenue_health_review
+  - segment_or_factor_attribution
+  - anomaly_or_black_swan_review
+  - custom_baseline_comparison
+  - data_quality_or_evidence_review
+
+capabilities:
+  - pattern_scan
+  - formula_decompose
+  - joint_attribution
+  - event_evidence
+  - outlier_scan
+  - segment_bridge
+  - data_quality_check
+  - answer_verify
+
+state_visibility:
+  missing_contract: Support records use backlog_refs.
+  permission_limited: Support records use limitation_refs or permission backlog refs.
+  unsupported_grain: Support records name supported and blocked grains through grain plus backlog_refs.
+  out_of_scope_for_now: No representative support record is parked here yet; CF-09 reconciliation can add explicit scope decisions if a SSOT node is outside launch scope.
+
+support_records:
+  - support_id: dq_paid_amount_change_metric_source
+    factor_group_id: paid_amount_metric_source
+    question_family: paid_amount_change_explanation
+    capability: data_quality_check
+    grain:
+      - day
+      - month
+      - baseline_window
+    claim_type: metric_identity_and_quality_boundary
+    business_evidence_state: quantifiable
+    data_contract_state: contract_backed
+    evidence_type: insufficient
+    strength: high
+    wording_limit: context
+    backlog_refs:
+      - currency_policy
+      - refund_or_reversal_policy
+      - timezone_policy
+      - payment_status_and_dedup_contract
+    wording_limit_reason: Current paid-order source binding, status boundary, and dedup policy are accepted; remaining policy gaps must still be surfaced before strong claims.
+    review_status: draft_pending_owner_review
+
+  - support_id: formula_paid_amount_change_order_chain
+    factor_group_id: payment_order_metric_chain
+    question_family: paid_amount_change_explanation
+    capability: formula_decompose
+    grain:
+      - day
+      - month
+      - baseline_window
+    claim_type: formula_component_contribution
+    business_evidence_state: quantifiable
+    data_contract_state: evidence_linked
+    evidence_type: accounting_contribution
+    strength: medium
+    wording_limit: quantified
+    backlog_refs:
+      - component_contracts
+      - payment_status_and_dedup_contract
+    wording_limit_reason: Current paid-order snapshot supports paid users, paid order count, frequency, ticket size, and success rate; DAU-to-paid conversion and retention paths still need component semantics review.
+    review_status: draft_pending_owner_review
+
+  - support_id: segment_paid_amount_change_payment_method
+    factor_group_id: payment_channel_and_method
+    question_family: paid_amount_change_explanation
+    capability: segment_bridge
+    grain:
+      - payment_method
+      - channel
+      - day
+    claim_type: segment_mix_or_payment_method_contribution
+    business_evidence_state: quantifiable
+    data_contract_state: contract_backed
+    evidence_type: accounting_contribution
+    strength: medium
+    wording_limit: quantified
+    backlog_refs:
+      - channel_payment_dimension_contracts
+    wording_limit_reason: Current channel and payment-method values are profiled for the accepted source snapshot; incident and campaign/exposure links are still required for broader infrastructure or marketing claims.
+    review_status: draft_pending_owner_review
+
+  - support_id: attribution_paid_amount_change_growth_ops
+    factor_group_id: marketing_channel_and_growth_ops
+    question_family: paid_amount_change_explanation
+    capability: joint_attribution
+    grain:
+      - channel
+      - campaign_when_contract_exists
+      - day
+    claim_type: multi_factor_operating_explanation
+    business_evidence_state: insufficient
+    data_contract_state: missing_contract
+    evidence_type: statistical_association
+    strength: insufficient
+    wording_limit: insufficient
+    backlog_refs:
+      - channel_payment_dimension_contracts
+      - product_operation_event_contracts
+      - exposure_control_contracts
+    wording_limit_reason: Current channel field is confirmed; spend, operation, exposure, and channel-history contracts are required before attribution claims.
+    review_status: draft_pending_owner_review
+
+  - support_id: pattern_month_phase_paid_amount
+    factor_group_id: paid_amount_metric_source
+    question_family: pattern_explanation
+    capability: pattern_scan
+    grain:
+      - full_sample
+      - month_phase
+      - custom_window
+      - event_window
+    claim_type: recurring_pattern_existence
+    business_evidence_state: insufficient
+    data_contract_state: missing_contract
+    evidence_type: statistical_association
+    strength: insufficient
+    wording_limit: insufficient
+    backlog_refs:
+      - timezone_policy
+    wording_limit_reason: Pattern scan can use the accepted source contract; executable recurrence evidence still needs time-boundary policy review.
+    review_status: draft_pending_owner_review
+
+  - support_id: event_pattern_payday_dimension
+    factor_group_id: calendar_time_and_payday
+    question_family: pattern_explanation
+    capability: event_evidence
+    grain:
+      - full_sample
+      - aggregate_daily
+      - month_phase
+      - event_window
+    claim_type: payday_dimension_candidate_mechanism
+    business_evidence_state: candidate_mechanism
+    data_contract_state: static_assumption
+    evidence_type: candidate_mechanism
+    strength: low
+    wording_limit: candidate
+    wording_limit_reason: The reviewed 25..30 payday dimension can support candidate/context wording wherever payday is relevant; stronger cause wording still needs supporting evidence.
+    review_status: draft_pending_owner_review
+
+  - support_id: outlier_pattern_payment_quality
+    factor_group_id: payment_status_latency_and_quality
+    question_family: pattern_explanation
+    capability: outlier_scan
+    grain:
+      - day
+      - month_phase
+      - payment_method
+    claim_type: pattern_exception_or_quality_anomaly
+    business_evidence_state: insufficient
+    data_contract_state: missing_contract
+    evidence_type: statistical_association
+    strength: insufficient
+    wording_limit: insufficient
+    backlog_refs:
+      - payment_status_and_dedup_contract
+      - product_operation_event_contracts
+    wording_limit_reason: Exception review needs final-success enum, retry handling, latency checks, and incident links.
+    review_status: draft_pending_owner_review
+
+  - support_id: pattern_hourly_paid_amount_time_distribution
+    factor_group_id: calendar_time_and_payday
+    question_family: pattern_explanation
+    capability: pattern_scan
+    grain:
+      - hour_when_source_time_confirmed
+      - day
+    claim_type: intra_day_time_distribution_pattern
+    business_evidence_state: insufficient
+    data_contract_state: missing_contract
+    evidence_type: statistical_association
+    strength: insufficient
+    wording_limit: insufficient
+    backlog_refs:
+      - hourly_time_distribution_contracts
+      - timezone_policy
+    wording_limit_reason: Hour-level payment timing requires reviewed source time semantics and timezone rules.
+    review_status: draft_pending_owner_review
+
+  - support_id: event_business_object_product_operation
+    factor_group_id: product_operation_events
+    question_family: business_object_impact_review
+    capability: event_evidence
+    grain:
+      - event_window_when_contract_exists
+      - affected_scope_when_contract_exists
+      - day
+    claim_type: business_object_candidate_impact
+    business_evidence_state: insufficient
+    data_contract_state: missing_contract
+    evidence_type: candidate_mechanism
+    strength: insufficient
+    wording_limit: insufficient
+    backlog_refs:
+      - product_operation_event_contracts
+      - exposure_control_contracts
+    wording_limit_reason: Event timing, affected scope, exposure, and controls are required before impact wording.
+    review_status: draft_pending_owner_review
+
+  - support_id: formula_business_object_metric_driver
+    factor_group_id: user_acquisition_and_first_payment
+    question_family: business_object_impact_review
+    capability: formula_decompose
+    grain:
+      - day
+      - cohort_when_contract_exists
+      - segment_when_dimension_contract_exists
+    claim_type: metric_driver_contribution
+    business_evidence_state: insufficient
+    data_contract_state: missing_contract
+    evidence_type: accounting_contribution
+    strength: insufficient
+    wording_limit: insufficient
+    backlog_refs:
+      - component_contracts
+      - sensitive_identifier_permission_policy
+    wording_limit_reason: User-funnel metric contracts and permission-aware cohort rules are required.
+    review_status: draft_pending_owner_review
+
+  - support_id: formula_revenue_health_order_chain
+    factor_group_id: payment_order_metric_chain
+    question_family: revenue_health_review
+    capability: formula_decompose
+    grain:
+      - day
+      - month
+      - baseline_window
+    claim_type: health_driver_decomposition
+    business_evidence_state: insufficient
+    data_contract_state: missing_contract
+    evidence_type: accounting_contribution
+    strength: insufficient
+    wording_limit: insufficient
+    backlog_refs:
+      - component_contracts
+      - payment_status_and_dedup_contract
+    wording_limit_reason: Health risk wording cannot rely on unreviewed formula components.
+    review_status: draft_pending_owner_review
+
+  - support_id: anomaly_revenue_health_payment_quality
+    factor_group_id: payment_status_latency_and_quality
+    question_family: revenue_health_review
+    capability: outlier_scan
+    grain:
+      - day
+      - payment_method
+      - event_window
+    claim_type: payment_chain_risk_or_anomaly
+    business_evidence_state: insufficient
+    data_contract_state: missing_contract
+    evidence_type: statistical_association
+    strength: insufficient
+    wording_limit: insufficient
+    backlog_refs:
+      - payment_status_and_dedup_contract
+      - product_operation_event_contracts
+      - external_context_event_contracts
+    wording_limit_reason: Payment-chain anomaly claims need quality, incident, and event-source contracts.
+    review_status: draft_pending_owner_review
+
+  - support_id: segment_attribution_payment_method
+    factor_group_id: payment_channel_and_method
+    question_family: segment_or_factor_attribution
+    capability: segment_bridge
+    grain:
+      - payment_method
+      - channel
+      - day
+    claim_type: segment_contribution_or_mix_shift
+    business_evidence_state: quantifiable
+    data_contract_state: contract_backed
+    evidence_type: accounting_contribution
+    strength: medium
+    wording_limit: quantified
+    backlog_refs:
+      - channel_payment_dimension_contracts
+    wording_limit_reason: Current channel and payment-method values are profiled for the accepted source snapshot; incident and campaign/exposure links are still required for broader infrastructure or marketing claims.
+    review_status: draft_pending_owner_review
+
+  - support_id: segment_gameplay_betting_structure
+    factor_group_id: gameplay_ggr_and_betting
+    question_family: segment_or_factor_attribution
+    capability: segment_bridge
+    grain:
+      - day
+      - gameplay
+      - channel_from_filename
+    claim_type: gameplay_betting_structure
+    business_evidence_state: quantifiable
+    data_contract_state: evidence_linked
+    evidence_type: statistical_association
+    strength: medium
+    wording_limit: stable_pattern
+    backlog_refs:
+      - gameplay_metric_contracts
+    wording_limit_reason: Gameplay files support bet count, bet amount, average bet amount, gameplay users, and GGR. Payout rate is deferred by business decision; channel filename mapping still needs owner confirmation.
+    review_status: draft_pending_owner_review
+
+  - support_id: formula_gameplay_paid_amount_linkage_blocked
+    factor_group_id: gameplay_engagement_and_arpu
+    question_family: paid_amount_change_explanation
+    capability: formula_decompose
+    grain:
+      - gameplay
+      - day
+    claim_type: gameplay_paid_amount_formula
+    business_evidence_state: insufficient
+    data_contract_state: missing_contract
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: blocked
+    backlog_refs:
+      - gameplay_metric_contracts
+      - exposure_control_contracts
+    wording_limit_reason: Current gameplay files do not contain icon exposure, icon click, gameplay paid rate, gameplay payment amount, or payment-order-to-gameplay linkage.
+    review_status: draft_pending_owner_review
+
+  - support_id: joint_attribution_geo_device_permission_limited
+    factor_group_id: geo_device_environment
+    question_family: segment_or_factor_attribution
+    capability: joint_attribution
+    grain:
+      - country_when_contract_exists
+      - city_when_permission_allows
+      - device_model_when_contract_exists
+      - network_type_when_contract_exists
+    claim_type: geo_device_combination_attribution
+    business_evidence_state: permission_limited
+    data_contract_state: permission_limited
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: blocked
+    backlog_refs:
+      - geo_device_environment_dimension_contracts
+      - sensitive_identifier_permission_policy
+    limitation_refs:
+      - pii_dimension_output_limit
+    wording_limit_reason: Aggregate geo/device attribution can run only at reviewed visible grains; raw IP/device output and sparse cells are blocked until enforcement rules exist.
+    review_status: draft_pending_owner_review
+
+  - support_id: outlier_black_swan_external_context
+    factor_group_id: external_context_events
+    question_family: anomaly_or_black_swan_review
+    capability: outlier_scan
+    grain:
+      - day
+      - event_window_when_evidence_linked
+      - country_or_region_when_source_supports
+    claim_type: external_shock_candidate_or_anomaly
+    business_evidence_state: contextual_evidence
+    data_contract_state: evidence_linked
+    evidence_type: candidate_mechanism
+    strength: low
+    wording_limit: context
+    backlog_refs:
+      - external_context_event_contracts
+    wording_limit_reason: External context can frame anomaly candidates or background context; confirmed cause wording is blocked until stronger contracts and evidence exist.
+    review_status: draft_pending_owner_review
+
+  - support_id: event_black_swan_external_context
+    factor_group_id: external_context_events
+    question_family: anomaly_or_black_swan_review
+    capability: event_evidence
+    grain:
+      - event_window_when_evidence_linked
+      - country_or_region_when_source_supports
+    claim_type: external_event_candidate_mechanism
+    business_evidence_state: contextual_evidence
+    data_contract_state: evidence_linked
+    evidence_type: candidate_mechanism
+    strength: low
+    wording_limit: context
+    backlog_refs:
+      - external_context_event_contracts
+      - calendar_event_contracts
+    wording_limit_reason: Event overlap can be surfaced as context or candidate mechanism; confirmed cause wording is blocked until stronger contracts and evidence exist.
+    review_status: draft_pending_owner_review
+
+  - support_id: event_black_swan_raw_external_ingestion_scope
+    factor_group_id: external_context_events
+    question_family: anomaly_or_black_swan_review
+    capability: event_evidence
+    grain:
+      - raw_web_source
+      - unreviewed_external_feed
+    claim_type: raw_external_crawl_claim
+    business_evidence_state: out_of_scope
+    data_contract_state: out_of_scope_for_now
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: blocked
+    backlog_refs:
+      - raw_external_evidence_ingestion_scope
+    limitation_refs:
+      - raw_external_ingestion_phase1_scope
+    wording_limit_reason: Raw external crawling is outside Phase 1; launch claims require reviewed event or evidence contracts.
+    review_status: draft_pending_owner_review
+
+  - support_id: pattern_custom_baseline_paid_amount
+    factor_group_id: paid_amount_metric_source
+    question_family: custom_baseline_comparison
+    capability: pattern_scan
+    grain:
+      - day
+      - month
+      - custom_window
+      - event_window
+    claim_type: baseline_stability_or_window_pattern
+    business_evidence_state: insufficient
+    data_contract_state: missing_contract
+    evidence_type: statistical_association
+    strength: insufficient
+    wording_limit: insufficient
+    backlog_refs:
+      - timezone_policy
+    wording_limit_reason: Custom baseline comparison can use the accepted materiality policy, but still needs valid time semantics before strong wording.
+    review_status: draft_pending_owner_review
+
+  - support_id: formula_custom_baseline_order_chain
+    factor_group_id: payment_order_metric_chain
+    question_family: custom_baseline_comparison
+    capability: formula_decompose
+    grain:
+      - day
+      - month
+      - baseline_window
+    claim_type: baseline_formula_contribution
+    business_evidence_state: insufficient
+    data_contract_state: missing_contract
+    evidence_type: accounting_contribution
+    strength: insufficient
+    wording_limit: insufficient
+    backlog_refs:
+      - component_contracts
+      - payment_status_and_dedup_contract
+    wording_limit_reason: Formula contribution across baselines requires component contracts and reconciliation.
+    review_status: draft_pending_owner_review
+
+  - support_id: dq_contract_coverage_review
+    factor_group_id: paid_amount_metric_source
+    question_family: data_quality_or_evidence_review
+    capability: data_quality_check
+    grain:
+      - contract_review
+      - day
+      - month
+      - segment_when_dimension_contract_exists
+    claim_type: contract_coverage_and_trust_boundary
+    business_evidence_state: quantifiable
+    data_contract_state: contract_backed
+    evidence_type: insufficient
+    strength: high
+    wording_limit: blocked
+    backlog_refs:
+      - currency_policy
+      - refund_or_reversal_policy
+      - timezone_policy
+      - component_contracts
+    wording_limit_reason: The review can name remaining contract gaps and blocked claim paths; current source binding is accepted.
+    review_status: draft_pending_owner_review
+
+  - support_id: dq_materiality_threshold_policy
+    factor_group_id: paid_amount_metric_source
+    question_family: data_quality_or_evidence_review
+    capability: data_quality_check
+    grain:
+      - contract_review
+      - claim_group
+    claim_type: materiality_threshold_coverage
+    business_evidence_state: quantifiable
+    data_contract_state: contract_backed
+    evidence_type: statistical_association
+    strength: medium
+    wording_limit: quantified
+    wording_limit_reason: Initial grain-aware materiality thresholds are accepted; sparse comparable windows still degrade to descriptive wording.
+    review_status: reviewed_confirmed_2026-07-05
+
+  - support_id: dq_permission_sensitive_identifiers
+    factor_group_id: sensitive_identity_and_dedup_fields
+    question_family: data_quality_or_evidence_review
+    capability: data_quality_check
+    grain:
+      - aggregate_only_with_sensitive_output_policy
+      - dedup_internal_check
+    claim_type: permission_and_dedup_boundary
+    business_evidence_state: permission_limited
+    data_contract_state: permission_limited
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: context
+    backlog_refs:
+      - sensitive_identifier_permission_policy
+      - payment_status_and_dedup_contract
+    limitation_refs:
+      - pii_dimension_output_limit
+    wording_limit_reason: The reviewed boundary can be reported as context; raw identifier output and individual user claims stay blocked.
+    review_status: draft_pending_owner_review
+
+  - support_id: verify_paid_amount_change
+    factor_group_id: paid_amount_metric_source
+    question_family: paid_amount_change_explanation
+    capability: answer_verify
+    grain:
+      - claim_group
+    claim_type: final_claim_boundary_check
+    business_evidence_state: contextual_evidence
+    data_contract_state: contract_backed
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: blocked
+    wording_limit_reason: answer_verify creates no new evidence; it blocks paid_amount change claims that exceed contract, evidence, or backlog limits.
+    review_status: draft_pending_owner_review
+
+  - support_id: verify_pattern
+    factor_group_id: paid_amount_metric_source
+    question_family: pattern_explanation
+    capability: answer_verify
+    grain:
+      - claim_group
+    claim_type: final_claim_boundary_check
+    business_evidence_state: contextual_evidence
+    data_contract_state: contract_backed
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: blocked
+    wording_limit_reason: answer_verify blocks recurring-pattern claims without recurrence, exception, data-quality, and wording support.
+    review_status: draft_pending_owner_review
+
+  - support_id: verify_business_object_impact
+    factor_group_id: product_operation_events
+    question_family: business_object_impact_review
+    capability: answer_verify
+    grain:
+      - claim_group
+    claim_type: final_claim_boundary_check
+    business_evidence_state: contextual_evidence
+    data_contract_state: contract_backed
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: blocked
+    wording_limit_reason: answer_verify blocks impact or causal wording without event, exposure, control, and evidence support.
+    review_status: draft_pending_owner_review
+
+  - support_id: verify_revenue_health
+    factor_group_id: payment_order_metric_chain
+    question_family: revenue_health_review
+    capability: answer_verify
+    grain:
+      - claim_group
+    claim_type: final_claim_boundary_check
+    business_evidence_state: contextual_evidence
+    data_contract_state: contract_backed
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: blocked
+    wording_limit_reason: answer_verify blocks health judgments that hide metric, quality, permission, or contract limitations.
+    review_status: draft_pending_owner_review
+
+  - support_id: verify_segment_attribution
+    factor_group_id: payment_channel_and_method
+    question_family: segment_or_factor_attribution
+    capability: answer_verify
+    grain:
+      - claim_group
+    claim_type: final_claim_boundary_check
+    business_evidence_state: contextual_evidence
+    data_contract_state: contract_backed
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: blocked
+    wording_limit_reason: answer_verify blocks attribution wording that exceeds supported segment grain, permission, sparsity, or evidence strength.
+    review_status: draft_pending_owner_review
+
+  - support_id: verify_anomaly_black_swan
+    factor_group_id: external_context_events
+    question_family: anomaly_or_black_swan_review
+    capability: answer_verify
+    grain:
+      - claim_group
+    claim_type: final_claim_boundary_check
+    business_evidence_state: contextual_evidence
+    data_contract_state: contract_backed
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: blocked
+    wording_limit_reason: answer_verify blocks black-swan or anomaly-cause wording without sufficient evidence and event support.
+    review_status: draft_pending_owner_review
+
+  - support_id: verify_custom_baseline
+    factor_group_id: paid_amount_metric_source
+    question_family: custom_baseline_comparison
+    capability: answer_verify
+    grain:
+      - claim_group
+    claim_type: final_claim_boundary_check
+    business_evidence_state: contextual_evidence
+    data_contract_state: contract_backed
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: blocked
+    wording_limit_reason: answer_verify blocks baseline conclusions that omit comparability, time semantics, or degraded paths.
+    review_status: draft_pending_owner_review
+
+  - support_id: verify_quality_review
+    factor_group_id: paid_amount_metric_source
+    question_family: data_quality_or_evidence_review
+    capability: answer_verify
+    grain:
+      - claim_group
+    claim_type: final_claim_boundary_check
+    business_evidence_state: contextual_evidence
+    data_contract_state: contract_backed
+    evidence_type: insufficient
+    strength: insufficient
+    wording_limit: blocked
+    wording_limit_reason: answer_verify checks that trust judgments name affected scope, blocked claims, and upgrade paths.
+    review_status: draft_pending_owner_review

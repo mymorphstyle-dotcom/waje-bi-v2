@@ -1,0 +1,43 @@
+contract_version: "0.1"
+artifact: static_assumptions
+review_status: draft
+scope: Universal payday dimension for paid_amount month-phase and event-window candidate mechanisms.
+
+assumptions:
+  - assumption_id: aggregate_payday_window_25_30
+    business_name: 发薪日维度 25..30
+    statement: For WAJE business framing, payday is the standard monthly day 25 through day 30 dimension across relevant analysis scenarios.
+    data_contract_state: static_assumption
+    business_evidence_state: candidate_mechanism
+    owner:
+      business_owner: pending_business_owner_confirmation
+      data_owner: pending_data_owner_confirmation
+    source:
+      ssot_file: contracts/ssot/付费金额影响因子分析.mm
+      ssot_nodes:
+        - becc9d7e87a7faba81fff6f575eaa1f1
+        - 3d74c7c8eed28ee275985235a6b0ade0
+        - 07d7eba416a62dec13b5570ab87a61c0
+      decision_ref: docs/product-decisions.md#payday
+    valid_window:
+      starts_on: "2026-07-03"
+      ends_on: pending_business_owner_review_or_contract_replacement
+    refresh_rule: Review when business owner changes the standard payday window.
+    wording_limit: candidate
+    allowed_evidence_types:
+      - candidate_mechanism
+      - statistical_association
+      - insufficient
+    allowed_grains:
+      - full_sample
+      - aggregate_daily
+      - month_phase
+      - event_window
+    limitations:
+      - Payday can support candidate or contextual wording after temporal alignment checks.
+      - Strong cause wording requires supporting evidence beyond the dimension definition.
+    backlog_refs:
+      - timezone_policy
+    verifier_rules:
+      - Do not allow confirmed cause wording from this assumption alone.
+      - Require the Answer Package to state the tested payday window and evidence strength.

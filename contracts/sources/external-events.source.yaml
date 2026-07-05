@@ -1,0 +1,57 @@
+contract_version: "0.1"
+source_id: external_events_2024_2026
+business_name: 外部影响因素事件表
+review_status: imported_from_waje_bi_pending_owner_review
+data_contract_state: evidence_linked
+business_evidence_state: contextual_evidence
+
+source_file:
+  path: data/raw/external-events/外部影响因素0608.xlsx
+  original_path: /Users/luka/work/waje_bi/外部影响因素0608.xlsx
+  bytes: 41680
+  sha256: e133494dea82e0b4880e153d3527d1a621983adb734b19538687bcab1bc40a73
+  workbook_sheets_profiled: 9
+  normalized_loader_in_old_project: waje_bi.data.loaders.load_external_events
+
+sheet_coverage:
+  - sheet: 尼日利亚宏观通胀汇率波动
+    business_use: macro_inflation_fx_context
+  - sheet: 工资周期
+    business_use: payday_context
+  - sheet: 重大赛事
+    business_use: sports_event_context
+  - sheet: 电力波动
+    business_use: electricity_issue_context
+  - sheet: 网络波动
+    business_use: network_issue_context
+  - sheet: 投放媒体政策变化
+    business_use: media_policy_context
+  - sheet: 极端天气
+    business_use: weather_context
+  - sheet: 社会稳定
+    business_use: social_stability_context
+  - sheet: 节假日
+    business_use: holiday_context
+
+coverage:
+  source_type: manually_curated_event_workbook
+  rows_profiled_after_old_loader: 324
+  date_range:
+    start: "2024-01-01"
+    end: "2026-06-08"
+  supported_business_uses:
+    - same_window_context
+    - candidate_mechanism_ranking
+    - anomaly_or_exception_background
+    - event_window_review
+  allowed_wording_limit: context
+  disallowed_wording:
+    - confirmed_cause_without_stronger_contracts_and_evidence
+
+known_limits:
+  - pending_owner_confirmation_for_source_authority_and_refresh_rule
+  - not_a_live_crawl_or_anysearch_connector
+  - can_not_replace_grafana_server_or_payment_incident_logs
+  - no_direct_user_or_payment_request_linkage
+  - competitor_ranking_is_not_in_this_workbook
+  - gambling_policy_feed_still_needs_accepted_source_contract_if_stronger_policy_claims_are_required

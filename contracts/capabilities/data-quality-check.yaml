@@ -1,0 +1,86 @@
+contract_version: "0.1"
+capability_id: data_quality_check
+business_name: Data quality check
+review_status: draft
+
+responsibilities:
+  - Check metric identity, contract coverage, time semantics, permission context, completeness, and quality limitations.
+  - Produce first-screen or strong-claim blockers before analytical claims publish.
+  - Report missing contracts, unsupported grains, permission gaps, and upgrade paths.
+
+parameters:
+  required:
+    - metric
+    - scope
+    - time_range
+    - grain
+    - contract_versions
+    - expected_output_paths
+  optional:
+    - filters
+    - permission_context
+    - freshness_expectation
+    - completeness_policy
+    - materiality_policy
+    - source_refs
+
+non_uses:
+  - Does not create business explanation by itself.
+  - Does not override metric, dimension, event, or permission contracts.
+  - Does not hide missing contracts behind low-confidence wording.
+
+evidence_outputs:
+  typed_payload: data_quality_result
+  envelope_fields:
+    - evidence_type
+    - strength
+    - wording_limit
+    - scope
+    - metric
+    - contract_versions
+    - limitations
+  payload_fields:
+    - contract_coverage
+    - freshness_status
+    - completeness_status
+    - time_semantics_status
+    - permission_status
+    - missing_contracts
+    - blocked_claim_paths
+
+limitations:
+  - Review-only contract coverage can name gaps while runtime data remains unavailable.
+  - Permission and missing-contract blockers must flow into Answer Package limitations.
+  - Data-quality output cannot raise evidence strength for another capability.
+
+degradation_rules:
+  - when: invalid_metric_contract
+    output: block dependent claims.
+  - when: missing_contract
+    output: degrade dependent path and link backlog.
+  - when: permission_limited
+    output: block or mask affected output.
+  - when: stale_or_incomplete_data
+    output: degrade claim strength or stop with limitation.
+
+lint_rules:
+  - rule_id: first_screen_quality_required
+    severity: auto_add
+    check: First-screen and strong claims require data-quality coverage.
+  - rule_id: backlog_required
+    severity: block
+    check: Missing-contract states must link backlog records.
+  - rule_id: static_assumption_required_fields
+    severity: block
+    check: Static assumptions need owner, source, valid window, refresh rule, and wording limit.
+
+verifier_hooks:
+  - blocked_claim_paths_must_not_publish
+  - missing_contracts_must_be_named
+  - permission_limit_must_be_visible
+
+typical_question_families:
+  - data_quality_or_evidence_review
+  - paid_amount_change_explanation
+  - revenue_health_review
+  - anomaly_or_black_swan_review

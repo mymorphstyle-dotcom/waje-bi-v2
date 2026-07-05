@@ -1,0 +1,785 @@
+contract_version: "0.1"
+artifact: factor_ledger
+review_status: draft
+scope: Phase 1 factor-group review source for paid_amount analysis.
+storage_design: deferred_to_later_phase
+
+source_refs:
+  ssot_file: contracts/ssot/付费金额影响因子分析.mm
+  ssot_extract: contracts/ssot/paid-amount-factors.extract.md
+  metric_contract: contracts/metrics/paid-amount.metric.yaml
+  source_template_extract: contracts/source-templates/paid-order-detail-template.extract.md
+
+coverage_policy:
+  grouping: Business factor groups are used for Phase 1 review instead of one record per mechanical SSOT node.
+  trace_rule: Each group must trace to at least one SSOT node or source-template field.
+  reconciliation_note: CF-09 node map covers all 142 extracted SSOT nodes with the accepted initial generated factor-group status; future review can override coarse mappings.
+
+allowed_data_contract_states:
+  - contract_backed
+  - evidence_linked
+  - static_assumption
+  - missing_contract
+  - permission_limited
+  - unsupported_grain
+  - out_of_scope_for_now
+
+allowed_business_evidence_states:
+  - quantifiable
+  - candidate_mechanism
+  - contextual_evidence
+  - insufficient
+  - permission_limited
+  - unsupported_grain
+  - out_of_scope
+
+factor_groups:
+  - factor_group_id: paid_amount_metric_source
+    business_name: 付费金额指标与订单明细源
+    business_meaning: Gross successful paid amount for final successful orders in a reviewed business scope and time window; each order ID should contribute at most one final success record.
+    source_refs:
+      metric_contract: paid_amount
+      ssot_nodes:
+        - id: 83d04615bed57847183e5c022b788af4
+          label: 公式
+        - id: e01560709518ecd63e8d093985541075
+          label: 付费金额= 付费日活 × 付费日活arpu
+      source_template_fields:
+        - 日期
+        - 支付完成时间
+        - 订单ID
+        - 支付状态
+        - 支付成功金额
+        - 币种
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: contract_backed
+    default_business_evidence_state: quantifiable
+    supported_grains:
+      - full_sample
+      - day
+      - month
+      - month_phase
+      - event_window
+    unsupported_grains: []
+    allowed_evidence_types:
+      - accounting_contribution
+      - statistical_association
+      - insufficient
+    allowed_wording_limits:
+      - quantified
+      - stable_pattern
+      - insufficient
+      - blocked
+    known_gaps:
+      - currency_policy
+      - refund_or_reversal_policy
+      - timezone_policy
+      - payment_status_and_dedup_contract
+    reviewed_progress:
+      - current_paid_order_detail_source_contract_accepted
+      - grain_aware_materiality_policy_accepted_initial_version
+      - market_dashboard_source_profiled_for_2024_01_01_through_2026_06_02_pending_owner_review
+    upgrade_path: Add remaining policy contracts for conversion validation, adjustment sources, and time semantics; version materiality only when tuning is needed.
+    launch_priority: p0
+
+  - factor_group_id: payment_order_metric_chain
+    business_name: 付费订单与支付链路指标
+    business_meaning: Metric components that explain paid_amount through paid users, final successful paid order count, conversion, frequency, ticket size, and payment success rate.
+    source_refs:
+      metric_contract_components:
+        - paid_dau
+        - paid_user_conversion_rate
+        - paid_user_count
+        - paid_dau_arpu
+        - paid_amount_per_paid_user
+        - payment_frequency_per_paid_user
+        - avg_paid_amount_per_payment
+        - payment_success_rate
+        - initiated_payment_count
+        - paid_order_count
+      ssot_nodes:
+        - id: 8e8e13b96d4ce78ae02ba0a2b852e412
+          label: 付费日活
+        - id: e698077a007cc840a48b96a186b19dd3
+          label: 当日付费转化率（付费人数/付费日活）
+        - id: 6b133335fd86eea3860cfbecd62fb9fb
+          label: 付费频次（付费次数/付费人数）
+        - id: cb4fd88a34c601fac8693f2a0d17f764
+          label: 单笔付费金额（付费金额/付费次数）
+        - id: 65aee0fc9a470f7c63c6dbe8c8c8185a
+          label: 支付成功率
+        - id: ceba4f72086e02d7902722f407a673b1
+          label: 付费次数=发起支付次数 × 支付成功率
+      source_template_fields:
+        - 支付发起时间
+        - 支付完成时间
+        - 支付发起金额
+        - 支付成功金额
+        - 支付状态
+        - 用户ID
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: evidence_linked
+    default_business_evidence_state: quantifiable
+    supported_grains:
+      - day
+      - month
+      - baseline_window
+      - segment_when_dimension_contract_exists
+    unsupported_grains: []
+    allowed_evidence_types:
+      - accounting_contribution
+      - statistical_association
+      - candidate_mechanism
+      - insufficient
+    allowed_wording_limits:
+      - quantified
+      - stable_pattern
+      - candidate
+      - insufficient
+      - blocked
+    known_gaps:
+      - component_contracts
+      - payment_status_and_dedup_contract
+    reviewed_progress:
+      - paid_order_detail_supports_paid_users_paid_orders_frequency_ticket_size_and_success_rate_for_current_snapshot
+      - market_dashboard_source_candidate_supports_DAU_new_users_registrations_first_pay_same_day_new_paid_paid_users_and_paid_amount_at_daily_aggregate_grain
+      - market_dashboard_channel_source_candidate_supports_single_channel_daily_metrics_from_filename_channel
+      - v2_new_user_rates_use_新增_denominator_and_should_be_derived_from_counts
+      - paid_dau_confirmed_as_market_dashboard_日活历史付费人数
+      - SSOT_paid_users_over_paid_dau_conversion_component_is_supported_by_market_dashboard
+    upgrade_path: Add reviewed component metric contracts, DAU-to-paid conversion wording, retention rules, and formula reconciliation rules.
+    launch_priority: p0
+
+  - factor_group_id: user_acquisition_and_first_payment
+    business_name: 新增、注册、首充与留存因素
+    business_meaning: User-funnel factors that can explain changes in paid users and first-payment paths.
+    source_refs:
+      ssot_nodes:
+        - id: 79a4251989ed5587d605fa62ed653163
+          label: 当日首充人数
+        - id: f85bf648e04f2b0d584975970e732097
+          label: 新增人数
+        - id: 9d66917f829783475271074cefc1a51c
+          label: 注册率
+        - id: 67949091e9396126d19680f2ea2eb0c6
+          label: 首次付费率
+        - id: 2005ff7adbf186ac07ecc9565fbb5da9
+          label: 昨日付费日活留存人数=昨日付费日活*昨日付费日活的留存
+      source_template_fields:
+        - 用户ID
+        - 是否新用户
+        - 是否首充
+        - 注册时间
+        - 首充时间
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: evidence_linked
+    default_business_evidence_state: quantifiable
+    supported_grains:
+      - day
+      - cohort_when_contract_exists
+      - segment_when_dimension_contract_exists
+    unsupported_grains:
+      - individual_user_without_permission
+    allowed_evidence_types:
+      - accounting_contribution
+      - candidate_mechanism
+      - insufficient
+    allowed_wording_limits:
+      - quantified
+      - candidate
+      - insufficient
+      - blocked
+    known_gaps:
+      - component_contracts
+      - sensitive_identifier_permission_policy
+    reviewed_progress:
+      - market_dashboard_source_candidate_covers_daily_new_users_registration_first_pay_and_new_paid_metrics
+      - registration_rate_first_pay_rate_and_same_day_new_paid_rate_use_新增_as_denominator
+      - source_rate_columns_need_owner_review_before_direct_use
+      - paid_order_detail_can_support_first_observed_pay_success_only_when_full_historical_paid_orders_are_loaded
+      - paid_active_retention_still_needs_cohort_contract
+    upgrade_path: Add user-funnel metric contracts, lifetime first-pay rules, and permission-aware cohort rules.
+    launch_priority: p0
+
+  - factor_group_id: payment_channel_and_method
+    business_name: 支付方式、支付渠道与通道稳定性
+    business_meaning: Payment-method, channel, bank, and infrastructure factors that can change success rate, latency, and paid amount structure.
+    source_refs:
+      ssot_nodes:
+        - id: bb6457f18917276042f78e7b4db18552
+          label: 三方支付通道
+        - id: 32448538a6a1b5cf03204858afac6520
+          label: 银行稳定性
+        - id: 320a69f2188859951b60cfb30210ad7a
+          label: 支付渠道
+        - id: 91262bd5e7f96462f40431d18524b46c
+          label: 支付功能的稳定性
+        - id: 775a535a2cc115148d34667e2e4d0102
+          label: 产品内部的支付流程
+      source_template_fields:
+        - 支付方式
+        - 支付状态
+        - 支付耗时秒
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: evidence_linked
+    default_business_evidence_state: quantifiable
+    supported_grains:
+      - payment_method
+      - channel
+      - payment_method_x_channel
+      - day
+      - event_window
+    unsupported_grains: []
+    allowed_evidence_types:
+      - accounting_contribution
+      - statistical_association
+      - candidate_mechanism
+      - insufficient
+    allowed_wording_limits:
+      - quantified
+      - stable_pattern
+      - candidate
+      - insufficient
+      - blocked
+    known_gaps:
+      - channel_payment_dimension_contracts
+      - external_context_event_contracts
+    upgrade_path: Add owner-reviewed channel history, campaign/exposure joins, and payment incident/event contracts.
+    launch_priority: p0
+
+  - factor_group_id: amount_tier_and_user_value
+    business_name: 充值档位、客单价与用户价值结构
+    business_meaning: Amount-tier and value-distribution factors that can explain changes in average paid amount and high-value payment behavior.
+    source_refs:
+      ssot_nodes:
+        - id: a1bc3af3e002f108b6a9db9da4a365bf
+          label: 充值档位分布
+        - id: c11cfc32396526335d3124f92ec45dd3
+          label: 今日充值金额不同档位的用户充值金额相加
+        - id: 77bca428efcdaa8a2dadac60616461fa
+          label: 充值档位策略
+        - id: 5352a07af42a94bf921063b8d3afc90f
+          label: 充值引导和充值活动
+        - id: 326e0957cf7865cee7e141a3f99ed721
+          label: 分层用户的维护和产品策略
+      source_template_fields:
+        - 支付成功金额
+        - 支付发起金额
+        - 是否首充
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: evidence_linked
+    default_business_evidence_state: quantifiable
+    supported_grains:
+      - amount_bucket_when_contract_exists
+      - day
+      - segment_when_dimension_contract_exists
+    unsupported_grains: []
+    allowed_evidence_types:
+      - accounting_contribution
+      - candidate_mechanism
+      - insufficient
+    allowed_wording_limits:
+      - quantified
+      - candidate
+      - insufficient
+      - blocked
+    known_gaps:
+      - component_contracts
+      - product_operation_event_contracts
+    reviewed_progress:
+      - amount_bucket_policy_confirmed_from_real_ngn_distribution
+    upgrade_path: Add component metric contracts and recharge strategy event contracts.
+    launch_priority: p0
+
+  - factor_group_id: marketing_channel_and_growth_ops
+    business_name: 投放、渠道、素材、SEO、GEO 与拉新运营
+    business_meaning: Growth and traffic-operation factors that can explain new-user volume, channel mix, first-payment conversion, and residual changes.
+    source_refs:
+      ssot_nodes:
+        - id: 4b14a3c567d773b1f7fee0bcc8795df6
+          label: 预算调整、出价调整
+        - id: 69a8deabeea9912b805cbc592b9dace8
+          label: 素材上新起量/素材衰退
+        - id: b4e51c09ac5087a8d7f3026648396b51
+          label: SEO优化
+        - id: e5d8cfdccdcc22071508cd1bb92c784f
+          label: GEO优化
+        - id: e247aaac1c9c03989b8ac1354ac37d37
+          label: 用户推荐活动
+        - id: caea77d50c306f78a10cbfc075a314f6
+          label: 外部联运
+        - id: 934212ab93575d5f8b0fb4d4b1599072
+          label: 各个渠道的消耗、新增、首充人数占比
+      source_template_fields:
+        - 一级渠道
+        - 分包渠道
+        - 是否新用户
+        - 是否首充
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: missing_contract
+    default_business_evidence_state: insufficient
+    supported_grains:
+      - channel_when_contract_exists
+      - campaign_when_contract_exists
+      - day
+      - event_window
+    unsupported_grains: []
+    allowed_evidence_types:
+      - statistical_association
+      - candidate_mechanism
+      - insufficient
+    allowed_wording_limits:
+      - stable_pattern
+      - candidate
+      - insufficient
+      - blocked
+    known_gaps:
+      - channel_payment_dimension_contracts
+      - product_operation_event_contracts
+      - exposure_control_contracts
+    reviewed_progress:
+      - market_dashboard_source_candidate_has_aggregate_投放成本
+      - no_current_source_for_budget_bid_campaign_spend_creative_ctr_cvr_seo_geo_ranking_or_referral_activity
+    upgrade_path: Add channel dimensions, operation event records, exposure/control fields, and spend metrics.
+    launch_priority: p0
+
+  - factor_group_id: geo_device_environment
+    business_name: 地理、设备、系统、网络与环境因素
+    business_meaning: Geo, device, OS, network, and environmental factors that can localize changes, anomalies, payment friction, or exposure differences.
+    source_refs:
+      ssot_nodes:
+        - id: 3d78317ffcb878b1519ecf81d111d5f6
+          label: 地理属性分布波动
+        - id: 6aa393ba4e6bf9e7925e2825bd281504
+          label: 手机型号分布波动
+        - id: 4af76d7e16e17313d479eb44cf68b87c
+          label: 网络波动
+        - id: 1a7a86e60a30f0fe566f494a20603f25
+          label: 电力波动
+        - id: 6c8e58a8d85aceaf679665e9fe894338
+          label: 极端天气
+      source_contracts:
+        - contracts/sources/external-events.source.yaml
+        - contracts/sources/competitor-ranking.source.yaml
+      source_template_fields:
+        - 国家
+        - 州/地区
+        - 城市
+        - IP
+        - 设备ID
+        - 设备品牌
+        - 设备型号
+        - 操作系统
+        - 网络类型
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: permission_limited
+    default_business_evidence_state: permission_limited
+    supported_grains:
+      - country_when_contract_exists
+      - city_when_permission_allows
+      - device_model_when_contract_exists
+      - network_type_when_contract_exists
+      - aggregate_only_with_sensitive_output_policy
+    unsupported_grains:
+      - raw_ip_output_without_permission
+      - raw_device_id_output_without_permission
+    allowed_evidence_types:
+      - accounting_contribution
+      - statistical_association
+      - candidate_mechanism
+      - insufficient
+    allowed_wording_limits:
+      - quantified
+      - stable_pattern
+      - candidate
+      - insufficient
+      - blocked
+    known_gaps:
+      - geo_device_environment_dimension_contracts
+      - sensitive_identifier_permission_policy
+      - external_context_event_contracts
+    limitation_refs:
+      - pii_dimension_output_limit
+    reviewed_progress:
+      - raw_IP_and_device_ID_are_not_required_for_current_operations_analysis
+      - current_paid_order_source_has_region_device_brand_device_model_OS_and_network_type_for_aggregate_analysis_with_missingness_limits
+    upgrade_path: Add dimension contracts, event sources, sparse-cell rules, and enforcement for aggregate-only sensitive output.
+    launch_priority: p0
+
+  - factor_group_id: calendar_time_and_payday
+    business_name: 时间窗口、发薪周期、节假日与日内分布
+    business_meaning: Calendar and time-window factors that support pattern, phase, event-window, exception analysis, and the universal 25..30 payday dimension.
+    source_refs:
+      ssot_nodes:
+        - id: 14e40e46d43d5ccbb752f2357d97633e
+          label: 时间分布
+        - id: 9de2f481297fb95286bfa2e531be42b7
+          label: 每小时的充值金额相加
+        - id: becc9d7e87a7faba81fff6f575eaa1f1
+          label: 发薪周期
+        - id: 3d74c7c8eed28ee275985235a6b0ade0
+          label: 发薪/节日消费意愿增强
+        - id: d4407c92b2d583de330ababd491b84fa
+          label: 节假日
+      source_template_fields:
+        - 日期
+        - 支付发起时间
+        - 支付完成时间
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: static_assumption
+    default_business_evidence_state: candidate_mechanism
+    static_assumptions:
+      - assumption_id: aggregate_payday_window_25_30
+        statement: Payday is a universal 25..30 monthly dimension for WAJE business analysis.
+        owner: pending_business_owner_confirmation
+        source: contracts/assumptions/payday.assumption.yaml
+        valid_window: pending_business_owner_review
+        refresh_rule: Review when business owner changes the standard payday window.
+        allowed_grains:
+          - full_sample
+          - aggregate_daily
+          - month_phase
+          - event_window
+        allowed_wording_limit: candidate
+    supported_grains:
+      - full_sample
+      - aggregate_daily
+      - month_phase
+      - event_window
+      - hour_when_source_time_confirmed
+    unsupported_grains: []
+    allowed_evidence_types:
+      - statistical_association
+      - candidate_mechanism
+      - insufficient
+    allowed_wording_limits:
+      - stable_pattern
+      - candidate
+      - context
+      - insufficient
+      - blocked
+    known_gaps:
+      - timezone_policy
+      - calendar_event_contracts
+      - hourly_time_distribution_contracts
+    limitation_refs: []
+    upgrade_path: Add timezone policy and maintained event calendars; payday itself remains the standard 25..30 dimension unless business owner changes it.
+    launch_priority: p0
+
+  - factor_group_id: product_operation_events
+    business_name: 产品、活动、服务器与运营事件
+    business_meaning: Internal product, activity, server-stability, operation, and payment-flow events that can explain changes or exceptions.
+    source_refs:
+      ssot_nodes:
+        - id: b22d74d8296870e552cf15f3c35108bf
+          label: 注册流程优化：游客、一键登录
+        - id: e8a70aeae28440a3097a781dc8487bfd
+          label: 注册页性能提升
+        - id: ff4f39c6c6bc589a5e44078b32e3cdc9
+          label: 服务器稳定性
+        - id: 576fd648b7d8e8844c98f46b9a0e9956
+          label: 首充的产品策略（新手引导、首充链路、首充礼包、金额）
+        - id: dc319b686656919dc63718ad36f7f657
+          label: 投放操作记录表
+        - id: 90c64ec6d6384faa8234d85ac6dce1e0
+          label: 产品更新记录
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: missing_contract
+    default_business_evidence_state: insufficient
+    supported_grains:
+      - event_window_when_contract_exists
+      - affected_scope_when_contract_exists
+      - day
+    unsupported_grains: []
+    allowed_evidence_types:
+      - candidate_mechanism
+      - statistical_association
+      - insufficient
+    allowed_wording_limits:
+      - candidate
+      - context
+      - insufficient
+      - blocked
+    known_gaps:
+      - product_operation_event_contracts
+      - exposure_control_contracts
+    reviewed_progress:
+      - no_current_source_for_server_stability_grafana_payment_incidents_product_updates_first_pay_packages_or_recharge_activities
+    upgrade_path: Add internal event records with timing, affected scope, exposure, and control availability.
+    launch_priority: p0
+
+  - factor_group_id: external_context_events
+    business_name: 外部环境、竞品、政策、赛事、天气与黑天鹅候选
+    business_meaning: External context and shock candidates that can provide contextual evidence or candidate mechanisms for event-window, anomaly, and black-swan review.
+    source_refs:
+      ssot_nodes:
+        - id: 367e0c8e77f4b2874bf4798c2a7d12b3
+          label: 竞品波动（调整预算、新增竞品、竞品重大变动）
+        - id: 866a916312726fdaf8334e63da0244af
+          label: 外部环境（参考重大事件表）
+        - id: 1f8897932c3a56b55b06b054bbe7700e
+          label: 重大赛事
+        - id: 1ed671c037a28c0b83112b826d0fd340
+          label: 社会事件（游行等）
+        - id: b27e065d01e6e6ae0d0bc4dc2f967f8c
+          label: 博彩相关政策、法案
+        - id: c3e7618e594e7f4aaceda90226edca02
+          label: 媒体政策
+        - id: 6c8e58a8d85aceaf679665e9fe894338
+          label: 极端天气
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: evidence_linked
+    default_business_evidence_state: contextual_evidence
+    supported_grains:
+      - event_window_when_evidence_linked
+      - country_or_region_when_source_supports
+      - day
+    unsupported_grains:
+      - raw_news_unreviewed_as_causal_claim
+    allowed_evidence_types:
+      - candidate_mechanism
+      - insufficient
+    allowed_wording_limits:
+      - candidate
+      - context
+      - insufficient
+      - blocked
+    known_gaps:
+      - external_context_event_contracts
+      - calendar_event_contracts
+      - raw_external_evidence_ingestion_scope
+    reviewed_progress:
+      - external_events_2024_2026_imported_from_old_WAJE_BI_project
+      - covered_contexts_include_macro_fx_inflation_payday_sports_power_network_media_policy_weather_social_stability_and_holidays
+      - competitor_ranking_2024_2026_imported_from_old_WAJE_BI_project
+      - stronger_official_policy_feeds_remain_missing
+    disallowed_wording:
+      - confirmed_cause_without_stronger_contracts_and_evidence
+    upgrade_path: Add accepted external evidence sources, confidence fields, affected scope, event windows, and stronger evidence contracts before any confirmed cause wording.
+    launch_priority: p1
+
+  - factor_group_id: gameplay_engagement_and_arpu
+    business_name: 玩法曝光、点击、付费率、频次与玩法 ARPU
+    business_meaning: Gameplay engagement and payment factors that can explain paid_amount through game exposure, click-through, paid rate, frequency, and average payment.
+    source_refs:
+      ssot_nodes:
+        - id: 60908a59f4bdaf00675716ca1d9f4b4a
+          label: 各个玩法人数*玩法arpu
+        - id: f05cb9601875d6aa2a86fd765394de9a
+          label: 玩法icon的曝光数
+        - id: 28b6759c7125178e5ef3ced357ed04c4
+          label: 玩法icon的点击率
+        - id: 9efb5960237e7adbd334a06f41380578
+          label: 玩法付费率
+        - id: d22cf570b8e2d1ce0f6ebb3770a272eb
+          label: 玩法付费频次
+        - id: ee45ae69d52a4e83ae0c7c7ec6c23c4d
+          label: 玩法单笔付费金额
+      source_contracts:
+        - contracts/sources/gameplay.source.yaml
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: missing_contract
+    default_business_evidence_state: insufficient
+    supported_grains:
+      - gameplay_when_contract_exists
+      - day
+      - segment_when_dimension_contract_exists
+    unsupported_grains: []
+    allowed_evidence_types:
+      - accounting_contribution
+      - statistical_association
+      - insufficient
+    allowed_wording_limits:
+      - quantified
+      - stable_pattern
+      - insufficient
+      - blocked
+    known_gaps:
+      - gameplay_metric_contracts
+      - exposure_control_contracts
+    reviewed_progress:
+      - gameplay_source_profiled_for_2024_01_01_through_2026_06_02
+      - gameplay_files_cover_gameplay_users_penetration_rounds_and_betting_activity
+      - icon_exposure_icon_click_direct_gameplay_payment_rate_and_payment_linkage_are_unavailable_without_new_source
+    upgrade_path: Add gameplay identity, exposure, click, activity, payment, and ARPU contracts.
+    launch_priority: p1
+
+  - factor_group_id: gameplay_ggr_and_betting
+    business_name: 玩法流水、人均下注、下注金额与返奖率
+    business_meaning: Gameplay revenue and betting-structure factors that may explain related revenue paths and paid_amount-adjacent questions.
+    source_refs:
+      ssot_nodes:
+        - id: a62e46ceb33a86af098d5f2b3149cff0
+          label: 各个玩法流水*（1-玩法返奖率）
+        - id: 9963a96ab3a2142991e34a22df61f62a
+          label: 人均下注次数
+        - id: 7104c2e4f577a4f94ab727b9c74d573a
+          label: 平均每次下注金额
+        - id: 4037602cebf5795940a5c493660c4a6d
+          label: 返奖率
+        - id: 777939ef030eb92e5a720f3ed56eed76
+          label: GGR= Σ[ 玩法流水× (1 - 返奖率) ]
+      source_contracts:
+        - contracts/sources/gameplay.source.yaml
+      source_fields:
+        - 玩家下注次数
+        - 玩家下注总额
+        - 玩家人均下注次数
+        - 玩家次均下注额
+        - 玩家人均下注额
+        - 系统抽水率
+        - 玩法盈利
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: evidence_linked
+    default_business_evidence_state: quantifiable
+    supported_grains:
+      - gameplay_when_contract_exists
+      - day
+      - segment_when_dimension_contract_exists
+    unsupported_grains: []
+    allowed_evidence_types:
+      - accounting_contribution
+      - statistical_association
+      - candidate_mechanism
+      - insufficient
+    allowed_wording_limits:
+      - quantified
+      - stable_pattern
+      - candidate
+      - insufficient
+      - blocked
+    known_gaps:
+      - gameplay_metric_contracts
+    reviewed_progress:
+      - gameplay_source_covers_bet_count_bet_amount_avg_bet_amount_and_GGR
+      - 玩法盈利_confirmed_as_GGR
+      - payout_rate_deferred_by_business_decision
+    upgrade_path: Add gameplay payment-linkage contracts before玩法付费 attribution claims.
+    launch_priority: p1
+
+  - factor_group_id: payment_status_latency_and_quality
+    business_name: 支付状态、耗时、失败与数据质量
+    business_meaning: Payment status and latency signals that support quality checks, success-rate decomposition, anomaly review, and failure-path limitations; failed, pending, processing, and retry-only records stay outside paid_amount.
+    source_refs:
+      ssot_nodes:
+        - id: c8b1dcb7ddbe454810a8393ef36ecf53
+          label: 支付环境稳定性
+        - id: f835c7006369ab2a1ddf5639253ec810
+          label: 服务器稳定性
+        - id: 91262bd5e7f96462f40431d18524b46c
+          label: 支付功能的稳定性
+      source_template_fields:
+        - 支付状态
+        - 支付耗时秒
+        - 订单ID
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: evidence_linked
+    default_business_evidence_state: quantifiable
+    supported_grains:
+      - day
+      - payment_method
+      - event_window
+    unsupported_grains: []
+    allowed_evidence_types:
+      - statistical_association
+      - candidate_mechanism
+      - insufficient
+    allowed_wording_limits:
+      - stable_pattern
+      - candidate
+      - insufficient
+      - blocked
+    known_gaps:
+      - payment_status_and_dedup_contract
+      - product_operation_event_contracts
+      - external_context_event_contracts
+    reviewed_progress:
+      - paid_order_detail_2026_h1_has_accepted_payment_status_and_dedup_policy
+      - latency_specific_analysis_must_carry_missingness_limits
+      - server_grafana_payment_incident_sources_are_unavailable_without_new_source
+    upgrade_path: Define final-success status enum, retry handling, latency quality checks, late-update rules, and incident/event links.
+    launch_priority: p0
+
+  - factor_group_id: sensitive_identity_and_dedup_fields
+    business_name: 用户、IP、设备标识与去重支持字段
+    business_meaning: Identifier fields may support aggregate analysis, internal quality checks, deduplication, and permission-aware joins; raw values must not appear in answers or visualizations.
+    source_refs:
+      source_template_fields:
+        - 用户ID
+        - IP
+        - 设备ID
+        - 订单ID
+    review:
+      business_owner_role: business_owner
+      data_owner_role: data_owner
+      review_status: draft_pending_owner_review
+    data_contract_state: permission_limited
+    default_business_evidence_state: permission_limited
+    supported_grains:
+      - aggregate_only_with_sensitive_output_policy
+      - dedup_internal_check
+    unsupported_grains:
+      - raw_identifier_output_without_permission
+      - individual_user_claim_without_permission
+    allowed_evidence_types:
+      - insufficient
+    allowed_wording_limits:
+      - context
+      - blocked
+      - insufficient
+    known_gaps:
+      - sensitive_identifier_permission_policy
+      - payment_status_and_dedup_contract
+    limitation_refs:
+      - pii_dimension_output_limit
+    upgrade_path: Add field sensitivity tags, masking enforcement, aggregation thresholds, and role-based access checks.
+    launch_priority: p0
+
+review_limitations:
+  - limitation_id: pii_dimension_output_limit
+    data_contract_state: permission_limited
+    description: Reviewed business boundary allows aggregate analysis, internal quality checks, and dedup support; raw user, IP, and device identifiers are blocked in answers and visualizations pending enforced masking, role, and sparse-cell rules.
+    backlog_ref: sensitive_identifier_permission_policy
+  - limitation_id: raw_external_ingestion_phase1_scope
+    data_contract_state: out_of_scope_for_now
+    description: Raw news, forum, media, or website crawling is outside the launch baseline; future AnySearch-like external evidence connectors require reviewed source contracts and verifier wording rules.
+    backlog_ref: raw_external_evidence_ingestion_scope

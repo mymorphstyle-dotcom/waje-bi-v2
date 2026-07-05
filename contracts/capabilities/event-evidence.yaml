@@ -1,0 +1,85 @@
+contract_version: "0.1"
+capability_id: event_evidence
+business_name: Event evidence
+review_status: draft
+
+responsibilities:
+  - Evaluate calendar, business-object, operation, external, payday, or incident candidates against target metric windows.
+  - Report temporal overlap, affected scope, controls, and evidence strength.
+  - Separate contextual evidence, candidate mechanism, association, and unsupported impact paths.
+
+parameters:
+  required:
+    - business_object
+    - event_window
+    - target_metric
+    - scope
+    - time_range
+    - contract_versions
+  optional:
+    - baseline
+    - control_window
+    - affected_scope
+    - exposure_contract
+    - source_confidence
+    - comparison_policy
+
+non_uses:
+  - Does not treat raw external crawling as reviewed evidence.
+  - Does not state net impact without controls or stronger evidence.
+  - Does not turn static assumptions into confirmed causes.
+
+evidence_outputs:
+  typed_payload: event_evidence_result
+  envelope_fields:
+    - evidence_type
+    - strength
+    - wording_limit
+    - scope
+    - target_metric
+    - contract_versions
+    - limitations
+  payload_fields:
+    - event_identity
+    - tested_windows
+    - temporal_alignment
+    - affected_scope
+    - control_or_baseline_status
+    - source_status
+    - unsupported_grains
+
+limitations:
+  - Static assumptions support candidate or context wording only.
+  - Missing event timing, affected scope, or exposure data degrades impact wording.
+  - Raw external sources need reviewed source contracts before launch claims.
+
+degradation_rules:
+  - when: static_assumption_only
+    output: candidate mechanism with assumption boundary.
+  - when: missing_event_contract
+    output: insufficient or context wording with backlog refs.
+  - when: no_control_for_impact
+    output: candidate impact or contextual evidence.
+  - when: raw_external_ingestion_out_of_scope
+    output: blocked raw-source claim.
+
+lint_rules:
+  - rule_id: event_identity_required
+    severity: targeted_repair
+    check: Business object must map to event, assumption, external evidence, or backlog.
+  - rule_id: control_required_for_strong_impact
+    severity: degrade
+    check: Strong impact wording requires controls or approved causal evidence.
+  - rule_id: raw_source_block
+    severity: block
+    check: Unreviewed raw crawling cannot support launch claims.
+
+verifier_hooks:
+  - event_claim_must_name_window_and_scope
+  - static_assumption_must_keep_candidate_wording
+  - unsupported_grain_must_be_reported
+
+typical_question_families:
+  - business_object_impact_review
+  - pattern_explanation
+  - anomaly_or_black_swan_review

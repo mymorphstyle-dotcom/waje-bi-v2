@@ -1,0 +1,191 @@
+contract_version: "0.1"
+source_id: market_dashboard_2024_2026
+business_name: 经营大盘整体数据源
+review_status: draft_pending_owner_review
+data_contract_state: evidence_linked
+business_evidence_state: quantifiable
+
+source_file:
+  path: data/raw/market-dashboard-2024-01-01_2026-06-02/大盘_2024-01-01_2026-06-02.csv
+  original_path: /Users/luka/work/waje_bi/经营大盘-整体数据 （2024-01-01_2026-06-02）/大盘_2024-01-01_2026-06-02.csv
+  bytes: 372902
+  sha256: 07de56e0f69d12217e431c2c929a78f57459ad2484079821b5e51560fb4bed5f
+  encoding: utf-8-sig
+  rows_profiled: 884
+  columns_profiled: 36
+  malformed_rows: 0
+  date_range:
+    start: "2024-01-01"
+    end: "2026-06-02"
+  game_scope:
+    - Waje Special
+
+channel_source_files:
+  path: data/raw/market-dashboard-channel-2024-01-01_2026-06-02
+  original_path: /Users/luka/work/waje_bi/经营大盘-分包渠道数据 （2024-01-01_2026-06-02）
+  csv_files_profiled: 183
+  nonempty_csv_files_profiled: 104
+  rows_profiled: 13418
+  date_range:
+    start: "2024-01-01"
+    end: "2026-06-02"
+  channel_derivation: infer channel from filename prefix before the date range
+  channels_profiled_all_files: 61
+  channels_profiled_nonempty_files: 49
+  filename_channel_contract:
+    decided_on: "2026-07-05"
+    parser: remove trailing `_YYYY-MM-DD_YYYY-MM-DD.csv`; remaining filename prefix is channel
+    merge_rule: Use the literal filename-derived channel for dashboard channel-day analysis. Merge with paid-order or gameplay channels only when normalized literal values match.
+    empty_file_rule: Empty channel files remain no-data channels for that date range, not zero-value business observations.
+
+field_mapping:
+  business_date: 日期
+  game: 游戏
+  active_users: 日活
+  new_users: 新增
+  revenue: 营收
+  active_user_arpu: 日活arpu
+  registrations: 注册人数
+  new_devices: 新增设备
+  login_accounts: 登录账户数
+  registration_rate: 注册率
+  zero_round_user_share: 0局用户占比
+  gameplay_users: 游戏人数
+  gameplay_rounds: 游戏局数
+  app_avg_online_time: app在线人均时长
+  effective_user_app_avg_online_time: 有效用户app在线人均时长
+  historical_paid_active_users: 日活历史付费人数
+  first_paid_amount: 首充用户金额
+  new_paid_amount: 新增付费金额
+  login_user_avg_recharge: 登陆用户人均充值
+  avg_first_paid_amount: 平均首充金额
+  first_paid_rate: 首充率
+  first_paid_users: 首充人数
+  new_paid_rate: 新增付费率
+  new_paid_users: 新增付费人数
+  paid_users: 付费人数
+  paid_amount: 付费金额
+  recharge_channel_fee: 充值渠道手续费
+  withdraw_request_amount: 申请提现金额
+  withdraw_arrived_users: 提现到账人数
+  withdraw_arrived_amount: 提现到账金额
+  withdraw_to_recharge_ratio: 提充比
+  withdraw_request_users: 申请提现人数
+  withdraw_fee: 提现手续费
+  withdraw_user_fee: 提现用户手续费
+  aggregate_marketing_cost: 投放成本
+  profit: 利润
+
+coverage:
+  covered_metrics:
+    - 日活
+    - 新增
+    - 注册人数
+    - 注册率
+    - 游戏人数
+    - 游戏局数
+    - 首充人数
+    - 首充率
+    - 新增付费人数
+    - 新增付费率
+    - 付费人数
+    - 付费金额
+    - 投放成本
+    - 利润
+    - 提现相关聚合指标
+  grain:
+    - day
+    - game
+    - channel_from_filename
+  report_currency:
+    source_field: absent
+    assumed_from_current_paid_order_contract: NGN
+    policy_status: accepted_under_global_NGN_reporting_policy
+    remaining_gap: Original-currency validation source is absent; do not make cross-currency conversion claims from this dashboard source alone.
+
+semantic_notes:
+  paid_active_definition:
+    user_confirmed_on: "2026-07-05"
+    business_definition: 付费日活 means 日活历史付费人数 in the market dashboard source.
+    source_field: 日活历史付费人数
+    paid_success_user_field: 付费人数
+  v2_new_user_rate_policy:
+    user_confirmed_on: "2026-07-05"
+    denominator: 新增
+    source_rate_fields_are_business_metrics: true
+    derived_metrics:
+      registration_rate:
+        business_definition: 当日注册 / 当日新增
+        source_field: 注册率
+      first_pay_rate:
+        business_definition: 当日首充 / 当日新增
+        source_field: 首充率
+      same_day_new_paid_rate:
+        business_definition: 新增首日付费 / 当日新增
+        source_field: 新增付费率
+  usable_dashboard_components:
+    by_day:
+      - 日活
+      - 新增
+      - 注册人数
+      - 注册率
+      - 首充人数
+      - 首充率
+      - 新增付费人数
+      - 新增付费率
+      - 付费人数
+      - 日活历史付费人数
+      - 付费金额
+      - 付费金额 / 付费人数
+      - 首充用户金额 / 首充人数
+      - 新增付费金额 / 新增付费人数
+      - 投放成本
+      - 利润
+      - 提现到账金额
+    by_channel_day:
+      - channel
+      - 日活
+      - 新增
+      - 注册人数
+      - 首充人数
+      - 新增付费人数
+      - 付费人数
+      - 付费金额
+      - 投放成本
+      - 利润
+  joint_analysis_boundary:
+    reason_for_paid_order_detail: 大盘 supports daily and filename-channel aggregate metrics, but it does not support joint analysis across channel, region, device, amount bucket, payment method, user history, and order-level dedup.
+    dashboard_allowed_use:
+      - overall_daily_formula_component_review
+      - channel_daily_single_dimension_review
+      - source_reconciliation_against_paid_order_detail
+    dashboard_blocked_use:
+      - channel_x_region_x_device_joint_attribution
+      - order_level_dedup_or_status_repair
+      - payment_method_or_latency_diagnostics
+      - user_level_first_pay_lifetime_reconstruction
+  marketing_boundary:
+    aggregate_cost_available: 投放成本
+    unavailable_without_new_source:
+      - 投放预算
+      - 出价
+      - campaign 消耗
+      - 素材 CTR
+      - 素材 CVR
+      - SEO 排名
+      - GEO 排名
+      - 用户推荐活动
+  adjustment_boundary:
+    refund_reversal_source: unavailable_without_new_source
+    note: 提现字段不能替代 refund, reversal, chargeback, or cancellation adjustment contracts.
+
+known_limits:
+  - pending_owner_confirmation_for_dashboard_field_meanings
+  - original_currency_validation_source_absent
+  - channel_dimension_is_inferred_from_filename_for_channel_dashboard_files_with_literal_merge_only
+  - dashboard_has_daily_and_channel_daily_aggregates_but_no_joint_grain
+  - aggregate_marketing_cost_is_not_campaign_budget_bid_or_spend_detail
+  - no_creative_ctr_cvr_fields
+  - no_seo_geo_ranking_fields
+  - no_referral_activity_fields
+  - no_refund_reversal_fields

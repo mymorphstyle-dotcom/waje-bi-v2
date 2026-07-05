@@ -1,0 +1,16 @@
+node_modules/
+.next/
+.playwright-cli/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+*.log
+
+data/raw/
+data/local/
+data/clickhouse/
+data/postgres/

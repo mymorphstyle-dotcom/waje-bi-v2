@@ -1,0 +1,56 @@
+contract_version: "0.1"
+source_id: competitor_ranking_2024_2026
+business_name: 竞品总榜排名数据源
+review_status: imported_from_waje_bi_pending_owner_review
+data_contract_state: evidence_linked
+business_evidence_state: contextual_evidence
+
+source_file:
+  path: data/raw/competitor-ranking-2024-01-01_2026-06-07/竞品总榜排名汇总.csv
+  original_path: /Users/luka/work/waje_bi/竞品总榜排名汇总.csv
+  bytes: 29059
+  sha256: 259c4ad900757f8741b7808811dac2f250c90fd6c5d16e2b4bae52b4fc2c88ea
+  encoding: utf-8-sig
+  rows_profiled: 889
+  columns_profiled: 9
+  date_range:
+    start: "2024-01-01"
+    end: "2026-06-07"
+
+field_mapping:
+  business_date: 日期
+  competitor_rank_columns:
+    - 1xBet
+    - Bangbet
+    - Bet9ja
+    - MSport
+    - SportyBet
+    - bet365
+    - iLOTBet
+    - Ludo Naira
+
+coverage:
+  supported_grains:
+    - day
+    - competitor
+  supported_business_uses:
+    - competitor_rank_context
+    - same_window_context
+    - candidate_mechanism_ranking
+  allowed_wording_limit: context
+  disallowed_wording:
+    - confirmed_cause_without_stronger_contracts_and_evidence
+  non_null_counts:
+    1xBet: 810
+    Bangbet: 440
+    Bet9ja: 850
+    MSport: 878
+    SportyBet: 880
+    bet365: 0
+    iLOTBet: 734
+    Ludo Naira: 519
+
+known_limits:
+  - pending_owner_confirmation_for_source_authority_and_refresh_rule
+  - bet365_column_has_no_values_in_current_file
+  - ranking_context_does_not_prove_competitor_causality
