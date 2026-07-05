@@ -108,6 +108,7 @@ def compile_graph(
         proposed=proposed_graph,
         rejected_or_degraded=(*unknown, *accepted),
         records=records,
+        node_status="degraded",
     )
 
 
@@ -119,6 +120,7 @@ def _compiled(
     proposed: tuple[str, ...],
     rejected_or_degraded: tuple[str, ...],
     records: tuple[MutationRecord, ...],
+    node_status: str = "accepted",
 ) -> CompiledGraph:
     return CompiledGraph(
         status=status,
@@ -126,7 +128,7 @@ def _compiled(
             GraphNode(
                 node_id=f"{index:02d}_{capability}",
                 capability=capability,
-                status="accepted" if status == "accepted" else "degraded",
+                status=node_status,
                 target_claim=target_metric,
                 depends_on=accepted[:index],
             )
