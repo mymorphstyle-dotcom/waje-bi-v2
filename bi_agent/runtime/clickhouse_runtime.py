@@ -130,7 +130,12 @@ class ClickHouseRuntime:
             kwargs = {"query_id": query_id} if query_id else {}
             result = client.query(sql, **kwargs)
         except Exception:
-            return ClickHouseQueryResult(ok=False, reason="clickhouse_query_failed")
+            return ClickHouseQueryResult(
+                ok=False,
+                reason="clickhouse_query_failed",
+                query_hash=query_hash,
+                query_id=query_id,
+            )
 
         return ClickHouseQueryResult(
             ok=True,

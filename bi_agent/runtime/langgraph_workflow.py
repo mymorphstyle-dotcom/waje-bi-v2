@@ -163,6 +163,7 @@ def _intent_binding(state: WorkflowState) -> WorkflowState:
         "question_family": request.get("question_family", "pattern_explanation"),
         "target_metric": request.get("target_metric", "paid_amount"),
         "pattern_family": request.get("pattern_family", "intra_period"),
+        "pattern_params": dict(request.get("pattern_params", {})),
         "scope": request.get("scope", "full_sample"),
         "time_window": request.get("time_window", "2024-01..2026-05"),
         "requested_nodes": tuple(request.get("requested_nodes", ("pattern_scan",))),
@@ -241,19 +242,28 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
         evidence.append(
             data_quality_check(
                 rows,
-                required_fields=("month", "phase", "amount"),
+                required_fields=tuple(
+                    state["request"].get(
+                        "required_fields",
+                        ("month", "phase", "amount"),
+                    )
+                ),
                 result_refs=query_ref,
             )
         )
     if "pattern_scan" in capabilities:
+        pattern_family = state["intent"]["pattern_family"]
+        pattern_params = dict(state["intent"].get("pattern_params", {}))
+        if pattern_family == "intra_period":
+            pattern_params.setdefault("target_phase", "start")
         evidence.append(
             scan_pattern(
                 rows,
-                pattern_family=state["intent"]["pattern_family"],
-                target_phase="start",
+                pattern_family=pattern_family,
                 materiality_floor=0.03,
                 result_refs=query_ref,
-                evidence_ref="pattern_scan:intra_period",
+                evidence_ref=f"pattern_scan:{pattern_family}",
+                **pattern_params,
             )
         )
     if "formula_decompose" in capabilities:
@@ -288,14 +298,18 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
 
 def _synthesize_draft_answer(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "synthesize_draft_answer")
-    pattern = _evidence_by_ref(state["evidence"])["pattern_scan:intra_period"]
+    pattern_family = state["intent"]["pattern_family"]
+    pattern = _evidence_by_ref(state["evidence"])[f"pattern_scan:{pattern_family}"]
     payload = pattern["typed_payload"]
     state["draft_claims"] = state["request"].get(
         "draft_claims",
         [
             {
-                "text": "Month-start paid amount is consistently higher than mid/end in the full sample.",
-                "evidence_refs": ["pattern_scan:intra_period"],
+                "text": (
+                    f"{pattern_family} paid amount pattern has "
+                    f"{pattern['wording_limit']} draft evidence in the requested scope."
+                ),
+                "evidence_refs": [f"pattern_scan:{pattern_family}"],
                 "numbers": {"median_uplift": payload["median_uplift"]},
                 "scope": state["intent"]["scope"],
                 "time_window": state["intent"]["time_window"],

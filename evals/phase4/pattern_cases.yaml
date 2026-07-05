@@ -1,0 +1,206 @@
+cases:
+  - case_id: month_start
+    pattern_family: intra_period
+    time_window: "2024-01..2026-05"
+    window_definition:
+      target: "1-10"
+      siblings: ["11-20", "21-end"]
+    pattern_params:
+      target_phase: start
+      period_key: month
+      group_key: phase
+    required_capabilities:
+      - data_quality_check
+      - pattern_scan
+      - formula_decompose
+      - event_evidence
+      - segment_bridge
+      - outlier_scan
+      - answer_verify
+    minimum_real_data_status: passed
+    expected_degraded_or_blocked_reasons: []
+    fixture_rows:
+      - {month: "2024-01", phase: start, amount: 120}
+      - {month: "2024-01", phase: mid, amount: 100}
+      - {month: "2024-01", phase: end, amount: 96}
+      - {month: "2024-02", phase: start, amount: 120}
+      - {month: "2024-02", phase: mid, amount: 100}
+      - {month: "2024-02", phase: end, amount: 96}
+      - {month: "2024-03", phase: start, amount: 120}
+      - {month: "2024-03", phase: mid, amount: 100}
+      - {month: "2024-03", phase: end, amount: 96}
+      - {month: "2024-04", phase: start, amount: 120}
+      - {month: "2024-04", phase: mid, amount: 100}
+      - {month: "2024-04", phase: end, amount: 96}
+      - {month: "2024-05", phase: start, amount: 120}
+      - {month: "2024-05", phase: mid, amount: 100}
+      - {month: "2024-05", phase: end, amount: 96}
+      - {month: "2024-06", phase: start, amount: 120}
+      - {month: "2024-06", phase: mid, amount: 100}
+      - {month: "2024-06", phase: end, amount: 96}
+      - {month: "2024-07", phase: start, amount: 120}
+      - {month: "2024-07", phase: mid, amount: 100}
+      - {month: "2024-07", phase: end, amount: 96}
+      - {month: "2024-08", phase: start, amount: 120}
+      - {month: "2024-08", phase: mid, amount: 100}
+      - {month: "2024-08", phase: end, amount: 96}
+      - {month: "2024-09", phase: start, amount: 120}
+      - {month: "2024-09", phase: mid, amount: 100}
+      - {month: "2024-09", phase: end, amount: 96}
+      - {month: "2024-10", phase: start, amount: 120}
+      - {month: "2024-10", phase: mid, amount: 100}
+      - {month: "2024-10", phase: end, amount: 96}
+      - {month: "2024-11", phase: start, amount: 120}
+      - {month: "2024-11", phase: mid, amount: 100}
+      - {month: "2024-11", phase: end, amount: 96}
+      - {month: "2024-12", phase: start, amount: 120}
+      - {month: "2024-12", phase: mid, amount: 100}
+      - {month: "2024-12", phase: end, amount: 96}
+      - {month: "2025-01", phase: start, amount: 120}
+      - {month: "2025-01", phase: mid, amount: 100}
+      - {month: "2025-01", phase: end, amount: 96}
+      - {month: "2025-02", phase: start, amount: 120}
+      - {month: "2025-02", phase: mid, amount: 100}
+      - {month: "2025-02", phase: end, amount: 96}
+      - {month: "2025-03", phase: start, amount: 120}
+      - {month: "2025-03", phase: mid, amount: 100}
+      - {month: "2025-03", phase: end, amount: 96}
+      - {month: "2025-04", phase: start, amount: 120}
+      - {month: "2025-04", phase: mid, amount: 100}
+      - {month: "2025-04", phase: end, amount: 96}
+      - {month: "2025-05", phase: start, amount: 120}
+      - {month: "2025-05", phase: mid, amount: 100}
+      - {month: "2025-05", phase: end, amount: 96}
+      - {month: "2025-06", phase: start, amount: 120}
+      - {month: "2025-06", phase: mid, amount: 100}
+      - {month: "2025-06", phase: end, amount: 96}
+      - {month: "2025-07", phase: start, amount: 120}
+      - {month: "2025-07", phase: mid, amount: 100}
+      - {month: "2025-07", phase: end, amount: 96}
+      - {month: "2025-08", phase: start, amount: 120}
+      - {month: "2025-08", phase: mid, amount: 100}
+      - {month: "2025-08", phase: end, amount: 96}
+      - {month: "2025-09", phase: start, amount: 120}
+      - {month: "2025-09", phase: mid, amount: 100}
+      - {month: "2025-09", phase: end, amount: 96}
+      - {month: "2025-10", phase: start, amount: 120}
+      - {month: "2025-10", phase: mid, amount: 100}
+      - {month: "2025-10", phase: end, amount: 96}
+      - {month: "2025-11", phase: start, amount: 120}
+      - {month: "2025-11", phase: mid, amount: 100}
+      - {month: "2025-11", phase: end, amount: 96}
+      - {month: "2025-12", phase: start, amount: 120}
+      - {month: "2025-12", phase: mid, amount: 100}
+      - {month: "2025-12", phase: end, amount: 96}
+      - {month: "2026-01", phase: start, amount: 120}
+      - {month: "2026-01", phase: mid, amount: 100}
+      - {month: "2026-01", phase: end, amount: 96}
+      - {month: "2026-02", phase: start, amount: 120}
+      - {month: "2026-02", phase: mid, amount: 100}
+      - {month: "2026-02", phase: end, amount: 96}
+      - {month: "2026-03", phase: start, amount: 120}
+      - {month: "2026-03", phase: mid, amount: 100}
+      - {month: "2026-03", phase: end, amount: 96}
+      - {month: "2026-04", phase: start, amount: 120}
+      - {month: "2026-04", phase: mid, amount: 100}
+      - {month: "2026-04", phase: end, amount: 96}
+      - {month: "2026-05", phase: start, amount: 120}
+      - {month: "2026-05", phase: mid, amount: 100}
+      - {month: "2026-05", phase: end, amount: 96}
+
+  - case_id: weekly_payday_like
+    pattern_family: weekly
+    time_window: "2024-01..2026-05"
+    window_definition:
+      target_weekdays: [friday]
+      baseline: week_average
+    pattern_params:
+      week_key: week
+      weekday_key: weekday
+      target_weekdays: [friday]
+    required_capabilities:
+      - pattern_scan
+      - event_evidence
+      - outlier_scan
+      - answer_verify
+    minimum_real_data_status: degraded
+    expected_degraded_or_blocked_reasons: []
+    fixture_rows:
+      - {week: "2026-W01", weekday: friday, amount: 150}
+      - {week: "2026-W01", weekday: monday, amount: 100}
+      - {week: "2026-W01", weekday: tuesday, amount: 100}
+      - {week: "2026-W02", weekday: friday, amount: 148}
+      - {week: "2026-W02", weekday: monday, amount: 100}
+      - {week: "2026-W02", weekday: tuesday, amount: 102}
+      - {week: "2026-W03", weekday: friday, amount: 152}
+      - {week: "2026-W03", weekday: monday, amount: 99}
+      - {week: "2026-W03", weekday: tuesday, amount: 101}
+
+  - case_id: event_relative_campaign
+    pattern_family: event_relative
+    time_window: "2024-01..2026-05"
+    window_definition:
+      target_window: during
+      baseline_window: before
+    pattern_params:
+      event_key: event_id
+      window_key: window
+      target_window: during
+      baseline_window: before
+    required_capabilities:
+      - pattern_scan
+      - event_evidence
+      - answer_verify
+    minimum_real_data_status: degraded
+    expected_degraded_or_blocked_reasons: []
+    fixture_rows:
+      - {event_id: launch_a, window: before, amount: 100}
+      - {event_id: launch_a, window: during, amount: 130}
+      - {event_id: launch_b, window: before, amount: 105}
+      - {event_id: launch_b, window: during, amount: 136}
+      - {event_id: launch_c, window: before, amount: 98}
+      - {event_id: launch_c, window: during, amount: 124}
+
+  - case_id: rolling_recovery
+    pattern_family: rolling
+    time_window: "2024-01..2026-05"
+    window_definition:
+      target: rolling_window
+      baseline: prior_window_high
+    pattern_params:
+      period_key: window
+    required_capabilities:
+      - pattern_scan
+      - outlier_scan
+      - answer_verify
+    minimum_real_data_status: degraded
+    expected_degraded_or_blocked_reasons: []
+    fixture_rows:
+      - {window: "2026-01-01..2026-01-10", amount: 118, baseline_high: 100}
+      - {window: "2026-01-11..2026-01-20", amount: 121, baseline_high: 101}
+      - {window: "2026-01-21..2026-01-31", amount: 119, baseline_high: 100}
+
+  - case_id: custom_baseline_release
+    pattern_family: custom_baseline
+    time_window: "2024-01..2026-05"
+    window_definition:
+      target_group: target
+      baseline_group: baseline
+    pattern_params:
+      period_key: period
+      group_key: group
+      target_group: target
+      baseline_group: baseline
+    required_capabilities:
+      - pattern_scan
+      - formula_decompose
+      - answer_verify
+    minimum_real_data_status: degraded
+    expected_degraded_or_blocked_reasons: []
+    fixture_rows:
+      - {period: release_1, group: target, amount: 132}
+      - {period: release_1, group: baseline, amount: 100}
+      - {period: release_2, group: target, amount: 129}
+      - {period: release_2, group: baseline, amount: 101}
+      - {period: release_3, group: target, amount: 135}
+      - {period: release_3, group: baseline, amount: 102}
