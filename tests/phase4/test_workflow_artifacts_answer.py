@@ -71,7 +71,24 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
 
         self.assertIn("sql_hash", json.dumps(business))
         self.assertNotIn("SELECT", json.dumps(business))
+        self.assertNotIn("validator_results", business)
+        self.assertNotIn("checkpoint_events", business)
+        self.assertNotIn("proposed_graph", business)
+        self.assertNotIn("accepted_graph", business)
         self.assertIn("SELECT", json.dumps(admin))
+
+    def test_analyst_diagnostics_do_not_expose_admin_validator_results(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow({"artifact_root": tmpdir, "run_id": "analyst"})
+
+            analyst = filter_artifact_for_role(result.answer_package, "analyst")
+
+        diagnostics = [
+            section for section in analyst["sections"] if section["section_id"] == "diagnostics"
+        ][0]
+        self.assertIn("sql_hash", diagnostics["payload"])
+        self.assertNotIn("validator_results", diagnostics["payload"])
+        self.assertNotIn("artifact_audit", diagnostics["payload"])
 
     def test_wording_warnings_do_not_block_phase4_draft(self):
         with tempfile.TemporaryDirectory() as tmpdir:

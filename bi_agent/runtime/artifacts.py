@@ -31,16 +31,21 @@ def persist_artifact(
 
 def filter_artifact_for_role(artifact: Mapping[str, Any], role: str) -> dict[str, Any]:
     allowed = ROLE_VISIBILITY.get(role, ROLE_VISIBILITY["business_reader"])
-    filtered = dict(artifact)
     if allowed is None:
-        return to_jsonable(filtered)
+        return to_jsonable(dict(artifact))
 
-    filtered["sections"] = [
-        section
-        for section in artifact.get("sections", [])
-        if section.get("visibility") in allowed
-    ]
-    filtered.pop("admin_audit", None)
+    filtered = {
+        "run_id": artifact.get("run_id"),
+        "status": artifact.get("status"),
+        "package_type": artifact.get("package_type"),
+        "sections": [
+            section
+            for section in artifact.get("sections", [])
+            if section.get("visibility") in allowed
+        ],
+    }
+    if role == "analyst":
+        filtered["checkpoint_events"] = artifact.get("checkpoint_events", [])
     return to_jsonable(filtered)
 
 

@@ -26,13 +26,11 @@ def build_answer_package(
         evidence=evidence,
         visible_limitations=visible_limitations,
     )
-    ordinary_audit = {
-        "sql_hash": sql_hash,
-        "validator_results": to_jsonable(validator_results),
-        "artifact_audit": to_jsonable(artifact_audit),
-    }
+    ordinary_audit = {"sql_hash": sql_hash}
     admin_audit = {
         **ordinary_audit,
+        "validator_results": to_jsonable(validator_results),
+        "artifact_audit": to_jsonable(artifact_audit),
         "sql_text": sql_text,
         "verifier": verifier,
     }
