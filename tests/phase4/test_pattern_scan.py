@@ -1,6 +1,9 @@
 import unittest
 
+from bi_agent.capabilities.data_quality_check import data_quality_check
+from bi_agent.capabilities.formula_decompose import formula_decompose
 from bi_agent.capabilities.pattern_scan import scan_pattern
+from bi_agent.capabilities.segment_bridge import segment_bridge
 
 
 def month_rows(start_amount, mid_amount, end_amount):
@@ -69,6 +72,52 @@ class PatternScanTest(unittest.TestCase):
         self.assertIs(result.established, True)
         self.assertEqual(result.comparable_periods, 2)
         self.assertEqual(result.evidence_type, "statistical_association")
+
+    def test_empty_pattern_scan_returns_insufficient_evidence(self):
+        result = scan_pattern(
+            [],
+            pattern_family="intra_period",
+            target_phase="start",
+            materiality_floor=0.03,
+        )
+
+        self.assertIs(result.established, False)
+        self.assertEqual(result.evidence_type, "insufficient")
+        self.assertEqual(result.wording_limit, "insufficient")
+
+    def test_formula_partial_gaps_degrade_quantified_wording(self):
+        result = formula_decompose(
+            [
+                {"formula_id": "covered", "components": ("paid_orders",)},
+                {"formula_id": "gap", "components": ("paid_orders", "missing_component")},
+            ],
+            available_components=("paid_orders",),
+        )
+
+        self.assertEqual(result.evidence_type, "accounting_contribution")
+        self.assertEqual(result.strength, "low")
+        self.assertEqual(result.wording_limit, "degraded")
+        self.assertIn("missing_formula_component:gap", result.limitations)
+
+    def test_data_quality_empty_rows_are_not_supported(self):
+        result = data_quality_check([], required_fields=("amount",))
+
+        self.assertEqual(result.evidence_type, "insufficient")
+        self.assertEqual(result.strength, "insufficient")
+        self.assertEqual(result.wording_limit, "blocked")
+
+    def test_segment_bridge_blocks_sparse_or_sensitive_rows(self):
+        result = segment_bridge(
+            [
+                {"segment": "A", "amount": 100, "n": 3},
+                {"segment": "B", "amount": 200, "raw_user_id": "u1", "n": 20},
+            ],
+        )
+
+        self.assertEqual(result.evidence_type, "permission_limited")
+        self.assertEqual(result.wording_limit, "blocked")
+        self.assertIn("sparse_cell", result.limitations)
+        self.assertIn("raw_identifier_present", result.limitations)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,26 @@ def data_quality_check(
     result_refs: tuple[str, ...] = (),
 ):
     rows = list(rows)
+    if not rows:
+        return make_evidence_envelope(
+            "data_quality_check",
+            evidence_type="insufficient",
+            strength="insufficient",
+            wording_limit="blocked",
+            typed_payload={"row_count": 0, "missing_required_fields": {}},
+            limitations=("no_rows",),
+            result_refs=result_refs,
+        )
+    if not required_fields:
+        return make_evidence_envelope(
+            "data_quality_check",
+            evidence_type="data_quality",
+            strength="low",
+            wording_limit="degraded",
+            typed_payload={"row_count": len(rows), "missing_required_fields": {}},
+            limitations=("no_required_fields_checked",),
+            result_refs=result_refs,
+        )
     missing = {
         field: sum(1 for row in rows if row.get(field) is None)
         for field in required_fields

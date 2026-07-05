@@ -57,10 +57,12 @@ def scan_pattern(
     )
     wording_limit = _wording_limit(established, direction_ratio, median_uplift, materiality_floor)
     strength = _strength(established, direction_ratio, median_uplift, materiality_floor)
+    evidence_type = "statistical_association" if comparable_periods else "insufficient"
     limitations = tuple(
         reason
         for reason, present in (
-            ("insufficient_comparable_periods", comparable_periods < min_periods),
+            ("no_comparable_periods", comparable_periods == 0),
+            ("insufficient_comparable_periods", 0 < comparable_periods < min_periods),
             ("weak_direction", direction_ratio < 0.70),
             ("below_materiality_floor", median_uplift < materiality_floor),
         )
@@ -79,7 +81,7 @@ def scan_pattern(
     return PatternScanResult(
         evidence_ref=evidence_ref or f"pattern_scan:{pattern_family}",
         capability="pattern_scan",
-        evidence_type="statistical_association",
+        evidence_type=evidence_type,
         strength=strength,
         wording_limit=wording_limit,
         typed_payload=typed_payload,
