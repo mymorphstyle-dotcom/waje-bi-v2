@@ -159,10 +159,12 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
         )
 
     def test_contract_loader_rejects_non_mapping_yaml(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = f"{tmpdir}/bad.yaml"
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write("- unsupported\n")
+        for contents in ("- unsupported\n", "false\n", "0\n", "[]\n"):
+            with self.subTest(contents=contents):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    path = f"{tmpdir}/bad.yaml"
+                    with open(path, "w", encoding="utf-8") as handle:
+                        handle.write(contents)
 
-            with self.assertRaisesRegex(ValueError, path):
-                load_contract(path)
+                    with self.assertRaisesRegex(ValueError, path):
+                        load_contract(path)

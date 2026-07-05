@@ -23,7 +23,40 @@ BLOCKED_KEYWORDS = frozenset(
 )
 
 BLOCKED_TABLE_FUNCTIONS = frozenset(
-    {"file", "url", "s3", "hdfs", "mysql", "postgresql", "jdbc", "odbc"}
+    {
+        "azureblobstorage",
+        "executable",
+        "file",
+        "filecluster",
+        "gcs",
+        "hdfs",
+        "jdbc",
+        "mongodb",
+        "mysql",
+        "odbc",
+        "postgresql",
+        "redis",
+        "remote",
+        "remotesecure",
+        "s3",
+        "s3cluster",
+        "sqlite",
+        "url",
+        "urlcluster",
+    }
+)
+
+BLOCKED_SELECT_CLAUSES = frozenset({"FORMAT", "OUTFILE", "SETTINGS"})
+AGGREGATE_FUNCTIONS = (
+    "avg",
+    "count",
+    "countIf",
+    "max",
+    "min",
+    "quantile",
+    "sum",
+    "sumIf",
+    "uniq",
 )
 
 
@@ -62,6 +95,14 @@ def validate_select_only(sql: str, *, aggregate: bool = False) -> SqlSafetyResul
     if _has_blocked_table_function(cleaned):
         return SqlSafetyResult(
             ok=False, query_hash=query_hash, reason="blocked_table_function"
+        )
+    if upper_tokens & BLOCKED_SELECT_CLAUSES:
+        return SqlSafetyResult(
+            ok=False, query_hash=query_hash, reason="blocked_select_clause"
+        )
+    if aggregate and "LIMIT" not in upper_tokens and not _has_aggregate_shape(cleaned, upper_tokens):
+        return SqlSafetyResult(
+            ok=False, query_hash=query_hash, reason="aggregate_shape_required"
         )
     if not aggregate and "LIMIT" not in upper_tokens:
         return SqlSafetyResult(ok=False, query_hash=query_hash, reason="limit_required")
@@ -147,6 +188,14 @@ def _tokens(sql: str) -> list[str]:
 def _has_blocked_table_function(sql: str) -> bool:
     pattern = r"\b(" + "|".join(sorted(BLOCKED_TABLE_FUNCTIONS)) + r")\s*\("
     return re.search(pattern, _mask_string_literals(sql), re.IGNORECASE) is not None
+
+
+def _has_aggregate_shape(sql: str, upper_tokens: set[str]) -> bool:
+    if {"GROUP", "BY"}.issubset(upper_tokens):
+        return True
+    masked = _mask_string_literals(sql)
+    pattern = r"\b(" + "|".join(AGGREGATE_FUNCTIONS) + r")\s*\("
+    return re.search(pattern, masked, re.IGNORECASE) is not None
 
 
 def _mask_string_literals(sql: str) -> str:

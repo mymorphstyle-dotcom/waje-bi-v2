@@ -16,6 +16,7 @@ ENV_NAMES = (
 )
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
+MAX_SAMPLE_LIMIT = 1000
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,11 @@ class ClickHouseRuntime:
             return cls(
                 binding=RuntimeBinding(ok=False, reason="invalid_clickhouse_port")
             )
+        secure = _env_bool(values["WAJE_CLICKHOUSE_SECURE"])
+        if secure is None:
+            return cls(
+                binding=RuntimeBinding(ok=False, reason="invalid_clickhouse_secure")
+            )
 
         return cls(
             host=values["WAJE_CLICKHOUSE_HOST"],
@@ -69,7 +75,7 @@ class ClickHouseRuntime:
             user=values["WAJE_CLICKHOUSE_USER"],
             password=values["WAJE_CLICKHOUSE_PASSWORD"],
             database=values["WAJE_CLICKHOUSE_DATABASE"],
-            secure=_env_bool(values["WAJE_CLICKHOUSE_SECURE"]),
+            secure=secure,
             binding=RuntimeBinding(ok=True),
         )
 
@@ -89,6 +95,8 @@ class ClickHouseRuntime:
             return ClickHouseQueryResult(ok=False, reason="invalid_identifier")
         if not isinstance(limit, int) or limit < 1:
             return ClickHouseQueryResult(ok=False, reason="invalid_limit")
+        if limit > MAX_SAMPLE_LIMIT:
+            return ClickHouseQueryResult(ok=False, reason="sample_limit_too_large")
         return self._execute_select(f"SELECT * FROM {table_name} LIMIT {limit}")
 
     def aggregate(self, sql: str, query_id: str) -> ClickHouseQueryResult:
@@ -146,8 +154,13 @@ class ClickHouseRuntime:
         return self.client
 
 
-def _env_bool(value: str) -> bool:
-    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+def _env_bool(value: str) -> Optional[bool]:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
 
 
 def _safe_identifier(value: str) -> bool:
