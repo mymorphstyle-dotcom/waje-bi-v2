@@ -37,6 +37,13 @@ class SqlSafetyAndBindingTest(unittest.TestCase):
             "SELECT * FROM remote('127.0.0.1', db, table) LIMIT 1",
             "SELECT * FROM executable('cat /etc/passwd') LIMIT 1",
             "SELECT * FROM azureBlobStorage('https://example.test/blob') LIMIT 1",
+            "SELECT * FROM azureBlobStorageCluster('cluster', 'https://example.test/blob') LIMIT 1",
+            "SELECT * FROM clusterAllReplicas('cluster', db, table) LIMIT 1",
+            "SELECT * FROM filesystem('/tmp/*.parquet') LIMIT 1",
+            "SELECT * FROM hdfsCluster('cluster', 'hdfs://namenode/path') LIMIT 1",
+            "SELECT * FROM hudi('s3://bucket/table') LIMIT 1",
+            "SELECT * FROM iceberg('s3://bucket/table') LIMIT 1",
+            "SELECT * FROM arrowFlight('host:port', 'dataset') LIMIT 1",
             "SELECT * FROM s3Cluster('cluster', 's3://bucket/key') LIMIT 1",
         ]:
             result = validate_select_only(sql)
@@ -63,8 +70,22 @@ class SqlSafetyAndBindingTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "limit_required")
 
+    def test_nested_limit_does_not_satisfy_top_level_limit(self):
+        result = validate_select_only(
+            "SELECT * FROM paid_success WHERE EXISTS (SELECT 1 LIMIT 1)"
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "limit_required")
+
     def test_aggregate_marker_does_not_allow_unbounded_detail_select(self):
         result = validate_select_only("SELECT * FROM paid_success", aggregate=True)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "aggregate_shape_required")
+
+    def test_group_by_without_aggregate_does_not_satisfy_aggregate_shape(self):
+        result = validate_select_only(
+            "SELECT user_id FROM paid_success GROUP BY user_id", aggregate=True
+        )
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "aggregate_shape_required")
 

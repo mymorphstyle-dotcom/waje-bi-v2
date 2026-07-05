@@ -58,6 +58,7 @@ AGGREGATE_FUNCTIONS = (
     "sumIf",
     "uniq",
 )
+TABLE_FUNCTION_INTRODUCERS = frozenset({"FROM", "JOIN"})
 
 
 @dataclass(frozen=True)
@@ -92,7 +93,10 @@ def validate_select_only(sql: str, *, aggregate: bool = False) -> SqlSafetyResul
         return SqlSafetyResult(
             ok=False, query_hash=query_hash, reason="blocked_keyword"
         )
-    if _has_blocked_table_function(cleaned):
+    top_level_tokens = _top_level_tokens(cleaned)
+    top_level_token_set = {token.upper() for token in top_level_tokens}
+
+    if _has_blocked_table_function(cleaned) or _has_table_function(cleaned):
         return SqlSafetyResult(
             ok=False, query_hash=query_hash, reason="blocked_table_function"
         )
@@ -100,11 +104,12 @@ def validate_select_only(sql: str, *, aggregate: bool = False) -> SqlSafetyResul
         return SqlSafetyResult(
             ok=False, query_hash=query_hash, reason="blocked_select_clause"
         )
-    if aggregate and "LIMIT" not in upper_tokens and not _has_aggregate_shape(cleaned, upper_tokens):
+    has_top_level_limit = "LIMIT" in top_level_token_set
+    if aggregate and not has_top_level_limit and not _has_aggregate_shape(cleaned):
         return SqlSafetyResult(
             ok=False, query_hash=query_hash, reason="aggregate_shape_required"
         )
-    if not aggregate and "LIMIT" not in upper_tokens:
+    if not aggregate and not has_top_level_limit:
         return SqlSafetyResult(ok=False, query_hash=query_hash, reason="limit_required")
 
     return SqlSafetyResult(ok=True, query_hash=query_hash)
@@ -190,12 +195,41 @@ def _has_blocked_table_function(sql: str) -> bool:
     return re.search(pattern, _mask_string_literals(sql), re.IGNORECASE) is not None
 
 
-def _has_aggregate_shape(sql: str, upper_tokens: set[str]) -> bool:
-    if {"GROUP", "BY"}.issubset(upper_tokens):
-        return True
+def _has_table_function(sql: str) -> bool:
+    pattern = r"\b(FROM|JOIN)\s+[A-Za-z_][A-Za-z0-9_]*\s*\("
+    return re.search(pattern, _mask_string_literals(sql), re.IGNORECASE) is not None
+
+
+def _has_aggregate_shape(sql: str) -> bool:
     masked = _mask_string_literals(sql)
     pattern = r"\b(" + "|".join(AGGREGATE_FUNCTIONS) + r")\s*\("
     return re.search(pattern, masked, re.IGNORECASE) is not None
+
+
+def _top_level_tokens(sql: str) -> list[str]:
+    masked = _mask_string_literals(sql)
+    tokens = []
+    depth = 0
+    index = 0
+    while index < len(masked):
+        char = masked[index]
+        if char == "(":
+            depth += 1
+            index += 1
+            continue
+        if char == ")":
+            depth = max(0, depth - 1)
+            index += 1
+            continue
+        if depth == 0 and (char.isalpha() or char == "_"):
+            start = index
+            index += 1
+            while index < len(masked) and (masked[index].isalnum() or masked[index] == "_"):
+                index += 1
+            tokens.append(masked[start:index])
+            continue
+        index += 1
+    return tokens
 
 
 def _mask_string_literals(sql: str) -> str:
