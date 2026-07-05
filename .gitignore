@@ -14,3 +14,4 @@ data/raw/
 data/local/
 data/clickhouse/
 data/postgres/
+artifacts/phase-4/
