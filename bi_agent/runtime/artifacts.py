@@ -44,8 +44,6 @@ def filter_artifact_for_role(artifact: Mapping[str, Any], role: str) -> dict[str
             if section.get("visibility") in allowed
         ],
     }
-    if role == "analyst":
-        filtered["checkpoint_events"] = artifact.get("checkpoint_events", [])
     return to_jsonable(filtered)
 
 

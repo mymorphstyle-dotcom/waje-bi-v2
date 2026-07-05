@@ -75,6 +75,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertNotIn("checkpoint_events", business)
         self.assertNotIn("proposed_graph", business)
         self.assertNotIn("accepted_graph", business)
+        self.assertNotIn("rejected_or_degraded_mutations", business)
         self.assertIn("SELECT", json.dumps(admin))
 
     def test_analyst_diagnostics_do_not_expose_admin_validator_results(self):
@@ -89,6 +90,11 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertIn("sql_hash", diagnostics["payload"])
         self.assertNotIn("validator_results", diagnostics["payload"])
         self.assertNotIn("artifact_audit", diagnostics["payload"])
+        self.assertNotIn("sql_text", diagnostics["payload"])
+        self.assertNotIn("proposed_graph", diagnostics["payload"])
+        self.assertNotIn("accepted_graph", diagnostics["payload"])
+        self.assertNotIn("rejected_or_degraded_mutations", diagnostics["payload"])
+        self.assertNotIn("checkpoint_events", analyst)
 
     def test_wording_warnings_do_not_block_phase4_draft(self):
         with tempfile.TemporaryDirectory() as tmpdir:

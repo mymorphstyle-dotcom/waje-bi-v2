@@ -65,14 +65,7 @@ def build_answer_package(
             {
                 "section_id": "diagnostics",
                 "visibility": "diagnostic_detail",
-                "payload": {
-                    "proposed_graph": list(proposed_graph),
-                    "accepted_graph": list(accepted_graph),
-                    "rejected_or_degraded_mutations": to_jsonable(
-                        rejected_or_degraded_mutations
-                    ),
-                    **ordinary_audit,
-                },
+                "payload": ordinary_audit,
             },
             {
                 "section_id": "admin_audit",
