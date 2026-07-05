@@ -111,6 +111,9 @@ class PatternScanTest(unittest.TestCase):
             [
                 {"segment": "A", "amount": 100, "n": 3},
                 {"segment": "B", "amount": 200, "raw_user_id": "u1", "n": 20},
+                {"segment": "C", "amount": 300, "email": "a@example.test", "n": 20},
+                {"segment": "D", "amount": 400, "account_id": "acct", "n": 20},
+                {"segment": "E", "amount": 500, "phone": "123", "n": 20},
             ],
         )
 
@@ -118,6 +121,29 @@ class PatternScanTest(unittest.TestCase):
         self.assertEqual(result.wording_limit, "blocked")
         self.assertIn("sparse_cell", result.limitations)
         self.assertIn("raw_identifier_present", result.limitations)
+
+    def test_segment_bridge_requires_valid_sample_size(self):
+        for segments in (
+            [{"segment": "A", "amount": 100}],
+            [{"segment": "A", "amount": 100, "n": "unknown"}],
+        ):
+            with self.subTest(segments=segments):
+                result = segment_bridge(segments)
+
+                self.assertEqual(result.evidence_type, "permission_limited")
+                self.assertEqual(result.wording_limit, "blocked")
+                self.assertIn("sample_size_unverified", result.limitations)
+
+    def test_segment_bridge_outputs_only_safe_aggregate_payload(self):
+        result = segment_bridge(
+            [{"segment": "A", "amount": 100, "n": 20, "payment_method": "OPAY"}]
+        )
+
+        self.assertEqual(result.wording_limit, "contextual")
+        self.assertEqual(
+            result.typed_payload["segments"],
+            ({"segment": "A", "amount": 100, "n": 20},),
+        )
 
 
 if __name__ == "__main__":
