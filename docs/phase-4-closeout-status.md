@@ -40,14 +40,16 @@ business conclusion.
 
 `python3 tools/phase4/validate_phase4.py`
 
-- Phase 4 Python tests: passed, 43 tests.
+- Phase 4 Python tests: passed, 46 tests.
 - Phase 3 Ruby validators: passed.
 - Contract validation: passed, 21 YAML files parsed.
 - Launch eval validation: passed, 8 expectation packages.
 - `git diff --check`: passed.
 - Fixture eval: passed all 5 cases.
-- Real month-start eval: blocked by missing local ClickHouse env vars, recorded
-  as `external_dependency_blocked` with owner `data_engineering_owner`.
+- Real month-start eval: local ClickHouse env and physical SQL binding are
+  configured. The run reaches ClickHouse and writes a real artifact, then blocks
+  because the accepted clean table covers 2026-01 through 2026-06 while the
+  regression asks for 2024-01 through 2026-05.
 
 `npm run build`
 
@@ -71,22 +73,21 @@ Fixture artifacts are marked with `non_real_data: true` and
 
 Owner: `data_engineering_owner`
 
-Current block: local environment does not provide the required read-only
-ClickHouse variables:
+Current local setup:
 
-- `WAJE_CLICKHOUSE_HOST`
-- `WAJE_CLICKHOUSE_PORT`
-- `WAJE_CLICKHOUSE_USER`
-- `WAJE_CLICKHOUSE_PASSWORD`
-- `WAJE_CLICKHOUSE_DATABASE`
-- `WAJE_CLICKHOUSE_SECURE`
+- local read-only ClickHouse user: configured in `.env`
+- accepted Phase 4 SQL binding: configured in `.env` as
+  `WAJE_PHASE4_PATTERN_SQL`
+- clean table: `waje_bi.paid_order_success_clean`
+- actual covered data window: 2026-01-01 through 2026-06-30
 
-Real mode also requires an accepted physical aggregate SQL binding in
-`WAJE_PHASE4_PATTERN_SQL`. The SQL must pass the SELECT-only aggregate
-validator. When provided, the executed SQL hash is persisted in the admin audit.
+Current block: the month-start regression expects the 2024-01 through 2026-05
+window. The available accepted clean table has only 5 comparable months inside
+that requested window, so the real run returns `external_dependency_blocked`
+with owner `data_engineering_owner` and does not publish a business conclusion.
 
-Repair path: provide read-only ClickHouse env vars and an accepted physical
-binding for the cleaned successful payment fact table, then rerun:
+Repair path: load or bind enough accepted successful-payment history for
+2024-01 through 2026-05, then rerun:
 
 ```bash
 python3 tools/phase4/run_phase4_pattern_slice.py --case month_start --mode real

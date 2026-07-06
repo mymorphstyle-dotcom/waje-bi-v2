@@ -110,7 +110,11 @@ def run_real_eval(
     case_id: str = "month_start",
     case_file: Path = CASE_FILE,
 ) -> EvalCaseResult:
-    env = dict(os.environ if environ is None else environ)
+    env = (
+        {**_load_local_env(ROOT / ".env"), **os.environ}
+        if environ is None
+        else dict(environ)
+    )
     missing_env = tuple(name for name in ENV_NAMES if not env.get(name))
     case = _find_case(case_id, load_cases(case_file))
     if missing_env:
@@ -251,6 +255,23 @@ def run_eval_case(
     status, reason = _status_from_answer_package(
         result.answer_package, case["pattern_family"]
     )
+    if mode == "real" and "insufficient_comparable_periods" in reason:
+        return EvalCaseResult(
+            case_id=case["case_id"],
+            pattern_family=case["pattern_family"],
+            status="blocked",
+            reason="external_dependency_blocked",
+            artifact_path=result.artifact_path,
+            non_real_data=False,
+            owner="data_engineering_owner",
+            repair_path=(
+                "provide enough accepted ClickHouse history for the requested "
+                f"{case.get('time_window', 'time window')}; current binding "
+                f"returned {reason}"
+            ),
+            business_conclusion_published=False,
+            diagnostics={"pattern_limitations": reason},
+        )
     return EvalCaseResult(
         case_id=case["case_id"],
         pattern_family=case["pattern_family"],
@@ -437,6 +458,22 @@ def _find_case(case_id: str, cases: Sequence[Mapping[str, Any]]) -> Mapping[str,
         if case.get("case_id") == case_id:
             return case
     raise ValueError(f"missing eval case: {case_id}")
+
+
+def _load_local_env(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
 
 
 @contextmanager

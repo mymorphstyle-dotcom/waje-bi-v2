@@ -25,6 +25,15 @@ class FakeFailingClient:
         raise RuntimeError("connection failed")
 
 
+class FakeNoQueryIdClient:
+    def __init__(self):
+        self.queries = []
+
+    def query(self, sql):
+        self.queries.append(sql)
+        return FakeQueryResult()
+
+
 class SqlSafetyAndBindingTest(unittest.TestCase):
     def test_select_with_limit_is_allowed(self):
         result = validate_select_only(
@@ -175,6 +184,26 @@ class SqlSafetyAndBindingTest(unittest.TestCase):
         self.assertEqual(result.reason, "clickhouse_query_failed")
         self.assertTrue(result.query_hash)
         self.assertEqual(result.query_id, "phase4_failure")
+
+    def test_client_without_query_id_support_still_runs_query(self):
+        client = FakeNoQueryIdClient()
+        runtime = ClickHouseRuntime(
+            host="localhost",
+            port=8123,
+            user="reader",
+            password="secret",
+            database="analytics",
+            secure=False,
+            client=client,
+        )
+
+        result = runtime.aggregate(
+            "SELECT count(*) FROM paid_success", query_id="phase4_compat"
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(client.queries, ["SELECT count(*) FROM paid_success"])
+        self.assertEqual(result.query_id, "phase4_compat")
 
     def test_sample_rows_has_small_limit_cap(self):
         runtime = ClickHouseRuntime(client=FakeClient())

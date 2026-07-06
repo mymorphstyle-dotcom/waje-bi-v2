@@ -128,7 +128,13 @@ class ClickHouseRuntime:
         try:
             client = self._get_client()
             kwargs = {"query_id": query_id} if query_id else {}
-            result = client.query(sql, **kwargs)
+            try:
+                result = client.query(sql, **kwargs)
+            except TypeError as exc:
+                if kwargs and "query_id" in str(exc):
+                    result = client.query(sql)
+                else:
+                    raise
         except Exception:
             return ClickHouseQueryResult(
                 ok=False,
