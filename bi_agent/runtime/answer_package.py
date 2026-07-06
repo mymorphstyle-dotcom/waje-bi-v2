@@ -1,5 +1,5 @@
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Optional
 
 from bi_agent.runtime.artifacts import to_jsonable
 from bi_agent.runtime.wording import wording_warnings
@@ -18,8 +18,22 @@ def build_answer_package(
     sql_text: str,
     sql_hash: str,
     artifact_audit: Mapping[str, Any],
+    llm_calls: Sequence[Mapping[str, Any]] = (),
+    semantic_audit: Optional[Mapping[str, Any]] = None,
+    final_explanation: Optional[Mapping[str, Any]] = None,
+    answer_text: str = "",
+    coverage_interpretation: Optional[Mapping[str, Any]] = None,
+    clarification_outcome: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
+    semantic_audit = {} if semantic_audit is None else semantic_audit
+    final_explanation = {} if final_explanation is None else final_explanation
+    coverage_interpretation = (
+        {} if coverage_interpretation is None else coverage_interpretation
+    )
+    clarification_outcome = (
+        {} if clarification_outcome is None else clarification_outcome
+    )
     visible_limitations = collect_visible_limitations(evidence)
     verifier = verify_answer_package(
         draft_claims=draft_claims,
@@ -33,6 +47,10 @@ def build_answer_package(
         "artifact_audit": to_jsonable(artifact_audit),
         "sql_text": sql_text,
         "verifier": verifier,
+        "llm_calls": to_jsonable(llm_calls),
+        "semantic_audit": to_jsonable(semantic_audit),
+        "coverage_interpretation": to_jsonable(coverage_interpretation),
+        "clarification_outcome": to_jsonable(clarification_outcome),
     }
 
     return {
@@ -44,14 +62,19 @@ def build_answer_package(
         "rejected_or_degraded_mutations": to_jsonable(rejected_or_degraded_mutations),
         "validator_results": to_jsonable(validator_results),
         "checkpoint_events": to_jsonable(checkpoint_events),
+        "llm_calls": to_jsonable(llm_calls),
+        "semantic_audit": to_jsonable(semantic_audit),
+        "final_explanation": to_jsonable(final_explanation),
         "sections": [
             {
                 "section_id": "summary",
                 "visibility": "business_summary",
                 "payload": {
+                    "answer_text": answer_text,
                     "claims": to_jsonable(draft_claims),
                     "limitations": visible_limitations,
                     "sql_hash": sql_hash,
+                    "final_explanation": to_jsonable(final_explanation),
                 },
             },
             {

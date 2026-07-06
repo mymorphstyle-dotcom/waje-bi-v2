@@ -90,9 +90,15 @@ def run_fixture_eval(
     *,
     artifact_root: Optional[str] = None,
     case_file: Path = CASE_FILE,
+    llm_client: Any = None,
 ) -> FixtureEvalResult:
     cases = [
-        run_eval_case(case, mode="fixture", artifact_root=artifact_root)
+        run_eval_case(
+            case,
+            mode="fixture",
+            artifact_root=artifact_root,
+            llm_client=llm_client,
+        )
         for case in load_cases(case_file)
     ]
     month_start = _case_by_id(cases, "month_start")
@@ -118,6 +124,7 @@ def run_real_eval(
     environ: Optional[Mapping[str, str]] = None,
     case_id: str = "month_start",
     case_file: Path = CASE_FILE,
+    llm_client: Any = None,
 ) -> EvalCaseResult:
     env = (
         {**_load_local_env(ROOT / ".env"), **os.environ}
@@ -216,6 +223,7 @@ def run_real_eval(
         mode="real",
         artifact_root=artifact_root,
         sql_text=sql,
+        llm_client=llm_client,
     )
 
 
@@ -224,6 +232,7 @@ def run_real_2026h1_eval(
     artifact_root: Optional[str] = None,
     environ: Optional[Mapping[str, str]] = None,
     case_file: Path = REAL_2026H1_CASE_FILE,
+    llm_client: Any = None,
 ) -> RealEvalSuiteResult:
     cases = load_cases(case_file)
     results = tuple(
@@ -232,6 +241,7 @@ def run_real_2026h1_eval(
             environ=environ,
             case_id=case["case_id"],
             case_file=case_file,
+            llm_client=llm_client,
         )
         for case in cases
     )
@@ -258,6 +268,7 @@ def run_eval_case(
     mode: str,
     artifact_root: Optional[str] = None,
     sql_text: str = "",
+    llm_client: Any = None,
 ) -> EvalCaseResult:
     run_id = f"phase4-{mode}-{case['case_id']}"
     request = {
@@ -269,9 +280,12 @@ def run_eval_case(
         "rows": list(case.get("fixture_rows", ())),
         "required_fields": _required_fields_for_case(case),
         "requested_nodes": tuple(case.get("required_capabilities", ())),
+        "allow_question_interrupt": False,
     }
     if sql_text:
         request["sql_text"] = sql_text
+    if llm_client is not None:
+        request["llm_client"] = llm_client
 
     result = run_pattern_workflow(request)
     non_real_data = mode == "fixture"
@@ -281,6 +295,16 @@ def run_eval_case(
             pattern_family=case["pattern_family"],
             status="failed",
             reason=result.failure_reason or "workflow_failed",
+            artifact_path=result.artifact_path,
+            non_real_data=non_real_data,
+            business_conclusion_published=False,
+        )
+    if not _has_required_llm_audit(result.answer_package):
+        return EvalCaseResult(
+            case_id=case["case_id"],
+            pattern_family=case["pattern_family"],
+            status="failed",
+            reason="missing_required_llm_audit",
             artifact_path=result.artifact_path,
             non_real_data=non_real_data,
             business_conclusion_published=False,
@@ -329,9 +353,11 @@ def run_validation_suite(*, run_commands: bool = True) -> Phase4ValidationResult
     command_results = (
         tuple(_run_validation_commands()) if run_commands else tuple()
     )
-    fixture_eval = run_fixture_eval()
-    real_month_start = run_real_eval()
-    real_2026h1_eval = run_real_2026h1_eval()
+    env = {**_load_local_env(ROOT / ".env"), **os.environ}
+    with _patched_environ(env):
+        fixture_eval = run_fixture_eval()
+        real_month_start = run_real_eval()
+        real_2026h1_eval = run_real_2026h1_eval()
     ok = (
         all(result.ok for result in command_results)
         and fixture_eval.engineering_fixture_passed
@@ -384,6 +410,7 @@ def _run_validation_commands() -> list[CommandResult]:
 def _status_from_answer_package(
     package: Mapping[str, Any], pattern_family: str
 ) -> tuple[str, str]:
+    final = package.get("final_explanation", {})
     evidence = _evidence_items(package)
     pattern = next(
         (
@@ -402,10 +429,41 @@ def _status_from_answer_package(
         return "degraded", ",".join(data_quality["limitations"])
     if pattern is None:
         return "failed", "missing_pattern_scan_evidence"
+    limitation_reason = ",".join(tuple(pattern.get("limitations", ())))
+    if final.get("status") == "blocked":
+        return "blocked", final.get("explanation") or limitation_reason or "blocked"
+    if final.get("status") == "degraded":
+        return "degraded", ",".join(
+            item
+            for item in (limitation_reason, final.get("explanation", "degraded"))
+            if item
+        )
     if pattern.get("established"):
         return "passed", "pattern_established"
     limitations = tuple(pattern.get("limitations", ()))
     return "degraded", ",".join(limitations) or "pattern_not_established"
+
+
+def _has_required_llm_audit(package: Mapping[str, Any]) -> bool:
+    calls = package.get("admin_audit", {}).get("llm_calls", ())
+    seen = {call.get("task") for call in calls}
+    common = {
+        "business_intent",
+        "boundary_decision",
+        "confirm_understanding",
+        "analysis_route",
+        "data_coverage_interpretation",
+        "next_action",
+    }
+    answer_path = {
+        "evidence_interpretation",
+        "answer_synthesis",
+        "semantic_audit",
+    }
+    terminal_path = {"degraded_explanation", "blocked_explanation"}
+    return common.issubset(seen) and (
+        answer_path.issubset(seen) or bool(terminal_path & seen)
+    )
 
 
 def _evidence_items(package: Mapping[str, Any]) -> list[dict[str, Any]]:

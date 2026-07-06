@@ -15,6 +15,7 @@ from tools.phase4.validate_phase4 import (
 )
 from tools.phase4.run_phase4_pattern_slice import exit_code_for_result
 from bi_agent.runtime.sql_safety import validate_select_only
+from tests.phase4.fake_llm import FakeLLMClient
 
 
 class FakeRealRuntime:
@@ -53,10 +54,49 @@ def _month_start_rows():
     return tuple(rows)
 
 
+class NoAuditLLMClient:
+    def invoke_json(self, *, task, prompt_version, messages, required_keys):
+        output = {}
+        for key in required_keys:
+            output[key] = None
+        if task == "business_intent":
+            output.update(
+                {
+                    "question_family": "pattern_explanation",
+                    "target_metric": "paid_amount",
+                    "pattern_family": "intra_period",
+                    "scope": "full_sample",
+                    "time_window": "2024-01..2026-05",
+                    "target_claim": "recurring_pattern_existence",
+                    "baseline_candidates": [],
+                    "status_message": "ok",
+                }
+            )
+        elif task == "boundary_decision":
+            output.update(
+                {
+                    "boundary_status": "clear",
+                    "recommended_assumption": {},
+                    "clarification_questions": [],
+                    "decision_summary": "ok",
+                }
+            )
+        elif task == "analysis_route":
+            output["requested_nodes"] = ["pattern_scan"]
+        elif task == "data_coverage_interpretation":
+            output["coverage_status"] = "sufficient"
+        elif task == "next_action":
+            output["next_action"] = "synthesize_answer"
+        return SimpleNamespace(output=output, audit={})
+
+
 class Phase4EvalHarnessTest(unittest.TestCase):
     def test_phase4_fixture_eval_requires_month_start_and_two_siblings(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_fixture_eval(artifact_root=tmpdir)
+            result = run_fixture_eval(
+                artifact_root=tmpdir,
+                llm_client=FakeLLMClient(),
+            )
             for case in result.cases:
                 with open(case.artifact_path, encoding="utf-8") as handle:
                     artifact = json.load(handle)
@@ -143,7 +183,11 @@ class Phase4EvalHarnessTest(unittest.TestCase):
                 "tools.phase4.validate_phase4.ClickHouseRuntime.from_env",
                 return_value=FakeRealRuntime(),
             ):
-                result = run_real_eval(artifact_root=tmpdir, environ=env)
+                result = run_real_eval(
+                    artifact_root=tmpdir,
+                    environ=env,
+                    llm_client=FakeLLMClient(),
+                )
             with open(result.artifact_path, encoding="utf-8") as handle:
                 artifact = json.load(handle)
 
@@ -188,6 +232,7 @@ cases:
                     environ=env,
                     case_id="case_sql",
                     case_file=case_file,
+                    llm_client=FakeLLMClient(),
                 )
             with open(result.artifact_path, encoding="utf-8") as handle:
                 artifact = json.load(handle)
@@ -250,12 +295,32 @@ cases:
                 mode="real",
                 artifact_root=tmpdir,
                 sql_text="SELECT count(*) FROM paid_success",
+                llm_client=FakeLLMClient(),
             )
 
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.reason, "external_dependency_blocked")
         self.assertEqual(result.owner, "data_engineering_owner")
         self.assertFalse(result.business_conclusion_published)
+
+    def test_eval_case_fails_when_llm_audit_is_missing(self):
+        case = {
+            "case_id": "missing_llm_audit",
+            "pattern_family": "intra_period",
+            "pattern_params": {"target_phase": "start"},
+            "required_capabilities": ["data_quality_check", "pattern_scan"],
+            "fixture_rows": list(_month_start_rows()),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_eval_case(
+                case,
+                mode="fixture",
+                artifact_root=tmpdir,
+                llm_client=NoAuditLLMClient(),
+            )
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.reason, "missing_required_llm_audit")
 
     def test_local_env_loader_keeps_quoted_sql(self):
         with tempfile.TemporaryDirectory() as tmpdir:

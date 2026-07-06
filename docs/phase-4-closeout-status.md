@@ -9,9 +9,17 @@ The month-start paid amount question is covered as a regression case for the
 general pattern runtime, alongside weekly, event-relative, rolling, and
 custom-baseline sibling cases.
 
-The runtime uses the Python BI Agent Core with a real LangGraph workflow. If
-LangGraph execution fails, the run returns failure and does not publish a local
-business conclusion.
+The runtime uses the Python BI Agent Core with a real LangGraph workflow and an
+OpenAI-compatible LLM adapter. Local `.env` is configured for DeepSeek
+`deepseek-v4-flash`; secrets stay out of git and normal artifacts. If LangGraph
+execution fails, the run returns failure and does not publish a local business
+conclusion.
+
+The main agent workflow reference is versioned in
+`docs/phase-4-agent-workflow-reference.md`. The main workflow is the fixed
+runtime lifecycle. The accepted graph is the per-question business analysis
+graph compiled from LLM proposals, contracts, policy, permissions, budget, and
+evidence requirements.
 
 ## Completed Engineering Items
 
@@ -29,6 +37,17 @@ business conclusion.
 - Added LangGraph workflow checkpoints, retry classification, graph mutation
   ledgers, answer package draft generation, local artifact persistence, and
   role-based artifact filtering.
+- Replaced the earlier deterministic workflow skeleton with LLM-backed nodes for
+  business intent, boundary decision, clarification, route design, route repair,
+  data coverage interpretation, next action selection, promotion direction,
+  evidence interpretation, answer synthesis, semantic audit, answer repair, and
+  blocked/degraded explanations.
+- Added LLM call audit records with task, provider, model, prompt version,
+  response id, input/output hashes, usage, and structured output in the admin
+  audit section.
+- Added local evidence policy gates so LLM route decisions cannot downgrade a
+  supported pattern answer only because mechanism, event, outlier, or
+  attribution evidence is missing.
 - Restricted ordinary artifact views to SQL hash only; SQL text, validator
   results, graph details, checkpoints, verifier output, and artifact audit stay
   in the `data_owner_admin` view.
@@ -42,7 +61,7 @@ business conclusion.
 
 `python3 tools/phase4/validate_phase4.py`
 
-- Phase 4 Python tests: passed, 49 tests.
+- Phase 4 Python tests: passed, 56 tests.
 - Phase 3 Ruby validators: passed.
 - Contract validation: passed, 21 YAML files parsed.
 - Launch eval validation: passed, 8 expectation packages.
@@ -58,6 +77,10 @@ business conclusion.
   configured. The run reaches ClickHouse and writes a real artifact, then blocks
   because the accepted clean table covers 2026-01 through 2026-06 while the
   regression asks for 2024-01 through 2026-05.
+
+The validation run also verifies that evaluated Answer Packages include the
+required LLM audit path. The answer verifier remains local and checks evidence
+refs, numeric claims, scope, time window, and visible limitations.
 
 `npm run build`
 
