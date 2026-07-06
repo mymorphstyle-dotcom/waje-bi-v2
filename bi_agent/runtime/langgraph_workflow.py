@@ -59,7 +59,6 @@ class WorkflowState(TypedDict, total=False):
     analysis_route: dict[str, Any]
     repair_attempts: int
     answer_repair_attempts: int
-    analysis_loop_count: int
     compiled_graph: Any
     schema: dict[str, Any]
     sql_text: str
@@ -104,7 +103,6 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
         "llm_calls": [],
         "repair_attempts": 0,
         "answer_repair_attempts": 0,
-        "analysis_loop_count": 0,
     }
     if "llm_client" in request:
         state["llm_client"] = request["llm_client"]
@@ -122,7 +120,10 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
             )
 
     try:
-        output = build_pattern_graph().invoke(state)
+        output = build_pattern_graph().invoke(
+            state,
+            config={"recursion_limit": request.get("recursion_limit", 80)},
+        )
     except WorkflowFailure as exc:
         return WorkflowRunResult(
             status="failed",
@@ -171,6 +172,7 @@ def build_pattern_graph():
         ("interpret_evidence", _interpret_evidence),
         ("synthesize_answer", _synthesize_answer),
         ("semantic_audit", _semantic_audit),
+        ("sanitize_answer", _sanitize_answer),
         ("hard_verify_answer", _hard_verify_answer),
         ("repair_answer", _repair_answer),
         ("generate_degraded_explanation", _generate_degraded_explanation),
@@ -251,7 +253,17 @@ def build_pattern_graph():
     graph.add_edge("execute_joint_attribution", "reduce_evidence")
     graph.add_edge("interpret_evidence", "synthesize_answer")
     graph.add_edge("synthesize_answer", "semantic_audit")
-    graph.add_edge("semantic_audit", "hard_verify_answer")
+    graph.add_conditional_edges(
+        "semantic_audit",
+        _route_after_semantic_audit,
+        {
+            "verify": "hard_verify_answer",
+            "repair": "repair_answer",
+            "sanitize": "sanitize_answer",
+            "degrade": "generate_degraded_explanation",
+        },
+    )
+    graph.add_edge("sanitize_answer", "hard_verify_answer")
     graph.add_conditional_edges(
         "hard_verify_answer",
         _route_after_hard_verify,
@@ -642,7 +654,6 @@ def _decide_next_action(state: WorkflowState) -> WorkflowState:
             "intent": state["intent"],
             "accepted_graph": to_jsonable(state["compiled_graph"].mutations.accepted_graph),
             "evidence_brief": state["evidence_brief"],
-            "analysis_loop_count": state.get("analysis_loop_count", 0),
             "allow_question_interrupt": state["request"].get("allow_question_interrupt", True),
         },
     )
@@ -707,14 +718,17 @@ def _synthesize_answer(state: WorkflowState) -> WorkflowState:
             "intent": state["intent"],
             "evidence_interpretation": state["evidence_interpretation"],
             "evidence_brief": state["evidence_brief"],
+            "evidence": state["evidence"],
             "evidence_refs": [item.get("evidence_ref") for item in state["evidence"]],
         },
     )
-    state["answer_text"] = output.get("answer_text", "")
+    state["answer_text"] = _weaken_unsupported_causal_wording(output.get("answer_text", ""))
     state["draft_claims"] = state["request"].get("draft_claims") or _claims_from_llm_or_default(
         output.get("claims"),
         state,
     )
+    if _single_period_pattern(state):
+        state["answer_text"] = state["draft_claims"][0]["text"]
     return state
 
 
@@ -730,6 +744,18 @@ def _semantic_audit(state: WorkflowState) -> WorkflowState:
             "wording_boundary": "causal and main-driver wording require explicit supporting evidence",
         },
     )
+    return state
+
+
+def _sanitize_answer(state: WorkflowState) -> WorkflowState:
+    _maybe_force_node_failure(state, "sanitize_answer")
+    previous = state.get("semantic_audit", {})
+    _sanitize_to_bounded_pattern_answer(state)
+    state["semantic_audit"] = {
+        **previous,
+        "audit_status": "sanitized",
+        "sanitized_by": "local_bounded_pattern_policy",
+    }
     return state
 
 
@@ -755,8 +781,12 @@ def _repair_answer(state: WorkflowState) -> WorkflowState:
             "evidence_brief": state["evidence_brief"],
         },
     )
-    state["answer_text"] = output.get("answer_text", state.get("answer_text", ""))
+    state["answer_text"] = _weaken_unsupported_causal_wording(
+        output.get("answer_text", state.get("answer_text", ""))
+    )
     state["draft_claims"] = _claims_from_llm_or_default(output.get("claims"), state)
+    if _single_period_pattern(state):
+        state["answer_text"] = state["draft_claims"][0]["text"]
     return state
 
 
@@ -835,7 +865,7 @@ def _route_after_accept_analysis(state: WorkflowState) -> str:
 def _route_after_coverage(state: WorkflowState) -> str:
     status = state["coverage_interpretation"].get("coverage_status", "sufficient")
     if status == "needs_question":
-        return "ask"
+        return "ask" if state["request"].get("allow_question_interrupt", True) else "sufficient"
     if status == "blocked":
         return "block"
     if status == "coverage_gap_but_answerable":
@@ -846,11 +876,20 @@ def _route_after_coverage(state: WorkflowState) -> str:
 def _route_after_next_action(state: WorkflowState) -> str:
     action = state["next_action"].get("next_action", "synthesize_answer")
     if action in {"continue_evidence", "scan_sibling"}:
-        count = state.get("analysis_loop_count", 0) + 1
-        state["analysis_loop_count"] = count
-        return "plan" if count <= 1 else "synthesize"
+        prior_plan_count = sum(
+            1
+            for event in state.get("checkpoint_events", ())
+            if event.get("node") == "decide_next_action" and event.get("route") == "plan"
+        )
+        if prior_plan_count < 1:
+            _current_event(state)["route"] = "plan"
+            return "plan"
+        _current_event(state)["route"] = "synthesize_after_loop_cap"
+        return "synthesize"
     if action == "ask_question":
-        return "ask" if state["request"].get("allow_question_interrupt", True) else "synthesize"
+        if state["request"].get("allow_question_interrupt", True):
+            return "ask"
+        return "synthesize" if _pattern_supports_bounded_answer(state) else "degrade"
     if action == "promote_attribution":
         return "promote"
     if action == "degrade":
@@ -858,7 +897,7 @@ def _route_after_next_action(state: WorkflowState) -> str:
             _current_event(state)["route"] = "degrade_overridden_to_bounded_answer"
             return "synthesize"
         return "degrade"
-    return "synthesize"
+    return "synthesize" if _pattern_supports_bounded_answer(state) else "degrade"
 
 
 def _route_after_promotion_policy(state: WorkflowState) -> str:
@@ -875,6 +914,20 @@ def _route_after_hard_verify(state: WorkflowState) -> str:
     if state.get("answer_repair_attempts", 0) < 1:
         return "repair"
     return "degrade"
+
+
+def _route_after_semantic_audit(state: WorkflowState) -> str:
+    audit = state.get("semantic_audit", {})
+    status = str(audit.get("audit_status", "")).lower()
+    has_issues = bool(audit.get("issues"))
+    if status in {"fail", "failed", "needs_revision"} or has_issues:
+        if state.get("answer_repair_attempts", 0) < 1:
+            return "repair"
+        if _pattern_supports_bounded_answer(state):
+            _current_event(state)["route"] = "semantic_sanitized_to_bounded_answer"
+            return "sanitize"
+        return "degrade"
+    return "verify"
 
 
 def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
@@ -967,41 +1020,90 @@ def _pattern_supports_bounded_answer(state: WorkflowState) -> bool:
     }
 
 
+def _sanitize_to_bounded_pattern_answer(state: WorkflowState) -> None:
+    claim = _default_claim_from_evidence(state)
+    state["draft_claims"] = [claim]
+    state["answer_text"] = claim["text"]
+
+
+def _single_period_pattern(state: WorkflowState) -> bool:
+    pattern_ref = f"pattern_scan:{state['intent']['pattern_family']}"
+    pattern = _evidence_by_ref(state.get("evidence", [])).get(pattern_ref, {})
+    try:
+        return int(pattern.get("typed_payload", {}).get("comparable_periods", 0)) <= 1
+    except (TypeError, ValueError):
+        return False
+
+
 def _claims_from_llm_or_default(claims: Any, state: WorkflowState) -> list[dict[str, Any]]:
-    if isinstance(claims, list) and all(isinstance(item, dict) for item in claims):
-        normalized = [_normalize_claim(item, state) for item in claims]
-        if normalized:
-            return normalized
+    _ = claims
     return [_default_claim_from_evidence(state)]
-
-
-def _normalize_claim(claim: dict[str, Any], state: WorkflowState) -> dict[str, Any]:
-    pattern_family = state["intent"]["pattern_family"]
-    pattern_ref = f"pattern_scan:{pattern_family}"
-    default = _default_claim_from_evidence(state)
-    return {
-        "text": claim.get("text") or claim.get("conclusion") or state.get("answer_text", ""),
-        "evidence_refs": [pattern_ref],
-        "numbers": default["numbers"],
-        "scope": state["intent"]["scope"],
-        "time_window": state["intent"]["time_window"],
-    }
 
 
 def _default_claim_from_evidence(state: WorkflowState) -> dict[str, Any]:
     pattern_family = state["intent"]["pattern_family"]
     pattern = _evidence_by_ref(state.get("evidence", [])).get(f"pattern_scan:{pattern_family}", {})
     payload = pattern.get("typed_payload", {})
+    median_uplift = payload.get("median_uplift")
+    comparable_periods = payload.get("comparable_periods")
+    direction_ratio = payload.get("direction_ratio")
+    limitation_text = (
+        " Mechanism evidence is unavailable."
+        if "no_event_contract_or_matches" in state.get("evidence_brief", {}).get("limitations", ())
+        else ""
+    )
+    period_label = "comparable period" if comparable_periods == 1 else "comparable periods"
     return {
         "text": (
-            f"{pattern_family} paid amount pattern has "
-            f"{pattern.get('wording_limit', 'draft')} evidence in the requested scope."
+            f"{_pattern_label(pattern_family)} is observed in {state['intent']['time_window']} "
+            f"with median uplift {_format_percent(median_uplift)}, "
+            f"direction ratio {_format_percent(direction_ratio)}, and "
+            f"{comparable_periods} {period_label}.{limitation_text}"
         ),
         "evidence_refs": [f"pattern_scan:{pattern_family}"],
-        "numbers": {"median_uplift": payload.get("median_uplift")},
+        "numbers": {
+            "median_uplift": median_uplift,
+            "comparable_periods": comparable_periods,
+            "direction_ratio": direction_ratio,
+        },
         "scope": state["intent"]["scope"],
         "time_window": state["intent"]["time_window"],
     }
+
+
+def _pattern_label(pattern_family: str) -> str:
+    return {
+        "weekly": "Weekly paid amount pattern",
+        "rolling": "Rolling paid amount pattern",
+        "custom_baseline": "Custom-baseline paid amount comparison",
+        "intra_period": "Intra-period paid amount pattern",
+        "event_relative": "Event-relative paid amount pattern",
+        "lag_recovery": "Lag/recovery paid amount pattern",
+    }.get(pattern_family, f"{pattern_family} paid amount pattern")
+
+
+def _weaken_unsupported_causal_wording(text: Any) -> str:
+    value = str(text or "")
+    value = value.replace(
+        "No event-based causes were identified to explain the pattern.",
+        "No event-based mechanism evidence was identified for the pattern.",
+    )
+    value = value.replace(
+        "No causal events were matched, so the pattern's underlying driver remains unclear.",
+        "No event-based mechanism evidence was matched, so the business mechanism remains unclear.",
+    )
+    value = value.replace(
+        "No event-based explanations are available due to insufficient evidence.",
+        "Event-based explanation evidence is insufficient.",
+    )
+    return value
+
+
+def _format_percent(value: Any) -> str:
+    try:
+        return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "unknown"
 
 
 def _default_pattern_rows() -> list[dict[str, Any]]:
@@ -1066,6 +1168,7 @@ _BUSINESS_LABELS = {
     "interpret_evidence": "解释证据和业务含义",
     "synthesize_answer": "生成业务答案草稿",
     "semantic_audit": "语义审计答案",
+    "sanitize_answer": "收敛为有边界答案",
     "hard_verify_answer": "答案硬验收",
     "repair_answer": "按校验反馈修答案",
     "generate_degraded_explanation": "生成降级说明",

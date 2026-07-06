@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 
+from bi_agent.runtime.answer_package import verify_answer_package
 from bi_agent.runtime.langgraph_workflow import run_pattern_workflow
 from bi_agent.runtime.artifacts import filter_artifact_for_role
 from tests.phase4.fake_llm import FakeLLMClient
@@ -154,6 +155,74 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 warning["code"] == "causal_wording_without_causal_evidence"
                 for warning in admin["admin_audit"]["verifier"]["warnings"]
             )
+        )
+
+    def test_medium_pattern_blocks_reliable_wording(self):
+        verifier = verify_answer_package(
+            draft_claims=[
+                {
+                    "text": "The paid amount shows a reliable rolling pattern.",
+                    "evidence_refs": ["pattern_scan:rolling"],
+                    "numbers": {"median_uplift": 0.04},
+                    "scope": "full_sample",
+                    "time_window": "2026-01..2026-06",
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_ref": "pattern_scan:rolling",
+                    "capability": "pattern_scan",
+                    "evidence_type": "statistical_association",
+                    "strength": "medium",
+                    "wording_limit": "supported",
+                    "typed_payload": {
+                        "median_uplift": 0.04,
+                        "scope": "full_sample",
+                        "time_window": "2026-01..2026-06",
+                        "comparable_periods": 5,
+                    },
+                    "limitations": [],
+                }
+            ],
+            visible_limitations=[],
+        )
+
+        self.assertTrue(
+            any(warning["code"] == "over_strong_evidence_wording" for warning in verifier["warnings"])
+        )
+
+    def test_single_period_blocks_statistical_confidence_wording(self):
+        verifier = verify_answer_package(
+            draft_claims=[
+                {
+                    "text": "The uplift has high statistical confidence and appears non-random.",
+                    "evidence_refs": ["pattern_scan:custom_baseline"],
+                    "numbers": {"median_uplift": 0.15},
+                    "scope": "full_sample",
+                    "time_window": "2026-01..2026-06",
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_ref": "pattern_scan:custom_baseline",
+                    "capability": "pattern_scan",
+                    "evidence_type": "statistical_association",
+                    "strength": "high",
+                    "wording_limit": "supported",
+                    "typed_payload": {
+                        "median_uplift": 0.15,
+                        "scope": "full_sample",
+                        "time_window": "2026-01..2026-06",
+                        "comparable_periods": 1,
+                    },
+                    "limitations": [],
+                }
+            ],
+            visible_limitations=[],
+        )
+
+        self.assertTrue(
+            any(warning["code"] == "single_period_confidence_wording" for warning in verifier["warnings"])
         )
 
     def test_retry_policy_retries_technical_failure_once_only(self):

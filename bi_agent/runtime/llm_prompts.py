@@ -202,17 +202,24 @@ def _task_rules(task: str) -> str:
             "evidence_refs, numbers, scope, time_window, and wording strength where "
             "available. Claim scope and time_window must match the supplied intent and "
             "evidence window; exception periods can be mentioned in the claim text but "
-            "must not replace the run-level claim time_window. Do not include claims "
-            "without evidence refs."
+            "must not replace the run-level claim time_window. Return at most one claim "
+            "per distinct evidence-backed conclusion. Do not duplicate claims. Match "
+            "wording to evidence strength: medium evidence supports moderate or observed "
+            "wording, not reliable or high-confidence wording. Single-period evidence "
+            "does not support statistical-confidence or non-random wording. Do not "
+            "include claims without evidence refs."
         ),
         "semantic_audit": (
             "Audit the draft answer semantically. Extract every claim, identify unlisted "
             "claims, scope drift, baseline drift, over-strong wording, and unsupported "
-            "business language. Do not perform hard numeric verification."
+            "business language. Mark audit_status as passed, needs_revision, or fail. "
+            "Use needs_revision when wording can be repaired, and fail when the answer "
+            "would mislead a business reader. Do not perform hard numeric verification."
         ),
         "answer_repair": (
             "Repair the draft answer only according to verifier and semantic audit "
-            "feedback. Keep supported claims and remove or weaken unsupported ones."
+            "feedback. Keep supported claims, remove duplicates, and weaken unsupported "
+            "or over-strong wording. Do not add new claims."
         ),
         "degraded_explanation": (
             "Explain the degraded result with supported conclusion boundary, visible "

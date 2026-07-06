@@ -75,7 +75,11 @@ flowchart TD
 
   Z --> AA["语义审计答案<br/>抽取claim、未列明断言、措辞强度、scope映射<br/>LLM: 是"]
 
-  AA --> AB{"答案硬验收<br/>数字/证据/scope/baseline/claim强度/禁用措辞<br/>LLM: 否"}
+  AA -->|passed| AB{"答案硬验收<br/>数字/证据/scope/baseline/claim强度/禁用措辞<br/>LLM: 否"}
+  AA -->|needs_revision, first time| AD["按verifier反馈修答案<br/>LLM: 是，最多1次"]
+  AA -->|still needs_revision, pattern supported| AG["收敛为有边界答案<br/>只保留本地evidence支持的pattern claim<br/>LLM: 否"]
+  AA -->|unsupported after repair| Y
+  AG --> AB
   AB -->|passed_or_warning| AC["保存审计结果并返回draft<br/>workflow trace / LLM audit / evidence / SQL / verifier<br/>LLM: 否"]
   AB -->|repairable| AD["按verifier反馈修答案<br/>LLM: 是，最多1次"]
   AB -->|needs_question| G
@@ -96,8 +100,9 @@ flowchart TD
 - Clarification is a loop. User answers, accepted recommendation, and "tell agent differently" all return to boundary rebinding before analysis continues.
 - Route repair is a loop with max 2 repair attempts.
 - Answer repair is a loop with max 1 repair attempt.
-- Evidence expansion and promotion loops return to the evidence brief before final interpretation.
+- Evidence expansion and promotion loops return to the evidence brief before final interpretation, with a hard loop cap before answer synthesis.
 - If pattern evidence already supports a bounded answer, missing mechanism, event, outlier, or attribution evidence limits the explanation instead of downgrading the main pattern answer.
+- If semantic audit still rejects an LLM answer after one repair but the pattern is evidence-supported, local policy can sanitize to one bounded pattern claim before hard verification.
 - No local business conclusion fallback is allowed after LangGraph execution failure.
 - User-facing process events use business labels. Technical ids, raw SQL, full provider payloads, token metadata, and hidden reasoning stay out of business-reader output.
 
