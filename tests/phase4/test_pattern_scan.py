@@ -73,6 +73,31 @@ class PatternScanTest(unittest.TestCase):
         self.assertEqual(result.comparable_periods, 2)
         self.assertEqual(result.evidence_type, "statistical_association")
 
+    def test_weekly_pattern_can_use_selected_baseline_weekdays(self):
+        rows = []
+        for week in ("w1", "w2", "w3"):
+            rows.extend(
+                [
+                    {"week": week, "weekday": 1, "amount": 100},
+                    {"week": week, "weekday": 5, "amount": 110},
+                    {"week": week, "weekday": 7, "amount": 100},
+                ]
+            )
+
+        result = scan_pattern(
+            rows,
+            pattern_family="weekly",
+            week_key="week",
+            weekday_key="weekday",
+            target_weekdays=(5,),
+            baseline_weekdays=(1, 7),
+            materiality_floor=0.03,
+            min_periods=3,
+        )
+
+        self.assertIs(result.established, True)
+        self.assertEqual(result.comparable_periods, 3)
+
     def test_empty_pattern_scan_returns_insufficient_evidence(self):
         result = scan_pattern(
             [],

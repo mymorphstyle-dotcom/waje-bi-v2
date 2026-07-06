@@ -22,6 +22,7 @@ from bi_agent.runtime.sql_safety import validate_select_only
 
 
 CASE_FILE = ROOT / "evals" / "phase4" / "pattern_cases.yaml"
+REAL_2026H1_CASE_FILE = ROOT / "evals" / "phase4" / "real_2026h1_pattern_cases.yaml"
 DEFAULT_ARTIFACT_ROOT = ROOT / "artifacts" / "phase-4"
 REAL_SQL_ENV = "WAJE_PHASE4_PATTERN_SQL"
 REPAIR_PATH = "provide read-only ClickHouse env vars and accepted physical binding"
@@ -69,6 +70,14 @@ class Phase4ValidationResult:
     command_results: tuple[CommandResult, ...]
     fixture_eval: FixtureEvalResult
     real_month_start: EvalCaseResult
+    real_2026h1_eval: "RealEvalSuiteResult"
+
+
+@dataclass(frozen=True)
+class RealEvalSuiteResult:
+    passed: bool
+    cases: tuple[EvalCaseResult, ...]
+    mismatches: tuple[dict[str, str], ...]
 
 
 def load_cases(path: Path = CASE_FILE) -> list[dict[str, Any]]:
@@ -124,7 +133,7 @@ def run_real_eval(
             detail=f"missing ClickHouse env: {', '.join(missing_env)}",
         )
 
-    sql = env.get(REAL_SQL_ENV, "")
+    sql = case.get("real_sql") or env.get(REAL_SQL_ENV, "")
     if not sql:
         return _external_blocked_case(
             case,
@@ -210,6 +219,39 @@ def run_real_eval(
     )
 
 
+def run_real_2026h1_eval(
+    *,
+    artifact_root: Optional[str] = None,
+    environ: Optional[Mapping[str, str]] = None,
+    case_file: Path = REAL_2026H1_CASE_FILE,
+) -> RealEvalSuiteResult:
+    cases = load_cases(case_file)
+    results = tuple(
+        run_real_eval(
+            artifact_root=artifact_root,
+            environ=environ,
+            case_id=case["case_id"],
+            case_file=case_file,
+        )
+        for case in cases
+    )
+    expected = {case["case_id"]: case.get("expected_status") for case in cases}
+    mismatches = tuple(
+        {
+            "case_id": result.case_id,
+            "expected": str(expected[result.case_id]),
+            "actual": result.status,
+        }
+        for result in results
+        if expected.get(result.case_id) and result.status != expected[result.case_id]
+    )
+    return RealEvalSuiteResult(
+        passed=not mismatches,
+        cases=results,
+        mismatches=mismatches,
+    )
+
+
 def run_eval_case(
     case: Mapping[str, Any],
     *,
@@ -289,16 +331,19 @@ def run_validation_suite(*, run_commands: bool = True) -> Phase4ValidationResult
     )
     fixture_eval = run_fixture_eval()
     real_month_start = run_real_eval()
+    real_2026h1_eval = run_real_2026h1_eval()
     ok = (
         all(result.ok for result in command_results)
         and fixture_eval.engineering_fixture_passed
         and real_month_start.status in {"passed", "blocked"}
+        and real_2026h1_eval.passed
     )
     return Phase4ValidationResult(
         ok=ok,
         command_results=command_results,
         fixture_eval=fixture_eval,
         real_month_start=real_month_start,
+        real_2026h1_eval=real_2026h1_eval,
     )
 
 

@@ -35,17 +35,25 @@ business conclusion.
 - Added wording warnings into admin audit without blocking Phase 4 draft eval.
 - Added Phase 4 eval harness and CLI covering fixture mode and real ClickHouse
   mode.
+- Added a 2026H1 real-data pattern suite using the accepted clean ClickHouse
+  table.
 
 ## Validation
 
 `python3 tools/phase4/validate_phase4.py`
 
-- Phase 4 Python tests: passed, 46 tests.
+- Phase 4 Python tests: passed, 49 tests.
 - Phase 3 Ruby validators: passed.
 - Contract validation: passed, 21 YAML files parsed.
 - Launch eval validation: passed, 8 expectation packages.
 - `git diff --check`: passed.
 - Fixture eval: passed all 5 cases.
+- 2026H1 real-data eval: passed expected statuses for 5 cases:
+  - `weekly_thu_fri_vs_mon_sun`: passed.
+  - `custom_q2_vs_q1`: passed.
+  - `rolling_28_day_growth`: passed.
+  - `month_boundary_vs_mid`: degraded as expected.
+  - `strict_month_start_2026h1`: degraded as expected.
 - Real month-start eval: local ClickHouse env and physical SQL binding are
   configured. The run reaches ClickHouse and writes a real artifact, then blocks
   because the accepted clean table covers 2026-01 through 2026-06 while the
@@ -65,9 +73,15 @@ Generated local artifacts are ignored by git under `artifacts/phase-4/`.
 - `artifacts/phase-4/phase4-fixture-event_relative_campaign/answer_package.json`
 - `artifacts/phase-4/phase4-fixture-rolling_recovery/answer_package.json`
 - `artifacts/phase-4/phase4-fixture-custom_baseline_release/answer_package.json`
+- `artifacts/phase-4/phase4-real-weekly_thu_fri_vs_mon_sun/answer_package.json`
+- `artifacts/phase-4/phase4-real-custom_q2_vs_q1/answer_package.json`
+- `artifacts/phase-4/phase4-real-rolling_28_day_growth/answer_package.json`
+- `artifacts/phase-4/phase4-real-month_boundary_vs_mid/answer_package.json`
+- `artifacts/phase-4/phase4-real-strict_month_start_2026h1/answer_package.json`
 
-Fixture artifacts are marked with `non_real_data: true` and
-`business_conclusion_published: false` in eval output.
+Fixture artifacts are marked with `non_real_data: true`. Real-data artifacts are
+marked with `non_real_data: false`; degraded real guardrail cases do not publish
+business conclusions.
 
 ## Real Data Blockers
 

@@ -10,6 +10,7 @@ from tools.phase4.validate_phase4 import (
     _load_local_env,
     run_eval_case,
     run_fixture_eval,
+    run_real_2026h1_eval,
     run_real_eval,
 )
 from tools.phase4.run_phase4_pattern_slice import exit_code_for_result
@@ -154,11 +155,81 @@ class Phase4EvalHarnessTest(unittest.TestCase):
         self.assertTrue(result.business_conclusion_published)
         self.assertEqual(artifact["admin_audit"]["sql_hash"], expected_hash)
 
+    def test_real_eval_uses_case_sql_before_env_sql(self):
+        env = {
+            "WAJE_CLICKHOUSE_HOST": "localhost",
+            "WAJE_CLICKHOUSE_PORT": "8123",
+            "WAJE_CLICKHOUSE_USER": "reader",
+            "WAJE_CLICKHOUSE_PASSWORD": "secret",
+            "WAJE_CLICKHOUSE_DATABASE": "waje_bi",
+            "WAJE_CLICKHOUSE_SECURE": "false",
+            "WAJE_PHASE4_PATTERN_SQL": "SELECT count(*) FROM wrong_binding",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case_file = Path(tmpdir) / "cases.yaml"
+            case_file.write_text(
+                """
+cases:
+  - case_id: case_sql
+    pattern_family: intra_period
+    real_sql: SELECT month, phase, sum(amount) AS amount FROM accepted_paid_success GROUP BY month, phase
+    pattern_params:
+      target_phase: start
+    required_capabilities: [data_quality_check, pattern_scan]
+""",
+                encoding="utf-8",
+            )
+            with patch(
+                "tools.phase4.validate_phase4.ClickHouseRuntime.from_env",
+                return_value=FakeRealRuntime(),
+            ):
+                result = run_real_eval(
+                    artifact_root=tmpdir,
+                    environ=env,
+                    case_id="case_sql",
+                    case_file=case_file,
+                )
+            with open(result.artifact_path, encoding="utf-8") as handle:
+                artifact = json.load(handle)
+
+        self.assertEqual(
+            artifact["admin_audit"]["sql_hash"],
+            validate_select_only(
+                "SELECT month, phase, sum(amount) AS amount FROM accepted_paid_success GROUP BY month, phase",
+                aggregate=True,
+            ).query_hash,
+        )
+
     def test_fixture_cli_exit_code_fails_on_degraded_or_blocked(self):
         self.assertEqual(exit_code_for_result("fixture", "passed"), 0)
         self.assertEqual(exit_code_for_result("fixture", "degraded"), 1)
         self.assertEqual(exit_code_for_result("fixture", "blocked"), 1)
         self.assertEqual(exit_code_for_result("real", "blocked"), 0)
+
+    def test_real_suite_checks_expected_statuses(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case_file = Path(tmpdir) / "cases.yaml"
+            case_file.write_text(
+                """
+cases:
+  - case_id: missing_env_expected_blocked
+    pattern_family: intra_period
+    expected_status: blocked
+    pattern_params:
+      target_phase: start
+    required_capabilities: [data_quality_check, pattern_scan]
+""",
+                encoding="utf-8",
+            )
+
+            result = run_real_2026h1_eval(
+                artifact_root=tmpdir,
+                environ={},
+                case_file=case_file,
+            )
+
+        self.assertTrue(result.passed)
+        self.assertFalse(result.mismatches)
 
     def test_real_eval_blocks_when_history_is_too_short(self):
         case = {

@@ -1,0 +1,205 @@
+cases:
+  - case_id: weekly_thu_fri_vs_mon_sun
+    pattern_family: weekly
+    time_window: "2026-01-01..2026-06-30"
+    expected_status: passed
+    pattern_params:
+      week_key: week
+      weekday_key: weekday
+      target_weekdays: [4, 5]
+      baseline_weekdays: [1, 7]
+      min_periods: 20
+    required_capabilities:
+      - data_quality_check
+      - pattern_scan
+      - answer_verify
+    real_sql: |
+      WITH daily AS (
+        SELECT
+          toMonday(business_date_lagos) AS week,
+          toDayOfWeek(business_date_lagos) AS weekday,
+          sum(paid_amount_ngn) AS amount
+        FROM paid_order_success_clean
+        WHERE business_date_lagos >= toDate('2026-01-01')
+          AND business_date_lagos < toDate('2026-07-01')
+        GROUP BY week, weekday
+      ), full_weeks AS (
+        SELECT week
+        FROM daily
+        GROUP BY week
+        HAVING count() = 7
+      )
+      SELECT
+        formatDateTime(week, '%Y-%m-%d') AS week,
+        weekday,
+        amount
+      FROM daily
+      INNER JOIN full_weeks USING week
+      ORDER BY week, weekday
+
+  - case_id: custom_q2_vs_q1
+    pattern_family: custom_baseline
+    time_window: "2026-01-01..2026-06-30"
+    expected_status: passed
+    pattern_params:
+      period_key: period
+      group_key: group
+      target_group: target
+      baseline_group: baseline
+      min_periods: 1
+    required_capabilities:
+      - data_quality_check
+      - pattern_scan
+      - answer_verify
+    real_sql: |
+      WITH daily AS (
+        SELECT
+          business_date_lagos AS d,
+          sum(paid_amount_ngn) AS amount
+        FROM paid_order_success_clean
+        WHERE business_date_lagos >= toDate('2026-01-01')
+          AND business_date_lagos < toDate('2026-07-01')
+        GROUP BY d
+      )
+      SELECT
+        'h1_2026' AS period,
+        'baseline' AS `group`,
+        avg(amount) AS amount
+      FROM daily
+      WHERE d < toDate('2026-04-01')
+      UNION ALL
+      SELECT
+        'h1_2026' AS period,
+        'target' AS `group`,
+        avg(amount) AS amount
+      FROM daily
+      WHERE d >= toDate('2026-04-01')
+
+  - case_id: rolling_28_day_growth
+    pattern_family: rolling
+    time_window: "2026-01-28..2026-06-30"
+    expected_status: passed
+    pattern_params:
+      period_key: window
+      min_periods: 2
+    required_capabilities:
+      - data_quality_check
+      - pattern_scan
+      - answer_verify
+    real_sql: |
+      WITH daily AS (
+        SELECT
+          business_date_lagos AS d,
+          sum(paid_amount_ngn) AS amount
+        FROM paid_order_success_clean
+        WHERE business_date_lagos >= toDate('2026-01-01')
+          AND business_date_lagos < toDate('2026-07-01')
+        GROUP BY d
+      ), roll AS (
+        SELECT
+          d,
+          avg(amount) OVER (ORDER BY d ROWS BETWEEN 27 PRECEDING AND CURRENT ROW) AS avg28
+        FROM daily
+      ), monthly AS (
+        SELECT
+          toStartOfMonth(d) AS m,
+          avg(avg28) AS amount
+        FROM roll
+        WHERE d >= toDate('2026-01-28')
+        GROUP BY m
+      )
+      SELECT
+        formatDateTime(curr.m, '%Y-%m') AS window,
+        curr.amount AS amount,
+        prev.amount AS baseline_high
+      FROM monthly curr
+      INNER JOIN monthly prev ON curr.m = addMonths(prev.m, 1)
+      ORDER BY curr.m
+
+  - case_id: month_boundary_vs_mid
+    pattern_family: intra_period
+    time_window: "2026-01-01..2026-06-30"
+    expected_status: degraded
+    pattern_params:
+      period_key: month
+      group_key: phase
+      target_phase: boundary
+      min_periods: 6
+    required_capabilities:
+      - data_quality_check
+      - pattern_scan
+      - answer_verify
+    real_sql: |
+      WITH daily AS (
+        SELECT
+          formatDateTime(toStartOfMonth(business_date_lagos), '%Y-%m') AS month,
+          toDayOfMonth(business_date_lagos) AS dom,
+          sum(paid_amount_ngn) AS amount
+        FROM paid_order_success_clean
+        WHERE business_date_lagos >= toDate('2026-01-01')
+          AND business_date_lagos < toDate('2026-07-01')
+        GROUP BY month, dom
+      )
+      SELECT
+        month,
+        'boundary' AS phase,
+        avg(amount) AS amount
+      FROM daily
+      WHERE dom >= 26 OR dom <= 8
+      GROUP BY month
+      UNION ALL
+      SELECT
+        month,
+        'mid' AS phase,
+        avg(amount) AS amount
+      FROM daily
+      WHERE dom >= 11 AND dom <= 20
+      GROUP BY month
+
+  - case_id: strict_month_start_2026h1
+    pattern_family: intra_period
+    time_window: "2026-01-01..2026-06-30"
+    expected_status: degraded
+    pattern_params:
+      period_key: month
+      group_key: phase
+      target_phase: start
+      min_periods: 6
+    required_capabilities:
+      - data_quality_check
+      - pattern_scan
+      - answer_verify
+    real_sql: |
+      WITH daily AS (
+        SELECT
+          formatDateTime(toStartOfMonth(business_date_lagos), '%Y-%m') AS month,
+          toDayOfMonth(business_date_lagos) AS dom,
+          sum(paid_amount_ngn) AS amount
+        FROM paid_order_success_clean
+        WHERE business_date_lagos >= toDate('2026-01-01')
+          AND business_date_lagos < toDate('2026-07-01')
+        GROUP BY month, dom
+      )
+      SELECT
+        month,
+        'start' AS phase,
+        avg(amount) AS amount
+      FROM daily
+      WHERE dom <= 10
+      GROUP BY month
+      UNION ALL
+      SELECT
+        month,
+        'mid' AS phase,
+        avg(amount) AS amount
+      FROM daily
+      WHERE dom >= 11 AND dom <= 20
+      GROUP BY month
+      UNION ALL
+      SELECT
+        month,
+        'end' AS phase,
+        avg(amount) AS amount
+      FROM daily
+      WHERE dom >= 21
+      GROUP BY month

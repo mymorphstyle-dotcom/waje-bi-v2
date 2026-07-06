@@ -117,8 +117,11 @@ def _scan_weekly(rows, materiality_floor, params):
     period_key = params.get("week_key") or _first_key(rows, "week", "period")
     group_key = params.get("weekday_key") or "weekday"
     selected = params.get("target_weekdays") or params.get("target_weekday")
+    baseline_selected = params.get("baseline_weekdays") or params.get("baseline_weekday")
     if isinstance(selected, (str, int)):
         selected = (selected,)
+    if isinstance(baseline_selected, (str, int)):
+        baseline_selected = (baseline_selected,)
     if not selected:
         raise ValueError("target_weekday or target_weekdays is required for weekly patterns")
 
@@ -131,7 +134,12 @@ def _scan_weekly(rows, materiality_floor, params):
             exceptions.append({"period": period, "reason": "incomplete"})
             continue
         target = mean(selected_values)
-        baseline = mean(groups.values())
+        baseline_values = (
+            [groups[item] for item in baseline_selected if item in groups]
+            if baseline_selected
+            else list(groups.values())
+        )
+        baseline = mean(baseline_values) if baseline_values else None
         _add_comparison(period, target, baseline, materiality_floor, uplifts, exceptions)
     return uplifts, exceptions
 
