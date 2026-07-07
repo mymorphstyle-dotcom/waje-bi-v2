@@ -62,6 +62,15 @@ type PersistedAnswerPackageRun = {
   createdAt: string;
 };
 
+export type PersistedRuntimeRun = {
+  runId: string;
+  threadId: string;
+  runStatus: string;
+  question: string;
+  request: Record<string, unknown>;
+  createdAt: string;
+};
+
 type MemoryStore = {
   threads: Map<string, ThreadRecord>;
   runs: Map<string, RunRecord>;
@@ -292,6 +301,35 @@ export async function listPersistedAnswerPackageRuns(limit = 20): Promise<Persis
       answerPackage: row.payload,
       createdAt: row.created_at,
     } satisfies PersistedAnswerPackageRun;
+  });
+}
+
+export async function listPersistedRuntimeRuns(limit = 20): Promise<PersistedRuntimeRun[]> {
+  if (conversationStoreMode() !== "postgres") return [];
+  const { rows } = await pool().query(
+    `
+    SELECT r.run_id, r.thread_id, r.status AS run_status, r.request, r.created_at
+    FROM waje_runtime.analysis_runs r
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM waje_runtime.answer_packages p
+      WHERE p.run_id = r.run_id
+    )
+    ORDER BY r.created_at DESC
+    LIMIT $1
+    `,
+    [limit],
+  );
+  return rows.map((row) => {
+    const request = row.request ?? {};
+    return {
+      runId: row.run_id,
+      threadId: row.thread_id,
+      runStatus: row.run_status,
+      question: String(request.question ?? request.user_message ?? ""),
+      request,
+      createdAt: row.created_at,
+    } satisfies PersistedRuntimeRun;
   });
 }
 

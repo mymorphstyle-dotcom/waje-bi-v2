@@ -18,6 +18,18 @@ class AgentRunsPersistedAdapterTest(unittest.TestCase):
         self.assertIn("export function traceRunFromAnswerPackage", replays)
         self.assertIn("persistedAnswerPackageRuns", agent_runs)
 
+    def test_agent_runs_api_surfaces_waiting_clarification_runs(self):
+        agent_runs = (ROOT / "app" / "api" / "agent-runs" / "route.ts").read_text(encoding="utf-8")
+        store = (ROOT / "app" / "api" / "_conversationStore.ts").read_text(encoding="utf-8")
+
+        self.assertIn("listPersistedRuntimeRuns", agent_runs)
+        self.assertIn("traceRunFromRuntimeRun", agent_runs)
+        self.assertIn("waiting_for_clarification", agent_runs)
+        self.assertIn("question_tool", agent_runs)
+        self.assertIn("clarification", agent_runs)
+        self.assertIn("NOT EXISTS", store)
+        self.assertIn("waje_runtime.analysis_runs", store)
+
 
 if __name__ == "__main__":
     unittest.main()
