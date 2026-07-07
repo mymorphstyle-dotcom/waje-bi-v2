@@ -91,6 +91,14 @@ type RunRerunComparability = {
   candidate: RunAuditTrace["traceCompleteness"];
 };
 
+type LaunchDashboard = {
+  slow_runs: Record<string, unknown>[];
+  failed_runs: Record<string, unknown>[];
+  degraded_runs: Record<string, unknown>[];
+  blocked_runs: Record<string, unknown>[];
+  verifier_failed_runs: Record<string, unknown>[];
+};
+
 type PersistedAnswerPackageRun = {
   runId: string;
   threadId: string;
@@ -468,6 +476,71 @@ export async function runRerunComparability(baseRunId: string, candidateRunId: s
   };
 }
 
+export async function launchDashboard({ limit = 20, slowMs = 30000 } = {}): Promise<LaunchDashboard> {
+  if (conversationStoreMode() !== "postgres") {
+    return {
+      slow_runs: [],
+      failed_runs: [],
+      degraded_runs: [],
+      blocked_runs: [],
+      verifier_failed_runs: [],
+    };
+  }
+  const slowRuns = await pool().query(
+    `
+    SELECT r.run_id, r.thread_id, r.status, max(EXTRACT(EPOCH FROM (n.finished_at - n.started_at)) * 1000)::bigint AS duration_ms
+    FROM waje_runtime.analysis_runs r
+    JOIN waje_runtime.run_nodes n ON n.run_id = r.run_id
+    WHERE n.started_at IS NOT NULL AND n.finished_at IS NOT NULL
+    GROUP BY r.run_id, r.thread_id, r.status
+    HAVING max(EXTRACT(EPOCH FROM (n.finished_at - n.started_at)) * 1000) >= $1
+    ORDER BY duration_ms DESC
+    LIMIT $2
+    `,
+    [slowMs, limit],
+  );
+  const failedRuns = await pool().query(
+    `
+    SELECT r.run_id, r.thread_id, r.status, r.updated_at
+    FROM waje_runtime.analysis_runs r
+    WHERE r.status ILIKE '%failed%'
+       OR EXISTS (
+         SELECT 1 FROM waje_runtime.audit_events a
+         WHERE (a.run_id = r.run_id OR a.ref = r.run_id) AND a.event_type = 'workflow_failed'
+       )
+    ORDER BY r.updated_at DESC
+    LIMIT $1
+    `,
+    [limit],
+  );
+  const degradedRuns = await packageStatusRows("degraded", limit);
+  const blockedRuns = await packageStatusRows("blocked", limit);
+  const verifierFailedRuns = await pool().query(
+    `
+    SELECT
+      r.run_id,
+      r.thread_id,
+      r.status,
+      p.payload #>> '{admin_audit,verifier,status}' AS verifier_status,
+      p.created_at
+    FROM waje_runtime.analysis_runs r
+    JOIN waje_runtime.answer_packages p ON p.run_id = r.run_id
+    WHERE COALESCE(p.payload #>> '{admin_audit,verifier,status}', '') NOT IN ('', 'passed')
+    ORDER BY p.created_at DESC
+    LIMIT $1
+    `,
+    [limit],
+  );
+
+  return {
+    slow_runs: slowRuns.rows,
+    failed_runs: failedRuns.rows,
+    degraded_runs: degradedRuns.rows,
+    blocked_runs: blockedRuns.rows,
+    verifier_failed_runs: verifierFailedRuns.rows,
+  };
+}
+
 export async function listPersistedAnswerPackageRuns(limit = 20): Promise<PersistedAnswerPackageRun[]> {
   if (conversationStoreMode() !== "postgres") return [];
   const { rows } = await pool().query(
@@ -781,6 +854,26 @@ function pool() {
   if (!connectionString) throw new Error("WAJE_RUNTIME_DATABASE_URL or DATABASE_URL is required");
   globalStore.__wajeConversationPool ??= new Pool({ connectionString });
   return globalStore.__wajeConversationPool;
+}
+
+async function packageStatusRows(status: "degraded" | "blocked", limit: number) {
+  return pool().query(
+    `
+    SELECT
+      r.run_id,
+      r.thread_id,
+      r.status AS run_status,
+      p.status AS package_status,
+      p.payload #>> '{final_explanation,status}' AS answer_status,
+      p.created_at
+    FROM waje_runtime.analysis_runs r
+    JOIN waje_runtime.answer_packages p ON p.run_id = r.run_id
+    WHERE p.status = $1 OR p.payload #>> '{final_explanation,status}' = $1
+    ORDER BY p.created_at DESC
+    LIMIT $2
+    `,
+    [status, limit],
+  );
 }
 
 async function audit(
