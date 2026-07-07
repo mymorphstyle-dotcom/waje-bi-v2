@@ -21,10 +21,13 @@ export async function POST(request: NextRequest, context: RouteContext) {
       : null;
     const run = memoryProposal ? null : await createRun(threadId);
     const agentCore = run ? await runAgentCore(threadId, run.id, text) : null;
+    const effectiveRun = run && agentCore?.status === "waiting_for_clarification"
+      ? { ...run, status: "waiting_for_clarification" as const }
+      : run;
     return NextResponse.json(
       {
         message,
-        run,
+        run: effectiveRun,
         memoryProposal,
         agentCore,
         eventsUrl: run ? `/api/runs/${run.id}/events` : null,

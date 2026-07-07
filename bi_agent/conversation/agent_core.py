@@ -37,6 +37,35 @@ class ConversationAgentCore:
         self.store.record_context_manifest(turn.context_manifest.to_dict())
 
         if not turn.run_request:
+            if turn.needs_clarification:
+                request = {
+                    "reason": "needs_clarification",
+                    "intent": turn.turn_intent.intent,
+                    "clarification": turn.clarification.to_dict() if turn.clarification else None,
+                }
+                self.store.upsert_run(
+                    run_id,
+                    thread_id=thread_id,
+                    turn_id=turn.turn_id,
+                    topic_id=turn.topic_id or "",
+                    status="waiting_for_clarification",
+                    request=request,
+                )
+                self.store.add_audit_event(
+                    "clarification_requested",
+                    thread_id=thread_id,
+                    topic_id=turn.topic_id or "",
+                    run_id=run_id,
+                    ref=run_id,
+                    payload=request["clarification"] or {},
+                )
+                return {
+                    "status": "waiting_for_clarification",
+                    "run_id": run_id,
+                    "turn_id": turn.turn_id,
+                    "intent": turn.turn_intent.intent,
+                    "clarification": request["clarification"],
+                }
             self.store.upsert_run(
                 run_id,
                 thread_id=thread_id,
@@ -134,7 +163,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     json.dump(result, sys.stdout, ensure_ascii=False, sort_keys=True)
     sys.stdout.write("\n")
-    return 0 if result["status"] in {"completed", "completed_without_workflow"} else 1
+    return 0 if result["status"] in {
+        "completed",
+        "completed_without_workflow",
+        "waiting_for_clarification",
+    } else 1
 
 
 if __name__ == "__main__":

@@ -29,12 +29,15 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const userMessage = await addUserMessage(threadId, message);
     const run = await createRun(threadId);
     const agentCore = await runAgentCore(threadId, run.id, message, role);
+    const effectiveRun = agentCore?.status === "waiting_for_clarification"
+      ? { ...run, status: "waiting_for_clarification" as const }
+      : run;
     return NextResponse.json(
       {
         artifactId,
         artifact,
         message: userMessage,
-        run,
+        run: effectiveRun,
         agentCore,
         eventsUrl: `/api/runs/${run.id}/events`,
       },

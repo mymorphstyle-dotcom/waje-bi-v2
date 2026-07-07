@@ -18,7 +18,7 @@ type MessageRecord = {
 type RunRecord = {
   id: string;
   threadId: string;
-  status: "queued" | "running" | "completed";
+  status: "queued" | "running" | "completed" | "waiting_for_clarification";
   createdAt: string;
 };
 

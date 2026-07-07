@@ -1,11 +1,19 @@
 import { spawn } from "child_process";
 
+type AgentCoreResult = {
+  status: string;
+  command: string;
+  output?: string;
+  result?: unknown;
+  error?: string;
+};
+
 export async function runAgentCore(
   threadId: string,
   runId: string,
   message: string,
   role = "analyst",
-) {
+): Promise<AgentCoreResult> {
   if (process.env.WAJE_AGENT_CORE_COMMAND && process.env.WAJE_AGENT_CORE_COMMAND !== "python3") {
     throw new Error("WAJE_AGENT_CORE_COMMAND currently supports python3");
   }
@@ -36,7 +44,7 @@ export async function runAgentCore(
   return { status: "started", command: "bi_agent.conversation.agent_core" };
 }
 
-function runAgentCoreInline(args: string[]) {
+function runAgentCoreInline(args: string[]): Promise<AgentCoreResult> {
   return new Promise((resolve) => {
     const child = spawn("python3", args, {
       cwd: process.cwd(),
@@ -51,12 +59,31 @@ function runAgentCoreInline(args: string[]) {
       stderr += chunk.toString();
     });
     child.on("close", (code) => {
+      const output = stdout.trim();
+      const parsed = parseAgentCoreOutput(output);
       resolve({
-        status: code === 0 ? "completed" : "failed",
+        status: code === 0 ? parsed.status : "failed",
         command: "bi_agent.conversation.agent_core",
-        output: stdout.trim(),
+        output,
+        result: parsed.result,
         error: stderr.trim(),
       });
     });
   });
+}
+
+function parseAgentCoreOutput(output: string) {
+  try {
+    const result = JSON.parse(output);
+    if (
+      result?.status === "completed" ||
+      result?.status === "completed_without_workflow" ||
+      result?.status === "waiting_for_clarification"
+    ) {
+      return { status: result.status, result };
+    }
+  } catch {
+    return { status: "completed", result: null };
+  }
+  return { status: "completed", result: null };
 }

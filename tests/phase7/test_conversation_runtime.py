@@ -66,9 +66,10 @@ class ConversationRuntimeTest(unittest.TestCase):
                     "memory_update",
                 }:
                     self.assertIsNone(result.run_request)
-                elif case["expected_topic_relation"] == "ask_topic_choice":
+                elif case["expected_langgraph"].get("ask_question"):
                     self.assertTrue(result.needs_clarification)
                     self.assertIsNone(result.run_request)
+                    self.assertIsNotNone(result.clarification)
                 else:
                     self.assertIsNotNone(result.run_request)
 
@@ -124,6 +125,57 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(store.get_thread("thread-clarify").pending_clarification_id, "")
         self.assertTrue(
             any(item.source_type == "clarification" for item in result.context_manifest.items)
+        )
+
+    def test_ambiguous_question_creates_structured_clarification_without_starting_run(self):
+        store = InMemoryConversationStore()
+        runtime = ConversationRuntime(store)
+        store.create_thread("thread-ambiguous", owner_id="analyst-1")
+
+        result = runtime.handle_message("thread-ambiguous", "这个月是不是变好了？")
+
+        self.assertEqual(result.turn_intent.intent, "new_topic")
+        self.assertTrue(result.needs_clarification)
+        self.assertIsNone(result.run_request)
+        self.assertIsNotNone(result.clarification)
+        self.assertEqual(
+            store.get_thread("thread-ambiguous").pending_clarification_id,
+            result.clarification.clarification_id,
+        )
+        self.assertLessEqual(len(result.clarification.questions), 4)
+        question = result.clarification.questions[0]
+        self.assertLessEqual(len(question.options), 3)
+        self.assertEqual(
+            len([option for option in question.options if option.recommended]),
+            1,
+        )
+        self.assertTrue(
+            any(option.option_id == "tell_agent_differently" for option in question.options)
+        )
+        self.assertTrue(
+            any(event["event_type"] == "clarification_requested" for event in store.audit_events)
+        )
+
+    def test_ambiguous_topic_reference_replaces_stale_pending_clarification(self):
+        store = InMemoryConversationStore()
+        runtime = ConversationRuntime(store)
+        store.create_thread("thread-topic-choice", owner_id="analyst-1")
+        q2_topic = store.create_topic("thread-topic-choice", title="Q2 vs Q1", summary="Q2/Q1")
+        store.create_topic("thread-topic-choice", title="1 月月初", summary="1 月月初")
+        store.set_current_topic("thread-topic-choice", q2_topic.topic_id)
+        store.set_pending_clarification("thread-topic-choice", q2_topic.topic_id, "old-clarification")
+
+        result = runtime.handle_message("thread-topic-choice", "刚才那个继续看渠道。")
+
+        self.assertTrue(result.needs_clarification)
+        self.assertIsNotNone(result.clarification)
+        self.assertEqual(
+            store.get_thread("thread-topic-choice").pending_clarification_id,
+            result.clarification.clarification_id,
+        )
+        self.assertEqual(
+            store.get_thread("thread-topic-choice").pending_clarification_topic_id,
+            q2_topic.topic_id,
         )
 
 

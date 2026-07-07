@@ -4,6 +4,9 @@ from typing import Optional
 from uuid import uuid4
 
 from bi_agent.conversation.models import (
+    ClarificationOption,
+    ClarificationQuestion,
+    ClarificationRequest,
     ContextItem,
     ContextManifest,
     ConversationRunRequest,
@@ -75,8 +78,20 @@ class ConversationRuntime:
         for proposal in memory_proposals:
             self.store.add_memory_proposal(proposal)
         needs_clarification = topic_relation == "ask_topic_choice" or _needs_clarification(user_message)
+        clarification = (
+            _build_clarification(turn_id, user_message, topic_relation)
+            if needs_clarification
+            else None
+        )
+        clarification_topic = topic or self.store.current_topic(thread_id)
+        if clarification and clarification_topic:
+            self.store.set_pending_clarification(
+                thread_id,
+                clarification_topic.topic_id,
+                clarification.clarification_id,
+            )
         run_request = None
-        if _should_run(intent_name, topic_relation):
+        if not needs_clarification and _should_run(intent_name, topic_relation):
             run_request = ConversationRunRequest(
                 thread_id=thread_id,
                 turn_id=turn_id,
@@ -102,6 +117,22 @@ class ConversationRuntime:
                 "can_support_claims": manifest.can_support_claims,
             },
         )
+        if clarification:
+            audit_events = audit_events + (
+                {
+                    "event": "clarification_requested",
+                    "turn_id": turn_id,
+                    "clarification_id": clarification.clarification_id,
+                    "reason": clarification.reason,
+                },
+            )
+            self.store.add_audit_event(
+                "clarification_requested",
+                thread_id=thread_id,
+                topic_id=topic.topic_id if topic else "",
+                ref=clarification.clarification_id,
+                payload=clarification.to_dict(),
+            )
         result = ConversationTurnResult(
             thread_id=thread_id,
             turn_id=turn_id,
@@ -114,6 +145,7 @@ class ConversationRuntime:
             audit_events=audit_events,
             run_request=run_request,
             needs_clarification=needs_clarification,
+            clarification=clarification,
             response_boundary=_response_boundary(intent_name),
         )
         self.store.add_turn(thread_id, result.to_dict())
@@ -391,6 +423,69 @@ def _must_rerun(message: str, intent: str, relation: str) -> bool:
 
 def _needs_clarification(message: str) -> bool:
     return any(token in message for token in ("这个月是不是变好了", "这个月有没有变好"))
+
+
+def _build_clarification(
+    turn_id: str,
+    message: str,
+    topic_relation: str,
+) -> ClarificationRequest:
+    if topic_relation == "ask_topic_choice":
+        question = ClarificationQuestion(
+            question_id="topic_reference",
+            question="你想继续哪一个业务问题？",
+            options=(
+                ClarificationOption(
+                    option_id="current_topic",
+                    label="继续当前问题",
+                    description="沿用当前打开的业务问题继续分析。",
+                    recommended=True,
+                ),
+                ClarificationOption(
+                    option_id="second_topic",
+                    label="继续第二个问题",
+                    description="切到 thread 里的第二条业务问题链。",
+                ),
+                ClarificationOption(
+                    option_id="tell_agent_differently",
+                    label="告诉 Agent 换一种做法",
+                    description="自己说明要继续哪个问题或换一个分析方式。",
+                ),
+            ),
+        )
+        return ClarificationRequest(
+            clarification_id=f"clarification-{turn_id}",
+            reason="topic_reference_ambiguous",
+            questions=(question,),
+        )
+
+    question = ClarificationQuestion(
+        question_id="metric_and_baseline",
+        question="你想用哪个口径判断“变好了”？",
+        options=(
+            ClarificationOption(
+                option_id="daily_avg_paid_amount",
+                label="按日均付费金额",
+                description="更适合比较不同天数的时间窗口。",
+                recommended=True,
+            ),
+            ClarificationOption(
+                option_id="total_paid_amount",
+                label="按付费总金额",
+                description="适合判断整体收入规模变化。",
+            ),
+            ClarificationOption(
+                option_id="tell_agent_differently",
+                label="告诉 Agent 换一个口径",
+                description="自己指定指标、时间窗口或对比基线。",
+            ),
+        ),
+    )
+    return ClarificationRequest(
+        clarification_id=f"clarification-{turn_id}",
+        reason="metric_or_baseline_changes_business_answer",
+        questions=(question,),
+    )
 
 
 def _should_run(intent: str, relation: str) -> bool:

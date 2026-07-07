@@ -52,6 +52,39 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertIsNone(store.runs["run-capability-question"]["answer_package"])
 
+    def test_agent_core_waits_for_structured_clarification_without_running_workflow(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-agent-core", owner_id="analyst-1")
+        calls = []
+
+        def runner(_request):
+            calls.append(_request)
+            return fake_workflow(_request)
+
+        core = ConversationAgentCore(store, workflow_runner=runner)
+        result = core.run_message(
+            thread_id="thread-agent-core",
+            run_id="run-needs-clarification",
+            user_message="这个月是不是变好了？",
+            role="analyst",
+        )
+
+        self.assertEqual(result["status"], "waiting_for_clarification")
+        self.assertEqual(calls, [])
+        self.assertIn("clarification", result)
+        self.assertEqual(store.runs["run-needs-clarification"]["status"], "waiting_for_clarification")
+        self.assertEqual(
+            store.runs["run-needs-clarification"]["request"]["clarification"]["clarification_id"],
+            result["clarification"]["clarification_id"],
+        )
+        self.assertTrue(
+            any(
+                event["event_type"] == "clarification_requested"
+                and event["run_id"] == "run-needs-clarification"
+                for event in store.audit_events
+            )
+        )
+
 
 def fake_workflow(request):
     return WorkflowRunResult(

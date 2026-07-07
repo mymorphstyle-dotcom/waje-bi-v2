@@ -54,6 +54,43 @@ class ReuseDecision:
 
 
 @dataclass(frozen=True)
+class ClarificationOption:
+    option_id: str
+    label: str
+    description: str
+    recommended: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ClarificationQuestion:
+    question_id: str
+    question: str
+    options: tuple[ClarificationOption, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["options"] = [option.to_dict() for option in self.options]
+        return data
+
+
+@dataclass(frozen=True)
+class ClarificationRequest:
+    clarification_id: str
+    reason: str
+    questions: tuple[ClarificationQuestion, ...]
+    allow_freeform: bool = True
+    status: str = "waiting_for_user"
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["questions"] = [question.to_dict() for question in self.questions]
+        return data
+
+
+@dataclass(frozen=True)
 class MemoryItem:
     memory_id: str
     owner_scope: str
@@ -124,6 +161,7 @@ class ConversationTurnResult:
     audit_events: tuple[dict[str, Any], ...] = ()
     run_request: Optional[ConversationRunRequest] = None
     needs_clarification: bool = False
+    clarification: Optional[ClarificationRequest] = None
     response_boundary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -133,6 +171,7 @@ class ConversationTurnResult:
         data["reuse_decisions"] = [decision.to_dict() for decision in self.reuse_decisions]
         data["memory_proposals"] = [proposal.to_dict() for proposal in self.memory_proposals]
         data["run_request"] = self.run_request.to_dict() if self.run_request else None
+        data["clarification"] = self.clarification.to_dict() if self.clarification else None
         return data
 
 
