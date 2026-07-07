@@ -12,8 +12,10 @@ from bi_agent.runtime.langgraph_workflow import (
     _final_summary_needs_display_repair,
     _normalize_evidence_interpretation_output,
     _align_route_output_to_requested,
+    _normalize_route_requested_nodes,
     _repair_path_invents_fixed_future_window,
     _reduce_evidence,
+    _route_after_next_action,
     _sanitize_terminal_explanation,
     run_pattern_workflow,
 )
@@ -127,6 +129,8 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("Do not claim complete weeks", text)
         self.assertIn("row_count", text)
         self.assertIn("field_values", text)
+        self.assertIn("Keep coverage_status consistent with the narrative", text)
+        self.assertIn("do not say the user must confirm", text)
         self.assertIn("sql_hash", text)
 
     def test_next_action_prompt_uses_business_language_and_stop_rules(self):
@@ -203,7 +207,15 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("change size", text)
         self.assertIn("not data volume", text)
         self.assertIn("weak_direction", text)
+        self.assertIn("fewer valid comparable periods than the run requires", text)
         self.assertIn("Do not suggest changing, adjusting, or relaxing thresholds", text)
+
+    def test_final_summary_prompt_uses_business_wording_for_simple_comparison(self):
+        messages = build_prompt("final_business_summary", {"intent": {}}).messages
+        text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("observed increase/decrease", text)
+        self.assertIn("do not write statistical association", text)
 
     def test_degraded_explanation_sanitizes_unsupported_period_and_threshold_advice(self):
         sanitized = _sanitize_terminal_explanation(
@@ -677,6 +689,48 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertTrue(_final_summary_needs_display_repair(summary, state))
 
+    def test_final_summary_display_repair_rejects_materiality_ratio_threshold_drift(self):
+        state = {
+            "intent": {
+                "pattern_family": "intra_period",
+                "target_metric": "paid_amount",
+                "scope": "full_sample",
+                "time_window": "2024-01-01..2026-06-30",
+            },
+            "draft_claims": [],
+            "evidence": [
+                {
+                    "capability_id": "compare_period_phases",
+                    "typed_payload": {
+                        "pattern_family": "intra_period",
+                        "median_uplift": -0.0713,
+                        "direction_ratio": 0.2667,
+                        "direction_consistency_ratio": 0.2667,
+                        "materiality_hit_ratio": 0.1,
+                        "comparable_periods": 30,
+                        "min_periods": 30,
+                        "materiality_floor": 0.03,
+                    },
+                    "limitations": ["below_materiality_floor", "weak_direction"],
+                    "strength": "low",
+                    "wording_limit": "insufficient",
+                }
+            ],
+            "evidence_brief": {
+                "limitations": ["below_materiality_floor", "weak_direction"],
+            },
+            "final_explanation": {"status": "degraded"},
+        }
+        summary = (
+            "我对问题的理解是：你想判断月初是否高于月中和月末。\n"
+            "分析脉络：我按月份对比月初和其他阶段。\n"
+            "关键发现：中位下降 7.1%，方向一致比例 26.7%，达到重要性阈值的比例 10.0%。\n"
+            "最终结论：达到重要性阈值的比例10%，低于3%阈值，当前证据不支持该假设。\n"
+            "需要注意：方向一致性不足，变化幅度未达到当前重要性阈值。"
+        )
+
+        self.assertTrue(_final_summary_needs_display_repair(summary, state))
+
     def test_degraded_final_summary_fallback_uses_business_language(self):
         summary = _final_business_summary_fallback(
             {
@@ -735,7 +789,8 @@ class LLMWorkflowTest(unittest.TestCase):
         summary = _final_business_summary_fallback(state)
 
         self.assertIn("中位提升 3.9%", summary)
-        self.assertIn("方向命中率 56.7%", summary)
+        self.assertIn("方向一致比例 56.7%", summary)
+        self.assertIn("达到重要性阈值的比例 56.7%", summary)
         self.assertIn("30 个可比周期", summary)
 
     def test_degraded_final_summary_without_primary_numbers_needs_repair(self):
@@ -774,6 +829,108 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertTrue(_final_summary_needs_display_repair(summary, state))
+
+    def test_final_summary_repair_requires_driver_claim_numbers(self):
+        state = {
+            "intent": {
+                "pattern_family": "custom_baseline",
+                "target_metric": "paid_amount",
+                "scope": "all_users",
+                "time_window": "2026-01-01..2026-06-30",
+                "baseline": {"label": "2026年Q1"},
+                "target": {"label": "2026年Q2"},
+            },
+            "request": {
+                "question": "2026年Q2相比Q1付费金额提升，主要是付费用户数增加还是单付费用户金额提升带来的？"
+            },
+            "draft_claims": [
+                {
+                    "text": "2026年Q2相比2026年Q1，付费金额提升约16.3%",
+                    "numbers": {"median_uplift": 0.1632579798864855},
+                    "evidence_refs": ["compare_periods:run-1"],
+                    "scope": "all_users",
+                    "time_window": "2026-01-01..2026-06-30",
+                },
+                {
+                    "text": "单付费用户金额是主要贡献项，贡献65.4%；付费用户数贡献34.6%。",
+                    "numbers": {
+                        "unit_value_share": 0.6537576498494277,
+                        "volume_share": 0.3462423501505722,
+                    },
+                    "evidence_refs": ["driver_decomposition:inline"],
+                    "scope": "all_users",
+                    "time_window": "2026-01-01..2026-06-30",
+                },
+            ],
+            "evidence": [
+                {
+                    "evidence_ref": "driver_decomposition:inline",
+                    "capability_id": "driver_decomposition",
+                    "typed_payload": {
+                        "decompositions": [
+                            {
+                                "primary_driver": "unit_value",
+                                "volume_key": "paid_users",
+                                "unit_value_share": 0.6537576498494277,
+                                "volume_share": 0.3462423501505722,
+                                "amount_delta_ratio": 0.1632579798864855,
+                            }
+                        ]
+                    },
+                    "strength": "high",
+                    "wording_limit": "quantified",
+                }
+            ],
+        }
+        incomplete = (
+            "我对问题的理解是：你想看Q2相比Q1。\n"
+            "分析脉络：我做了周期对比和驱动拆解。\n"
+            "关键发现：付费金额提升 16.3%。\n"
+            "最终结论：付费金额提升约16.3%。\n"
+            "需要注意：不能外推为长期规律。"
+        )
+
+        self.assertTrue(_final_summary_needs_display_repair(incomplete, state))
+        fallback = _final_business_summary_fallback(state)
+        self.assertIn("65.4%", fallback)
+        self.assertIn("34.6%", fallback)
+        self.assertIn("单付费用户金额", fallback)
+
+    def test_next_action_ask_degrades_when_evidence_has_terminal_business_boundary(self):
+        state = {
+            "request": {"allow_question_interrupt": True},
+            "checkpoint_events": [{"node": "decide_next_action"}],
+            "next_action": {
+                "next_action": "ask_question",
+                "decision_summary": "建议用户调整稳定性规则。",
+            },
+            "intent": {
+                "pattern_family": "custom_baseline",
+                "target_metric": "paid_amount",
+                "scope": "full_sample",
+                "time_window": "2024-01-01..2026-06-30",
+            },
+            "evidence_brief": {"limitations": ["insufficient_comparable_periods"]},
+            "evidence": [
+                {
+                    "capability_id": "compare_periods",
+                    "typed_payload": {
+                        "pattern_family": "custom_baseline",
+                        "comparable_periods": 29,
+                    },
+                    "limitations": ["insufficient_comparable_periods"],
+                    "strength": "low",
+                    "wording_limit": "insufficient",
+                }
+            ],
+        }
+
+        self.assertEqual(_route_after_next_action(state), "degrade")
+        self.assertEqual(state["next_action"]["next_action"], "degrade")
+        self.assertEqual(
+            state["checkpoint_events"][-1]["route"],
+            "ask_overridden_to_degrade",
+        )
 
     def test_llm_narrative_replaces_non_string_narrative_values(self):
         output = _localize_narrative_fields(
@@ -1082,6 +1239,94 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertNotIn("requested_nodes_hint", payload)
         self.assertNotIn("joint_attribution", result.answer_package["accepted_graph"])
+
+    def test_factor_attribution_route_runs_driver_decomposition(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "segment_or_factor_attribution",
+                    "pattern_family": "custom_baseline",
+                    "target_metric": "paid_amount",
+                    "scope": "full_sample",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "target_claim": "判断增长来自用户数还是客单价",
+                },
+                "analysis_route": {
+                    "requested_nodes": ["joint_attribution", "answer_verify"],
+                },
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "driver-decomposition-route",
+                    "llm_client": fake,
+                    "question": "Q2比Q1是用户数还是客单价驱动？",
+                    "pattern_family": "custom_baseline",
+                    "pattern_params": {
+                        "period_key": "period",
+                        "group_key": "group",
+                        "target_group": "target",
+                        "baseline_group": "baseline",
+                    },
+                    "rows": [
+                        {
+                            "period": "h1",
+                            "group": "baseline",
+                            "amount": 100,
+                            "paid_users": 10,
+                        },
+                        {
+                            "period": "h1",
+                            "group": "target",
+                            "amount": 150,
+                            "paid_users": 12,
+                        },
+                    ],
+                    "required_fields": ["period", "group", "amount", "paid_users"],
+                    "time_window": "2026-01-01..2026-06-30",
+                }
+            )
+
+        evidence = result.answer_package["sections"][1]["payload"]["evidence"]
+
+        self.assertEqual(result.status, "draft")
+        self.assertIn("driver_decomposition", result.answer_package["accepted_graph"])
+        self.assertTrue(
+            any(item.get("capability") == "driver_decomposition" for item in evidence)
+        )
+        self.assertIn(
+            "unit_value_share",
+            result.answer_package["sections"][0]["payload"]["claims"][0]["numbers"],
+        )
+
+    def test_route_normalization_adds_driver_decomposition_for_explicit_volume_vs_unit_value_question(self):
+        nodes = _normalize_route_requested_nodes(
+            ("data_quality_profile", "compare_periods", "answer_verify"),
+            {
+                "question_family": "custom_baseline_comparison",
+                "pattern_family": "custom_baseline",
+                "target_claim": "Q2提升主要是付费用户数增加还是单付费用户金额提升带来的",
+                "target_metric": "paid_amount",
+            },
+        )
+
+        self.assertIn("driver_decomposition", nodes)
+
+    def test_route_normalization_removes_segment_contribution_without_segment_dimension(self):
+        nodes = _normalize_route_requested_nodes(
+            ("driver_decomposition", "segment_contribution", "answer_verify"),
+            {
+                "question_family": "segment_or_factor_attribution",
+                "pattern_family": "custom_baseline",
+                "target_claim": "Q2提升主要是付费用户数贡献还是单付费用户金额贡献",
+                "target_metric": "paid_amount",
+            },
+        )
+
+        self.assertIn("driver_decomposition", nodes)
+        self.assertNotIn("segment_contribution", nodes)
 
     def test_analysis_route_accepts_llm_node_objects_but_filters_internal_reducer(self):
         fake = FakeLLMClient(
@@ -1398,6 +1643,89 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.status, "draft")
         self.assertIn("answer_synthesis", fake.calls)
         self.assertNotIn("blocked_explanation", fake.calls)
+
+    def test_answerable_custom_baseline_overrides_coverage_question(self):
+        fake = FakeLLMClient(
+            {
+                "data_coverage_interpretation": {
+                    "coverage_status": "needs_question",
+                    "business_impact": "需要补充每日明细才能确认日均。",
+                    "decision_summary": "询问是否允许用固定天数。",
+                }
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "coverage-question-answerable",
+                    "llm_client": fake,
+                    "rows": [
+                        {"period": "h1", "group": "baseline", "amount": 100},
+                        {"period": "h1", "group": "target", "amount": 120},
+                    ],
+                    "required_fields": ("period", "group", "amount"),
+                    "pattern_family": "custom_baseline",
+                    "pattern_params": {
+                        "period_key": "period",
+                        "group_key": "group",
+                        "target_group": "target",
+                        "baseline_group": "baseline",
+                        "min_periods": 1,
+                    },
+                    "baseline": {"label": "Q1"},
+                    "target": {"label": "Q2"},
+                }
+            )
+
+        self.assertEqual(result.status, "draft")
+        self.assertIn("answer_synthesis", fake.calls)
+        self.assertNotIn("blocked_explanation", fake.calls)
+        coverage = result.answer_package["admin_audit"]["coverage_interpretation"]
+        self.assertEqual(coverage["coverage_status"], "coverage_gap_but_answerable")
+        self.assertEqual(coverage["local_override"], "needs_question_without_local_gap")
+
+    def test_answerable_custom_baseline_cleans_answerable_coverage_confirmation_text(self):
+        fake = FakeLLMClient(
+            {
+                "data_coverage_interpretation": {
+                    "coverage_status": "coverage_gap_but_answerable",
+                    "business_impact": "缺少日明细，无法直接计算，需要用户确认。",
+                    "decision_summary": "建议确认是否接受当前聚合结果。",
+                }
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "coverage-gap-confirmation-cleaned",
+                    "llm_client": fake,
+                    "rows": [
+                        {"period": "h1", "group": "baseline", "amount": 100},
+                        {"period": "h1", "group": "target", "amount": 120},
+                    ],
+                    "required_fields": ("period", "group", "amount"),
+                    "pattern_family": "custom_baseline",
+                    "pattern_params": {
+                        "period_key": "period",
+                        "group_key": "group",
+                        "target_group": "target",
+                        "baseline_group": "baseline",
+                        "min_periods": 1,
+                    },
+                    "baseline": {"label": "Q1"},
+                    "target": {"label": "Q2"},
+                }
+            )
+
+        coverage = result.answer_package["admin_audit"]["coverage_interpretation"]
+        visible = coverage["business_impact"] + coverage["decision_summary"]
+        self.assertEqual(coverage["coverage_status"], "coverage_gap_but_answerable")
+        self.assertNotIn("确认", visible)
+        self.assertNotIn("无法直接", visible)
 
     def test_coverage_block_without_local_data_failure_continues_as_warning(self):
         fake = FakeLLMClient(

@@ -227,7 +227,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                     "summary_text": (
                         "我对问题的理解是：你想判断全样本付费金额是否存在周期内模式。\n"
                         "分析脉络：系统先确认数据口径，再比较目标阶段和基线阶段。\n"
-                        "关键发现：中位提升 20.0%，方向命中率 100.0%，共有 29 个可比周期。\n"
+                        "关键发现：中位提升 20.0%，方向一致比例 100.0%，共有 29 个可比周期。\n"
                         "最终结论：这个现象支持一个有边界的周期内观察，但仍然停留在统计相关层面。\n"
                         "需要注意：洞察上可以继续观察支付节奏和用户结构，但不能归因。"
                     ),
@@ -245,7 +245,123 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
 
         summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
         self.assertIn("洞察上可以继续观察支付节奏和用户结构", summary)
+        self.assertIn("方向一致比例", summary)
+        self.assertNotIn("方向命中率", summary)
         self.assertNotIn("周期内付费金额模式在 2024-01..2026-05 观察到", summary)
+
+    def test_final_business_summary_repairs_custom_baseline_limit_reason(self):
+        fake = FakeLLMClient(
+            {
+                "next_action": {
+                    "next_action": "degrade",
+                    "decision_summary": "证据不足。",
+                },
+                "final_business_summary": {
+                    "summary_text": (
+                        "我对问题的理解是：你想看目标相比基线是否提升。\n"
+                        "分析脉络：我做了周期对比。\n"
+                        "关键发现：目标相比基线提升 20.0%。\n"
+                        "最终结论：当前证据不足以发布这个主结论。\n"
+                        "需要注意：继续观察。"
+                    ),
+                },
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "final-summary-custom-baseline-limit",
+                    "llm_client": fake,
+                    "question": "目标期相比基线期是否稳定提升？",
+                    "pattern_family": "custom_baseline",
+                    "pattern_params": {
+                        "period_key": "period",
+                        "group_key": "group",
+                        "target_group": "target",
+                        "baseline_group": "baseline",
+                        "min_periods": 2,
+                    },
+                    "baseline": {"label": "基线期"},
+                    "target": {"label": "目标期"},
+                    "rows": [
+                        {"period": "p1", "group": "baseline", "amount": 100},
+                        {"period": "p1", "group": "target", "amount": 120},
+                    ],
+                }
+            )
+
+        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
+        self.assertIn("可比周期", summary)
+        self.assertIn("低于本轮要求", summary)
+
+    def test_final_business_summary_businessizes_driver_scope_and_labels(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "segment_or_factor_attribution",
+                    "pattern_family": "custom_baseline",
+                    "scope": "all_users",
+                    "target_claim": "Q2提升来自付费用户数还是单付费用户金额",
+                    "baseline_candidates": [],
+                },
+                "analysis_route": {
+                    "requested_nodes": ["driver_decomposition", "answer_verify"],
+                },
+                "final_business_summary": {
+                    "summary_text": (
+                        "我对问题的理解是：口径是all_users。\n"
+                        "分析脉络：我做了驱动拆解。\n"
+                        "关键发现：主要驱动因素为单用户付费金额。\n"
+                        "最终结论：单用户/单订单价值贡献 62.5%，用户数/订单量贡献 37.5%。\n"
+                        "需要注意：只适用于当前窗口。"
+                    ),
+                },
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "final-summary-driver-labels",
+                    "llm_client": fake,
+                    "question": "Q2提升主要来自付费用户数还是单付费用户金额？",
+                    "pattern_family": "custom_baseline",
+                    "pattern_params": {
+                        "period_key": "period",
+                        "group_key": "group",
+                        "target_group": "target",
+                        "baseline_group": "baseline",
+                        "min_periods": 1,
+                    },
+                    "scope": "all_users",
+                    "baseline": {"label": "Q1"},
+                    "target": {"label": "Q2"},
+                    "rows": [
+                        {
+                            "period": "h1",
+                            "group": "baseline",
+                            "amount": 100,
+                            "paid_users": 10,
+                        },
+                        {
+                            "period": "h1",
+                            "group": "target",
+                            "amount": 160,
+                            "paid_users": 12,
+                        },
+                    ],
+                }
+            )
+
+        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
+        self.assertIn("全体用户", summary)
+        self.assertIn("单付费用户金额", summary)
+        self.assertIn("付费用户数", summary)
+        self.assertNotIn("all_users", summary)
+        self.assertNotIn("单用户/单订单", summary)
+        self.assertNotIn("驱动因素", summary)
+        self.assertNotIn("单用户付费金额", summary)
 
     def test_final_business_summary_allows_negated_attribution_boundary(self):
         fake = FakeLLMClient(

@@ -1,0 +1,71 @@
+contract_version: "0.1"
+capability_id: segment_contribution
+business_name: Segment contribution
+review_status: draft
+
+responsibilities:
+  - Compare target and baseline movement by channel, segment, or another supported grouping.
+  - Rank segment lift and drag contributors at the requested grain.
+  - Return quantified contribution evidence with visible limitations.
+
+parameters:
+  required:
+    - metric
+    - dimension
+    - scope
+    - time_range
+    - baseline
+    - target
+    - segment_key
+    - group_key
+  optional:
+    - top_k
+    - target_group
+    - baseline_group
+
+non_uses:
+  - Does not expose raw identifiers.
+  - Does not claim causal mechanism for segment changes.
+  - Does not run visible segment claims on unsupported or permission-blocked dimensions.
+
+evidence_outputs:
+  typed_payload: segment_contribution_result
+  envelope_fields:
+    - evidence_type
+    - strength
+    - wording_limit
+    - scope
+    - metric
+    - dimension
+    - limitations
+  payload_fields:
+    - top_drags
+    - top_lifts
+    - total_delta
+    - segment_count
+    - skipped_rows_or_segments
+
+limitations:
+  - Sparse or incomplete segments are skipped and must be visible.
+  - Permission-limited dimensions can block visible contribution output.
+  - Segment contribution remains accounting evidence unless paired with mechanism evidence.
+
+degradation_rules:
+  - when: no_comparable_segments
+    output: insufficient segment contribution wording.
+  - when: skipped_incomplete_segments
+    output: quantify visible segments and state the skipped scope.
+
+lint_rules:
+  - rule_id: supported_dimension_required
+    severity: block
+    check: Visible segment claims require a supported or reviewed dimension.
+
+verifier_hooks:
+  - segment_claim_must_state_dimension_and_grain
+  - skipped_segments_must_be_visible
+
+typical_question_families:
+  - segment_or_factor_attribution
+  - paid_amount_change_explanation
+  - custom_baseline_comparison

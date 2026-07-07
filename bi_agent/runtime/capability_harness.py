@@ -59,6 +59,8 @@ def _execute_pattern_compare(
         numeric_facts={
             "median_uplift": payload.get("median_uplift"),
             "direction_ratio": payload.get("direction_ratio"),
+            "direction_consistency_ratio": payload.get("direction_consistency_ratio"),
+            "materiality_hit_ratio": payload.get("materiality_hit_ratio"),
             "comparable_periods": payload.get("comparable_periods"),
         },
         typed_payload=payload,

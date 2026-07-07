@@ -146,27 +146,31 @@ Deliberate deferrals:
 
 Current plan: [docs/superpowers/plans/2026-07-07-phase-5-from-phase-4-state.md](/Users/luka/work/waje-bi-v2/docs/superpowers/plans/2026-07-07-phase-5-from-phase-4-state.md:1)
 
+Closeout evidence (2026-07-08): Phase 5 is complete as an engineering milestone. The latest real ClickHouse + real LLM node-by-node run is `artifacts/phase-5/live-node-system/20260707-v31-prompt-audit-r2/`, with 4 representative cases passed, 81 workflow nodes completed, and 47 LLM calls recorded. Local validation passes with `python3 tools/phase5/validate_phase5.py`, `npm run build`, and `git diff --check`.
+
 **Goal:** Make final answers auditable and regression-tested.
 
 **Business reason:** Production BI answers need clear claim boundaries, visible evidence strength, and repeatable acceptance.
 
 **Deliverables:**
 
-- [ ] Claim group contract implemented and emitted in Answer Package summary.
-- [ ] Answer verifier blocks unsupported strong claims and records visible limitations.
-- [ ] Independent Causal Auditor LLM reviews causal implications and mechanism hypotheses from a structured evidence dossier.
-- [ ] Local verifier remains a mechanical evidence checker for refs, numbers, scope, permissions, metric contracts, and auditor wording boundary.
-- [ ] Launch eval harness uses real user wording plus structured expectation packages.
-- [ ] Failure attribution labels include business failure type and system responsibility point.
-- [ ] Implicit clarification eval suite covers latent ambiguity that can change claim quality.
-- [ ] Route drift measurement records observed drift and impact without auto-promoting guardrails.
+- [x] Claim group contract implemented and emitted in Answer Package summary.
+- [x] Answer verifier blocks unsupported strong claims and records visible limitations.
+- [x] Independent Causal Auditor LLM reviews causal implications and mechanism hypotheses from a structured evidence dossier.
+- [x] Local verifier remains a mechanical evidence checker for refs, numbers, scope, permissions, metric contracts, and auditor wording boundary.
+- [x] Launch eval harness uses real user wording plus structured expectation packages.
+- [x] Failure attribution labels include business failure type and system responsibility point.
+- [x] Implicit clarification eval suite covers latent ambiguity that can change claim quality.
+- [x] Route drift measurement records observed drift and impact without auto-promoting guardrails.
 
 **Acceptance:**
 
-- [ ] Strong claims cannot publish when verifier fails.
-- [ ] Eval case fields include allowed claim/evidence type and allowed strength or wording limit.
-- [ ] Eval failures do not auto-promote into guardrails without human review and dual ownership.
-- [ ] Smoke, affected-slice, and full acceptance eval runs are defined.
+- [x] Strong claims cannot publish when verifier fails.
+- [x] Eval case fields include allowed claim/evidence type and allowed strength or wording limit.
+- [x] Eval failures do not auto-promote into guardrails without human review and dual ownership.
+- [x] Smoke, affected-slice, and full acceptance eval runs are defined.
+
+Phase 5 closeout does not claim production release readiness. Broader composite intent coverage, full question-family expansion, production observability, and release gates continue in Phase 6 through Phase 8.
 
 ## Phase 6: Capability Expansion Across Eight Question Families
 

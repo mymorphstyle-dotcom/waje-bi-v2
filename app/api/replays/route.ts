@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 
 type JsonObject = Record<string, any>;
 
-const artifactRoot = path.join(process.cwd(), "artifacts", "phase-4", "ten-case-node-audit-20260707-postfix");
+const artifactRoot = path.join(process.cwd(), "artifacts", "phase-5", "live-node-system", "20260707-v31-prompt-audit-r2");
 
 const caseMeta: Record<string, { label: string; question?: string; expectedStatus?: string }> = {
   full_month_start_vs_mid_end: {
@@ -45,6 +45,11 @@ const caseMeta: Record<string, { label: string; question?: string; expectedStatu
     question: "全量样本看，WajeSpecial渠道的月度日均付费金额是否稳定高于其他渠道合计？",
     expectedStatus: "degraded",
   },
+  driver_q2_vs_q1_paid_users: {
+    label: "Q2 vs Q1 贡献拆解",
+    question: "2026年Q2相比Q1付费金额提升，主要是付费用户数增加还是单付费用户金额提升带来的？",
+    expectedStatus: "passed",
+  },
   full_weekend_vs_workday: {
     label: "全量周末 vs 工作日",
     question: "全量样本看，周末付费金额是否稳定高于工作日？",
@@ -78,7 +83,10 @@ export async function GET() {
 async function readAllReplays() {
   const files = await listFiles(artifactRoot);
   const debugFiles = files.filter((file) => /(?:_eval|final_node_debug_summary)\.json$/.test(path.basename(file)));
-  const answerPackages = files.filter((file) => path.basename(file) === "answer_package.json" && path.basename(path.dirname(file)).startsWith("phase4-real-"));
+  const answerPackages = files.filter((file) => {
+    const directory = path.basename(path.dirname(file));
+    return path.basename(file) === "answer_package.json" && /^(phase4-real-|phase5-node-debug-)/.test(directory);
+  });
   const replayGroups = await Promise.all([
     ...debugFiles.map(readDebugArtifactReplays),
     ...answerPackages.map((file) => readAnswerPackageReplay(file).then((replay) => [replay])),
@@ -91,7 +99,7 @@ async function readAllReplays() {
 
 async function readAnswerPackageReplay(filePath: string) {
   const artifact = JSON.parse(await readFile(filePath, "utf8"));
-  const caseId = String(artifact.run_id ?? path.basename(path.dirname(filePath))).replace(/^phase4-real-/, "");
+  const caseId = String(artifact.run_id ?? path.basename(path.dirname(filePath))).replace(/^(phase4-real-|phase5-node-debug-)/, "");
   const meta = caseMeta[caseId] ?? { label: caseId };
   const summary = sectionPayload(artifact, "summary");
   const evidence = sectionPayload(artifact, "evidence").evidence ?? [];
@@ -101,6 +109,11 @@ async function readAnswerPackageReplay(filePath: string) {
   const checkpoints = artifact.checkpoint_events ?? [];
   const events = timelineEvents(artifact, summary, evidence, finalExplanation, status, llmCalls, checkpoints);
   const timing = replayTiming(events);
+  const nodes = graphNodes(artifact, summary, evidence, finalExplanation, status, llmCalls, checkpoints);
+  const traceEvidence = evidence.map(traceEvidenceItem);
+  const traceClaims = traceClaimsFromSummary(summary);
+  const summaryCards = answerStats(summary, evidence, finalExplanation, status, artifact);
+  const answer = answerPayload(summary, evidence, finalExplanation, status, traceClaims, traceEvidence, summaryCards);
 
   return {
     id: `answer-package:${path.relative(artifactRoot, filePath)}`,
@@ -111,6 +124,11 @@ async function readAnswerPackageReplay(filePath: string) {
     runId: artifact.run_id,
     todos,
     events,
+    summaryCards,
+    traceClaims,
+    traceEvidence,
+    messages: traceMessages(meta.question ?? "", nodes, answer),
+    answer,
     timing,
     generatedAt: Date.parse(artifact.checkpoint_events?.at?.(-1)?.finished_at ?? "") || 0,
     processSummary: {
@@ -120,8 +138,33 @@ async function readAnswerPackageReplay(filePath: string) {
       verifierStatus: artifact.admin_audit?.verifier?.status ?? "unknown",
       sourceArtifact: path.relative(artifactRoot, filePath),
       debugStage: "完整运行",
+      nodes,
     },
   };
+}
+
+function traceMessages(question: string, nodes: JsonObject[], answer: JsonObject) {
+  return [
+    {
+      id: "user-question",
+      role: "user",
+      text: question,
+      title: "用户问题",
+    },
+    ...nodes.map((node) => ({
+      id: `node-message-${node.id}`,
+      role: node.owner === "LLM" ? "assistant" : "tool",
+      title: node.label,
+      text: node.summary,
+      nodeId: node.id,
+    })),
+    {
+      id: "final-answer",
+      role: "assistant",
+      title: "最终回答",
+      text: answer.answerText,
+    },
+  ];
 }
 
 async function readDebugArtifactReplays(filePath: string) {
@@ -221,8 +264,8 @@ function debugToolEvent(row: JsonObject, stage: string) {
     ...(row.accepted_graph ?? []).map((item: string) => tool(capabilityLabel(item), "completed", "已接受")),
     row.primary_evidence ? tool(capabilityLabel(row.primary_evidence.capability_id ?? row.primary_evidence.capability), "completed", capabilitySummary(row.primary_evidence), row.primary_evidence) : null,
     row.evidence_brief ? tool("证据简报", "completed", evidenceBriefSummary(row.evidence_brief), row.evidence_brief) : null,
-    row.verifier ? tool("答案边界校验", row.verifier.errors?.length ? "blocked" : "completed", `${row.verifier.status ?? "unknown"} · ${(row.verifier.warnings ?? []).length} 个警告`, row.verifier) : null,
-    row.semantic_audit ? tool("语义一致性检查", row.semantic_audit.issues?.length ? "blocked" : "completed", `${row.semantic_audit.audit_status ?? "unknown"} · ${(row.semantic_audit.issues ?? []).length} 个问题`, row.semantic_audit) : null,
+    row.verifier ? tool("答案边界校验", row.verifier.errors?.length ? "blocked" : "completed", `${statusLabel(row.verifier.status)} · ${(row.verifier.warnings ?? []).length} 个警告`, row.verifier) : null,
+    row.semantic_audit ? tool("语义一致性检查", row.semantic_audit.issues?.length ? "blocked" : "completed", `${statusLabel(row.semantic_audit.audit_status)} · ${(row.semantic_audit.issues ?? []).length} 个问题`, row.semantic_audit) : null,
   ]);
   if (!tools.length) return undefined;
   return {
@@ -495,11 +538,11 @@ function verifierToolEvent(artifact: JsonObject, checkpoints: JsonObject[]) {
     todoId: "answer",
     title: "校验答案边界",
     completedTitle: "答案边界已校验",
-    summary: `硬校验：${verifier.status ?? "unknown"} · 语义审计：${semantic.audit_status ?? "n/a"}`,
+    summary: `答案边界：${statusLabel(verifier.status)} · 语义一致性：${statusLabel(semantic.audit_status)}`,
     tools: [
-      tool("semantic_audit", "completed", `${semantic.audit_status ?? "n/a"} · ${(semantic.issues ?? []).length} 个问题`),
-      tool("hard_verify_answer", verifier.errors?.length ? "blocked" : "completed", `${verifier.status ?? "unknown"} · ${(verifier.warnings ?? []).length} 个警告`),
-      tool("persist_artifact", "completed", "草稿 Answer Package 已保存"),
+      tool("语义一致性检查", "completed", `${statusLabel(semantic.audit_status)} · ${(semantic.issues ?? []).length} 个问题`),
+      tool("答案边界校验", verifier.errors?.length ? "blocked" : "completed", `${statusLabel(verifier.status)} · ${(verifier.warnings ?? []).length} 个警告`),
+      tool("保存答案和审计记录", "completed", "本轮回答和审计记录已保存"),
     ],
     durationMs: totalDurationMs(related),
     startedAt: firstStartedAt(related),
@@ -509,9 +552,9 @@ function verifierToolEvent(artifact: JsonObject, checkpoints: JsonObject[]) {
 }
 
 function answerEvent(summary: JsonObject, evidence: JsonObject[], finalExplanation: JsonObject, status: string, checkpoints: JsonObject[]) {
-  const pattern = evidence.find((entry) => (entry.capability_id ?? entry.capability) === "pattern_scan") ?? {};
-  const patternPayload = pattern.typed_payload ?? {};
   const related = checkpointsFor(checkpoints, ["persist_artifact"]);
+  const traceEvidence = evidence.map(traceEvidenceItem);
+  const traceClaims = traceClaimsFromSummary(summary);
   return {
     id: "answer",
     kind: "answer",
@@ -519,48 +562,214 @@ function answerEvent(summary: JsonObject, evidence: JsonObject[], finalExplanati
     durationMs: totalDurationMs(related),
     startedAt: firstStartedAt(related),
     finishedAt: lastFinishedAt(related),
-    answer: {
-      status,
-      answerText: businessDisplayText(
-        summary.final_business_summary ||
-        summary.answer_text ||
-        finalExplanation.explanation ||
-        "当前证据不足，不能发布主业务结论。",
-      ),
-      claims: summary.claims ?? [],
-      limitations: (summary.limitations ?? []).map(limitationLabel),
-      repairPath: businessDisplayText(finalExplanation.repair_path ?? ""),
-      stats: [
-        stat("中位提升", percent(pattern.median_uplift ?? patternPayload.median_uplift)),
-        stat("方向命中率", percent(pattern.direction_ratio ?? patternPayload.direction_ratio)),
-        stat("周期数", String(pattern.comparable_periods ?? patternPayload.comparable_periods ?? "n/a")),
-        stat("结果", statusLabel(status)),
-      ],
+    answer: answerPayload(summary, evidence, finalExplanation, status, traceClaims, traceEvidence),
+  };
+}
+
+function answerPayload(
+  summary: JsonObject,
+  evidence: JsonObject[],
+  finalExplanation: JsonObject,
+  status: string,
+  claims = traceClaimsFromSummary(summary),
+  traceEvidence = evidence.map(traceEvidenceItem),
+  stats = answerStats(summary, evidence, finalExplanation, status),
+) {
+  return {
+    status,
+    answerText: businessDisplayText(
+      summary.final_business_summary ||
+      summary.answer_text ||
+      finalExplanation.explanation ||
+      "当前证据不足，不能发布主业务结论。",
+    ),
+    claims,
+    limitations: (summary.limitations ?? []).map(limitationLabel),
+    repairPath: businessDisplayText(finalExplanation.repair_path ?? ""),
+    stats,
+    evidence: traceEvidence,
+  };
+}
+
+function traceClaimsFromSummary(summary: JsonObject) {
+  return (summary.claims ?? []).map((claim: JsonObject) => ({
+    text: String(claim.text ?? ""),
+    scope: claim.scope ?? "",
+    timeWindow: claim.time_window ?? "",
+    numbers: claim.numbers ?? {},
+    evidenceRefs: claim.evidence_refs ?? [],
+  }));
+}
+
+function traceEvidenceItem(entry: JsonObject) {
+  const capability = entry.capability_id ?? entry.capability;
+  return {
+    capability,
+    label: capabilityLabel(capability),
+    detail: capabilitySummary(entry),
+    strength: entry.strength ?? "unknown",
+    limitations: (entry.limitations ?? []).map(limitationLabel),
+    evidenceRef: entry.evidence_ref,
+  };
+}
+
+function graphNodes(
+  artifact: JsonObject,
+  summary: JsonObject,
+  evidence: JsonObject[],
+  finalExplanation: JsonObject,
+  status: string,
+  llmCalls: JsonObject[],
+  checkpoints: JsonObject[],
+) {
+  const remainingCalls = llmCalls.map((call, index) => ({ call, index }));
+  return checkpoints.map((checkpoint, index) => {
+    const call = checkpoint.llm ? consumeCallForCheckpoint(remainingCalls, checkpoint) : undefined;
+    return {
+      id: `${index}-${checkpoint.node}`,
+      index: index + 1,
+      node: checkpoint.node,
+      label: nodeDisplayLabel(checkpoint.node, checkpoint.label),
+      owner: checkpoint.llm ? "LLM" : "本地系统",
+      status: checkpoint.status ?? "completed",
+      route: routeLabel(checkpoint.route ?? ""),
+      durationMs: eventDurationMs(checkpoint),
+      startedAt: checkpoint.started_at ?? "",
+      finishedAt: checkpoint.finished_at ?? "",
+      summary: nodeSummary(checkpoint, call?.call, artifact, summary, evidence, finalExplanation, status),
+      audit: nodeAudit(checkpoint, call?.call, artifact, evidence),
+    };
+  });
+}
+
+function nodeSummary(
+  checkpoint: JsonObject,
+  call: JsonObject | undefined,
+  artifact: JsonObject,
+  summary: JsonObject,
+  evidence: JsonObject[],
+  finalExplanation: JsonObject,
+  status: string,
+) {
+  if (call) return businessDisplayText(businessTextForCall(call));
+  switch (checkpoint.node) {
+    case "clarification_policy_gate":
+      return `澄清策略：${reasonLabel(checkpoint.route ?? checkpoint.status)}。`;
+    case "accept_analysis_route":
+      return `接受 ${artifact.accepted_graph?.length ?? 0} 条证据路径：${(artifact.accepted_graph ?? []).map(capabilityLabel).join("、") || "无"}。`;
+    case "inspect_schema":
+      return "确认当前运行使用聚合数据口径，未暴露原始明细。";
+    case "validate_runtime_binding":
+      return `完成 ${artifact.admin_audit?.validator_results?.length ?? 0} 项数据和安全校验。`;
+    case "execute_capabilities":
+      return `执行证据路径：${evidence.map((entry) => capabilityLabel(entry.capability_id ?? entry.capability)).join("、") || "无"}。`;
+    case "reduce_evidence":
+      return evidenceSummary(evidence);
+    case "hard_verify_answer":
+      return `答案边界校验：${statusLabel(artifact.admin_audit?.verifier?.status)}。`;
+    case "sanitize_answer":
+      return "收敛为有边界的业务表述，避免越过证据强度。";
+    case "persist_artifact":
+      return `保存本轮回答和审计记录，最终状态：${statusLabel(status)}。`;
+    default:
+      return summary.final_business_summary || finalExplanation.explanation || "节点已完成。";
+  }
+}
+
+function nodeAudit(checkpoint: JsonObject, call: JsonObject | undefined, artifact: JsonObject, evidence: JsonObject[]) {
+  if (call) return auditForCall(call, checkpoint);
+  const common = {
+    node: checkpoint.node,
+    node_label: checkpoint.label,
+    status: checkpoint.status,
+    route: checkpoint.route,
+    duration_ms: checkpoint.duration_ms,
+  };
+  if (checkpoint.node === "validate_runtime_binding") {
+    return { ...common, validator_results: artifact.admin_audit?.validator_results ?? [] };
+  }
+  if (checkpoint.node === "execute_capabilities" || checkpoint.node === "reduce_evidence") {
+    return {
+      ...common,
+      accepted_graph: artifact.accepted_graph ?? [],
       evidence: evidence.map((entry) => ({
         capability: entry.capability_id ?? entry.capability,
-        label: capabilityLabel(entry.capability_id ?? entry.capability),
-        detail: capabilitySummary(entry),
-        strength: entry.strength ?? "unknown",
-        limitations: (entry.limitations ?? []).map(limitationLabel),
+        strength: entry.strength,
+        limitations: entry.limitations ?? [],
+        evidence_ref: entry.evidence_ref,
       })),
-    },
-  };
+    };
+  }
+  if (checkpoint.node === "hard_verify_answer") {
+    return { ...common, verifier: artifact.admin_audit?.verifier ?? {} };
+  }
+  return common;
+}
+
+function answerStats(
+  summary: JsonObject,
+  evidence: JsonObject[],
+  finalExplanation: JsonObject,
+  status: string,
+  artifact?: JsonObject,
+) {
+  const cards: { label: string; value: string; detail?: string }[] = [];
+  const claimNumbers = Object.assign({}, ...(summary.claims ?? []).map((claim: JsonObject) => claim.numbers ?? {}));
+  const primaryEvidence = evidence[0] ?? {};
+  const payload = primaryEvidence.typed_payload ?? {};
+  const numeric = { ...payload, ...(primaryEvidence.numeric_facts ?? {}), ...claimNumbers };
+
+  addNumberCard(cards, "付费金额变化", numeric.amount_delta_ratio, percent);
+  addNumberCard(cards, "单付费用户金额贡献", numeric.unit_value_share, percent);
+  addNumberCard(cards, "付费用户数贡献", numeric.volume_share, percent);
+  addNumberCard(cards, "中位变化", numeric.median_uplift, percent);
+  addNumberCard(cards, "方向一致比例", numeric.direction_consistency_ratio ?? numeric.direction_ratio, percent);
+  addNumberCard(cards, "达到阈值比例", numeric.materiality_hit_ratio, percent);
+  addNumberCard(cards, "可比周期", numeric.comparable_periods, (value) => `${Math.round(Number(value))} 个`);
+  addNumberCard(cards, "数据行数", numeric.row_count, (value) => `${Math.round(Number(value))} 行`);
+
+  cards.push({
+    label: "证据路径",
+    value: `${evidence.length}`,
+    detail: evidence.map((entry) => capabilityLabel(entry.capability_id ?? entry.capability)).join("、") || "无",
+  });
+  cards.push({
+    label: "校验状态",
+    value: statusLabel(status),
+    detail: artifact?.admin_audit?.verifier?.status
+      ? `答案边界校验${statusLabel(artifact.admin_audit.verifier.status)}`
+      : statusLabel(finalExplanation.status),
+  });
+
+  return cards.slice(0, 4);
+}
+
+function addNumberCard(
+  cards: { label: string; value: string; detail?: string }[],
+  label: string,
+  value: unknown,
+  formatter: (value: unknown) => string,
+) {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return;
+  cards.push({ label, value: formatter(numberValue) });
 }
 
 function businessTextForCall(call: JsonObject) {
   const output = call.structured_output ?? {};
+  const displaySummary = businessDisplayText(String(output.display_summary ?? "")).trim();
+  if (displaySummary) return displaySummary;
   switch (call.task) {
     case "business_intent":
       return compact([
-        `识别为 ${output.question_family ?? "unknown"} / ${output.pattern_family ?? "unknown"}。`,
-        `指标 ${output.target_metric ?? "unknown"}，范围 ${output.scope ?? "unknown"}，窗口 ${output.time_window ?? "unknown"}。`,
         output.status_message,
+        output.target_claim ? `本轮要回答的是：${output.target_claim}。` : "",
+        `分析范围 ${scopeLabel(output.scope)}，观察窗口 ${output.time_window ?? "unknown"}。`,
       ]).join(" ");
     case "boundary_decision":
       return compact([
-        `问题边界：${output.boundary_status ?? "unknown"}。`,
         output.decision_summary,
-        output.recommended_assumption ? `推荐假设：${jsonInline(output.recommended_assumption)}` : "",
+        output.recommended_assumption ? `系统按这个假设继续：${jsonInline(output.recommended_assumption)}。` : "",
       ]).join(" ");
     case "confirm_understanding":
       return compact([
@@ -568,13 +777,23 @@ function businessTextForCall(call: JsonObject) {
         acceptedAssumptionsText(output.accepted_assumptions),
       ]).join(" ");
     case "analysis_route":
-      return compact([output.route_summary, output.decision_summary]).join(" ");
+      return compact([
+        output.route_summary,
+        output.expected_evidence?.length ? `计划收集的证据包括：${output.expected_evidence.join("；")}。` : "",
+        output.decision_summary,
+      ]).join(" ");
     case "data_coverage_interpretation":
-      return compact([`数据覆盖：${output.coverage_status ?? "unknown"}。`, output.business_impact, output.decision_summary]).join(" ");
+      return compact([output.business_impact, output.decision_summary]).join(" ");
     case "next_action":
-      return compact([`下一步：${output.next_action ?? "unknown"}。`, output.decision_summary]).join(" ");
+      return output.decision_summary || `下一步进入 ${output.next_action ?? "后续分析"}。`;
     case "evidence_interpretation":
       return compact([output.interpretation, output.evidence_boundary, output.decision_summary]).join(" ");
+    case "causal_audit":
+      return compact([
+        output.publishable_wording,
+        output.answer_guidance,
+        output.main_risks?.length ? `需要保留的边界：${output.main_risks.join("；")}。` : "",
+      ]).join(" ");
     case "answer_synthesis":
     case "answer_repair":
       return output.answer_text || "已生成答案草稿。";
@@ -582,8 +801,9 @@ function businessTextForCall(call: JsonObject) {
       return output.summary_text || "已整理最终业务总结。";
     case "semantic_audit":
       return compact([
-        `语义一致性检查：${output.audit_status ?? "unknown"}。`,
-        output.issues?.length ? `问题：${output.issues.map(issueText).join("；")}` : "",
+        output.issues?.length
+          ? `审计发现回答里有需要收敛的表述：${output.issues.map(issueText).join("；")}。`
+          : "回答和证据边界一致，可以继续。",
       ]).join(" ");
     case "degraded_explanation":
       return compact([output.explanation, output.repair_path ? `修复路径：${output.repair_path}` : ""]).join(" ");
@@ -605,8 +825,21 @@ function auditForCall(call: JsonObject, node?: JsonObject) {
     node_duration_ms: node?.duration_ms ?? null,
     usage: call.usage ?? {},
     structured_output: call.structured_output ?? {},
-    messages: call.messages ?? [],
+    message_count: Array.isArray(call.messages) ? call.messages.length : 0,
+    messages_preview: messagePreviews(call.messages),
   };
+}
+
+function messagePreviews(messages: unknown) {
+  if (!Array.isArray(messages)) return [];
+  return messages.map((message) => {
+    const item = message as JsonObject;
+    const content = String(item.content ?? "");
+    return {
+      role: item.role ?? "",
+      content: content.length > 1200 ? `${content.slice(0, 1200)}...` : content,
+    };
+  });
 }
 
 function labelForTask(task: string) {
@@ -619,12 +852,43 @@ function labelForTask(task: string) {
       data_coverage_interpretation: "解释数据覆盖影响",
       next_action: "判断下一步分析动作",
       evidence_interpretation: "解释证据和业务含义",
+      causal_audit: "审阅因果和业务含义",
       answer_synthesis: "生成业务答案草稿",
       semantic_audit: "语义审计答案",
       answer_repair: "按校验反馈修答案",
+      final_business_summary: "整理最终业务回答",
       degraded_explanation: "生成降级说明",
+      blocked_explanation: "生成阻断说明",
     } as Record<string, string>
   )[task] ?? task;
+}
+
+function nodeDisplayLabel(node: string, fallback?: unknown) {
+  return (
+    {
+      understand_business_intent: "理解用户业务意图",
+      decide_question_boundary: "判断问题边界是否清楚",
+      clarification_policy_gate: "判断是否需要追问",
+      confirm_business_understanding: "确认本次业务理解",
+      design_analysis_route: "设计分析路径",
+      accept_analysis_route: "验收分析路径",
+      inspect_schema: "确认数据口径",
+      validate_runtime_binding: "校验数据和安全边界",
+      interpret_data_coverage: "解释数据覆盖影响",
+      execute_capabilities: "执行证据路径",
+      reduce_evidence: "整理证据简报",
+      decide_next_action: "判断下一步动作",
+      interpret_evidence: "解释证据含义",
+      synthesize_answer: "生成业务答案",
+      causal_audit: "审阅因果和业务含义",
+      semantic_audit: "检查答案语义边界",
+      repair_answer: "修正业务答案",
+      sanitize_answer: "收敛答案表述",
+      hard_verify_answer: "校验答案边界",
+      final_business_summary: "整理最终业务回答",
+      persist_artifact: "保存回答和审计记录",
+    } as Record<string, string>
+  )[node] ?? String(fallback ?? labelForTask(taskForNode(node)));
 }
 
 function capabilityLabel(value: unknown) {
@@ -639,6 +903,9 @@ function capabilityLabel(value: unknown) {
       weekday_calendar_compare: "星期日历对比",
       event_window_compare: "事件窗口对比",
       formula_decompose: "指标构成检查",
+      driver_decomposition: "贡献拆解",
+      segment_contribution: "分群贡献拆解",
+      outlier_contribution: "异常贡献拆解",
       event_evidence: "事件解释线索",
       segment_bridge: "分群一致性检查",
       outlier_scan: "异常周期检查",
@@ -779,9 +1046,16 @@ function actionLabel(value: unknown) {
 function reasonLabel(value: unknown) {
   const text = String(value ?? "");
   const labels: Record<string, string> = {
-    phase4_draft_binding: "Phase 4 草稿绑定",
+    phase4_draft_binding: "草稿绑定口径",
     aggregate_only: "仅使用聚合数据",
     low_risk_assumption: "采用低风险推荐假设继续",
+    clear: "无需追问",
+    needs_question: "需要追问",
+    cannot_answer: "当前无法回答",
+    synthesize_answer: "进入答案生成",
+    continue_evidence: "继续补充证据",
+    degrade: "给出有边界的结论",
+    blocked: "当前阻断",
     ok: "已通过",
     select_only: "只读 SELECT 已通过",
     aggregate_select_only: "聚合 SELECT 已通过",
@@ -793,6 +1067,12 @@ function reasonLabel(value: unknown) {
   return text;
 }
 
+function routeLabel(value: unknown) {
+  const text = String(value ?? "");
+  if (!text) return "";
+  return reasonLabel(text);
+}
+
 function statusLabel(value: unknown) {
   return (
     {
@@ -800,8 +1080,23 @@ function statusLabel(value: unknown) {
       degraded: "已降级",
       blocked: "已阻断",
       failed: "失败",
+      needs_revision: "需要修订",
+      fail: "失败",
+      n_a: "无",
+      "n/a": "无",
+      unknown: "未知",
     } as Record<string, string>
   )[String(value)] ?? String(value ?? "未知");
+}
+
+function scopeLabel(value: unknown) {
+  return (
+    {
+      full_sample: "全样本",
+      all_users: "全体用户",
+      default: "默认口径",
+    } as Record<string, string>
+  )[String(value)] ?? String(value ?? "当前口径");
 }
 
 function businessDisplayText(value: string) {
@@ -814,6 +1109,9 @@ function businessDisplayText(value: string) {
     pattern_scan: "模式强度检验",
     answer_verify: "答案边界校验",
     formula_decompose: "指标构成检查",
+    driver_decomposition: "贡献拆解",
+    segment_contribution: "分群贡献拆解",
+    outlier_contribution: "异常贡献拆解",
     event_evidence: "事件解释线索",
     segment_bridge: "分群一致性检查",
     outlier_scan: "异常周期检查",

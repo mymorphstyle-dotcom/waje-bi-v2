@@ -46,14 +46,14 @@
 
 ## Phase 5 保留项
 
-- 当前报告只基于已有 10 case 汇总和隐性澄清 YAML；没有重跑 ClickHouse live eval。
-- 隐性澄清套件还缺全量执行后的 artifact summary。
+- 4 个代表 case 已完成真实 ClickHouse + 真实 LLM 逐节点闭环；10 case 更大样本和复合意图开放测试进入 Phase 6。
+- 隐性澄清套件已有单测和评估字段；完整真实 artifact summary 随 Phase 6 复合意图测试补齐。
 
-## 主线程 Live Rerun 记录
+## 主线程 Live Rerun 记录（早期）
 
 运行时间：2026-07-07
 
-本轮用当前代码重新跑 `evals/phase4/full_period_pattern_cases.yaml`，产物写入 `artifacts/phase-5/live-full-period-20260707/`。结果未达到完整 10 case：前 6 个 case 已写出 Answer Package，第 7 个 `full_wajespecial_vs_other_by_month` 卡在 `design_analysis_route` 的 DeepSeek 响应读取，已人工中断。
+本轮用当时代码重新跑 `evals/phase4/full_period_pattern_cases.yaml`，产物写入 `artifacts/phase-5/live-full-period-20260707/`。结果未达到完整 10 case：前 6 个 case 已写出 Answer Package，第 7 个 `full_wajespecial_vs_other_by_month` 卡在 `design_analysis_route` 的 DeepSeek 响应读取，已人工中断。
 
 已完成 6 个 case 的状态：
 
@@ -69,11 +69,41 @@
 业务判断：
 
 - 当前代码的 Answer Package claim group 在已通过 case 上可用；降级 case 没有发布主 claim，符合证据边界。
-- 当前 live rerun 的主要问题是可观测性：长 LLM 调用期间没有逐 case 进度和当前节点输出，出问题时只能靠中断堆栈定位。
+- 当前 live rerun 暴露的主要问题是可观测性：长 LLM 调用期间没有逐 case 进度和当前节点输出，出问题时只能靠中断堆栈定位。
 - `WajeSpecial vs 其他渠道` 仍是 Phase 5 route/clarification 重点样本。它的问题不应直接变成 compiler 硬规则，先进入逐 case 调试和 route drift 影响评估。
 
-下一步调试要求：
+这段记录已被后续逐节点闭环取代，保留它是为了说明 Phase 5 为什么新增 node debug runner 和 Agent Run Workbench。
 
-- live runner 改成逐 case 输出：开始 case、完成 ClickHouse、进入每个 LLM 节点、写出 artifact、失败节点。
-- 对卡住 case 单独跑 `business_intent -> boundary_decision -> analysis_route` 三段，记录 prompt、raw response、耗时和是否需要 ask question。
-- 完整 10 case live rerun 通过后再更新本报告的 10 case live summary。
+## Phase 5 逐节点闭环记录
+
+运行时间：2026-07-07
+
+产物目录：`artifacts/phase-5/live-node-system/20260707-v31-prompt-audit-r2/`
+
+本轮按逐节点协议执行真实 ClickHouse + 真实 LLM，覆盖 4 个代表 case：支持型 Q2/Q1 对比、历史负向假设、渠道月度对比、驱动拆解。4 个 case 全部 passed，共 81 个 workflow node、47 次 LLM call。
+
+| Case | 状态 | 节点数 | LLM 调用 | accepted graph | 下一步动作 |
+|---|---:|---:|---:|---|---|
+| full_2026_q2_vs_q1 | passed | 22 | 13 | data_quality_profile, compare_periods, answer_verify | synthesize_answer |
+| full_month_start_vs_mid_end | passed | 21 | 13 | data_quality_profile, compare_period_phases, answer_verify, data_quality_check, pattern_scan, formula_decompose, event_evidence, segment_bridge, outlier_scan | synthesize_answer |
+| full_wajespecial_vs_other_by_month | passed | 15 | 8 | data_quality_profile, compare_periods, outlier_scan, answer_verify, data_quality_check, pattern_scan, formula_decompose, event_evidence, segment_bridge | degrade |
+| driver_q2_vs_q1_paid_users | passed | 23 | 13 | driver_decomposition, answer_verify | synthesize_answer |
+
+业务判断：
+
+- 数据充分但假设不被支持时，workflow 输出负向业务答案，不再把可回答问题降级成无法回答。
+- `WajeSpecial vs 其他渠道` 的早期卡点已通过逐节点 runner 复现并闭环；最终路径保留降级解释，未把 route drift 直接固化成 compiler 硬规则。
+- 驱动拆解 case 可由 LLM 自主选择 `driver_decomposition`，并由本地 verifier 保持数字、证据 ref 和 claim 边界。
+- Agent Run Workbench 已能把 Answer Package 映射成线性对话、LangGraph path、节点 inspector、accepted graph 侧支和折叠工作流画布。
+
+Phase 5 closeout 验证：
+
+- `python3 tools/phase5/validate_phase5.py`
+- `npm run build`
+- `git diff --check`
+
+Phase 6 接续项：
+
+- 用更大的 10 case 和随机开放样本继续评估 route drift、复合意图和隐性澄清。
+- 扩展八类问题族的 capability coverage。
+- 把生产观测、权限过滤、rerun comparability 和 release gates 留到后续生产门禁。

@@ -4,10 +4,14 @@ import unittest
 import yaml
 
 from tests.phase4.fake_llm import FakeLLMClient
+from tools.phase5 import debug_node_runner
 from tools.phase5.debug_node_runner import build_initial_state, run_one_node
 
 
 class NodeDebugRunnerTest(unittest.TestCase):
+    def test_runner_knows_causal_audit_node(self):
+        self.assertIn("audit_causal_implications", debug_node_runner.NODE_FUNCS)
+
     def test_node_debug_case_suite_starts_with_low_risk_then_stuck_case(self):
         with open("evals/phase5/node_debug_cases.yaml", encoding="utf-8") as handle:
             data = yaml.safe_load(handle)

@@ -1,0 +1,69 @@
+contract_version: "0.1"
+capability_id: driver_decomposition
+business_name: Driver decomposition
+review_status: draft
+
+responsibilities:
+  - Decompose paid amount movement between a baseline window and a target window.
+  - Quantify whether volume or unit value contributed more to the observed movement.
+  - Return accounting contribution evidence without promoting it into causal proof.
+
+parameters:
+  required:
+    - metric
+    - scope
+    - time_range
+    - baseline
+    - target
+    - period_key
+    - group_key
+  optional:
+    - volume_key
+    - target_group
+    - baseline_group
+
+non_uses:
+  - Does not prove why users or unit value changed.
+  - Does not use raw identifiers in visible output.
+  - Does not replace event, segment, or causal evidence checks.
+
+evidence_outputs:
+  typed_payload: driver_decomposition_result
+  envelope_fields:
+    - evidence_type
+    - strength
+    - wording_limit
+    - scope
+    - metric
+    - limitations
+  payload_fields:
+    - decompositions
+    - primary_driver
+    - volume_share
+    - unit_value_share
+    - amount_delta_ratio
+
+limitations:
+  - Accounting contribution can support contribution wording, not causal wording.
+  - Missing volume fields degrade the analysis.
+  - Single-window comparisons cannot prove long-term stability.
+
+degradation_rules:
+  - when: no_comparable_segments
+    output: insufficient contribution wording.
+  - when: missing_volume_field
+    output: degrade to amount-only comparison or ask for a supported metric.
+
+lint_rules:
+  - rule_id: contribution_wording_only
+    severity: degrade
+    check: Driver decomposition cannot publish causal wording by itself.
+
+verifier_hooks:
+  - contribution_claim_must_state_baseline_and_target
+  - causal_wording_requires_external_evidence
+
+typical_question_families:
+  - segment_or_factor_attribution
+  - paid_amount_change_explanation
+  - custom_baseline_comparison

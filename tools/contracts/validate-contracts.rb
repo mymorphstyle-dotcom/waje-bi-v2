@@ -46,7 +46,10 @@ CAPABILITIES = %w[
   joint_attribution
   event_evidence
   outlier_scan
+  outlier_contribution
   segment_bridge
+  segment_contribution
+  driver_decomposition
   data_quality_check
   answer_verify
 ].freeze

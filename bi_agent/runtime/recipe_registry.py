@@ -21,6 +21,7 @@ def load_recipe_registry() -> dict[str, RecipeEntry]:
             question_family="paid_amount_change_explanation",
             subgraph_nodes=(
                 "data_quality_check",
+                "driver_decomposition",
                 "formula_decompose",
                 "segment_bridge",
                 "answer_verify",
@@ -49,7 +50,8 @@ def load_recipe_registry() -> dict[str, RecipeEntry]:
             question_family="segment_or_factor_attribution",
             subgraph_nodes=(
                 "data_quality_check",
-                "segment_bridge",
+                "segment_contribution",
+                "driver_decomposition",
                 "formula_decompose",
                 "answer_verify",
             ),
@@ -60,6 +62,7 @@ def load_recipe_registry() -> dict[str, RecipeEntry]:
             question_family="anomaly_or_black_swan_review",
             subgraph_nodes=(
                 "data_quality_check",
+                "outlier_contribution",
                 "outlier_scan",
                 "event_evidence",
                 "answer_verify",

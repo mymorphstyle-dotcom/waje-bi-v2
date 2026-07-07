@@ -1,0 +1,87 @@
+version: "0.1"
+source_case_file: evals/phase4/full_period_pattern_cases.yaml
+artifact_policy: real_clickhouse_real_llm_node_debug_only
+cases:
+  - case_id: full_2026_q2_vs_q1
+    source_case_id: full_2026_q2_vs_q1
+    review_focus: "支持型自定义基线对比，确认通过路径、claim 和最终业务总结。"
+    required_accepted_capabilities:
+      - compare_periods
+    forbidden_boundary_statuses:
+      - needs_question
+    forbidden_final_statuses:
+      - degraded
+      - blocked
+
+  - case_id: full_month_start_vs_mid_end
+    source_case_id: full_month_start_vs_mid_end
+    review_focus: "历史高风险问题，确认全量数据不支持时输出负向业务答案。"
+    required_accepted_capabilities:
+      - compare_period_phases
+    forbidden_boundary_statuses:
+      - needs_question
+
+  - case_id: full_wajespecial_vs_other_by_month
+    source_case_id: full_wajespecial_vs_other_by_month
+    review_focus: "渠道月度对比，检查 route drift、有效周期和降级说明。"
+    required_accepted_capabilities:
+      - compare_periods
+    forbidden_boundary_statuses:
+      - needs_question
+    forbidden_final_statuses:
+      - blocked
+
+  - case_id: driver_q2_vs_q1_paid_users
+    review_focus: "驱动拆解，确认 LLM 自主选择 driver_decomposition 并给出贡献型答案。"
+    required_accepted_capabilities:
+      - driver_decomposition
+    forbidden_boundary_statuses:
+      - needs_question
+    forbidden_final_statuses:
+      - degraded
+      - blocked
+    question: "2026年Q2相比Q1付费金额提升，主要是付费用户数增加还是单付费用户金额提升带来的？"
+    pattern_family: custom_baseline
+    time_window: "2026-01-01..2026-06-30"
+    scope: all_users
+    baseline:
+      label: "2026年Q1"
+      start: "2026-01-01"
+      end: "2026-04-01"
+    target:
+      label: "2026年Q2"
+      start: "2026-04-01"
+      end: "2026-07-01"
+    pattern_params:
+      period_key: period
+      group_key: group
+      target_group: target
+      baseline_group: baseline
+      min_periods: 1
+    required_fields:
+      - period
+      - group
+      - amount
+      - paid_users
+      - orders
+    real_sql: |
+      WITH periodized AS (
+        SELECT
+          '2026_h1' AS period,
+          if(business_date_lagos < toDate('2026-04-01'), 'baseline', 'target') AS `group`,
+          paid_amount_ngn,
+          user_id,
+          order_id
+        FROM paid_order_success_clean_20240101_20260704
+        WHERE business_date_lagos >= toDate('2026-01-01')
+          AND business_date_lagos < toDate('2026-07-01')
+      )
+      SELECT
+        period,
+        `group`,
+        sum(paid_amount_ngn) AS amount,
+        uniqExact(user_id) AS paid_users,
+        count() AS orders
+      FROM periodized
+      GROUP BY period, `group`
+      ORDER BY period, `group`

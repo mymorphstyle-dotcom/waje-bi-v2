@@ -1,5 +1,8 @@
 import unittest
 
+from bi_agent.capabilities.driver_decomposition import driver_decomposition
+from bi_agent.capabilities.outlier_contribution import outlier_contribution
+from bi_agent.capabilities.segment_contribution import segment_contribution
 from bi_agent.runtime.capability_harness import execute_capability
 from bi_agent.runtime.capability_models import BudgetState, CapabilityRequest
 
@@ -103,6 +106,47 @@ class CapabilityHarnessTest(unittest.TestCase):
         self.assertEqual(envelope.baseline_label, "Q1")
         self.assertEqual(envelope.numeric_facts["comparable_periods"], 1)
         self.assertAlmostEqual(envelope.numeric_facts["median_uplift"], 0.2)
+
+    def test_driver_decomposition_identifies_volume_or_unit_driver(self):
+        result = driver_decomposition(
+            [
+                {"period": "h1", "group": "baseline", "amount": 100, "paid_users": 10},
+                {"period": "h1", "group": "target", "amount": 150, "paid_users": 12},
+            ]
+        )
+
+        self.assertEqual(result.wording_limit, "quantified")
+        self.assertEqual(result.typed_payload["primary_driver"], "unit_value")
+        self.assertGreater(
+            result.typed_payload["decompositions"][0]["unit_value_share"],
+            result.typed_payload["decompositions"][0]["volume_share"],
+        )
+
+    def test_segment_contribution_ranks_dragging_segments(self):
+        result = segment_contribution(
+            [
+                {"period": "A", "group": "baseline", "amount": 100},
+                {"period": "A", "group": "target", "amount": 80},
+                {"period": "B", "group": "baseline", "amount": 100},
+                {"period": "B", "group": "target", "amount": 130},
+            ]
+        )
+
+        self.assertEqual(result.wording_limit, "contextual")
+        self.assertEqual(result.typed_payload["top_drags"][0]["segment"], "A")
+
+    def test_outlier_contribution_reports_top_period_share(self):
+        result = outlier_contribution(
+            [
+                {"period": "1", "group": "baseline", "amount": 100},
+                {"period": "1", "group": "target", "amount": 200},
+                {"period": "2", "group": "baseline", "amount": 100},
+                {"period": "2", "group": "target", "amount": 105},
+            ]
+        )
+
+        self.assertEqual(result.wording_limit, "contextual")
+        self.assertGreater(result.typed_payload["top_positive_share"], 0.9)
 
 
 if __name__ == "__main__":

@@ -195,27 +195,37 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
         )
         self.assertFalse(compiled.mutations.rejected_or_degraded)
 
-    def test_non_pattern_recipe_records_supported_proposed_nodes_outside_skeleton(self):
+    def test_non_pattern_recipe_accepts_llm_selected_supported_nodes(self):
         registry = load_recipe_registry()
         compiled = compile_graph(
             question_family="paid_amount_change_explanation",
             target_metric="paid_amount",
-            requested_nodes=["joint_attribution"],
+            requested_nodes=["driver_decomposition", "answer_verify"],
             registry=registry,
         )
 
-        self.assertEqual(compiled.status, "degraded")
-        self.assertIn("joint_attribution", compiled.mutations.proposed_graph)
-        self.assertNotIn("joint_attribution", compiled.mutations.accepted_graph)
-        self.assertIn("joint_attribution", compiled.mutations.rejected_or_degraded)
-        self.assertTrue(
-            any(
-                item.action == "degraded"
-                and item.capability == "joint_attribution"
-                and item.reason == "non_pattern_recipe_skeleton_scope"
-                for item in compiled.mutations.records
-            )
+        self.assertEqual(compiled.status, "accepted")
+        self.assertEqual(
+            compiled.mutations.accepted_graph,
+            ("driver_decomposition", "answer_verify"),
         )
+        self.assertFalse(compiled.mutations.rejected_or_degraded)
+
+    def test_custom_baseline_accepts_explicit_driver_decomposition(self):
+        registry = load_recipe_registry()
+        compiled = compile_graph(
+            question_family="custom_baseline_comparison",
+            target_metric="paid_amount",
+            requested_nodes=["driver_decomposition", "answer_verify"],
+            registry=registry,
+        )
+
+        self.assertEqual(compiled.status, "accepted")
+        self.assertEqual(
+            compiled.mutations.accepted_graph,
+            ("driver_decomposition", "answer_verify"),
+        )
+        self.assertFalse(compiled.mutations.rejected_or_degraded)
 
     def test_contract_loader_rejects_non_mapping_yaml(self):
         for contents in ("- unsupported\n", "false\n", "0\n", "[]\n"):

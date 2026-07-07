@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from time import perf_counter
 from typing import Any, Mapping, Optional, Sequence
 
 import yaml
@@ -47,6 +48,7 @@ NODE_FUNCS = {
     "promotion_policy_gate": workflow._promotion_policy_gate,
     "execute_joint_attribution": workflow._execute_joint_attribution,
     "interpret_evidence": workflow._interpret_evidence,
+    "audit_causal_implications": workflow._audit_causal_implications,
     "synthesize_answer": workflow._synthesize_answer,
     "semantic_audit": workflow._semantic_audit,
     "sanitize_answer": workflow._sanitize_answer,
@@ -106,6 +108,7 @@ def run_one_node(
     live_state["llm_client"] = llm_client or _default_llm_client()
     before = _comparable_state(live_state)
     before_llm_count = len(live_state.get("llm_calls", []))
+    started = perf_counter()
 
     try:
         workflow._retrying_node(node_name, NODE_FUNCS[node_name])(live_state)
@@ -129,6 +132,7 @@ def run_one_node(
         "node": node_name,
         "status": "failed" if error else "completed",
         "error": error,
+        "duration_ms": round((perf_counter() - started) * 1000, 3),
         "changed_keys": changed_keys,
         "llm_tasks_added": llm_tasks_added,
         "checkpoint": after.get("checkpoint_events", [{}])[-1],

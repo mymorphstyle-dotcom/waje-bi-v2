@@ -38,6 +38,7 @@ def compile_graph(
 ) -> CompiledGraph:
     registry = load_recipe_registry() if registry is None else registry
     proposed_graph = tuple(requested_nodes)
+    explicit_requested = bool(proposed_graph)
     recipe = registry.get(question_family)
 
     if recipe is None:
@@ -116,6 +117,17 @@ def compile_graph(
         )
 
     if question_family == "custom_baseline_comparison" and known_requested:
+        accepted = _dedupe(known_requested)
+        return _compiled(
+            status="accepted" if not unknown and not unsupported_for_family else "degraded",
+            target_metric=target_metric,
+            accepted=accepted,
+            proposed=proposed_graph,
+            rejected_or_degraded=_dedupe((*unknown, *unsupported_for_family)),
+            records=records,
+        )
+
+    if explicit_requested and known_requested:
         accepted = _dedupe(known_requested)
         return _compiled(
             status="accepted" if not unknown and not unsupported_for_family else "degraded",

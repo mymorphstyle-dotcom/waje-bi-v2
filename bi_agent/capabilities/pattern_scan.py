@@ -48,11 +48,13 @@ def scan_pattern(
 
     uplifts, exceptions = scanners[pattern_family](rows, materiality_floor, params)
     comparable_periods = len(uplifts)
-    direction_ratio = sum(1 for uplift in uplifts if uplift >= materiality_floor) / comparable_periods if comparable_periods else 0.0
+    direction_consistency_ratio = sum(1 for uplift in uplifts if uplift > 0) / comparable_periods if comparable_periods else 0.0
+    materiality_hit_ratio = sum(1 for uplift in uplifts if uplift >= materiality_floor) / comparable_periods if comparable_periods else 0.0
+    direction_ratio = materiality_hit_ratio
     median_uplift = median(uplifts) if uplifts else 0.0
     established = (
         comparable_periods >= min_periods
-        and direction_ratio >= 0.70
+        and materiality_hit_ratio >= 0.70
         and median_uplift >= materiality_floor
     )
     wording_limit = _wording_limit(established, direction_ratio, median_uplift, materiality_floor)
@@ -73,6 +75,8 @@ def scan_pattern(
         "pattern_family": pattern_family,
         "materiality_floor": materiality_floor,
         "direction_ratio": direction_ratio,
+        "direction_consistency_ratio": direction_consistency_ratio,
+        "materiality_hit_ratio": materiality_hit_ratio,
         "median_uplift": median_uplift,
         "comparable_periods": comparable_periods,
         "min_periods": min_periods,

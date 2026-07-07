@@ -1,0 +1,70 @@
+contract_version: "0.1"
+capability_id: outlier_contribution
+business_name: Outlier contribution
+review_status: draft
+
+responsibilities:
+  - Check whether a small number of days, weeks, or periods explains a large share of movement.
+  - Quantify top positive and negative period contribution under the requested comparison.
+  - Separate concentrated-period contribution from stable pattern evidence.
+
+parameters:
+  required:
+    - metric
+    - scope
+    - time_range
+    - baseline
+    - target
+    - period_key
+    - group_key
+  optional:
+    - top_k
+    - target_group
+    - baseline_group
+
+non_uses:
+  - Does not prove the business cause of an outlier.
+  - Does not replace event evidence or incident records.
+  - Does not turn concentrated movement into stable pattern wording.
+
+evidence_outputs:
+  typed_payload: outlier_contribution_result
+  envelope_fields:
+    - evidence_type
+    - strength
+    - wording_limit
+    - scope
+    - metric
+    - limitations
+  payload_fields:
+    - top_positive_periods
+    - top_negative_periods
+    - top_positive_share
+    - concentrated_in_top_periods
+    - paired_periods
+    - total_delta
+
+limitations:
+  - Too few paired periods degrade the result.
+  - Concentration evidence supports exception wording, not stable-pattern wording.
+  - External event evidence is required to explain why outliers happened.
+
+degradation_rules:
+  - when: insufficient_paired_periods
+    output: insufficient outlier contribution wording.
+  - when: no_positive_delta
+    output: report no positive movement to attribute.
+
+lint_rules:
+  - rule_id: stable_pattern_wording_block
+    severity: degrade
+    check: Outlier concentration cannot be described as a stable recurring pattern.
+
+verifier_hooks:
+  - outlier_claim_must_state_top_period_share
+  - stable_pattern_wording_requires_pattern_evidence
+
+typical_question_families:
+  - anomaly_or_black_swan_review
+  - paid_amount_change_explanation
+  - custom_baseline_comparison
