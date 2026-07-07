@@ -79,7 +79,17 @@ def build_initial_state(
         "requested_nodes": list(case.get("required_capabilities", ())),
         "allow_question_interrupt": True,
     }
-    for key in ("question", "baseline", "target", "scope"):
+    for key in (
+        "question",
+        "baseline",
+        "target",
+        "scope",
+        "target_metric",
+        "events",
+        "segments",
+        "primary_question_family",
+        "secondary_question_families",
+    ):
         if key in case:
             request[key] = case[key]
     if sql_text:

@@ -98,9 +98,9 @@ def _groups(rows, period_key, group_key):
     for row in rows:
         period = row.get(period_key, "all")
         group = row.get(group_key)
-        if group is None:
+        if period in (None, "") or group is None:
             continue
-        grouped.setdefault(period, {})[group] = row
+        grouped.setdefault(str(period), {})[str(group)] = row
     return grouped
 
 

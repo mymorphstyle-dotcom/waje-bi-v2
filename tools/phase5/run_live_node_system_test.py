@@ -291,6 +291,11 @@ def _validate_live_case(
     final_status = str((state.get("final_explanation") or {}).get("status") or "")
     if final_status in set(case.get("forbidden_final_statuses", [])):
         issues.append(f"forbidden_final_status:{final_status}")
+    allowed_final = set(case.get("allowed_final_statuses", ()))
+    if allowed_final:
+        observed_final = final_status or "passed"
+        if observed_final not in allowed_final:
+            issues.append(f"unexpected_final_status:{observed_final}")
     accepted = set(_accepted_graph(state))
     for capability in case.get("required_accepted_capabilities", []):
         if capability not in accepted:
@@ -319,11 +324,18 @@ def _accepted_graph(state: Mapping[str, Any]) -> list[str]:
 
 def _load_live_cases(path: Path) -> list[dict[str, Any]]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    source_path = ROOT / str(loaded.get("source_case_file") or "evals/phase4/full_period_pattern_cases.yaml")
-    source_cases = {
-        case["case_id"]: case
-        for case in node_runner._load_cases(source_path)
-    }
+    source_files = list(loaded.get("source_case_files") or ())
+    if loaded.get("source_case_file"):
+        source_files.append(str(loaded["source_case_file"]))
+    if not source_files:
+        source_files.append("evals/phase4/full_period_pattern_cases.yaml")
+    source_cases = {}
+    for source_file in source_files:
+        for source_case in node_runner._load_cases(ROOT / str(source_file)):
+            existing = source_cases.get(source_case["case_id"])
+            if existing and existing.get("real_sql") and not source_case.get("real_sql"):
+                continue
+            source_cases[source_case["case_id"]] = source_case
     cases = []
     for item in loaded.get("cases", []):
         source_id = item.get("source_case_id")

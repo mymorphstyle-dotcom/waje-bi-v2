@@ -205,6 +205,9 @@ function RunOverview({ run }: { run: TraceRun }) {
         <p>{run.question}</p>
       </div>
       <div className={styles.summaryCards}>
+        {(run.businessThreads ?? []).map((card) => (
+          <SummaryTile card={card} key={`${card.label}-${card.value}`} />
+        ))}
         {run.summaryCards.map((card) => (
           <SummaryTile card={card} key={`${card.label}-${card.value}`} />
         ))}

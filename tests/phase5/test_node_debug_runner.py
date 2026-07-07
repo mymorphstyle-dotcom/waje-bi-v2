@@ -95,6 +95,110 @@ class NodeDebugRunnerTest(unittest.TestCase):
         self.assertEqual(state["node_debug_reviews"][-1]["llm_tasks_added"], ["boundary_decision"])
         self.assertIn("boundary_decision", state["node_debug_reviews"][-1]["changed_keys"])
 
+    def test_business_intent_preserves_composite_question_families(self):
+        state = build_initial_state(
+            {
+                "case_id": "phase6-composite",
+                "pattern_family": "custom_baseline",
+                "time_window": "2026-01-01..2026-06-30",
+                "pattern_params": {
+                    "period_key": "channel",
+                    "group_key": "group",
+                    "target_group": "target",
+                    "baseline_group": "baseline",
+                },
+                "question": "Q2为什么增长，主要渠道和用户数客单价分别怎么贡献？",
+                "required_capabilities": ["driver_decomposition", "segment_contribution"],
+            },
+            rows=[
+                {"channel": "WajeSpecial", "group": "baseline", "amount": 100},
+                {"channel": "WajeSpecial", "group": "target", "amount": 160},
+            ],
+            artifact_root=tempfile.mkdtemp(),
+        )
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "paid_amount_change_explanation",
+                    "question_families": [
+                        "paid_amount_change_explanation",
+                        "segment_or_factor_attribution",
+                    ],
+                    "target_metric": "paid_amount",
+                    "scope": "all_users",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "pattern_family": "custom_baseline",
+                    "target_claim": "formula_component_contribution",
+                },
+            }
+        )
+
+        state = run_one_node(state, "understand_business_intent", llm_client=fake)
+
+        self.assertEqual(state["intent"]["question_family"], "paid_amount_change_explanation")
+        self.assertEqual(
+            state["intent"]["primary_question_family"],
+            "paid_amount_change_explanation",
+        )
+        self.assertEqual(
+            state["intent"]["secondary_question_families"],
+            ["segment_or_factor_attribution"],
+        )
+
+    def test_boundary_decision_can_keep_needs_question_for_composite_ambiguity(self):
+        state = build_initial_state(
+            {
+                "case_id": "phase6-ambiguous-composite",
+                "pattern_family": "custom_baseline",
+                "time_window": "2026-01-01..2026-06-30",
+                "pattern_params": {
+                    "period_key": "channel",
+                    "group_key": "group",
+                    "target_group": "target",
+                    "baseline_group": "baseline",
+                },
+                "question": "WajeSpecial最近是不是比其他渠道好，也帮我看主要原因？",
+                "required_capabilities": ["compare_periods", "segment_contribution"],
+            },
+            rows=[
+                {"channel": "WajeSpecial", "group": "baseline", "amount": 100},
+                {"channel": "WajeSpecial", "group": "target", "amount": 160},
+            ],
+            artifact_root=tempfile.mkdtemp(),
+        )
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "paid_amount_change_explanation",
+                    "question_families": [
+                        "paid_amount_change_explanation",
+                        "segment_or_factor_attribution",
+                    ],
+                    "target_metric": "paid_amount",
+                    "scope": "WajeSpecial_vs_other_channels",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "pattern_family": "custom_baseline",
+                    "target_claim": "comparative_change",
+                },
+                "boundary_decision": {
+                    "boundary_status": "needs_question",
+                    "recommended_assumption": "先按日均付费金额比较，再拆主要贡献项。",
+                    "clarification_questions": [
+                        {
+                            "question": "先看日均可比表现还是总额贡献？",
+                            "options": ["按推荐继续", "只看总额"],
+                        }
+                    ],
+                    "decision_summary": "指标口径会影响最终回答质量。",
+                },
+            }
+        )
+
+        state = run_one_node(state, "understand_business_intent", llm_client=fake)
+        state = run_one_node(state, "decide_question_boundary", llm_client=fake)
+
+        self.assertEqual(state["boundary_decision"]["boundary_status"], "needs_question")
+
 
 if __name__ == "__main__":
     unittest.main()

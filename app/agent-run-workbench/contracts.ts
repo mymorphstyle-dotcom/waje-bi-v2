@@ -64,6 +64,7 @@ export type TraceRun = {
   runId: string;
   generatedAt?: number;
   summaryCards: TraceCard[];
+  businessThreads?: TraceCard[];
   traceClaims: TraceClaim[];
   traceEvidence: TraceEvidence[];
   messages?: TraceMessage[];

@@ -1,4 +1,4 @@
-import { readdir, readFile } from "fs/promises";
+import { readdir, readFile, stat as fsStat } from "fs/promises";
 import path from "path";
 import { NextResponse } from "next/server";
 
@@ -7,7 +7,19 @@ export const runtime = "nodejs";
 
 type JsonObject = Record<string, any>;
 
-const artifactRoot = path.join(process.cwd(), "artifacts", "phase-5", "live-node-system", "20260707-v31-prompt-audit-r2");
+const phase6ArtifactRoot = path.join(process.cwd(), "artifacts", "phase-6", "live-question-family");
+const fallbackArtifactRoot = path.join(process.cwd(), "artifacts", "phase-5", "live-node-system", "20260707-v31-prompt-audit-r2");
+
+const familyLabel: Record<string, string> = {
+  pattern_explanation: "模式解释",
+  paid_amount_change_explanation: "付费金额变化解释",
+  business_object_impact_review: "业务对象影响评估",
+  segment_or_factor_attribution: "分群或因素归因",
+  revenue_health_review: "收入健康评估",
+  anomaly_or_black_swan_review: "异常或突发因素评估",
+  custom_baseline_comparison: "自定义基线对比",
+  data_quality_or_evidence_review: "数据质量或证据评估",
+};
 
 const caseMeta: Record<string, { label: string; question?: string; expectedStatus?: string }> = {
   full_month_start_vs_mid_end: {
@@ -81,6 +93,7 @@ export async function GET() {
 }
 
 async function readAllReplays() {
+  const artifactRoot = await resolveArtifactRoot();
   const files = await listFiles(artifactRoot);
   const debugFiles = files.filter((file) => /(?:_eval|final_node_debug_summary)\.json$/.test(path.basename(file)));
   const answerPackages = files.filter((file) => {
@@ -88,8 +101,8 @@ async function readAllReplays() {
     return path.basename(file) === "answer_package.json" && /^(phase4-real-|phase5-node-debug-)/.test(directory);
   });
   const replayGroups = await Promise.all([
-    ...debugFiles.map(readDebugArtifactReplays),
-    ...answerPackages.map((file) => readAnswerPackageReplay(file).then((replay) => [replay])),
+    ...debugFiles.map((file) => readDebugArtifactReplays(file, artifactRoot)),
+    ...answerPackages.map((file) => readAnswerPackageReplay(file, artifactRoot).then((replay) => [replay])),
   ]);
   return replayGroups
     .flat()
@@ -97,7 +110,7 @@ async function readAllReplays() {
     .sort((left, right) => (right.generatedAt ?? 0) - (left.generatedAt ?? 0));
 }
 
-async function readAnswerPackageReplay(filePath: string) {
+async function readAnswerPackageReplay(filePath: string, artifactRoot: string) {
   const artifact = JSON.parse(await readFile(filePath, "utf8"));
   const caseId = String(artifact.run_id ?? path.basename(path.dirname(filePath))).replace(/^(phase4-real-|phase5-node-debug-)/, "");
   const meta = caseMeta[caseId] ?? { label: caseId };
@@ -106,6 +119,7 @@ async function readAnswerPackageReplay(filePath: string) {
   const finalExplanation = summary.final_explanation ?? {};
   const status = summary.claims?.length ? "passed" : finalExplanation.status || "degraded";
   const llmCalls = artifact.admin_audit?.llm_calls ?? [];
+  const businessThreads = traceBusinessThreads(llmCalls);
   const checkpoints = artifact.checkpoint_events ?? [];
   const events = timelineEvents(artifact, summary, evidence, finalExplanation, status, llmCalls, checkpoints);
   const timing = replayTiming(events);
@@ -125,6 +139,7 @@ async function readAnswerPackageReplay(filePath: string) {
     todos,
     events,
     summaryCards,
+    businessThreads,
     traceClaims,
     traceEvidence,
     messages: traceMessages(meta.question ?? "", nodes, answer),
@@ -167,13 +182,63 @@ function traceMessages(question: string, nodes: JsonObject[], answer: JsonObject
   ];
 }
 
-async function readDebugArtifactReplays(filePath: string) {
+function traceBusinessThreads(llmCalls: JsonObject[]) {
+  const intent = llmCalls.find((call) => call.task === "business_intent")?.structured_output ?? {};
+  const primary = String(intent.primary_question_family ?? intent.question_family ?? "");
+  const families = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(intent.question_families) ? intent.question_families : []),
+        primary,
+        ...(Array.isArray(intent.secondary_question_families) ? intent.secondary_question_families : []),
+      ]
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  return families.map((family) => ({
+    label: family === primary ? "主业务线" : "旁路业务线",
+    value: familyLabel[family] ?? family,
+  }));
+}
+
+async function readDebugArtifactReplays(filePath: string, artifactRoot: string) {
   const artifact = JSON.parse(await readFile(filePath, "utf8"));
   const rows = Array.isArray(artifact.rows) ? artifact.rows : [];
   const stage = debugStageLabel(filePath);
   return rows
-    .map((row: JsonObject, index: number) => debugReplay(row, artifact, filePath, stage, index))
+    .map((row: JsonObject, index: number) => debugReplay(row, artifact, filePath, stage, index, artifactRoot))
     .filter(Boolean);
+}
+
+async function resolveArtifactRoot() {
+  const explicitLatest = path.join(phase6ArtifactRoot, "latest");
+  if (await directoryExists(explicitLatest)) return explicitLatest;
+  const phase6Latest = await newestChildDirectory(phase6ArtifactRoot);
+  if (phase6Latest) return phase6Latest;
+  return fallbackArtifactRoot;
+}
+
+async function newestChildDirectory(root: string) {
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    const directories = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(root, entry.name))
+      .sort()
+      .reverse();
+    return directories[0] ?? "";
+  } catch {
+    return "";
+  }
+}
+
+async function directoryExists(root: string) {
+  try {
+    return (await fsStat(root)).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 async function listFiles(root: string): Promise<string[]> {
@@ -188,7 +253,7 @@ async function listFiles(root: string): Promise<string[]> {
   return nested.flat();
 }
 
-function debugReplay(row: JsonObject, artifact: JsonObject, filePath: string, stage: string, index: number) {
+function debugReplay(row: JsonObject, artifact: JsonObject, filePath: string, stage: string, index: number, artifactRoot: string) {
   const caseId = String(row.case_id ?? row.caseId ?? "").trim();
   if (!caseId) return undefined;
   const meta = caseMeta[caseId] ?? { label: caseId };

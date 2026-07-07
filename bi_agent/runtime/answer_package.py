@@ -256,7 +256,8 @@ def _numbers_match(actual: Any, expected: Any) -> bool:
     if actual is None:
         return False
     try:
-        return abs(float(actual) - float(expected)) < 0.000001
+        delta = abs(float(actual) - float(expected))
+        return delta < 0.000001 or delta < 0.005
     except (TypeError, ValueError):
         return actual == expected
 

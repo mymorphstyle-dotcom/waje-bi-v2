@@ -6,10 +6,12 @@ from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.exploration_budget import default_budget
 from bi_agent.runtime.langgraph_workflow import (
     _capability_path_labels,
+    _clarification_policy_gate,
     _default_claim_from_evidence,
     _execute_capabilities,
     _final_business_summary_fallback,
     _final_summary_needs_display_repair,
+    _infer_question_families_from_requested_nodes,
     _normalize_evidence_interpretation_output,
     _align_route_output_to_requested,
     _normalize_route_requested_nodes,
@@ -143,6 +145,36 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("Do not expose", text)
         self.assertIn("internal field names", text)
         self.assertIn("Simplified Chinese", text)
+
+    def test_revenue_health_boundary_defaults_to_low_risk_assumption(self):
+        state = {
+            "request": {"allow_question_interrupt": True},
+            "checkpoint_events": [{"node": "clarification_policy_gate"}],
+            "intent": {
+                "question_family": "revenue_health_review",
+                "primary_question_family": "revenue_health_review",
+                "ambiguous_slots": [],
+                "target_metric": "paid_amount",
+                "scope": "all_users",
+                "time_window": "2026-01-01..2026-06-30",
+            },
+            "boundary_decision": {
+                "boundary_status": "needs_question",
+                "recommended_assumption": "采用产品默认业务假设继续。",
+                "clarification_questions": [
+                    {"question": "请选择同比或环比基准。"},
+                    {"question": "是否指定细分维度。"},
+                ],
+            },
+        }
+
+        _clarification_policy_gate(state)
+
+        self.assertEqual(
+            state["clarification_outcome"]["boundary_status"],
+            "low_risk_assumption",
+        )
+        self.assertEqual(state["checkpoint_events"][-1]["route"], "low_risk_assumption")
 
     def test_evidence_interpretation_prompt_keeps_boundary_business_readable(self):
         messages = build_prompt("evidence_interpretation", {"intent": {}}).messages
@@ -932,6 +964,52 @@ class LLMWorkflowTest(unittest.TestCase):
             "ask_overridden_to_degrade",
         )
 
+    def test_next_action_ask_degrades_when_post_evidence_gap_is_not_business_ambiguity(self):
+        state = {
+            "request": {"allow_question_interrupt": True},
+            "checkpoint_events": [{"node": "decide_next_action"}],
+            "next_action": {
+                "next_action": "ask_question",
+                "decision_summary": "建议用户补充更多业务维度。",
+            },
+            "intent": {
+                "ambiguous_slots": [],
+                "pattern_family": "rolling",
+                "question_family": "revenue_health_review",
+                "target_metric": "paid_amount",
+                "scope": "all_users",
+                "time_window": "2026-01-01..2026-06-30",
+            },
+            "evidence_brief": {
+                "limitations": ["driver_components_missing"],
+                "primary_capability": "driver_decomposition",
+                "wording_limit": "insufficient",
+            },
+            "evidence": [
+                {
+                    "capability_id": "data_quality_profile",
+                    "evidence_ref": "data_quality_profile:run",
+                    "strength": "high",
+                    "wording_limit": "supported",
+                    "limitations": [],
+                },
+                {
+                    "capability_id": "driver_decomposition",
+                    "evidence_ref": "driver_decomposition:inline",
+                    "strength": "low",
+                    "wording_limit": "insufficient",
+                    "limitations": ["driver_components_missing"],
+                },
+            ],
+        }
+
+        self.assertEqual(_route_after_next_action(state), "degrade")
+        self.assertEqual(state["next_action"]["next_action"], "degrade")
+        self.assertEqual(
+            state["checkpoint_events"][-1]["route"],
+            "ask_overridden_to_degrade",
+        )
+
     def test_llm_narrative_replaces_non_string_narrative_values(self):
         output = _localize_narrative_fields(
             {
@@ -1301,6 +1379,59 @@ class LLMWorkflowTest(unittest.TestCase):
             result.answer_package["sections"][0]["payload"]["claims"][0]["numbers"],
         )
 
+    def test_segment_contribution_evidence_has_claim_ready_fields(self):
+        compiled = compile_graph(
+            question_family="segment_or_factor_attribution",
+            target_metric="paid_amount",
+            pattern_family="custom_baseline",
+            requested_nodes=("segment_contribution", "answer_verify"),
+        )
+        state = {
+            "request": {
+                "rows": [
+                    {"period": "WajeSpecial", "group": "baseline", "amount": 100},
+                    {"period": "WajeSpecial", "group": "target", "amount": 160},
+                    {"period": "Organic", "group": "baseline", "amount": 100},
+                    {"period": "Organic", "group": "target", "amount": 90},
+                ],
+                "required_fields": ("period", "group", "amount"),
+                "role": "analyst",
+            },
+            "run_id": "segment-evidence",
+            "sql_hash": "sqlhash-segment",
+            "budget_state": default_budget("ordinary"),
+            "compiled_graph": compiled,
+            "intent": {
+                "question_family": "segment_or_factor_attribution",
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "pattern_params": {
+                    "period_key": "period",
+                    "group_key": "group",
+                    "target_group": "target",
+                    "baseline_group": "baseline",
+                },
+                "scope": "full_sample",
+                "time_window": "2026-01-01..2026-06-30",
+                "target_claim": "渠道贡献",
+                "baseline": {"label": "Q1"},
+                "target": {"label": "Q2"},
+            },
+        }
+
+        result = _execute_capabilities(state)
+        segment = next(
+            item for item in result["evidence"] if item["capability"] == "segment_contribution"
+        )
+
+        self.assertEqual(segment["capability_id"], "segment_contribution")
+        self.assertIn("typed_payload", segment)
+        self.assertIn("numeric_facts", segment)
+        self.assertIn(
+            segment["wording_limit"],
+            {"contextual", "supported", "tendency", "insufficient"},
+        )
+
     def test_route_normalization_adds_driver_decomposition_for_explicit_volume_vs_unit_value_question(self):
         nodes = _normalize_route_requested_nodes(
             ("data_quality_profile", "compare_periods", "answer_verify"),
@@ -1327,6 +1458,52 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertIn("driver_decomposition", nodes)
         self.assertNotIn("segment_contribution", nodes)
+
+    def test_route_normalization_adds_segment_contribution_from_original_question(self):
+        nodes = _normalize_route_requested_nodes(
+            ("data_quality_profile", "driver_decomposition", "answer_verify"),
+            {
+                "question": "Q2付费金额提升主要是哪些渠道贡献的？",
+                "question_family": "segment_or_factor_attribution",
+                "primary_question_family": "segment_or_factor_attribution",
+                "secondary_question_families": ["custom_baseline_comparison"],
+                "pattern_family": "custom_baseline",
+                "target_claim": "pattern_explanation",
+                "target_metric": "paid_amount",
+            },
+        )
+
+        self.assertIn("segment_contribution", nodes)
+
+    def test_route_normalization_adds_segment_contribution_when_family_drifts_to_baseline(self):
+        nodes = _normalize_route_requested_nodes(
+            ("data_quality_profile", "compare_periods", "driver_decomposition", "answer_verify"),
+            {
+                "question": "2026年Q2相比Q1，哪些渠道解释了付费金额变化？",
+                "question_family": "custom_baseline_comparison",
+                "pattern_family": "custom_baseline",
+                "target_claim": "识别各渠道对付费金额变化的解释程度",
+                "target_metric": "paid_amount",
+            },
+        )
+
+        self.assertIn("segment_contribution", nodes)
+
+    def test_requested_segment_node_infers_secondary_question_family(self):
+        intent = {
+            "question_family": "custom_baseline_comparison",
+            "primary_question_family": "custom_baseline_comparison",
+            "question_families": ["custom_baseline_comparison"],
+            "secondary_question_families": [],
+        }
+
+        _infer_question_families_from_requested_nodes(
+            intent,
+            ("data_quality_profile", "segment_contribution", "answer_verify"),
+        )
+
+        self.assertIn("segment_or_factor_attribution", intent["question_families"])
+        self.assertIn("segment_or_factor_attribution", intent["secondary_question_families"])
 
     def test_analysis_route_accepts_llm_node_objects_but_filters_internal_reducer(self):
         fake = FakeLLMClient(

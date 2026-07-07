@@ -4,7 +4,7 @@ import json
 import re
 from time import perf_counter
 import warnings
-from typing import Any, Mapping, Optional, Sequence, TypedDict
+from typing import Any, Iterable, Mapping, Optional, Sequence, TypedDict
 
 from langchain_core._api.deprecation import LangChainPendingDeprecationWarning
 
@@ -363,7 +363,7 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         "business_intent",
         _business_intent_payload(request),
     )
-    state["intent"] = {
+    state["intent"] = _normalize_question_families({
         "question_family": output.get("question_family") or "pattern_explanation",
         "target_metric": _normalize_target_metric(
             request.get("target_metric")
@@ -389,8 +389,12 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         "answer_contract": dict(output.get("answer_contract") or {}),
         "baseline": request.get("baseline") or output.get("baseline") or {},
         "target": request.get("target") or output.get("target") or {},
+        "question": request.get("question", ""),
         "requested_nodes": (),
-    }
+        "question_families": list(output.get("question_families") or ()),
+        "primary_question_family": output.get("primary_question_family"),
+        "secondary_question_families": list(output.get("secondary_question_families") or ()),
+    })
     return state
 
 
@@ -414,6 +418,36 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
     if context:
         payload["bound_business_context"] = context
     return payload
+
+
+def _normalize_question_families(intent: dict[str, Any]) -> dict[str, Any]:
+    primary = str(
+        intent.get("primary_question_family")
+        or intent.get("question_family")
+        or "pattern_explanation"
+    )
+    families = [
+        str(item)
+        for item in intent.get("question_families", ())
+        if item
+    ]
+    if primary not in families:
+        families.insert(0, primary)
+    secondary = [
+        str(item)
+        for item in intent.get("secondary_question_families", ())
+        if item and str(item) != primary
+    ]
+    for family in families:
+        if family != primary and family not in secondary:
+            secondary.append(family)
+    return {
+        **intent,
+        "question_family": primary,
+        "primary_question_family": primary,
+        "question_families": families,
+        "secondary_question_families": secondary,
+    }
 
 
 def _normalize_scope(scope: Any) -> str:
@@ -511,6 +545,15 @@ def _clarification_policy_gate(state: WorkflowState) -> WorkflowState:
                 "沿用问题中已经绑定的月初、月中和月末窗口规则继续评估。"
             ),
         }
+    if status == "needs_question" and _can_continue_with_default_business_boundary(
+        state, decision
+    ):
+        status = "low_risk_assumption"
+        decision = {
+            **decision,
+            "recommended_assumption": decision.get("recommended_assumption")
+            or "采用产品默认业务假设继续，并把假设写入本次分析边界。",
+        }
     if status == "needs_question" and not state["request"].get("allow_question_interrupt", True):
         status = "low_risk_assumption"
     state["clarification_outcome"] = {
@@ -520,6 +563,23 @@ def _clarification_policy_gate(state: WorkflowState) -> WorkflowState:
     }
     _current_event(state)["route"] = status
     return state
+
+
+def _can_continue_with_default_business_boundary(
+    state: WorkflowState, decision: Mapping[str, Any]
+) -> bool:
+    intent = state.get("intent", {})
+    if "revenue_health_review" not in _intent_question_family_set(intent):
+        return False
+    if not decision.get("recommended_assumption"):
+        return False
+    hard_slots = {"target_metric", "metric", "time_window", "date_range", "scope", "permission"}
+    ambiguous = {
+        str(item.get("slot") if isinstance(item, Mapping) else item)
+        for item in intent.get("ambiguous_slots", ())
+        if item
+    }
+    return not bool(ambiguous & hard_slots)
 
 
 def _generate_clarification(state: WorkflowState) -> WorkflowState:
@@ -607,6 +667,7 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
     if not requested:
         requested = ("pattern_scan",)
     output = _align_route_output_to_requested(output, requested)
+    _infer_question_families_from_requested_nodes(state["intent"], requested)
     state["analysis_route"] = {**output, "requested_nodes": requested}
     state["intent"]["requested_nodes"] = requested
     return state
@@ -620,6 +681,7 @@ def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
         target_metric=intent["target_metric"],
         pattern_family=intent["pattern_family"],
         requested_nodes=intent["requested_nodes"],
+        question_families=intent.get("question_families", ()),
     )
     state["compiled_graph"] = compiled
     return state
@@ -646,6 +708,7 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
     if not requested:
         requested = ("pattern_scan",)
     output = _align_route_output_to_requested(output, requested)
+    _infer_question_families_from_requested_nodes(state["intent"], requested)
     state["analysis_route"] = {**state["analysis_route"], **output, "requested_nodes": requested}
     state["intent"]["requested_nodes"] = requested
     return state
@@ -1040,6 +1103,7 @@ def _normalize_route_requested_nodes(
 ) -> tuple[str, ...]:
     normalized = []
     business_text = _intent_business_text(intent)
+    families = _intent_question_family_set(intent)
     for node in nodes:
         value = node
         if (
@@ -1073,10 +1137,16 @@ def _normalize_route_requested_nodes(
         and "driver_decomposition" not in normalized
     ):
         normalized.append("driver_decomposition")
-    if "segment_contribution" in normalized and not _contains_any(
-        business_text,
-        ("渠道", "分群", "segment", "channel", "拖累", "结构", "组合", "分布"),
+    if (
+        (
+            "segment_or_factor_attribution" in families
+            or _business_text_requests_segment_contribution(business_text)
+        )
+        and _contains_segment_dimension(business_text)
+        and "segment_contribution" not in normalized
     ):
+        normalized.append("segment_contribution")
+    if "segment_contribution" in normalized and not _contains_segment_dimension(business_text):
         normalized = [node for node in normalized if node != "segment_contribution"]
     if _contains_any(business_text, ("少数", "几天", "异常日", "撑起来")) and "outlier_contribution" not in normalized:
         normalized.append("outlier_contribution")
@@ -1087,6 +1157,7 @@ def _intent_business_text(intent: Mapping[str, Any]) -> str:
     return json.dumps(
         {
             "target_claim": intent.get("target_claim"),
+            "question": intent.get("question"),
             "sub_intents": intent.get("sub_intents"),
             "baseline": intent.get("baseline"),
             "target": intent.get("target"),
@@ -1094,6 +1165,59 @@ def _intent_business_text(intent: Mapping[str, Any]) -> str:
         ensure_ascii=False,
         default=str,
     ).lower()
+
+
+def _contains_segment_dimension(text: str) -> bool:
+    return _contains_any(
+        text,
+        ("渠道", "分群", "segment", "channel", "拖累", "结构", "组合", "分布"),
+    )
+
+
+def _business_text_requests_segment_contribution(text: str) -> bool:
+    if not _contains_segment_dimension(text):
+        return False
+    return _contains_any(
+        text,
+        ("哪些", "各", "贡献", "解释", "拉动", "拖累", "归因", "分解", "变化"),
+    )
+
+
+def _infer_question_families_from_requested_nodes(
+    intent: dict[str, Any], requested_nodes: Iterable[str]
+) -> None:
+    additions = []
+    if "segment_contribution" in requested_nodes:
+        additions.append("segment_or_factor_attribution")
+    if "outlier_contribution" in requested_nodes:
+        additions.append("anomaly_or_black_swan_review")
+    if "driver_decomposition" in requested_nodes:
+        additions.append("paid_amount_change_explanation")
+    if not additions:
+        return
+
+    families = list(intent.get("question_families") or ())
+    if not families and intent.get("question_family"):
+        families.append(str(intent["question_family"]))
+    secondary = list(intent.get("secondary_question_families") or ())
+    primary = str(intent.get("primary_question_family") or intent.get("question_family") or "")
+    for family in additions:
+        if family not in families:
+            families.append(family)
+        if family != primary and family not in secondary:
+            secondary.append(family)
+    intent["question_families"] = families
+    intent["secondary_question_families"] = secondary
+
+
+def _intent_question_family_set(intent: Mapping[str, Any]) -> set[str]:
+    values: list[Any] = [
+        intent.get("question_family"),
+        intent.get("primary_question_family"),
+    ]
+    values.extend(intent.get("question_families") or ())
+    values.extend(intent.get("secondary_question_families") or ())
+    return {str(value) for value in values if value}
 
 
 def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
@@ -1504,6 +1628,7 @@ def _final_business_summary(state: WorkflowState) -> WorkflowState:
             "verifier": state.get("verifier", {}),
             "final_explanation": state.get("final_explanation", {}),
             "checkpoint_summary": _checkpoint_summary(state),
+            "business_threads": _business_threads(state),
         },
     )
     state["final_business_summary"] = _weaken_unsupported_causal_wording(
@@ -1834,6 +1959,18 @@ def _evidence_dict(item: Any, state: WorkflowState) -> dict[str, Any]:
     payload["scope"] = state["intent"]["scope"]
     payload["time_window"] = state["intent"]["time_window"]
     evidence["typed_payload"] = payload
+    evidence.setdefault("capability_id", evidence.get("capability"))
+    evidence.setdefault("capability", evidence.get("capability_id"))
+    evidence.setdefault(
+        "numeric_facts",
+        {
+            key: value
+            for key, value in payload.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        },
+    )
+    evidence.setdefault("result_refs", (state.get("sql_hash"),))
+    evidence.setdefault("sql_hashes", evidence.get("result_refs", ()))
     return evidence
 
 
@@ -1859,19 +1996,21 @@ def _evidence_supports_bounded_answer(state: WorkflowState) -> bool:
 
 
 def _evidence_has_terminal_business_boundary(state: WorkflowState) -> bool:
-    if not _pattern_evidence(state):
-        return False
     limitations = set(state.get("evidence_brief", {}).get("limitations", ()))
-    return bool(
-        limitations
-        & {
-            "insufficient_comparable_periods",
-            "no_comparable_periods",
-            "no_rows",
-            "missing_required_fields",
-            "insufficient_values",
-        }
-    )
+    terminal_limitations = {
+        "insufficient_comparable_periods",
+        "no_comparable_periods",
+        "no_rows",
+        "missing_required_fields",
+        "insufficient_values",
+        "driver_components_missing",
+    }
+    if not limitations & terminal_limitations:
+        return False
+    if _pattern_evidence(state):
+        return True
+    primary = _primary_business_evidence(state)
+    return bool(primary.get("evidence_ref") or primary.get("capability_id"))
 
 
 def _pattern_has_negative_answer_evidence(state: WorkflowState) -> bool:
@@ -2459,6 +2598,37 @@ def _capability_path_labels(accepted_graph: tuple[str, ...]) -> str:
     if not selected:
         return "已接受分析路径"
     return "、".join(dict.fromkeys(selected))
+
+
+def _business_threads(state: WorkflowState) -> list[dict[str, str]]:
+    intent = state.get("intent", {})
+    families = list(intent.get("question_families") or ())
+    if not families and intent.get("question_family"):
+        families = [intent["question_family"]]
+    primary = intent.get("primary_question_family") or intent.get("question_family") or ""
+    return [
+        {
+            "question_family": str(family),
+            "label": _question_family_label(str(family)),
+            "role": "primary" if family == primary else "secondary",
+        }
+        for family in families
+        if family
+    ]
+
+
+def _question_family_label(family: str) -> str:
+    labels = {
+        "pattern_explanation": "模式解释",
+        "paid_amount_change_explanation": "付费金额变化解释",
+        "business_object_impact_review": "业务对象影响评估",
+        "segment_or_factor_attribution": "分群或因素归因",
+        "revenue_health_review": "收入健康评估",
+        "anomaly_or_black_swan_review": "异常或突发因素评估",
+        "custom_baseline_comparison": "自定义基线对比",
+        "data_quality_or_evidence_review": "数据质量或证据评估",
+    }
+    return labels.get(family, family)
 
 
 def _capability_labels(accepted_graph: tuple[str, ...]) -> list[str]:

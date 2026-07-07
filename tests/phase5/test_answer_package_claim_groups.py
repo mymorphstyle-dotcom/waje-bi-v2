@@ -116,6 +116,55 @@ class AnswerPackageClaimGroupsTest(unittest.TestCase):
             )
         )
 
+    def test_verifier_accepts_business_rounding_for_ratio_claims(self):
+        verifier = verify_answer_package(
+            draft_claims=[
+                {
+                    "text": "单付费用户金额贡献约65%，付费用户数贡献约35%。",
+                    "evidence_refs": ["driver_decomposition:inline"],
+                    "numbers": {
+                        "unit_value_share": 0.654,
+                        "volume_share": 0.346,
+                    },
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_ref": "driver_decomposition:inline",
+                    "typed_payload": {
+                        "unit_value_share": 0.6537576498494277,
+                        "volume_share": 0.3462423501505722,
+                    },
+                    "limitations": [],
+                }
+            ],
+            visible_limitations=[],
+        )
+
+        self.assertEqual(verifier["status"], "passed")
+
+    def test_verifier_rejects_material_number_drift(self):
+        verifier = verify_answer_package(
+            draft_claims=[
+                {
+                    "text": "单付费用户金额贡献约70%。",
+                    "evidence_refs": ["driver_decomposition:inline"],
+                    "numbers": {"unit_value_share": 0.70},
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_ref": "driver_decomposition:inline",
+                    "typed_payload": {"unit_value_share": 0.6537576498494277},
+                    "limitations": [],
+                }
+            ],
+            visible_limitations=[],
+        )
+
+        self.assertEqual(verifier["status"], "failed")
+        self.assertTrue(any(error["code"] == "number_mismatch" for error in verifier["errors"]))
+
 
 if __name__ == "__main__":
     unittest.main()

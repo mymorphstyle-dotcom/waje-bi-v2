@@ -122,6 +122,18 @@ class CapabilityHarnessTest(unittest.TestCase):
             result.typed_payload["decompositions"][0]["volume_share"],
         )
 
+    def test_driver_decomposition_skips_null_period_without_crashing(self):
+        result = driver_decomposition(
+            [
+                {"period": None, "group": "baseline", "amount": 100, "paid_users": 10},
+                {"period": "h1", "group": "baseline", "amount": 100, "paid_users": 10},
+                {"period": "h1", "group": "target", "amount": 150, "paid_users": 12},
+            ]
+        )
+
+        self.assertEqual(result.wording_limit, "quantified")
+        self.assertEqual(result.typed_payload["decompositions"][0]["period"], "h1")
+
     def test_segment_contribution_ranks_dragging_segments(self):
         result = segment_contribution(
             [

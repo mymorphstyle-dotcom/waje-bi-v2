@@ -176,6 +176,8 @@ Phase 5 closeout does not claim production release readiness. Broader composite 
 
 Current plan: [docs/superpowers/plans/2026-07-08-phase-6-question-family-expansion.md](/Users/luka/work/waje-bi-v2/docs/superpowers/plans/2026-07-08-phase-6-question-family-expansion.md:1)
 
+Closeout evidence (2026-07-08): Phase 6 is ready to close as an engineering milestone. The latest real ClickHouse + real LLM run is `artifacts/phase-6/live-question-family/20260708-r9/`, with 12 representative cases passed, 231 workflow nodes completed, and 136 LLM calls recorded. Audit notes are in [docs/reviews/phase6-live-question-family-audit-20260708.md](/Users/luka/work/waje-bi-v2/docs/reviews/phase6-live-question-family-audit-20260708.md:1).
+
 **Goal:** Expand from the first pattern slice into the full baseline question-family matrix.
 
 Phase 6 starts only after Phase 5 eval gates can classify wrong intent, wrong baseline, weak evidence, route drift, and unsupported claims without manual log reading.
@@ -184,20 +186,20 @@ Phase 6 starts only after Phase 5 eval gates can classify wrong intent, wrong ba
 
 **Build order:**
 
-- [ ] `paid_amount_change_explanation`: operating-review spine, formula decomposition, attribution, anomaly, pattern, business object evidence, data quality, verifier.
-- [ ] `business_object_impact_review`: object binding, object-specific evidence route, comparison/control, candidate impact, claim limits.
-- [ ] `segment_or_factor_attribution`: one-dimensional screening, two-dimensional combination start, higher-order promotion loop, sparse and scope limits.
-- [ ] `revenue_health_review`: trend, target, structure, funnel/formula, anomaly, data quality, risk wording.
-- [ ] `anomaly_or_black_swan_review`: pseudo-anomaly rejection, local segment anomaly, metric-chain anomaly, internal/external candidate explanations.
-- [ ] `custom_baseline_comparison`: user baseline, recommended baseline, multiple-baseline disagreement, comparability checks.
-- [ ] `data_quality_or_evidence_review`: trust judgment, affected claims, degradation, contract and permission fixes.
+- [x] `paid_amount_change_explanation`: operating-review spine, formula decomposition, attribution, anomaly, pattern, business object evidence, data quality, verifier.
+- [x] `business_object_impact_review`: object binding, object-specific evidence route, comparison/control, candidate impact, claim limits.
+- [x] `segment_or_factor_attribution`: one-dimensional screening, two-dimensional combination start, higher-order promotion loop, sparse and scope limits.
+- [x] `revenue_health_review`: trend, target, structure, funnel/formula, anomaly, data quality, risk wording.
+- [x] `anomaly_or_black_swan_review`: pseudo-anomaly rejection, local segment anomaly, metric-chain anomaly, internal/external candidate explanations.
+- [x] `custom_baseline_comparison`: user baseline, recommended baseline, multiple-baseline disagreement, comparability checks.
+- [x] `data_quality_or_evidence_review`: trust judgment, affected claims, degradation, contract and permission fixes.
 
 **Acceptance:**
 
-- [ ] Every question family has at least one end-to-end representative case.
-- [ ] Launch acceptance matrix covers representative SSOT factor groups and ledger states for every family.
-- [ ] `answer_verify` runs for launch representative cases.
-- [ ] `data_quality_check` runs for first-screen claims and strong claims.
+- [x] Every question family has at least one end-to-end representative case.
+- [x] Launch acceptance matrix covers representative SSOT factor groups and ledger states for every family.
+- [x] `answer_verify` runs for launch representative cases.
+- [x] `data_quality_check` runs for first-screen claims and strong claims.
 
 ## Phase 7: Frontend Agent Shell
 

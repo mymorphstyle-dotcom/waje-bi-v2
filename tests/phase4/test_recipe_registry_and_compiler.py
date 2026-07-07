@@ -211,6 +211,57 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
         )
         self.assertFalse(compiled.mutations.rejected_or_degraded)
 
+    def test_paid_amount_change_recipe_accepts_phase6_required_capabilities(self):
+        compiled = compile_graph(
+            question_family="paid_amount_change_explanation",
+            target_metric="paid_amount",
+            requested_nodes=(
+                "data_quality_profile",
+                "driver_decomposition",
+                "answer_verify",
+            ),
+        )
+
+        self.assertEqual(compiled.status, "accepted")
+        self.assertIn("driver_decomposition", compiled.mutations.accepted_graph)
+        self.assertNotIn(
+            "paid_amount_change_explanation",
+            compiled.mutations.rejected_or_degraded,
+        )
+
+    def test_business_object_recipe_stays_degraded_without_event_or_comparison_path(self):
+        compiled = compile_graph(
+            question_family="business_object_impact_review",
+            target_metric="paid_amount",
+            requested_nodes=("answer_verify",),
+        )
+
+        self.assertEqual(compiled.status, "degraded")
+        self.assertIn(
+            "business_object_impact_review",
+            compiled.mutations.rejected_or_degraded,
+        )
+
+    def test_composite_family_allows_secondary_family_capability(self):
+        compiled = compile_graph(
+            question_family="custom_baseline_comparison",
+            question_families=(
+                "custom_baseline_comparison",
+                "segment_or_factor_attribution",
+            ),
+            target_metric="paid_amount",
+            pattern_family="custom_baseline",
+            requested_nodes=(
+                "data_quality_profile",
+                "segment_contribution",
+                "answer_verify",
+            ),
+        )
+
+        self.assertEqual(compiled.status, "accepted")
+        self.assertIn("segment_contribution", compiled.mutations.accepted_graph)
+        self.assertNotIn("segment_contribution", compiled.mutations.rejected_or_degraded)
+
     def test_custom_baseline_accepts_explicit_driver_decomposition(self):
         registry = load_recipe_registry()
         compiled = compile_graph(

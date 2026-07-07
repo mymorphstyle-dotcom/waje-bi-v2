@@ -8,6 +8,17 @@ from bi_agent.runtime.artifacts import filter_artifact_for_role
 from tests.phase4.fake_llm import FakeLLMClient
 
 
+def _llm_input_payload(answer_package, task):
+    call = next(
+        item for item in answer_package["admin_audit"]["llm_calls"] if item["task"] == task
+    )
+    user_message = next(item for item in call["messages"] if item["role"] == "user")
+    content = user_message["content"]
+    start = content.index("<input_json>") + len("<input_json>")
+    end = content.index("</input_json>")
+    return json.loads(content[start:end].strip())
+
+
 class WorkflowArtifactsAnswerTest(unittest.TestCase):
     def test_answer_package_keeps_causal_audit_in_admin_audit_only(self):
         package = build_answer_package(
@@ -362,6 +373,99 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertNotIn("单用户/单订单", summary)
         self.assertNotIn("驱动因素", summary)
         self.assertNotIn("单用户付费金额", summary)
+
+    def test_final_business_summary_receives_composite_business_threads(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "paid_amount_change_explanation",
+                    "question_families": [
+                        "paid_amount_change_explanation",
+                        "segment_or_factor_attribution",
+                    ],
+                    "pattern_family": "custom_baseline",
+                    "scope": "all_users",
+                    "target_claim": "Q2增长的渠道和驱动贡献",
+                    "baseline_candidates": [],
+                },
+                "analysis_route": {
+                    "requested_nodes": [
+                        "driver_decomposition",
+                        "segment_contribution",
+                        "answer_verify",
+                    ],
+                },
+                "final_business_summary": {
+                    "summary_text": (
+                        "我对问题的理解是：你想看Q2增长如何被拆解。\n"
+                        "分析脉络：我先判断整体变化，再拆渠道贡献和付费用户数/单付费用户金额贡献。\n"
+                        "关键发现：增长主要由单付费用户金额和部分渠道共同解释。\n"
+                        "最终结论：这是贡献拆解结论，不代表因果定论。\n"
+                        "需要注意：继续观察渠道结构和用户价值变化。"
+                    ),
+                },
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "final-summary-composite-context",
+                    "llm_client": fake,
+                    "question": "2026年Q2为什么增长，主要渠道和付费用户数/单付费用户金额分别怎么贡献？",
+                    "pattern_family": "custom_baseline",
+                    "pattern_params": {
+                        "period_key": "channel",
+                        "group_key": "group",
+                        "target_group": "target",
+                        "baseline_group": "baseline",
+                    },
+                    "scope": "all_users",
+                    "baseline": {"label": "Q1"},
+                    "target": {"label": "Q2"},
+                    "rows": [
+                        {
+                            "channel": "WajeSpecial",
+                            "group": "baseline",
+                            "amount": 100,
+                            "paid_users": 10,
+                            "orders": 20,
+                        },
+                        {
+                            "channel": "WajeSpecial",
+                            "group": "target",
+                            "amount": 160,
+                            "paid_users": 12,
+                            "orders": 24,
+                        },
+                        {
+                            "channel": "Organic",
+                            "group": "baseline",
+                            "amount": 100,
+                            "paid_users": 10,
+                            "orders": 20,
+                        },
+                        {
+                            "channel": "Organic",
+                            "group": "target",
+                            "amount": 90,
+                            "paid_users": 9,
+                            "orders": 18,
+                        },
+                    ],
+                }
+            )
+
+        payload = _llm_input_payload(result.answer_package, "final_business_summary")
+
+        self.assertEqual(
+            payload["intent"]["question_families"],
+            ["paid_amount_change_explanation", "segment_or_factor_attribution"],
+        )
+        self.assertEqual(
+            [item["label"] for item in payload["business_threads"]],
+            ["付费金额变化解释", "分群或因素归因"],
+        )
 
     def test_final_business_summary_allows_negated_attribution_boundary(self):
         fake = FakeLLMClient(

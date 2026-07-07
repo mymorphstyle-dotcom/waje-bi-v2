@@ -26,6 +26,12 @@ SUPPORTED_CAPABILITIES = frozenset(
     (*REQUIRED_PATTERN_PATHS, "joint_attribution", *public_capability_ids())
 )
 PUBLIC_CAPABILITIES = frozenset(public_capability_ids())
+PHASE6_ENABLED_FAMILY_REQUIREMENTS = {
+    "paid_amount_change_explanation": frozenset(("driver_decomposition",)),
+    "segment_or_factor_attribution": frozenset(("segment_contribution",)),
+    "anomaly_or_black_swan_review": frozenset(("outlier_contribution",)),
+    "data_quality_or_evidence_review": frozenset(("data_quality_profile",)),
+}
 
 
 def compile_graph(
@@ -34,6 +40,7 @@ def compile_graph(
     target_metric: str,
     pattern_family: Optional[str] = None,
     requested_nodes: Iterable[str] = (),
+    question_families: Iterable[str] = (),
     registry: Optional[Mapping[str, RecipeEntry]] = None,
 ) -> CompiledGraph:
     registry = load_recipe_registry() if registry is None else registry
@@ -60,13 +67,14 @@ def compile_graph(
     if not proposed_graph:
         proposed_graph = recipe.subgraph_nodes
 
+    supported_families = frozenset((question_family, *tuple(question_families)))
     unknown = tuple(node for node in proposed_graph if node not in SUPPORTED_CAPABILITIES)
     unsupported_for_family = tuple(
         node
         for node in proposed_graph
         if node in PUBLIC_CAPABILITIES
         and node not in REQUIRED_PATTERN_PATHS
-        and question_family not in get_capability_card(node).supported_question_families
+        and not supported_families.intersection(get_capability_card(node).supported_question_families)
     )
     known_requested = tuple(
         node
@@ -129,6 +137,28 @@ def compile_graph(
 
     if explicit_requested and known_requested:
         accepted = _dedupe(known_requested)
+        enablement = PHASE6_ENABLED_FAMILY_REQUIREMENTS.get(question_family)
+        if recipe.default_degraded and not (
+            enablement and enablement.issubset(set(accepted))
+        ):
+            return _compiled(
+                status="degraded",
+                target_metric=target_metric,
+                accepted=accepted,
+                proposed=proposed_graph,
+                rejected_or_degraded=_dedupe(
+                    (*unknown, *unsupported_for_family, question_family)
+                ),
+                records=(
+                    *records,
+                    MutationRecord(
+                        action="degraded",
+                        capability=question_family,
+                        reason="phase6_family_not_enabled",
+                    ),
+                ),
+                node_status="degraded",
+            )
         return _compiled(
             status="accepted" if not unknown and not unsupported_for_family else "degraded",
             target_metric=target_metric,
