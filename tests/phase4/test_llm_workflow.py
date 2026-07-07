@@ -45,6 +45,17 @@ class LLMWorkflowTest(unittest.TestCase):
     def test_prompt_specs_are_consistent(self):
         self.assertEqual(validate_prompt_specs(), [])
 
+    def test_conversation_orchestrator_prompt_keeps_llm_in_business_routing_role(self):
+        messages = build_prompt("conversation_orchestrator", {"user_message": "check"}).messages
+        text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("Classify one user message inside a BI investigation thread", text)
+        self.assertIn("Allowed intent values", text)
+        self.assertIn("Allowed topic_relation values", text)
+        self.assertIn("Use ask_topic_choice", text)
+        self.assertIn("Do not answer the BI question", text)
+        self.assertIn("Simplified Chinese business wording", text)
+
     def test_business_intent_prompt_separates_repeated_patterns_from_baseline_comparison(self):
         messages = build_prompt("business_intent", {"question": "check"}).messages
         text = "\n".join(message["content"] for message in messages)

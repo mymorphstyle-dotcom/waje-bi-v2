@@ -19,9 +19,11 @@ class ConversationAgentCore:
         store: Any,
         *,
         workflow_runner: Optional[WorkflowRunner] = None,
+        conversation_llm_client: Any = None,
     ) -> None:
         self.store = store
         self.workflow_runner = workflow_runner or run_pattern_workflow
+        self.conversation_llm_client = conversation_llm_client
 
     def run_message(
         self,
@@ -33,7 +35,10 @@ class ConversationAgentCore:
         artifact_root: str = "artifacts/phase-7",
     ) -> dict[str, Any]:
         self.store.upsert_run(run_id, thread_id=thread_id, status="running")
-        turn = ConversationRuntime(self.store).handle_message(thread_id, user_message, role=role)
+        turn = ConversationRuntime(
+            self.store,
+            llm_client=self.conversation_llm_client,
+        ).handle_message(thread_id, user_message, role=role)
         self.store.record_context_manifest(turn.context_manifest.to_dict())
 
         if not turn.run_request:
@@ -143,6 +148,15 @@ class ConversationAgentCore:
         }
 
 
+def _conversation_llm_from_env() -> Any:
+    try:
+        from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
+
+        return OpenAICompatibleLLMClient.from_env()
+    except Exception:
+        return None
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--thread-id", required=True)
@@ -153,7 +167,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     store = PostgresConversationStore.from_env()
-    core = ConversationAgentCore(store)
+    core = ConversationAgentCore(store, conversation_llm_client=_conversation_llm_from_env())
     result = core.run_message(
         thread_id=args.thread_id,
         run_id=args.run_id,

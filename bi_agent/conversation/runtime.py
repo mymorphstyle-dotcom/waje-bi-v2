@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from bi_agent.conversation.models import (
@@ -17,11 +17,48 @@ from bi_agent.conversation.models import (
     TurnIntent,
 )
 from bi_agent.conversation.store import InMemoryConversationStore
+from bi_agent.runtime.llm_prompts import build_prompt
+
+
+ALLOWED_INTENTS = frozenset(
+    {
+        "new_topic",
+        "follow_up",
+        "mixed_question",
+        "correction",
+        "clarification_answer",
+        "challenge",
+        "artifact_continue",
+        "capability_question",
+        "off_topic",
+        "unsupported_request",
+        "memory_update",
+    }
+)
+ALLOWED_TOPIC_RELATIONS = frozenset(
+    {
+        "new_topic",
+        "inherit_current",
+        "split_topics",
+        "split_subintents",
+        "select_referenced_topic",
+        "ask_topic_choice",
+        "queued_new_topic",
+        "rejected",
+    }
+)
+LOCAL_GUARDED_INTENTS = frozenset({"off_topic", "unsupported_request"})
 
 
 class ConversationRuntime:
-    def __init__(self, store: Optional[InMemoryConversationStore] = None) -> None:
+    def __init__(
+        self,
+        store: Optional[InMemoryConversationStore] = None,
+        *,
+        llm_client: Any = None,
+    ) -> None:
         self.store = store or InMemoryConversationStore()
+        self.llm_client = llm_client
 
     def handle_message(
         self,
@@ -36,16 +73,26 @@ class ConversationRuntime:
     ) -> ConversationTurnResult:
         thread = self.store.get_thread(thread_id)
         turn_id = f"turn-{uuid4().hex[:12]}"
-        intent_name = _classify_intent(user_message, bool(thread.pending_clarification_id))
-        topic_relation = _topic_relation(intent_name, user_message, active_run_status)
+        local_intent = _classify_intent(user_message, bool(thread.pending_clarification_id))
+        local_topic_relation = _topic_relation(local_intent, user_message, active_run_status)
+        orchestration = self._orchestrate_turn(
+            thread_id,
+            thread,
+            user_message,
+            active_run_status,
+            local_intent,
+            local_topic_relation,
+        )
+        intent_name = orchestration["intent"]
+        topic_relation = orchestration["topic_relation"]
         pending_clarification_id = thread.pending_clarification_id
         topic = self._resolve_topic(thread_id, topic_relation, user_message, intent_name)
         turn_intent = TurnIntent(
             intent=intent_name,
-            confidence=0.82,
+            confidence=orchestration["confidence"],
             topic_relation=topic_relation,
-            decision_source="conversation_orchestrator",
-            business_summary=_intent_summary(intent_name, user_message),
+            decision_source=orchestration["decision_source"],
+            business_summary=orchestration["business_summary"],
         )
         reuse_decisions = self._reuse_decisions(
             topic,
@@ -109,6 +156,8 @@ class ConversationRuntime:
                 "intent": intent_name,
                 "topic_relation": topic_relation,
                 "source": turn_intent.decision_source,
+                "local_intent": local_intent,
+                "local_topic_relation": local_topic_relation,
             },
             {
                 "event": "context_manifest_created",
@@ -117,6 +166,15 @@ class ConversationRuntime:
                 "can_support_claims": manifest.can_support_claims,
             },
         )
+        if orchestration.get("llm_audit"):
+            audit_events = audit_events + (
+                {
+                    "event": "conversation_orchestrator_llm_evaluated",
+                    "turn_id": turn_id,
+                    "source": turn_intent.decision_source,
+                    "audit": orchestration["llm_audit"],
+                },
+            )
         if clarification:
             audit_events = audit_events + (
                 {
@@ -152,6 +210,66 @@ class ConversationRuntime:
         if intent_name == "clarification_answer":
             self.store.clear_pending_clarification(thread_id)
         return result
+
+    def _orchestrate_turn(
+        self,
+        thread_id: str,
+        thread: Any,
+        message: str,
+        active_run_status: str,
+        local_intent: str,
+        local_topic_relation: str,
+    ) -> dict[str, Any]:
+        local = _local_orchestration(local_intent, local_topic_relation, message)
+        if not self.llm_client:
+            return local
+
+        spec = build_prompt(
+            "conversation_orchestrator",
+            {
+                "user_message": message,
+                "thread_state": {
+                    "thread_id": thread_id,
+                    "current_topic_id": thread.current_topic_id,
+                    "pending_clarification_id": thread.pending_clarification_id,
+                    "pending_clarification_topic_id": thread.pending_clarification_topic_id,
+                    "active_run_status": active_run_status,
+                },
+                "candidate_topics": [
+                    topic.to_dict() for topic in self.store.topics_for_thread(thread_id)[-5:]
+                ],
+                "recent_turns": list(getattr(thread, "turns", [])[-5:]),
+                "local_precheck": {
+                    "intent": local_intent,
+                    "topic_relation": local_topic_relation,
+                },
+                "allowed_intents": sorted(ALLOWED_INTENTS),
+                "allowed_topic_relations": sorted(ALLOWED_TOPIC_RELATIONS),
+            },
+        )
+        try:
+            result = self.llm_client.invoke_json(
+                task=spec.task,
+                prompt_version=spec.prompt_version,
+                messages=spec.messages,
+                required_keys=spec.required_keys,
+            )
+        except Exception as exc:
+            fallback = dict(local)
+            fallback["decision_source"] = "local_conversation_orchestrator_fallback"
+            fallback["business_summary"] = f"{local['business_summary']} LLM 路由不可用，已采用本地预检。"
+            fallback["llm_audit"] = {"error": str(exc)}
+            return fallback
+
+        validated = _validated_orchestration(
+            result.output,
+            local,
+            has_pending_clarification=bool(thread.pending_clarification_id),
+            active_run_status=active_run_status,
+            topic_count=len(self.store.topics_for_thread(thread_id)),
+        )
+        validated["llm_audit"] = result.audit
+        return validated
 
     def _resolve_topic(
         self,
@@ -314,6 +432,76 @@ class ConversationRuntime:
                 visibility=role,
             ),
         )
+
+
+def _local_orchestration(intent: str, topic_relation: str, message: str) -> dict[str, Any]:
+    return {
+        "intent": intent,
+        "topic_relation": topic_relation,
+        "confidence": 0.82,
+        "decision_source": "local_conversation_orchestrator",
+        "business_summary": _intent_summary(intent, message),
+    }
+
+
+def _validated_orchestration(
+    output: Any,
+    local: dict[str, Any],
+    *,
+    has_pending_clarification: bool,
+    active_run_status: str,
+    topic_count: int,
+) -> dict[str, Any]:
+    if not isinstance(output, dict):
+        return _local_fallback(local, "local_conversation_orchestrator_fallback")
+
+    intent = str(output.get("intent") or "").strip()
+    topic_relation = str(output.get("topic_relation") or "").strip()
+    if intent not in ALLOWED_INTENTS or topic_relation not in ALLOWED_TOPIC_RELATIONS:
+        return _local_fallback(local, "local_conversation_orchestrator_fallback")
+
+    if local["intent"] in LOCAL_GUARDED_INTENTS and intent != local["intent"]:
+        return _local_fallback(local, "local_conversation_orchestrator_guard")
+
+    if intent == "clarification_answer" and not has_pending_clarification:
+        return _local_fallback(local, "local_conversation_orchestrator_fallback")
+
+    if intent in {"off_topic", "unsupported_request"}:
+        topic_relation = "rejected"
+    elif intent == "capability_question" and topic_relation not in {"inherit_current", "rejected"}:
+        topic_relation = "rejected"
+    elif intent == "memory_update":
+        topic_relation = "inherit_current"
+    elif active_run_status == "running" and intent == "new_topic":
+        topic_relation = "queued_new_topic"
+    elif topic_relation == "select_referenced_topic" and topic_count < 2:
+        return _local_fallback(local, "local_conversation_orchestrator_fallback")
+
+    business_summary = output.get("business_summary")
+    if not isinstance(business_summary, str) or not business_summary.strip():
+        business_summary = _intent_summary(intent, "")
+
+    return {
+        "intent": intent,
+        "topic_relation": topic_relation,
+        "confidence": _confidence(output.get("confidence")),
+        "decision_source": "llm_conversation_orchestrator",
+        "business_summary": business_summary.strip(),
+    }
+
+
+def _local_fallback(local: dict[str, Any], source: str) -> dict[str, Any]:
+    fallback = dict(local)
+    fallback["decision_source"] = source
+    return fallback
+
+
+def _confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.7
+    return max(0.0, min(1.0, confidence))
 
 
 def _classify_intent(message: str, has_pending_clarification: bool) -> str:

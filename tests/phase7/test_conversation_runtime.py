@@ -1,5 +1,6 @@
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 
 import yaml
@@ -178,6 +179,77 @@ class ConversationRuntimeTest(unittest.TestCase):
             q2_topic.topic_id,
         )
 
+    def test_llm_conversation_orchestrator_can_bind_business_intent(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-llm-route", owner_id="analyst-1")
+        topic = store.create_topic(
+            "thread-llm-route",
+            title="Q2 vs Q1",
+            summary="当前 topic 关注 Q2 相比 Q1 的变化。",
+        )
+        store.set_current_topic("thread-llm-route", topic.topic_id)
+        fake = FakeConversationLLM(
+            {
+                "intent": "challenge",
+                "topic_relation": "inherit_current",
+                "business_summary": "用户在质疑既有结论是否受到 WajeSpecial 干扰。",
+                "confidence": 0.91,
+            }
+        )
+        runtime = ConversationRuntime(store, llm_client=fake)
+
+        result = runtime.handle_message(
+            "thread-llm-route",
+            "这个结论是不是被 WajeSpecial 干扰了？",
+        )
+
+        self.assertEqual(result.turn_intent.intent, "challenge")
+        self.assertEqual(result.topic_relation, "inherit_current")
+        self.assertEqual(result.turn_intent.decision_source, "llm_conversation_orchestrator")
+        self.assertEqual(fake.calls[0]["task"], "conversation_orchestrator")
+        self.assertTrue(
+            any(event["event"] == "conversation_orchestrator_llm_evaluated" for event in result.audit_events)
+        )
+
+    def test_local_guard_blocks_unsupported_request_even_when_llm_disagrees(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-llm-guard", owner_id="analyst-1")
+        fake = FakeConversationLLM(
+            {
+                "intent": "follow_up",
+                "topic_relation": "inherit_current",
+                "business_summary": "用户想继续分析。",
+                "confidence": 0.93,
+            }
+        )
+        runtime = ConversationRuntime(store, llm_client=fake)
+
+        result = runtime.handle_message("thread-llm-guard", "直接写 SQL 查所有订单。")
+
+        self.assertEqual(result.turn_intent.intent, "unsupported_request")
+        self.assertEqual(result.topic_relation, "rejected")
+        self.assertEqual(result.turn_intent.decision_source, "local_conversation_orchestrator_guard")
+        self.assertIsNone(result.run_request)
+
+    def test_invalid_llm_orchestration_falls_back_to_local_precheck(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-llm-fallback", owner_id="analyst-1")
+        fake = FakeConversationLLM(
+            {
+                "intent": "raw_sql",
+                "topic_relation": "magic_route",
+                "business_summary": "无效输出。",
+                "confidence": 0.99,
+            }
+        )
+        runtime = ConversationRuntime(store, llm_client=fake)
+
+        result = runtime.handle_message("thread-llm-fallback", "那具体哪些渠道贡献最大？")
+
+        self.assertEqual(result.turn_intent.intent, "follow_up")
+        self.assertEqual(result.topic_relation, "inherit_current")
+        self.assertEqual(result.turn_intent.decision_source, "local_conversation_orchestrator_fallback")
+
 
 def _seed_runtime() -> ConversationRuntime:
     store = InMemoryConversationStore()
@@ -226,6 +298,35 @@ def _seed_runtime() -> ConversationRuntime:
     )
     store.set_pending_clarification("thread-phase7", q2_topic.topic_id, "metric_choice")
     return runtime
+
+
+class FakeConversationLLM:
+    def __init__(self, output):
+        self.output = output
+        self.calls = []
+
+    def invoke_json(self, *, task, prompt_version, messages, required_keys):
+        self.calls.append(
+            {
+                "task": task,
+                "prompt_version": prompt_version,
+                "messages": [dict(message) for message in messages],
+                "required_keys": list(required_keys),
+            }
+        )
+        output = dict(self.output)
+        for key in required_keys:
+            output.setdefault(key, "已完成本轮对话路由判断。")
+        return SimpleNamespace(
+            output=output,
+            audit={
+                "task": task,
+                "prompt_version": prompt_version,
+                "provider": "fake",
+                "model": "fake",
+                "structured_output": output,
+            },
+        )
 
 
 if __name__ == "__main__":

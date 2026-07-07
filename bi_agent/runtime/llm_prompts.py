@@ -18,6 +18,12 @@ class PromptSpec:
 
 
 TASK_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
+    "conversation_orchestrator": (
+        "intent",
+        "topic_relation",
+        "business_summary",
+        "confidence",
+    ),
     "business_intent": (
         "question_family",
         "target_metric",
@@ -160,6 +166,34 @@ def _task_prompt(task: str, payload: Mapping[str, Any]) -> str:
 
 def _task_rules(task: str) -> str:
     rules = {
+        "conversation_orchestrator": (
+            "Classify one user message inside a BI investigation thread. Decide the "
+            "business turn intent and topic relation from the user's wording, pending "
+            "clarification state, active run state, candidate topics, recent turns, and "
+            "allowed enum values supplied in the input. Allowed intent values are "
+            "new_topic, follow_up, mixed_question, correction, clarification_answer, "
+            "challenge, artifact_continue, capability_question, off_topic, "
+            "unsupported_request, and memory_update. Allowed topic_relation values are "
+            "new_topic, inherit_current, split_topics, split_subintents, "
+            "select_referenced_topic, ask_topic_choice, queued_new_topic, and rejected. "
+            "Use clarification_answer only when pending clarification exists and the "
+            "message answers that question. Use ask_topic_choice when a reference such "
+            "as 刚才那个 could bind to more than one plausible topic and the choice would "
+            "change the analysis. Use select_referenced_topic when the message clearly "
+            "points to a numbered or named existing topic. Use mixed_question when one "
+            "message contains multiple BI asks; choose split_topics when the asks belong "
+            "to different business problem chains, and split_subintents when they belong "
+            "to one chain. Use capability_question for questions about available data, "
+            "analysis ability, permission boundaries, or why causal proof is unavailable. "
+            "Use unsupported_request for raw identifiers, unsafe SQL, permission-bypassing "
+            "requests, or actions outside BI analysis. Use off_topic for non-BI requests. "
+            "If active_run_status is running and the message is a new independent BI "
+            "question, prefer queued_new_topic. Do not answer the BI question, invent "
+            "data, choose SQL, or claim a result can be reused. business_summary and "
+            "display_summary must be concise Simplified Chinese business wording for "
+            "audit and replay, with no hidden chain-of-thought, raw SQL, enum leakage, "
+            "provider metadata, or graph node names. confidence is a number from 0 to 1."
+        ),
         "business_intent": (
             "Classify the user's business question. Bind question_family, target_metric, "
             "pattern_family, scope, time_window, target_claim, and plausible baseline "
