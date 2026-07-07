@@ -1,0 +1,50 @@
+{
+  "manifest_version": "phase8.release.2026-07-08",
+  "components": [
+    {
+      "component": "contract",
+      "paths": ["contracts/metrics", "contracts/dimensions", "contracts/sources", "contracts/events", "contracts/assumptions", "contracts/backlog"],
+      "active_ref": "HEAD",
+      "rollback_ref": "last_release",
+      "owner": "data_contract_owner",
+      "required_checks": ["validate_contracts", "affected_eval_slice", "full_acceptance_eval"],
+      "rollback_action": "restore listed contract paths from rollback_ref, reload Postgres contract mirror, rerun affected eval slice"
+    },
+    {
+      "component": "ledger",
+      "paths": ["contracts/ledger/factor-ledger.yaml", "contracts/ledger/capability-support.yaml", "contracts/ledger/ssot-node-reconciliation.yaml"],
+      "active_ref": "HEAD",
+      "rollback_ref": "last_release",
+      "owner": "evidence_ledger_owner",
+      "required_checks": ["validate_contracts", "affected_eval_slice", "full_acceptance_eval"],
+      "rollback_action": "restore ledger paths from rollback_ref, reload support ledger, rerun affected eval slice"
+    },
+    {
+      "component": "capability_card",
+      "paths": ["contracts/capabilities", "bi_agent/runtime/capability_registry.py", "bi_agent/runtime/capability_models.py"],
+      "active_ref": "HEAD",
+      "rollback_ref": "last_release",
+      "owner": "agent_runtime_owner",
+      "required_checks": ["phase4_capability_tests", "affected_eval_slice", "full_acceptance_eval"],
+      "rollback_action": "restore capability card and registry paths from rollback_ref, rerun capability and launch eval checks"
+    },
+    {
+      "component": "prompt_recipe",
+      "paths": ["bi_agent/runtime/llm_prompts.py", "bi_agent/runtime/recipe_registry.py", "docs/phase-4-agent-workflow-reference.md"],
+      "active_ref": "phase4.agent_workflow.2026-07-07.v32",
+      "rollback_ref": "phase4.agent_workflow.2026-07-07.v31",
+      "owner": "agent_quality_owner",
+      "required_checks": ["prompt_consistency", "affected_eval_slice", "full_acceptance_eval"],
+      "rollback_action": "restore prompt and recipe paths or previous prompt version, rerun prompt consistency and full acceptance eval"
+    },
+    {
+      "component": "verifier_policy",
+      "paths": ["bi_agent/runtime/answer_package.py", "bi_agent/runtime/wording.py", "docs/evals/launch-eval-plan.md"],
+      "active_ref": "HEAD",
+      "rollback_ref": "last_release",
+      "owner": "answer_safety_owner",
+      "required_checks": ["answer_package_tests", "affected_eval_slice", "full_acceptance_eval"],
+      "rollback_action": "restore verifier policy paths from rollback_ref, rerun answer package and launch eval checks"
+    }
+  ]
+}
