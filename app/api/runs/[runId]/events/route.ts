@@ -1,4 +1,4 @@
-import { conversationStore, jsonError } from "../../../_conversationStore";
+import { jsonError, requireRun } from "../../../_conversationStore";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -7,8 +7,12 @@ type RouteContext = { params: Promise<{ runId: string }> };
 
 export async function GET(_request: Request, context: RouteContext) {
   const { runId } = await context.params;
-  const run = conversationStore().runs.get(runId);
-  if (!run) return jsonError(new Error("run_not_found"));
+  let run;
+  try {
+    run = await requireRun(runId);
+  } catch (error) {
+    return jsonError(error);
+  }
 
   const events = [
     { event: "run_queued", runId, threadId: run.threadId },

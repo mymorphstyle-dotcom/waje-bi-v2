@@ -10,7 +10,7 @@ type RouteContext = { params: Promise<{ proposalId: string }> };
 export async function POST(_request: Request, context: RouteContext) {
   const { proposalId } = await context.params;
   try {
-    return NextResponse.json({ memoryProposal: updateMemoryProposal(proposalId, "accepted") });
+    return NextResponse.json({ memoryProposal: await updateMemoryProposal(proposalId, "accepted") });
   } catch (error) {
     return jsonError(error);
   }

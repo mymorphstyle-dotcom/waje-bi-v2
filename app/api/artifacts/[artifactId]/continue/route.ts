@@ -13,9 +13,9 @@ export async function POST(request: NextRequest, context: RouteContext) {
   const threadId = typeof body.threadId === "string" ? body.threadId : "";
   const message = typeof body.message === "string" ? body.message : "基于这个结果继续分析";
   try {
-    requireThread(threadId);
-    const userMessage = addUserMessage(threadId, message);
-    const run = createRun(threadId);
+    await requireThread(threadId);
+    const userMessage = await addUserMessage(threadId, message);
+    const run = await createRun(threadId);
     return NextResponse.json(
       {
         artifactId,

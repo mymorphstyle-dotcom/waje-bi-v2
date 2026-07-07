@@ -10,7 +10,7 @@ type RouteContext = { params: Promise<{ threadId: string }> };
 export async function GET(_request: Request, context: RouteContext) {
   const { threadId } = await context.params;
   try {
-    return NextResponse.json({ thread: requireThread(threadId) });
+    return NextResponse.json({ thread: await requireThread(threadId) });
   } catch (error) {
     return jsonError(error);
   }

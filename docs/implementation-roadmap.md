@@ -207,7 +207,7 @@ Phase 6 starts only after Phase 5 eval gates can classify wrong intent, wrong ba
 
 **Business reason:** Users need to see what the agent understood, what it checked, where evidence degraded, and what answer is safe to trust.
 
-Current progress (2026-07-08): Phase 7 runtime foundation now has conversation contracts, an in-memory Postgres-ready store seam, thread/topic/turn/run context assembly, result reuse decisions, memory proposals, and the public gateway routes for threads, messages, run events, clarifications, artifact continue, and memory proposal accept/reject. Coverage is tracked in `evals/phase7/conversation_scenarios.yaml` with 60 natural-language multi-turn scenarios.
+Current progress (2026-07-08): Phase 7 runtime foundation now has conversation contracts, Postgres conversation schema, Python Postgres store with audit writes, production-safe TypeScript gateway store selection, thread/topic/turn/run context assembly, result reuse decisions, memory proposals, and the public gateway routes for threads, messages, run events, clarifications, artifact continue, and memory proposal accept/reject. Coverage is tracked in `evals/phase7/conversation_scenarios.yaml` with 60 natural-language multi-turn scenarios.
 
 **Deliverables:**
 
@@ -217,7 +217,7 @@ Current progress (2026-07-08): Phase 7 runtime foundation now has conversation c
 - [ ] Process event rendering for intent, accepted plan, capability progress, question tool, repair/degrade/block/skip, evidence summary, verifier result.
 - [ ] Dynamic first-screen answer cards from verified claim groups and validated visualization plan.
 - [ ] Artifact save, read-only sharing, permission-filtered access, static export, and continue-investigation entry.
-- [ ] Replace the in-memory gateway/runtime store seam with Postgres persistence and audit writes.
+- [x] Replace the in-memory-only gateway/runtime store seam with Postgres persistence and audit writes; development fallback remains local-only.
 
 **Acceptance:**
 

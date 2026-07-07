@@ -9,6 +9,7 @@ from bi_agent.conversation.models import (
     TurnIntent,
 )
 from bi_agent.conversation.runtime import ConversationRuntime
+from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.store import InMemoryConversationStore
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "InMemoryConversationStore",
     "MemoryItem",
     "MemoryProposal",
+    "PostgresConversationStore",
     "ReuseDecision",
     "TopicState",
     "TurnIntent",

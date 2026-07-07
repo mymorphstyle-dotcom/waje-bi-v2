@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { conversationStore, jsonError } from "../../../_conversationStore";
+import { jsonError, requireRun } from "../../../_conversationStore";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -9,8 +9,11 @@ type RouteContext = { params: Promise<{ runId: string }> };
 
 export async function POST(request: NextRequest, context: RouteContext) {
   const { runId } = await context.params;
-  const run = conversationStore().runs.get(runId);
-  if (!run) return jsonError(new Error("run_not_found"));
+  try {
+    await requireRun(runId);
+  } catch (error) {
+    return jsonError(error);
+  }
   const body = await request.json().catch(() => ({}));
   return NextResponse.json({
     runId,
