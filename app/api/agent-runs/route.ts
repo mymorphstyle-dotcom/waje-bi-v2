@@ -15,7 +15,7 @@ export async function GET() {
   ]);
   const data = await response.json();
   const persistedRuns = persistedAnswerPackageRuns.map((row) =>
-    traceRunFromAnswerPackage(row.answerPackage, {
+    traceRunFromAnswerPackage(withRunNodes(row.answerPackage, row.runNodes), {
       id: `persisted:${row.runId}`,
       label: `${row.question || row.runId} · 实时运行`,
       question: row.question,
@@ -29,6 +29,14 @@ export async function GET() {
       (left, right) => (right.generatedAt ?? 0) - (left.generatedAt ?? 0),
     ),
   });
+}
+
+function withRunNodes(answerPackage: Record<string, unknown>, runNodes: Record<string, unknown>[]) {
+  if (!runNodes.length) return answerPackage;
+  return {
+    ...answerPackage,
+    checkpoint_events: runNodes,
+  };
 }
 
 function traceRunFromRuntimeRun(row: PersistedRuntimeRun): TraceRun {

@@ -67,6 +67,7 @@ type PersistedAnswerPackageRun = {
   runStatus: string;
   question: string;
   answerPackage: Record<string, unknown>;
+  runNodes: Record<string, unknown>[];
   createdAt: string;
 };
 
@@ -320,9 +321,21 @@ export async function listPersistedAnswerPackageRuns(limit = 20): Promise<Persis
   if (conversationStoreMode() !== "postgres") return [];
   const { rows } = await pool().query(
     `
-    SELECT r.run_id, r.thread_id, r.status AS run_status, r.request, p.payload, p.created_at
+    SELECT
+      r.run_id,
+      r.thread_id,
+      r.status AS run_status,
+      r.request,
+      p.payload,
+      p.created_at,
+      COALESCE(nodes.run_nodes, '[]'::jsonb) AS run_nodes
     FROM waje_runtime.answer_packages p
     JOIN waje_runtime.analysis_runs r ON r.run_id = p.run_id
+    LEFT JOIN LATERAL (
+      SELECT jsonb_agg(payload ORDER BY node_id) AS run_nodes
+      FROM waje_runtime.run_nodes
+      WHERE run_id = r.run_id
+    ) nodes ON true
     ORDER BY p.created_at DESC
     LIMIT $1
     `,
@@ -336,6 +349,7 @@ export async function listPersistedAnswerPackageRuns(limit = 20): Promise<Persis
       runStatus: row.run_status,
       question: String(request.question ?? request.user_message ?? ""),
       answerPackage: row.payload,
+      runNodes: Array.isArray(row.run_nodes) ? row.run_nodes : [],
       createdAt: row.created_at,
     } satisfies PersistedAnswerPackageRun;
   });

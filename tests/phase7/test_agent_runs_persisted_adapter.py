@@ -30,6 +30,15 @@ class AgentRunsPersistedAdapterTest(unittest.TestCase):
         self.assertIn("NOT EXISTS", store)
         self.assertIn("waje_runtime.analysis_runs", store)
 
+    def test_persisted_answer_package_runs_include_recorded_run_nodes(self):
+        agent_runs = (ROOT / "app" / "api" / "agent-runs" / "route.ts").read_text(encoding="utf-8")
+        store = (ROOT / "app" / "api" / "_conversationStore.ts").read_text(encoding="utf-8")
+
+        self.assertIn("runNodes", store)
+        self.assertIn("waje_runtime.run_nodes", store)
+        self.assertIn("checkpoint_events", agent_runs)
+        self.assertIn("withRunNodes", agent_runs)
+
 
 if __name__ == "__main__":
     unittest.main()
