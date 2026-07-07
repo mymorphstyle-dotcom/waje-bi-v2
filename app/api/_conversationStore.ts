@@ -82,6 +82,15 @@ type RunAuditTrace = {
   };
 };
 
+type RunRerunComparability = {
+  baseRunId: string;
+  candidateRunId: string;
+  comparable: boolean;
+  reasons: string[];
+  base: RunAuditTrace["traceCompleteness"];
+  candidate: RunAuditTrace["traceCompleteness"];
+};
+
 type PersistedAnswerPackageRun = {
   runId: string;
   threadId: string;
@@ -438,6 +447,25 @@ export async function runAuditTrace(runId: string): Promise<RunAuditTrace> {
     resultRefs: resultRows.rows,
     auditEvents: auditRows.rows,
   });
+}
+
+export async function runRerunComparability(baseRunId: string, candidateRunId: string): Promise<RunRerunComparability> {
+  const baseTrace = await runAuditTrace(baseRunId);
+  const candidateTrace = await runAuditTrace(candidateRunId);
+  const base = baseTrace.traceCompleteness;
+  const candidate = candidateTrace.traceCompleteness;
+  const reasons: string[] = [];
+  if (!sameSet(base.snapshotIds, candidate.snapshotIds)) reasons.push("snapshot_mismatch");
+  if (!sameSet(base.contractVersions, candidate.contractVersions)) reasons.push("contract_version_mismatch");
+  if (!sameSet(base.queryRefs, candidate.queryRefs)) reasons.push("query_ref_mismatch");
+  return {
+    baseRunId,
+    candidateRunId,
+    comparable: reasons.length === 0,
+    reasons,
+    base,
+    candidate,
+  };
 }
 
 export async function listPersistedAnswerPackageRuns(limit = 20): Promise<PersistedAnswerPackageRun[]> {
@@ -897,6 +925,10 @@ function summarySectionPayload(answerPackage: unknown): Record<string, unknown> 
 
 function uniqueStrings(values: unknown[]) {
   return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];
+}
+
+function sameSet(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value) => right.includes(value));
 }
 
 function processEvent(eventType: string, payload: unknown): RunProcessEvent {
