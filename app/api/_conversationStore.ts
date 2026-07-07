@@ -30,6 +30,13 @@ type MemoryProposalRecord = {
   createdAt: string;
 };
 
+type RunEvent = {
+  event: string;
+  runId: string;
+  threadId?: string;
+  payload?: unknown;
+};
+
 type MemoryStore = {
   threads: Map<string, ThreadRecord>;
   runs: Map<string, RunRecord>;
@@ -174,6 +181,67 @@ export async function requireRun(runId: string): Promise<RunRecord> {
   const run = memoryStore().runs.get(runId);
   if (!run) throw new Error("run_not_found");
   return run;
+}
+
+export async function runEvents(runId: string): Promise<RunEvent[]> {
+  const run = await requireRun(runId);
+  if (conversationStoreMode() === "postgres") {
+    const events: RunEvent[] = [
+      {
+        event: "run_status",
+        runId,
+        threadId: run.threadId,
+        payload: { status: run.status },
+      },
+    ];
+    const auditRows = await pool().query(
+      `
+      SELECT event_type, payload, created_at
+      FROM waje_runtime.audit_events
+      WHERE run_id = $1 OR ref = $1
+      ORDER BY created_at
+      `,
+      [runId],
+    );
+    for (const row of auditRows.rows) {
+      events.push({
+        event: row.event_type,
+        runId,
+        threadId: run.threadId,
+        payload: row.payload,
+      });
+    }
+    const packageRows = await pool().query(
+      `
+      SELECT status, payload
+      FROM waje_runtime.answer_packages
+      WHERE run_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [runId],
+    );
+    if (packageRows.rows[0]) {
+      events.push({
+        event: "answer_package_ready",
+        runId,
+        threadId: run.threadId,
+        payload: {
+          status: packageRows.rows[0].status,
+          answer_package: packageRows.rows[0].payload,
+        },
+      });
+    }
+    return events;
+  }
+  return [
+    {
+      event: "run_status",
+      runId,
+      threadId: run.threadId,
+      payload: { status: run.status },
+    },
+  ];
 }
 
 export async function addUserMessage(threadId: string, text: string): Promise<MessageRecord> {

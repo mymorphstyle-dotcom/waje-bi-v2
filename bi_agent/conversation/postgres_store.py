@@ -196,6 +196,129 @@ class PostgresConversationStore:
         )
         self._audit("turn_recorded", thread_id=thread_id, topic_id=topic_id, ref=turn_id, payload={"intent": intent})
 
+    def upsert_run(
+        self,
+        run_id: str,
+        *,
+        thread_id: str,
+        turn_id: str = "",
+        topic_id: str = "",
+        status: str,
+        request: Optional[dict[str, Any]] = None,
+    ) -> None:
+        self._execute(
+            """
+            INSERT INTO waje_runtime.analysis_runs(run_id, thread_id, turn_id, topic_id, status, request)
+            VALUES (
+              %(run_id)s, %(thread_id)s, %(turn_id)s, %(topic_id)s,
+              %(status)s, %(request)s::jsonb
+            )
+            ON CONFLICT (run_id) DO UPDATE
+            SET status = EXCLUDED.status,
+                request = EXCLUDED.request,
+                turn_id = EXCLUDED.turn_id,
+                topic_id = EXCLUDED.topic_id,
+                updated_at = now()
+            """,
+            {
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "turn_id": turn_id or None,
+                "topic_id": topic_id or None,
+                "status": status,
+                "request": _json(request or {}),
+            },
+        )
+        self._audit("run_status_changed", thread_id=thread_id, topic_id=topic_id, run_id=run_id, ref=run_id)
+
+    def record_context_manifest(self, manifest: dict[str, Any]) -> None:
+        self._execute(
+            """
+            INSERT INTO waje_runtime.context_manifests(
+              manifest_id, thread_id, turn_id, can_support_claims, items
+            )
+            VALUES (
+              %(manifest_id)s, %(thread_id)s, %(turn_id)s,
+              %(can_support_claims)s, %(items)s::jsonb
+            )
+            ON CONFLICT (manifest_id) DO UPDATE
+            SET can_support_claims = EXCLUDED.can_support_claims,
+                items = EXCLUDED.items
+            """,
+            {
+                "manifest_id": manifest["manifest_id"],
+                "thread_id": manifest["thread_id"],
+                "turn_id": manifest.get("turn_id"),
+                "can_support_claims": bool(manifest.get("can_support_claims")),
+                "items": _json(manifest.get("items", [])),
+            },
+        )
+        self._audit(
+            "context_manifest_recorded",
+            thread_id=manifest.get("thread_id"),
+            ref=manifest["manifest_id"],
+        )
+
+    def record_answer_package(self, run_id: str, package: dict[str, Any]) -> None:
+        self._execute(
+            """
+            INSERT INTO waje_runtime.answer_packages(package_id, run_id, artifact_id, status, payload)
+            VALUES (%(package_id)s, %(run_id)s, %(artifact_id)s, %(status)s, %(payload)s::jsonb)
+            ON CONFLICT (package_id) DO UPDATE
+            SET status = EXCLUDED.status,
+                payload = EXCLUDED.payload
+            """,
+            {
+                "package_id": f"answer-package:{run_id}",
+                "run_id": run_id,
+                "artifact_id": package.get("artifact_id") or package.get("artifact_path"),
+                "status": package.get("status", "draft"),
+                "payload": _json(package),
+            },
+        )
+        self._audit("answer_package_recorded", run_id=run_id, ref=run_id)
+
+    def record_run_nodes(self, run_id: str, checkpoint_events: tuple[dict, ...]) -> None:
+        for index, event in enumerate(checkpoint_events):
+            node_name = str(event.get("node") or event.get("name") or f"node_{index}")
+            self._execute(
+                """
+                INSERT INTO waje_runtime.run_nodes(node_id, run_id, node_name, status, payload)
+                VALUES (%(node_id)s, %(run_id)s, %(node_name)s, %(status)s, %(payload)s::jsonb)
+                ON CONFLICT (node_id) DO UPDATE
+                SET status = EXCLUDED.status,
+                    payload = EXCLUDED.payload,
+                    finished_at = now()
+                """,
+                {
+                    "node_id": f"{run_id}:{index}:{node_name}",
+                    "run_id": run_id,
+                    "node_name": node_name,
+                    "status": str(event.get("status") or "completed"),
+                    "payload": _json(event),
+                },
+            )
+        self._audit("run_nodes_recorded", run_id=run_id, ref=run_id, payload={"count": len(checkpoint_events)})
+
+    def add_audit_event(
+        self,
+        event_type: str,
+        *,
+        thread_id: str = "",
+        topic_id: str = "",
+        run_id: str = "",
+        ref: str = "",
+        payload: Optional[dict[str, Any]] = None,
+    ) -> None:
+        self._audit(
+            event_type,
+            thread_id=thread_id or None,
+            topic_id=topic_id or None,
+            run_id=run_id or None,
+            ref=ref or None,
+            payload=payload or {},
+        )
+
     def add_result_ref(
         self,
         topic_id: str,

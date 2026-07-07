@@ -207,12 +207,13 @@ Phase 6 starts only after Phase 5 eval gates can classify wrong intent, wrong ba
 
 **Business reason:** Users need to see what the agent understood, what it checked, where evidence degraded, and what answer is safe to trust.
 
-Current progress (2026-07-08): Phase 7 runtime foundation now has conversation contracts, Postgres conversation schema, Python Postgres store with audit writes, production-safe TypeScript gateway store selection, thread/topic/turn/run context assembly, result reuse decisions, memory proposals, and the public gateway routes for threads, messages, run events, clarifications, artifact continue, and memory proposal accept/reject. Coverage is tracked in `evals/phase7/conversation_scenarios.yaml` with 60 natural-language multi-turn scenarios.
+Current progress (2026-07-08): Phase 7 runtime foundation now has conversation contracts, Postgres conversation schema, Python Postgres store with audit writes, production-safe TypeScript gateway store selection, thread/topic/turn/run context assembly, result reuse decisions, memory proposals, Python Agent Core bridge, and the public gateway routes for threads, messages, run events, clarifications, artifact continue, and memory proposal accept/reject. Coverage is tracked in `evals/phase7/conversation_scenarios.yaml` with 60 natural-language multi-turn scenarios.
 
 **Deliverables:**
 
 - [x] TypeScript gateway routes for thread creation, message submission, run event stream handles, clarifications, artifact continue, and memory proposal decisions.
 - [x] Conversation runtime contracts for `Thread`, `Topic`, `Turn`, `Run`, `ContextManifest`, `ReuseDecision`, `MemoryItem`, and `MemoryProposal`.
+- [x] Gateway-triggered Python Agent Core bridge that records conversation intent, context manifest, LangGraph result, Answer Package, run nodes, and audit events.
 - [ ] SDK decision for 21st Agent Elements or a better-fitting alternative.
 - [ ] Process event rendering for intent, accepted plan, capability progress, question tool, repair/degrade/block/skip, evidence summary, verifier result.
 - [ ] Dynamic first-screen answer cards from verified claim groups and validated visualization plan.

@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from typing import Any, Callable, Optional
+
+from bi_agent.conversation.postgres_store import PostgresConversationStore
+from bi_agent.conversation.runtime import ConversationRuntime
+from bi_agent.runtime.langgraph_workflow import run_pattern_workflow
+
+
+WorkflowRunner = Callable[[dict[str, Any]], Any]
+
+
+class ConversationAgentCore:
+    def __init__(
+        self,
+        store: Any,
+        *,
+        workflow_runner: Optional[WorkflowRunner] = None,
+    ) -> None:
+        self.store = store
+        self.workflow_runner = workflow_runner or run_pattern_workflow
+
+    def run_message(
+        self,
+        *,
+        thread_id: str,
+        run_id: str,
+        user_message: str,
+        role: str = "analyst",
+        artifact_root: str = "artifacts/phase-7",
+    ) -> dict[str, Any]:
+        self.store.upsert_run(run_id, thread_id=thread_id, status="running")
+        turn = ConversationRuntime(self.store).handle_message(thread_id, user_message, role=role)
+        self.store.record_context_manifest(turn.context_manifest.to_dict())
+
+        if not turn.run_request:
+            self.store.upsert_run(
+                run_id,
+                thread_id=thread_id,
+                turn_id=turn.turn_id,
+                topic_id=turn.topic_id or "",
+                status="completed_without_workflow",
+                request={"reason": turn.turn_intent.intent},
+            )
+            return {
+                "status": "completed_without_workflow",
+                "run_id": run_id,
+                "turn_id": turn.turn_id,
+                "intent": turn.turn_intent.intent,
+            }
+
+        request = turn.run_request.to_dict()
+        request.update(
+            {
+                "run_id": run_id,
+                "question": user_message,
+                "role": role,
+                "artifact_root": artifact_root,
+            }
+        )
+        self.store.upsert_run(
+            run_id,
+            thread_id=thread_id,
+            turn_id=turn.turn_id,
+            topic_id=turn.topic_id or "",
+            status="running_workflow",
+            request=request,
+        )
+        result = self.workflow_runner(request)
+        if result.status != "draft" or not result.answer_package:
+            self.store.upsert_run(
+                run_id,
+                thread_id=thread_id,
+                turn_id=turn.turn_id,
+                topic_id=turn.topic_id or "",
+                status="failed",
+                request={**request, "failure_reason": result.failure_reason},
+            )
+            self.store.add_audit_event(
+                "workflow_failed",
+                thread_id=thread_id,
+                topic_id=turn.topic_id or "",
+                run_id=run_id,
+                payload={"failure_reason": result.failure_reason},
+            )
+            return {
+                "status": "failed",
+                "run_id": run_id,
+                "turn_id": turn.turn_id,
+                "failure_reason": result.failure_reason,
+            }
+
+        package = dict(result.answer_package)
+        package["run_id"] = run_id
+        package["artifact_path"] = result.artifact_path
+        self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
+        self.store.record_answer_package(run_id, package)
+        self.store.upsert_run(
+            run_id,
+            thread_id=thread_id,
+            turn_id=turn.turn_id,
+            topic_id=turn.topic_id or "",
+            status="completed",
+            request=request,
+        )
+        return {
+            "status": "completed",
+            "run_id": run_id,
+            "turn_id": turn.turn_id,
+            "artifact_path": result.artifact_path,
+        }
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--thread-id", required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--message", required=True)
+    parser.add_argument("--role", default="analyst")
+    parser.add_argument("--artifact-root", default="artifacts/phase-7")
+    args = parser.parse_args(argv)
+
+    store = PostgresConversationStore.from_env()
+    core = ConversationAgentCore(store)
+    result = core.run_message(
+        thread_id=args.thread_id,
+        run_id=args.run_id,
+        user_message=args.message,
+        role=args.role,
+        artifact_root=args.artifact_root,
+    )
+    json.dump(result, sys.stdout, ensure_ascii=False, sort_keys=True)
+    sys.stdout.write("\n")
+    return 0 if result["status"] in {"completed", "completed_without_workflow"} else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

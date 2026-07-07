@@ -23,6 +23,10 @@ class InMemoryConversationStore:
         self.artifacts: dict[str, ArtifactRef] = {}
         self.memory_items: dict[str, list[MemoryItem]] = defaultdict(list)
         self.memory_proposals: dict[str, MemoryProposal] = {}
+        self.runs: dict[str, dict] = {}
+        self.context_manifests: dict[str, dict] = {}
+        self.answer_packages: dict[str, dict] = {}
+        self.audit_events: list[dict] = []
 
     def create_thread(self, thread_id: Optional[str] = None, *, owner_id: str = "user") -> ThreadState:
         thread_id = thread_id or f"thread-{uuid4().hex[:12]}"
@@ -81,6 +85,66 @@ class InMemoryConversationStore:
 
     def add_turn(self, thread_id: str, turn: dict) -> None:
         self.get_thread(thread_id).turns.append(turn)
+
+    def upsert_run(
+        self,
+        run_id: str,
+        *,
+        thread_id: str,
+        turn_id: str = "",
+        topic_id: str = "",
+        status: str,
+        request: dict | None = None,
+    ) -> None:
+        self.runs[run_id] = {
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "turn_id": turn_id,
+            "topic_id": topic_id,
+            "status": status,
+            "request": request or {},
+            "answer_package": self.runs.get(run_id, {}).get("answer_package"),
+        }
+        self.add_audit_event("run_status_changed", thread_id=thread_id, topic_id=topic_id, run_id=run_id)
+
+    def record_context_manifest(self, manifest: dict) -> None:
+        self.context_manifests[manifest["manifest_id"]] = manifest
+        self.add_audit_event(
+            "context_manifest_recorded",
+            thread_id=manifest.get("thread_id", ""),
+            ref=manifest["manifest_id"],
+        )
+
+    def record_answer_package(self, run_id: str, package: dict) -> None:
+        self.answer_packages[run_id] = package
+        if run_id in self.runs:
+            self.runs[run_id]["answer_package"] = package
+        self.add_audit_event("answer_package_recorded", run_id=run_id, ref=run_id)
+
+    def record_run_nodes(self, run_id: str, checkpoint_events: tuple[dict, ...]) -> None:
+        self.runs.setdefault(run_id, {})["checkpoint_events"] = list(checkpoint_events)
+        self.add_audit_event("run_nodes_recorded", run_id=run_id, ref=run_id)
+
+    def add_audit_event(
+        self,
+        event_type: str,
+        *,
+        thread_id: str = "",
+        topic_id: str = "",
+        run_id: str = "",
+        ref: str = "",
+        payload: dict | None = None,
+    ) -> None:
+        self.audit_events.append(
+            {
+                "event_type": event_type,
+                "thread_id": thread_id,
+                "topic_id": topic_id,
+                "run_id": run_id,
+                "ref": ref,
+                "payload": payload or {},
+            }
+        )
 
     def add_result_ref(
         self,
