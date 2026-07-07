@@ -52,6 +52,7 @@ def build_answer_package(
         evidence=evidence,
         verifier=verifier,
     )
+    visualization_plan = build_visualization_plan(claim_groups)
     ordinary_audit = {"sql_hash": sql_hash}
     admin_audit = {
         **ordinary_audit,
@@ -88,6 +89,7 @@ def build_answer_package(
                     "final_business_summary": final_business_summary,
                     "claims": to_jsonable(draft_claims),
                     "claim_groups": claim_groups,
+                    "visualization_plan": visualization_plan,
                     "limitations": visible_limitations,
                     "sql_hash": sql_hash,
                     "final_explanation": to_jsonable(final_explanation),
@@ -150,6 +152,47 @@ def build_claim_groups(
             }
         )
     return groups
+
+
+def build_visualization_plan(claim_groups: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    return {
+        "status": "validated",
+        "blocks": [
+            {
+                "id": f"visual-{index + 1}",
+                "block_type": _visual_block_type(group.get("evidence_refs", ())),
+                "title": _visual_title(group.get("evidence_refs", ())),
+                "claim_text": group.get("text", ""),
+                "target_metric": group.get("target_metric"),
+                "scope": group.get("scope"),
+                "time_window": group.get("time_window"),
+                "evidence_refs": list(group.get("evidence_refs", ())),
+                "limitations": list(group.get("limitations", ())),
+                "verifier_status": group.get("verifier_status"),
+            }
+            for index, group in enumerate(claim_groups)
+        ],
+    }
+
+
+def _visual_block_type(evidence_refs: Sequence[str]) -> str:
+    joined = " ".join(str(ref) for ref in evidence_refs)
+    if "segment" in joined or "driver" in joined:
+        return "contribution_breakdown"
+    if "pattern" in joined or "phase" in joined:
+        return "phase_profile"
+    if "outlier" in joined or "anomaly" in joined:
+        return "anomaly_review"
+    return "period_comparison"
+
+
+def _visual_title(evidence_refs: Sequence[str]) -> str:
+    return {
+        "contribution_breakdown": "贡献拆解",
+        "phase_profile": "阶段模式",
+        "anomaly_review": "异常复核",
+        "period_comparison": "期间对比",
+    }[_visual_block_type(evidence_refs)]
 
 
 def verify_answer_package(

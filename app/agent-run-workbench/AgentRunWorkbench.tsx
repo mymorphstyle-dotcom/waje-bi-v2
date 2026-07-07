@@ -399,6 +399,21 @@ function AnswerCard({ answer, cards }: { answer: TraceAnswer; cards: TraceCard[]
           </div>
         ))}
       </section>
+      {answer.visualBlocks.length ? (
+        <section className={styles.evidence}>
+          <h3>可视化计划</h3>
+          {answer.visualBlocks.map((block) => (
+            <div key={block.id}>
+              <strong>{block.title}</strong>
+              <small>
+                {block.claimText}
+                {block.evidenceRefs.length ? ` · 证据 ${block.evidenceRefs.join("、")}` : ""}
+                {block.limitations.length ? ` · 边界 ${block.limitations.join("、")}` : ""}
+              </small>
+            </div>
+          ))}
+        </section>
+      ) : null}
     </article>
   );
 }

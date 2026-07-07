@@ -66,6 +66,63 @@ class AnswerPackageClaimGroupsTest(unittest.TestCase):
             ],
         )
 
+    def test_answer_package_emits_visualization_plan_from_verified_claim_groups(self):
+        package = build_answer_package(
+            run_id="phase5-visual-plan",
+            draft_claims=[
+                {
+                    "text": "Q2 相比 Q1 日均付费金额提升 15.0%。",
+                    "evidence_refs": ["compare_periods:run"],
+                    "scope": "full_sample",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "target_metric": "paid_amount",
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_ref": "compare_periods:run",
+                    "capability_id": "compare_periods",
+                    "evidence_type": "statistical_association",
+                    "strength": "high",
+                    "wording_limit": "supported",
+                    "limitations": ["no_channel_breakdown"],
+                    "typed_payload": {
+                        "scope": "full_sample",
+                        "time_window": "2026-01-01..2026-06-30",
+                    },
+                }
+            ],
+            checkpoint_events=[],
+            proposed_graph=[],
+            accepted_graph=["compare_periods", "answer_verify"],
+            rejected_or_degraded_mutations=[],
+            validator_results=[],
+            sql_text="SELECT 1",
+            sql_hash="hash",
+            artifact_audit={},
+        )
+
+        summary = package["sections"][0]["payload"]
+        visual_blocks = summary["visualization_plan"]["blocks"]
+
+        self.assertEqual(
+            visual_blocks,
+            [
+                {
+                    "id": "visual-1",
+                    "block_type": "period_comparison",
+                    "title": "期间对比",
+                    "claim_text": "Q2 相比 Q1 日均付费金额提升 15.0%。",
+                    "target_metric": "paid_amount",
+                    "scope": "full_sample",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "evidence_refs": ["compare_periods:run"],
+                    "limitations": ["no_channel_breakdown"],
+                    "verifier_status": "passed",
+                }
+            ],
+        )
+
     def test_strong_claim_fails_when_evidence_ref_is_missing(self):
         verifier = verify_answer_package(
             draft_claims=[

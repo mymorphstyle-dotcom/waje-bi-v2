@@ -674,7 +674,21 @@ function answerPayload(
     repairPath: businessDisplayText(finalExplanation.repair_path ?? ""),
     stats,
     evidence: traceEvidence,
+    visualBlocks: visualBlocksFromPlan(summary.visualization_plan),
   };
+}
+
+function visualBlocksFromPlan(plan: JsonObject) {
+  const blocks = Array.isArray(plan?.blocks) ? plan.blocks : [];
+  return blocks.map((block: JsonObject) => ({
+    id: String(block.id ?? ""),
+    blockType: String(block.block_type ?? block.blockType ?? ""),
+    title: String(block.title ?? "可视化块"),
+    claimText: String(block.claim_text ?? block.claimText ?? ""),
+    evidenceRefs: Array.isArray(block.evidence_refs) ? block.evidence_refs.map(String) : [],
+    limitations: Array.isArray(block.limitations) ? block.limitations.map(limitationLabel) : [],
+    verifierStatus: block.verifier_status ? String(block.verifier_status) : undefined,
+  })).filter((block: JsonObject) => block.id && block.title);
 }
 
 function traceClaimsFromSummary(summary: JsonObject) {

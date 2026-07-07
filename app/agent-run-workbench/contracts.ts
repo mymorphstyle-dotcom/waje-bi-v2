@@ -23,6 +23,16 @@ export type TraceClaim = {
   evidenceRefs: string[];
 };
 
+export type TraceVisualBlock = {
+  id: string;
+  blockType: string;
+  title: string;
+  claimText: string;
+  evidenceRefs: string[];
+  limitations: string[];
+  verifierStatus?: string;
+};
+
 export type TraceNode = {
   id: string;
   index: number;
@@ -54,6 +64,7 @@ export type TraceAnswer = {
   repairPath: string;
   stats: TraceCard[];
   evidence: TraceEvidence[];
+  visualBlocks: TraceVisualBlock[];
 };
 
 export type TraceRun = {
