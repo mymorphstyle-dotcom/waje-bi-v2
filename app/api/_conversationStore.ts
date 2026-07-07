@@ -47,6 +47,15 @@ type RunEvent = {
   payload?: unknown;
 };
 
+type PersistedAnswerPackageRun = {
+  runId: string;
+  threadId: string;
+  runStatus: string;
+  question: string;
+  answerPackage: Record<string, unknown>;
+  createdAt: string;
+};
+
 type MemoryStore = {
   threads: Map<string, ThreadRecord>;
   runs: Map<string, RunRecord>;
@@ -253,6 +262,31 @@ export async function runEvents(runId: string): Promise<RunEvent[]> {
       payload: { status: run.status },
     },
   ];
+}
+
+export async function listPersistedAnswerPackageRuns(limit = 20): Promise<PersistedAnswerPackageRun[]> {
+  if (conversationStoreMode() !== "postgres") return [];
+  const { rows } = await pool().query(
+    `
+    SELECT r.run_id, r.thread_id, r.status AS run_status, r.request, p.payload, p.created_at
+    FROM waje_runtime.answer_packages p
+    JOIN waje_runtime.analysis_runs r ON r.run_id = p.run_id
+    ORDER BY p.created_at DESC
+    LIMIT $1
+    `,
+    [limit],
+  );
+  return rows.map((row) => {
+    const request = row.request ?? {};
+    return {
+      runId: row.run_id,
+      threadId: row.thread_id,
+      runStatus: row.run_status,
+      question: String(request.question ?? request.user_message ?? ""),
+      answerPackage: row.payload,
+      createdAt: row.created_at,
+    } satisfies PersistedAnswerPackageRun;
+  });
 }
 
 export async function addUserMessage(threadId: string, text: string): Promise<MessageRecord> {

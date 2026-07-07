@@ -114,6 +114,27 @@ async function readAnswerPackageReplay(filePath: string, artifactRoot: string) {
   const artifact = JSON.parse(await readFile(filePath, "utf8"));
   const caseId = String(artifact.run_id ?? path.basename(path.dirname(filePath))).replace(/^(phase4-real-|phase5-node-debug-)/, "");
   const meta = caseMeta[caseId] ?? { label: caseId };
+  return traceRunFromAnswerPackage(artifact, {
+    id: `answer-package:${path.relative(artifactRoot, filePath)}`,
+    label: `${meta.label} · 完整运行`,
+    question: meta.question ?? "",
+    expectedStatus: meta.expectedStatus,
+    sourceArtifact: path.relative(artifactRoot, filePath),
+    generatedAt: Date.parse(artifact.checkpoint_events?.at?.(-1)?.finished_at ?? "") || 0,
+  });
+}
+
+export function traceRunFromAnswerPackage(
+  artifact: JsonObject,
+  options: {
+    id: string;
+    label: string;
+    question?: string;
+    expectedStatus?: string;
+    sourceArtifact?: string;
+    generatedAt?: number;
+  },
+) {
   const summary = sectionPayload(artifact, "summary");
   const evidence = sectionPayload(artifact, "evidence").evidence ?? [];
   const finalExplanation = summary.final_explanation ?? {};
@@ -130,10 +151,10 @@ async function readAnswerPackageReplay(filePath: string, artifactRoot: string) {
   const answer = answerPayload(summary, evidence, finalExplanation, status, traceClaims, traceEvidence, summaryCards);
 
   return {
-    id: `answer-package:${path.relative(artifactRoot, filePath)}`,
-    label: `${meta.label} · 完整运行`,
-    question: meta.question ?? "",
-    expectedStatus: meta.expectedStatus ?? status,
+    id: options.id,
+    label: options.label,
+    question: options.question ?? "",
+    expectedStatus: options.expectedStatus ?? status,
     status,
     runId: artifact.run_id,
     todos,
@@ -142,16 +163,16 @@ async function readAnswerPackageReplay(filePath: string, artifactRoot: string) {
     businessThreads,
     traceClaims,
     traceEvidence,
-    messages: traceMessages(meta.question ?? "", nodes, answer),
+    messages: traceMessages(options.question ?? "", nodes, answer),
     answer,
     timing,
-    generatedAt: Date.parse(artifact.checkpoint_events?.at?.(-1)?.finished_at ?? "") || 0,
+    generatedAt: options.generatedAt ?? (Date.parse(artifact.checkpoint_events?.at?.(-1)?.finished_at ?? "") || 0),
     processSummary: {
       checkpointCount: artifact.checkpoint_events?.length ?? 0,
       llmCallCount: llmCalls.length,
       acceptedGraph: artifact.accepted_graph ?? [],
       verifierStatus: artifact.admin_audit?.verifier?.status ?? "unknown",
-      sourceArtifact: path.relative(artifactRoot, filePath),
+      sourceArtifact: options.sourceArtifact,
       debugStage: "完整运行",
       nodes,
     },
