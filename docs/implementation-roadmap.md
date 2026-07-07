@@ -174,6 +174,8 @@ Phase 5 closeout does not claim production release readiness. Broader composite 
 
 ## Phase 6: Capability Expansion Across Eight Question Families
 
+Current plan: [docs/superpowers/plans/2026-07-08-phase-6-question-family-expansion.md](/Users/luka/work/waje-bi-v2/docs/superpowers/plans/2026-07-08-phase-6-question-family-expansion.md:1)
+
 **Goal:** Expand from the first pattern slice into the full baseline question-family matrix.
 
 Phase 6 starts only after Phase 5 eval gates can classify wrong intent, wrong baseline, weak evidence, route drift, and unsupported claims without manual log reading.
