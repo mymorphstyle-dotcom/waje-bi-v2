@@ -499,7 +499,7 @@ function buildTodoStatuses(nodes: TraceNode[], done: boolean) {
 }
 
 function stageForNode(node: string) {
-  if (["understand_business_intent", "decide_question_boundary", "confirm_business_understanding", "clarification_policy_gate"].includes(node)) return "intent";
+  if (["run_status", "question_tool", "understand_business_intent", "decide_question_boundary", "confirm_business_understanding", "clarification_policy_gate"].includes(node)) return "intent";
   if (["design_analysis_route", "accept_analysis_route"].includes(node)) return "route";
   if (["inspect_schema", "validate_runtime_binding", "interpret_data_coverage"].includes(node)) return "data";
   if (["execute_capabilities", "reduce_evidence"].includes(node)) return "capability";

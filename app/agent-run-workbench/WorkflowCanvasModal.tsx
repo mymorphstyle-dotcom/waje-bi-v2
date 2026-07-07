@@ -595,7 +595,7 @@ function sourceNameForBypass(id: string) {
 }
 
 function stageForNodeName(node: string): StageId {
-  if (["understand_business_intent", "decide_question_boundary", "confirm_business_understanding", "clarification_policy_gate"].includes(node)) return "intent";
+  if (["run_status", "question_tool", "understand_business_intent", "decide_question_boundary", "confirm_business_understanding", "clarification_policy_gate"].includes(node)) return "intent";
   if (["design_analysis_route", "accept_analysis_route"].includes(node)) return "route";
   if (["inspect_schema", "validate_runtime_binding", "interpret_data_coverage"].includes(node)) return "data";
   if (["execute_capabilities", "reduce_evidence"].includes(node)) return "evidence";
@@ -616,6 +616,7 @@ function routeLabel(value: string) {
     {
       clear: "无需追问",
       ask: "需要用户确认",
+      "暂停等待用户选择": "等待用户确认",
       repair: "需要修复后继续",
       semantic_sanitized_to_bounded_answer: "收敛到有边界答案",
       answer_verified: "答案已通过校验",

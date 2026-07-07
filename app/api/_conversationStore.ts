@@ -738,6 +738,14 @@ function processEvent(eventType: string, payload: unknown): RunProcessEvent {
 }
 
 function processNodeEvent(nodeName: string, status: string, payload: unknown): RunProcessEvent {
+  if (["clarification_policy_gate", "question_tool"].includes(nodeName)) {
+    return {
+      stage: "question",
+      label: "判断是否需要用户确认",
+      summary: "已检查当前问题是否需要用户补充口径、范围或业务目标后继续。",
+      status,
+    };
+  }
   if (["understand_business_intent", "decide_question_boundary", "confirm_business_understanding"].includes(nodeName)) {
     return {
       stage: "intent",
@@ -754,10 +762,18 @@ function processNodeEvent(nodeName: string, status: string, payload: unknown): R
       status,
     };
   }
-  if (["execute_capabilities", "reduce_evidence"].includes(nodeName)) {
+  if (nodeName === "execute_capabilities") {
     return {
       stage: "capability_progress",
       label: "证据路径推进",
+      summary: capabilityProgressSummary(payload),
+      status,
+    };
+  }
+  if (nodeName === "reduce_evidence") {
+    return {
+      stage: "evidence_summary",
+      label: "证据摘要已生成",
       summary: capabilityProgressSummary(payload),
       status,
     };
@@ -767,6 +783,14 @@ function processNodeEvent(nodeName: string, status: string, payload: unknown): R
       stage: "verifier_result",
       label: "答案边界校验",
       summary: "已检查回答中的数字、证据引用、口径和表达强度。",
+      status,
+    };
+  }
+  if (nodeName.includes("skip")) {
+    return {
+      stage: "repair_or_degrade",
+      label: "跳过不可用路径",
+      summary: "已跳过当前证据不足、权限不足或不适合本轮问题的路径。",
       status,
     };
   }

@@ -35,8 +35,11 @@ class GatewayRunEventsTest(unittest.TestCase):
         self.assertIn("processNodeEvent", store)
         self.assertIn("accepted_plan", store)
         self.assertIn("capability_progress", store)
+        self.assertIn("evidence_summary", store)
+        self.assertIn("clarification_policy_gate", store)
         self.assertIn("verifier_result", store)
         self.assertIn("repair_or_degrade", store)
+        self.assertIn("skip", store)
 
 
 if __name__ == "__main__":
