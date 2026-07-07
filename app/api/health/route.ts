@@ -1,0 +1,107 @@
+import { spawn } from "child_process";
+import { Pool } from "pg";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+type HealthCheck = {
+  name: string;
+  status: "ok" | "failed";
+  detail: string;
+};
+
+const CLICKHOUSE_ENV = [
+  "WAJE_CLICKHOUSE_HOST",
+  "WAJE_CLICKHOUSE_PORT",
+  "WAJE_CLICKHOUSE_USER",
+  "WAJE_CLICKHOUSE_PASSWORD",
+  "WAJE_CLICKHOUSE_DATABASE",
+  "WAJE_CLICKHOUSE_SECURE",
+];
+
+export async function GET() {
+  const checks = await Promise.all([
+    gatewayHealth(),
+    postgresHealth(),
+    pythonHealth("python_bi_agent_core", "import bi_agent.conversation.agent_core"),
+    pythonHealth(
+      "langgraph_adapter",
+      "from bi_agent.runtime.langgraph_workflow import build_pattern_graph; build_pattern_graph()",
+    ),
+    clickhouseHealth(),
+  ]);
+  return Response.json({
+    status: checks.every((check) => check.status === "ok") ? "ok" : "degraded",
+    checks,
+  });
+}
+
+function gatewayHealth(): HealthCheck {
+  return { name: "frontend_gateway", status: "ok", detail: "route_responded" };
+}
+
+async function postgresHealth(): Promise<HealthCheck> {
+  const connectionString = process.env.WAJE_RUNTIME_DATABASE_URL || process.env.DATABASE_URL;
+  if (!connectionString) {
+    return {
+      name: "postgres_runtime_store",
+      status: "failed",
+      detail: "missing_database_url",
+    };
+  }
+  const pool = new Pool({ connectionString, max: 1 });
+  try {
+    await pool.query("SELECT 1");
+    return { name: "postgres_runtime_store", status: "ok", detail: "select_1_passed" };
+  } catch {
+    return { name: "postgres_runtime_store", status: "failed", detail: "select_1_failed" };
+  } finally {
+    await pool.end().catch(() => undefined);
+  }
+}
+
+async function clickhouseHealth(): Promise<HealthCheck> {
+  const missing = CLICKHOUSE_ENV.filter((name) => !process.env[name]);
+  if (missing.length) {
+    return {
+      name: "clickhouse_access",
+      status: "failed",
+      detail: `missing_env:${missing.join(",")}`,
+    };
+  }
+  return pythonHealth(
+    "clickhouse_access",
+    [
+      "from bi_agent.runtime.clickhouse_runtime import ClickHouseRuntime",
+      "runtime = ClickHouseRuntime.from_env()",
+      "result = runtime.show_tables()",
+      "raise SystemExit(0 if result.ok else 1)",
+    ].join("; "),
+  );
+}
+
+function pythonHealth(name: string, code: string, timeoutMs = 5000): Promise<HealthCheck> {
+  return new Promise((resolve) => {
+    const child = spawn("python3", ["-c", code], { cwd: process.cwd(), env: process.env });
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve({ name, status: "failed", detail: "timeout" });
+    }, timeoutMs);
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolve({ name, status: "failed", detail: "spawn_failed" });
+    });
+    child.on("close", (codeNumber) => {
+      clearTimeout(timer);
+      resolve({
+        name,
+        status: codeNumber === 0 ? "ok" : "failed",
+        detail: codeNumber === 0 ? "python_check_passed" : stderr.trim() || "python_check_failed",
+      });
+    });
+  });
+}
