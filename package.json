@@ -8,7 +8,6 @@
     "start": "next start --hostname 127.0.0.1"
   },
   "dependencies": {
-    "@21st-sdk/react": "^0.2.3",
     "@ai-sdk/react": "^2.0.212",
     "@xyflow/react": "^12.11.2",
     "ai": "^5.0.210",

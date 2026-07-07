@@ -219,7 +219,7 @@ Current progress (2026-07-08): Phase 7 runtime foundation now has conversation c
 - [x] Clarification answer resume path with pending-topic binding, outcome audit, and same-run Agent Core execution.
 - [x] Continue investigation from saved artifacts with Postgres artifact refs, permission filtering, audit events, and shared Agent Core execution.
 - [x] Artifact read-only open and Markdown export with role-filtered Answer Package sections and audit records.
-- [ ] SDK decision for 21st Agent Elements or a better-fitting alternative.
+- [x] SDK decision for 21st Agent Elements or a better-fitting alternative.
 - [ ] Process event rendering for intent, accepted plan, capability progress, question tool, repair/degrade/block/skip, evidence summary, verifier result.
 - [x] Dynamic first-screen answer cards from verified claim groups and validated visualization plan.
 - [x] Artifact read-only sharing, permission-filtered section rendering, and static export.
