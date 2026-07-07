@@ -51,6 +51,14 @@ type RunEvent = {
   runId: string;
   threadId?: string;
   payload?: unknown;
+  process?: RunProcessEvent;
+};
+
+type RunProcessEvent = {
+  stage: string;
+  label: string;
+  summary: string;
+  status?: string;
 };
 
 type PersistedAnswerPackageRun = {
@@ -227,6 +235,7 @@ export async function runEvents(runId: string): Promise<RunEvent[]> {
         runId,
         threadId: run.threadId,
         payload: { status: run.status },
+        process: processEvent("run_status", { status: run.status }),
       },
     ];
     const auditRows = await pool().query(
@@ -244,6 +253,7 @@ export async function runEvents(runId: string): Promise<RunEvent[]> {
         runId,
         threadId: run.threadId,
         payload: row.payload,
+        process: processEvent(row.event_type, row.payload),
       });
     }
     const packageRows = await pool().query(
@@ -265,6 +275,7 @@ export async function runEvents(runId: string): Promise<RunEvent[]> {
           status: packageRows.rows[0].status,
           answer_package: packageRows.rows[0].payload,
         },
+        process: processEvent("answer_package_ready", { status: packageRows.rows[0].status }),
       });
     }
     return events;
@@ -275,6 +286,7 @@ export async function runEvents(runId: string): Promise<RunEvent[]> {
       runId,
       threadId: run.threadId,
       payload: { status: run.status },
+      process: processEvent("run_status", { status: run.status }),
     },
   ];
 }
@@ -643,4 +655,68 @@ function hiddenSectionCount(original: Record<string, unknown>, filtered: Record<
   const originalCount = Array.isArray(original.sections) ? original.sections.length : 0;
   const filteredCount = Array.isArray(filtered.sections) ? filtered.sections.length : 0;
   return Math.max(0, originalCount - filteredCount);
+}
+
+function processEvent(eventType: string, payload: unknown): RunProcessEvent {
+  if (eventType === "clarification_requested") {
+    const question = firstClarificationQuestion(payload);
+    return {
+      stage: "question",
+      label: "需要用户确认",
+      summary: question || "需要确认业务口径后继续执行。",
+      status: "waiting_for_user",
+    };
+  }
+  if (eventType === "answer_package_ready" || eventType === "answer_package_recorded") {
+    return {
+      stage: "answer",
+      label: "答案已生成",
+      summary: "已生成可审计的业务回答。",
+      status: payloadStatus(payload),
+    };
+  }
+  if (eventType === "workflow_failed") {
+    return {
+      stage: "block",
+      label: "执行失败",
+      summary: "执行链路失败，需要查看审计信息后重试或修复。",
+      status: "failed",
+    };
+  }
+  if (eventType === "context_manifest_recorded") {
+    return {
+      stage: "context",
+      label: "上下文已锁定",
+      summary: "本轮可用上下文和可支撑 claim 的范围已记录。",
+    };
+  }
+  return {
+    stage: "runtime",
+    label: statusLabelForProcess(eventType, payload),
+    summary: "运行状态已更新，详细审计保留在 payload。",
+    status: payloadStatus(payload),
+  };
+}
+
+function firstClarificationQuestion(payload: unknown) {
+  if (!payload || typeof payload !== "object") return "";
+  const questions = (payload as Record<string, unknown>).questions;
+  if (!Array.isArray(questions)) return "";
+  const first = questions[0];
+  if (!first || typeof first !== "object") return "";
+  return String((first as Record<string, unknown>).question ?? "");
+}
+
+function payloadStatus(payload: unknown) {
+  if (!payload || typeof payload !== "object") return undefined;
+  const status = (payload as Record<string, unknown>).status;
+  return typeof status === "string" ? status : undefined;
+}
+
+function statusLabelForProcess(eventType: string, payload: unknown) {
+  const status = payloadStatus(payload);
+  if (status === "waiting_for_clarification") return "等待确认";
+  if (status === "completed") return "运行完成";
+  if (status === "running_workflow") return "正在执行";
+  return eventType;
 }

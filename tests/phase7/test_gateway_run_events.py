@@ -19,6 +19,14 @@ class GatewayRunEventsTest(unittest.TestCase):
         self.assertIn("runEvents", route)
         self.assertNotIn("context_manifest_pending", route)
 
+    def test_run_events_include_business_process_summary(self):
+        store = (ROOT / "app" / "api" / "_conversationStore.ts").read_text(encoding="utf-8")
+
+        self.assertIn("processEvent", store)
+        self.assertIn("process:", store)
+        self.assertIn("需要用户确认", store)
+        self.assertIn("payload", store)
+
 
 if __name__ == "__main__":
     unittest.main()
