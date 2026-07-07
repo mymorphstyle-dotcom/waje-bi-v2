@@ -333,6 +333,19 @@ export async function requireArtifactForContinue(
   return artifact;
 }
 
+export async function recordClarificationOutcome(runId: string, answer: string) {
+  const run = await requireRun(runId);
+  if (conversationStoreMode() === "postgres") {
+    await audit("clarification_answer_recorded", {
+      threadId: run.threadId,
+      runId,
+      ref: runId,
+      payload: { answer },
+    });
+  }
+  return { runId, threadId: run.threadId, answer, status: "accepted" };
+}
+
 export async function createMemoryProposal(threadId: string, text: string): Promise<MemoryProposalRecord> {
   if (conversationStoreMode() === "postgres") {
     const proposal: MemoryProposalRecord = {

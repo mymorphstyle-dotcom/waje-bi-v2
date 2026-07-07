@@ -107,6 +107,25 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(result.memory_proposals[0].status, "proposed")
         self.assertEqual(runtime.store.long_term_memory("org-default"), before)
 
+    def test_clarification_answer_resumes_pending_topic_even_when_current_topic_changed(self):
+        store = InMemoryConversationStore()
+        runtime = ConversationRuntime(store)
+        store.create_thread("thread-clarify", owner_id="analyst-1")
+        q2_topic = store.create_topic("thread-clarify", title="Q2 vs Q1", summary="Q2/Q1")
+        month_topic = store.create_topic("thread-clarify", title="1 月月初", summary="1 月月初")
+        store.set_current_topic("thread-clarify", q2_topic.topic_id)
+        store.set_pending_clarification("thread-clarify", month_topic.topic_id, "metric_choice")
+
+        result = runtime.handle_message("thread-clarify", "日均。")
+
+        self.assertEqual(result.turn_intent.intent, "clarification_answer")
+        self.assertEqual(result.topic_id, month_topic.topic_id)
+        self.assertEqual(result.run_request.topic_id, month_topic.topic_id)
+        self.assertEqual(store.get_thread("thread-clarify").pending_clarification_id, "")
+        self.assertTrue(
+            any(item.source_type == "clarification" for item in result.context_manifest.items)
+        )
+
 
 def _seed_runtime() -> ConversationRuntime:
     store = InMemoryConversationStore()

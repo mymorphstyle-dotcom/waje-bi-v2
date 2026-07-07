@@ -35,7 +35,8 @@ class ConversationRuntime:
         turn_id = f"turn-{uuid4().hex[:12]}"
         intent_name = _classify_intent(user_message, bool(thread.pending_clarification_id))
         topic_relation = _topic_relation(intent_name, user_message, active_run_status)
-        topic = self._resolve_topic(thread_id, topic_relation, user_message)
+        pending_clarification_id = thread.pending_clarification_id
+        topic = self._resolve_topic(thread_id, topic_relation, user_message, intent_name)
         turn_intent = TurnIntent(
             intent=intent_name,
             confidence=0.82,
@@ -61,6 +62,7 @@ class ConversationRuntime:
             current_snapshot,
             reuse_decisions,
             owner_scope,
+            pending_clarification_id if intent_name == "clarification_answer" else "",
         )
         memory_proposals = self._memory_proposals(
             thread_id,
@@ -119,7 +121,19 @@ class ConversationRuntime:
             self.store.clear_pending_clarification(thread_id)
         return result
 
-    def _resolve_topic(self, thread_id: str, relation: str, message: str) -> Optional[TopicState]:
+    def _resolve_topic(
+        self,
+        thread_id: str,
+        relation: str,
+        message: str,
+        intent: str,
+    ) -> Optional[TopicState]:
+        if intent == "clarification_answer":
+            thread = self.store.get_thread(thread_id)
+            topic = self.store.topic(thread.pending_clarification_topic_id)
+            if topic:
+                self.store.set_current_topic(thread_id, topic.topic_id)
+                return topic
         if relation in {"rejected", "ask_topic_choice"}:
             return self.store.current_topic(thread_id) if "老板" in message else None
         if relation == "select_referenced_topic":
@@ -173,8 +187,19 @@ class ConversationRuntime:
         current_snapshot: str,
         reuse_decisions: tuple[ReuseDecision, ...],
         owner_scope: str,
+        pending_clarification_id: str = "",
     ) -> ContextManifest:
         items: list[ContextItem] = []
+        if pending_clarification_id:
+            items.append(
+                ContextItem(
+                    source_type="clarification",
+                    source_ref=pending_clarification_id,
+                    summary="用户已回答上一轮澄清问题，本轮按该选择恢复执行。",
+                    can_support_claims=False,
+                    reason="clarification_outcome",
+                )
+            )
         if topic:
             items.append(
                 ContextItem(
