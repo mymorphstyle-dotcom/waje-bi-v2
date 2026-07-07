@@ -61,6 +61,27 @@ type RunProcessEvent = {
   status?: string;
 };
 
+type RunAuditTrace = {
+  run: Record<string, unknown>;
+  answerPackage: Record<string, unknown> | null;
+  claims: unknown[];
+  evidence: unknown[];
+  verifier: unknown;
+  runNodes: Record<string, unknown>[];
+  evidenceRefs: Record<string, unknown>[];
+  resultRefs: Record<string, unknown>[];
+  auditEvents: Record<string, unknown>[];
+  traceCompleteness: {
+    hasAnswerPackage: boolean;
+    hasVerifier: boolean;
+    evidenceRefCount: number;
+    resultRefCount: number;
+    contractVersions: string[];
+    snapshotIds: string[];
+    queryRefs: string[];
+  };
+};
+
 type PersistedAnswerPackageRun = {
   runId: string;
   threadId: string;
@@ -315,6 +336,108 @@ export async function runEvents(runId: string): Promise<RunEvent[]> {
       process: processEvent("run_status", { status: run.status }),
     },
   ];
+}
+
+export async function runAuditTrace(runId: string): Promise<RunAuditTrace> {
+  if (conversationStoreMode() !== "postgres") {
+    const run = await requireRun(runId);
+    return auditTracePayload({
+      run: {
+        run_id: run.id,
+        thread_id: run.threadId,
+        status: run.status,
+        created_at: run.createdAt,
+      },
+    });
+  }
+  const runRows = await pool().query(
+    `
+    SELECT run_id, thread_id, turn_id, topic_id, status, request, created_at, updated_at
+    FROM waje_runtime.analysis_runs
+    WHERE run_id = $1
+    `,
+    [runId],
+  );
+  const run = runRows.rows[0];
+  if (!run) throw new Error("run_not_found");
+
+  const packageRows = await pool().query(
+    `
+    SELECT package_id, artifact_id, status, payload, created_at
+    FROM waje_runtime.answer_packages
+    WHERE run_id = $1
+    ORDER BY created_at DESC
+    LIMIT 1
+    `,
+    [runId],
+  );
+  const nodeRows = await pool().query(
+    `
+    SELECT node_id, node_name, status, payload, started_at, finished_at
+    FROM waje_runtime.run_nodes
+    WHERE run_id = $1
+    ORDER BY started_at NULLS LAST, finished_at NULLS LAST, node_id
+    `,
+    [runId],
+  );
+  const evidenceRows = await pool().query(
+    `
+    SELECT
+      e.evidence_ref,
+      e.result_ref AS query_ref,
+      e.payload,
+      e.created_at,
+      r.snapshot_id,
+      r.contract_version,
+      r.permission_scope,
+      r.semantic_scope
+    FROM waje_runtime.evidence_refs e
+    LEFT JOIN waje_runtime.result_refs r ON r.result_ref = e.result_ref
+    WHERE e.run_id = $1
+    ORDER BY e.created_at, e.evidence_ref
+    `,
+    [runId],
+  );
+  const resultRows = run.topic_id
+    ? await pool().query(
+        `
+        SELECT
+          result_ref AS query_ref,
+          snapshot_id,
+          contract_version,
+          permission_scope,
+          semantic_scope,
+          payload,
+          created_at
+        FROM waje_runtime.result_refs
+        WHERE topic_id = $1
+        ORDER BY created_at, result_ref
+        `,
+        [run.topic_id],
+      )
+    : { rows: [] };
+  const auditRows = await pool().query(
+    `
+    SELECT audit_id, event_type, actor_id, thread_id, topic_id, run_id, ref, payload, created_at
+    FROM waje_runtime.audit_events
+    WHERE run_id = $1 OR ref = $1
+    ORDER BY created_at, audit_id
+    `,
+    [runId],
+  );
+
+  const latestPackage = packageRows.rows[0];
+  return auditTracePayload({
+    run,
+    answerPackage: latestPackage?.payload ?? null,
+    claims: claimsFromPackage(latestPackage?.payload),
+    evidence: evidenceFromPackage(latestPackage?.payload),
+    verifier: verifierFromPackage(latestPackage?.payload),
+    runNodes: nodeRows.rows,
+    evidenceRefs: evidenceRows.rows,
+    resultRefs: resultRows.rows,
+    auditEvents: auditRows.rows,
+  });
 }
 
 export async function listPersistedAnswerPackageRuns(limit = 20): Promise<PersistedAnswerPackageRun[]> {
@@ -694,6 +817,86 @@ function hiddenSectionCount(original: Record<string, unknown>, filtered: Record<
   const originalCount = Array.isArray(original.sections) ? original.sections.length : 0;
   const filteredCount = Array.isArray(filtered.sections) ? filtered.sections.length : 0;
   return Math.max(0, originalCount - filteredCount);
+}
+
+function auditTracePayload({
+  run,
+  answerPackage = null,
+  claims = [],
+  evidence = [],
+  verifier,
+  runNodes = [],
+  evidenceRefs = [],
+  resultRefs = [],
+  auditEvents = [],
+}: Partial<RunAuditTrace> & { run: Record<string, unknown> }): RunAuditTrace {
+  return {
+    run,
+    answerPackage,
+    claims,
+    evidence,
+    verifier,
+    runNodes,
+    evidenceRefs,
+    resultRefs,
+    auditEvents,
+    traceCompleteness: {
+      hasAnswerPackage: Boolean(answerPackage),
+      hasVerifier: Boolean(verifier),
+      evidenceRefCount: evidenceRefs.length + evidence.length,
+      resultRefCount: resultRefs.length,
+      contractVersions: uniqueStrings(resultRefs.map((row) => row.contract_version)),
+      snapshotIds: uniqueStrings(resultRefs.map((row) => row.snapshot_id)),
+      queryRefs: uniqueStrings(resultRefs.map((row) => row.query_ref)),
+    },
+  };
+}
+
+function claimsFromPackage(answerPackage: unknown): unknown[] {
+  const summary = summarySectionPayload(answerPackage);
+  const claimGroups = summary?.claim_groups;
+  if (Array.isArray(claimGroups) && claimGroups.length) return claimGroups;
+  const claims = summary?.claims;
+  return Array.isArray(claims) ? claims : [];
+}
+
+function evidenceFromPackage(answerPackage: unknown): unknown[] {
+  const evidencePayload = evidenceSectionPayload(answerPackage);
+  const evidence = evidencePayload?.evidence;
+  return Array.isArray(evidence) ? evidence : [];
+}
+
+function verifierFromPackage(answerPackage: unknown) {
+  if (!answerPackage || typeof answerPackage !== "object") return undefined;
+  const admin = (answerPackage as Record<string, unknown>).admin_audit;
+  if (!admin || typeof admin !== "object") return undefined;
+  return (admin as Record<string, unknown>).verifier;
+}
+
+function evidenceSectionPayload(answerPackage: unknown): Record<string, unknown> | undefined {
+  if (!answerPackage || typeof answerPackage !== "object") return undefined;
+  const sections = (answerPackage as Record<string, unknown>).sections;
+  if (!Array.isArray(sections)) return undefined;
+  const evidence = sections.find((section) => {
+    return Boolean(section && typeof section === "object" && (section as Record<string, unknown>).section_id === "evidence");
+  });
+  const payload = evidence && typeof evidence === "object" ? (evidence as Record<string, unknown>).payload : undefined;
+  return payload && typeof payload === "object" ? payload as Record<string, unknown> : undefined;
+}
+
+function summarySectionPayload(answerPackage: unknown): Record<string, unknown> | undefined {
+  if (!answerPackage || typeof answerPackage !== "object") return undefined;
+  const sections = (answerPackage as Record<string, unknown>).sections;
+  if (!Array.isArray(sections)) return undefined;
+  const summary = sections.find((section) => {
+    return Boolean(section && typeof section === "object" && (section as Record<string, unknown>).section_id === "summary");
+  });
+  const payload = summary && typeof summary === "object" ? (summary as Record<string, unknown>).payload : undefined;
+  return payload && typeof payload === "object" ? payload as Record<string, unknown> : undefined;
+}
+
+function uniqueStrings(values: unknown[]) {
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];
 }
 
 function processEvent(eventType: string, payload: unknown): RunProcessEvent {

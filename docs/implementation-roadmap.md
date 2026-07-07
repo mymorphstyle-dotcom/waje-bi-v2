@@ -239,10 +239,12 @@ Current progress (2026-07-08): Phase 7 runtime foundation now has conversation c
 
 **Business reason:** BI claims affect business decisions, so failures must be visible and reruns must be explainable.
 
+Current progress (2026-07-08): The first Phase 8 production gate is in place: `GET /api/runs/:runId/audit-trace` returns the run, latest Answer Package, claim groups, verifier output, run nodes, evidence refs, result/query refs, contract versions, snapshot ids, and audit events from the Postgres runtime store. This gives dashboard, rerun, and incident review work a direct trace from answer to runtime evidence.
+
 **Deliverables:**
 
 - [ ] Permission-blocked claim behavior and permission-filtered artifacts.
-- [ ] Audit trace from answer to run, contract version, evidence, claim, verifier result, and query refs.
+- [x] Audit trace from answer to run, contract version, evidence, claim, verifier result, and query refs.
 - [ ] Snapshot and rerun comparability rules.
 - [ ] Capability timeout, row/result budget, and degradation behavior.
 - [ ] Health checks for frontend/gateway, Python BI Agent Core, Postgres runtime mirror, ClickHouse access, and LangGraph adapter.
