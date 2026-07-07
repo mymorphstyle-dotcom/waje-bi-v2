@@ -97,6 +97,11 @@ type LaunchDashboard = {
   degraded_runs: Record<string, unknown>[];
   blocked_runs: Record<string, unknown>[];
   verifier_failed_runs: Record<string, unknown>[];
+  capability_error_runs: Record<string, unknown>[];
+  compiler_block_runs: Record<string, unknown>[];
+  permission_spike_runs: Record<string, unknown>[];
+  contract_mismatch_runs: Record<string, unknown>[];
+  ledger_mismatch_runs: Record<string, unknown>[];
 };
 
 type PersistedAnswerPackageRun = {
@@ -484,6 +489,11 @@ export async function launchDashboard({ limit = 20, slowMs = 30000 } = {}): Prom
       degraded_runs: [],
       blocked_runs: [],
       verifier_failed_runs: [],
+      capability_error_runs: [],
+      compiler_block_runs: [],
+      permission_spike_runs: [],
+      contract_mismatch_runs: [],
+      ledger_mismatch_runs: [],
     };
   }
   const slowRuns = await pool().query(
@@ -531,6 +541,53 @@ export async function launchDashboard({ limit = 20, slowMs = 30000 } = {}): Prom
     `,
     [limit],
   );
+  const capabilityErrorRuns = await pool().query(
+    `
+    SELECT r.run_id, r.thread_id, n.node_name, n.status, n.payload, n.finished_at
+    FROM waje_runtime.analysis_runs r
+    JOIN waje_runtime.run_nodes n ON n.run_id = r.run_id
+    WHERE (n.node_name = 'execute_capabilities' OR n.node_name ILIKE '%capability%')
+      AND (
+        n.status ILIKE '%failed%'
+        OR n.status ILIKE '%blocked%'
+        OR n.payload::text ILIKE '%capability_error%'
+      )
+    ORDER BY n.finished_at DESC NULLS LAST
+    LIMIT $1
+    `,
+    [limit],
+  );
+  const compilerBlockRuns = await pool().query(
+    `
+    SELECT r.run_id, r.thread_id, n.node_name, n.status, n.payload, n.finished_at
+    FROM waje_runtime.analysis_runs r
+    JOIN waje_runtime.run_nodes n ON n.run_id = r.run_id
+    WHERE n.node_name IN ('accept_analysis_route', 'repair_analysis_route')
+      AND (
+        n.status ILIKE '%blocked%'
+        OR n.status ILIKE '%failed%'
+        OR n.payload::text ILIKE '%compiler_block%'
+      )
+    ORDER BY n.finished_at DESC NULLS LAST
+    LIMIT $1
+    `,
+    [limit],
+  );
+  const permissionSpikeRuns = await auditSignalRows(
+    ["artifact_continue_blocked", "artifact_open_blocked", "artifact_export_blocked"],
+    ["%permission_scope_mismatch%", "%permission_limited%"],
+    limit,
+  );
+  const contractMismatchRuns = await auditSignalRows(
+    [],
+    ["%contract_version_mismatch%", "%contract_mismatch%"],
+    limit,
+  );
+  const ledgerMismatchRuns = await auditSignalRows(
+    [],
+    ["%ledger_mismatch%", "%missing_contract%", "%unsupported_grain%"],
+    limit,
+  );
 
   return {
     slow_runs: slowRuns.rows,
@@ -538,6 +595,11 @@ export async function launchDashboard({ limit = 20, slowMs = 30000 } = {}): Prom
     degraded_runs: degradedRuns.rows,
     blocked_runs: blockedRuns.rows,
     verifier_failed_runs: verifierFailedRuns.rows,
+    capability_error_runs: capabilityErrorRuns.rows,
+    compiler_block_runs: compilerBlockRuns.rows,
+    permission_spike_runs: permissionSpikeRuns.rows,
+    contract_mismatch_runs: contractMismatchRuns.rows,
+    ledger_mismatch_runs: ledgerMismatchRuns.rows,
   };
 }
 
@@ -873,6 +935,20 @@ async function packageStatusRows(status: "degraded" | "blocked", limit: number) 
     LIMIT $2
     `,
     [status, limit],
+  );
+}
+
+async function auditSignalRows(eventTypes: string[], payloadPatterns: string[], limit: number) {
+  return pool().query(
+    `
+    SELECT audit_id, event_type, actor_id, thread_id, topic_id, run_id, ref, payload, created_at
+    FROM waje_runtime.audit_events
+    WHERE event_type = ANY($1::text[])
+       OR payload::text ILIKE ANY($2::text[])
+    ORDER BY created_at DESC, audit_id DESC
+    LIMIT $3
+    `,
+    [eventTypes, payloadPatterns, limit],
   );
 }
 

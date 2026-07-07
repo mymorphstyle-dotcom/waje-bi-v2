@@ -239,7 +239,7 @@ Current progress (2026-07-08): Phase 7 runtime foundation now has conversation c
 
 **Business reason:** BI claims affect business decisions, so failures must be visible and reruns must be explainable.
 
-Current progress (2026-07-08): The first Phase 8 production gates are in place. `GET /api/runs/:runId/audit-trace` returns the run, latest Answer Package, claim groups, verifier output, run nodes, evidence refs, result/query refs, contract versions, snapshot ids, and audit events from the Postgres runtime store. `GET /api/runs/:runId/rerun-comparability?candidateRunId=...` compares snapshot ids, contract versions, and query/result refs between two runs so reruns can state whether they are comparable to the original run. `GET /api/runs/launch-dashboard` lists slow, failed, degraded, blocked, and verifier-failed runs for launch review.
+Current progress (2026-07-08): The first Phase 8 production gates are in place. `GET /api/runs/:runId/audit-trace` returns the run, latest Answer Package, claim groups, verifier output, run nodes, evidence refs, result/query refs, contract versions, snapshot ids, and audit events from the Postgres runtime store. `GET /api/runs/:runId/rerun-comparability?candidateRunId=...` compares snapshot ids, contract versions, and query/result refs between two runs so reruns can state whether they are comparable to the original run. `GET /api/runs/launch-dashboard` lists slow, failed, degraded, blocked, verifier-failed, capability-error, compiler-blocked, permission-spike, contract-mismatch, and ledger-mismatch runs for launch review.
 
 **Deliverables:**
 
@@ -249,11 +249,11 @@ Current progress (2026-07-08): The first Phase 8 production gates are in place. 
 - [ ] Capability timeout, row/result budget, and degradation behavior.
 - [ ] Health checks for frontend/gateway, Python BI Agent Core, Postgres runtime mirror, ClickHouse access, and LangGraph adapter.
 - [ ] Version rollback for contract, ledger, capability card, prompt/recipe, and verifier policy.
-- [ ] Launch dashboard for slow run, capability error, compiler block, verifier failure, permission spike, contract mismatch, and ledger mismatch.
+- [x] Launch dashboard for slow run, capability error, compiler block, verifier failure, permission spike, contract mismatch, and ledger mismatch.
 
 **Acceptance:**
 
-- [x] Slow, failed, degraded, blocked, and verifier-failed runs are locatable.
+- [x] Slow, failed, degraded, blocked, verifier-failed, capability-error, compiler-blocked, permission-spike, contract-mismatch, and ledger-mismatch runs are locatable.
 - [ ] Budget skips enter Answer Package limitations or follow-up.
 - [x] Reruns state whether they are comparable to the original run.
 - [ ] Release candidate runs full acceptance eval.
