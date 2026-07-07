@@ -64,12 +64,14 @@ export function WorkflowCanvasModal({
   run,
   visibleCount,
   selectedNodeId,
+  debugAudit,
   onClose,
   onSelectNode,
 }: {
   run: TraceRun;
   visibleCount: number;
   selectedNodeId?: string;
+  debugAudit?: boolean;
   onClose: () => void;
   onSelectNode: (nodeId: string) => void;
 }) {
@@ -173,7 +175,7 @@ export function WorkflowCanvasModal({
               <Controls showInteractive={false} />
             </ReactFlow>
           </div>
-          <CanvasInspector data={selected} run={run} />
+          <CanvasInspector data={selected} debugAudit={Boolean(debugAudit ?? run.processSummary.debugAudit)} run={run} />
         </div>
       </section>
     </div>
@@ -226,7 +228,7 @@ function CanvasNodeCard({ data }: NodeProps<CanvasNode>) {
   );
 }
 
-function CanvasInspector({ data, run }: { data?: CanvasNodeData; run: TraceRun }) {
+function CanvasInspector({ data, debugAudit, run }: { data?: CanvasNodeData; debugAudit: boolean; run: TraceRun }) {
   if (!data) {
     return (
       <aside className={styles.workflowInspector}>
@@ -280,7 +282,7 @@ function CanvasInspector({ data, run }: { data?: CanvasNodeData; run: TraceRun }
           )}
         </section>
       ) : null}
-      {data.traceNode?.audit ? (
+      {debugAudit && data.traceNode?.audit ? (
         <details className={styles.auditDetails}>
           <summary>
             结构化审计

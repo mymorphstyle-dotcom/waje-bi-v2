@@ -91,6 +91,7 @@ export type TraceRun = {
     verifierStatus: string;
     sourceArtifact?: string;
     debugStage?: string;
+    debugAudit?: boolean;
     nodes: TraceNode[];
   };
 };

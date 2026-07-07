@@ -185,6 +185,7 @@ export function AgentRunWorkbench({ deprecated = false }: { deprecated?: boolean
       </section>
       {active && canvasOpen ? (
         <WorkflowCanvasModal
+          debugAudit={Boolean(active.processSummary.debugAudit)}
           onClose={() => setCanvasOpen(false)}
           onSelectNode={setSelectedNodeId}
           run={active}
@@ -321,7 +322,7 @@ function TraceNodeRow({ node, selected, onSelect }: { node: TraceNode; selected:
   );
 }
 
-function NodeInspector({ node, answer }: { node?: TraceNode; answer?: TraceAnswer }) {
+function NodeInspector({ node, answer, debugAudit }: { node?: TraceNode; answer?: TraceAnswer; debugAudit: boolean }) {
   if (!node) {
     return (
       <aside className={styles.inspector}>
@@ -353,7 +354,7 @@ function NodeInspector({ node, answer }: { node?: TraceNode; answer?: TraceAnswe
           <p>{answer.answerText.split(/\n+/).find(Boolean) ?? answer.answerText}</p>
         </section>
       ) : null}
-      {node.audit ? <AuditDetails audit={node.audit} label="结构化审计" /> : null}
+      {debugAudit && node.audit ? <AuditDetails audit={node.audit} label="结构化审计" /> : null}
     </aside>
   );
 }
