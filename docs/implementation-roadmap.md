@@ -18,110 +18,25 @@
 - Treat recipe entries as starting templates. The accepted graph is compiled from user intent, contracts, evidence needs, policy, permissions, and budget.
 - Keep the first slice generic to same-class pattern questions. The month-start case is a regression example for the broader pattern workflow.
 
-## Phase 0: Signoff Baseline
+## Phases 0-4: Historical Baseline
 
-**Goal:** Freeze the product contract before implementation starts.
+Status: superseded by the 2026-07-07 Post-Phase 4 Rebaseline below.
 
-**Business reason:** Engineering should build against one reviewed baseline, so implementation does not drift into demo behavior or old WAJE reuse.
+The original Phase 0-4 checklist described the first implementation program:
+contract setup, graph/compiler contracts, semantic-query handoff, and the first
+generalized pattern slice. Its checkbox criteria were useful during the initial
+build, but they are no longer the current launch acceptance source.
 
-**Deliverables:**
+Current evidence for this historical segment lives in:
 
-- [ ] `docs/prd.md` remains at `v0.1 signoff draft`.
-- [ ] `docs/product-decisions.md` contains all PRD signoff decisions.
-- [ ] Implementation work references PRD sections for question families, evidence states, graph compiler, launch eval, and launch gates.
+- [docs/phase-1-contract-foundation-breakdown.md](/Users/luka/work/waje-bi-v2/docs/phase-1-contract-foundation-breakdown.md:1)
+- [docs/phase-3-completion-status.md](/Users/luka/work/waje-bi-v2/docs/phase-3-completion-status.md:1)
+- [docs/phase-4-closeout-status.md](/Users/luka/work/waje-bi-v2/docs/phase-4-closeout-status.md:1)
+- [docs/reviews/phase4-ten-case-node-audit-20260707.md](/Users/luka/work/waje-bi-v2/docs/reviews/phase4-ten-case-node-audit-20260707.md:1)
 
-**Acceptance:**
-
-- [ ] No unresolved P0/P1 PRD review findings.
-- [ ] Legacy event-impact naming is absent from active PRD paths.
-- [ ] Ledger states match `data_contract_state`: `contract_backed`, `evidence_linked`, `static_assumption`, `missing_contract`, `permission_limited`, `unsupported_grain`, `out_of_scope_for_now`.
-
-## Phase 1: Contract Foundation
-
-Detailed breakdown: [docs/phase-1-contract-foundation-breakdown.md](/Users/luka/work/waje-bi-v2/docs/phase-1-contract-foundation-breakdown.md:1)
-
-**Current progress (2026-07-05):** Phase 1 has a reviewable contract loop for CF-04 through CF-10 and the first real paid-order source contract is accepted for the 2026-01-01 through 2026-06-30 snapshot. Factor ledger, capability support, missing-contract backlog, dimension/event/assumption sources, eight capability cards, factor review artifact, real-data intake review, `ruby tools/contracts/validate-contracts.rb`, and the accepted initial 142-node SSOT reconciliation map are in place. The latest source coverage pass added profiled source contracts for 大盘 2024-01-01 through 2026-06-02, gameplay overall/by-channel 2024-01-01 through 2026-06-02, old WAJE external events through 2026-06-08, and competitor ranking through 2026-06-07. Dev Postgres contract mirror is initialized. Remaining Phase 1 work is limited to explicitly tracked gaps such as refund/reversal source and gameplay payment attribution.
-
-**Goal:** Make the SSOT and runtime contracts reviewable before query execution.
-
-**Business reason:** Analysts need to know which factors can support strong claims, weak candidate explanations, missing-contract limitations, or no claim.
-
-**Deliverables:**
-
-- [x] Versioned metric contracts for `付费金额` and required formula paths.
-- [x] Versioned dimension, event, static-assumption, and missing-contract contract sources.
-- [x] Factor ledger review artifact generated from `付费金额影响因子分析.mm`.
-- [x] Factor ledger support records by factor, question family, capability, grain, and claim type.
-- [x] Capability card source for all eight baseline capabilities.
-
-**Acceptance:**
-
-- [ ] Every relevant SSOT node has a ledger status.
-- [x] Payday is represented as a universal 25..30 event-window dimension and candidate mechanism.
-- [x] Unsupported grains and missing contracts appear as explicit backlog or limitation records.
-- [x] Capability cards expose required parameters, optional parameters, evidence payload, lint severity, degradation output, and verifier hooks.
-
-## Phase 2: Core Runtime Contract
-
-**Goal:** Build the minimal WAJE-owned runtime needed to accept, reject, repair, degrade, and audit analysis graphs.
-
-**Business reason:** LLM planning is useful only when local systems decide what can run and what claims can be made.
-
-**Deliverables:**
-
-- [ ] `analysis_graph` product contract with node fields from the PRD.
-- [ ] Graph compiler action table implemented for block, auto-add, degrade, targeted repair, skip, verifier repair, and human-reviewed failure promotion.
-- [ ] Evidence envelope contract with common audit and verifier fields.
-- [ ] Run state records linked to LangGraph node ids.
-- [ ] Permission, contract-version, completeness, timezone, and cumulative-value guards.
-
-**Acceptance:**
-
-- [ ] LLM can propose a candidate capability graph but cannot execute raw SQL.
-- [ ] Compiler records accepted, auto-added, repaired, degraded, blocked, and skipped paths.
-- [ ] Every run pins contract versions and current-data snapshot or freshness marker.
-- [ ] User-visible process events use business language.
-
-## Phase 3: Semantic Query And Evidence Layer
-
-**Goal:** Let capability APIs compile semantic requests into validated analytical queries and evidence.
-
-**Business reason:** Business conclusions need reproducible numbers, not free-form SQL or hidden notebook logic.
-
-**Deliverables:**
-
-- [ ] Semantic request model for capability calls.
-- [ ] Query compiler boundary for ClickHouse analytical access and Postgres runtime mirror access.
-- [ ] Evidence persistence with `evidence refs`, result refs, query refs, quality flags, and limitations.
-- [ ] Shared semantic query planning for compatible scope, metric, window, grain, filter, and baseline needs.
-
-**Acceptance:**
-
-- [ ] Capability APIs return evidence envelopes plus typed payloads.
-- [ ] Query execution is blocked when metric, grain, filter, window, permission, or contract legality fails.
-- [ ] Reused results validate scope, filters, grain, metric, window, baseline, contract version, and freshness.
-
-## Phase 4: First Pattern Vertical Slice
-
-**Goal:** Ship the first end-to-end generalized `pattern_explanation` slice.
-
-**Business reason:** The system must correctly recognize, prove, quantify, explain, and verify recurring business patterns without hard-coding the month-start case.
-
-**Deliverables:**
-
-- [ ] Intent binding for intra-period, weekly, event-relative, rolling, lag/recovery, and custom-baseline pattern families.
-- [ ] `data_quality_check`, `pattern_scan`, `formula_decompose`, `event_evidence`, `segment_bridge` or `joint_attribution`, `outlier_scan`, and `answer_verify` wired as required evidence paths for launch pattern cases.
-- [ ] Month-start regression case for 2024-01 to 2026-05 with 1-10 / 11-20 / 21-end windows.
-- [ ] Pattern visual blocks: phase comparison, exception list, formula contribution, candidate explanation ranking, evidence boundary.
-- [ ] Answer Package with supported explanations, local/exception explanations, insufficient or ruled-out paths.
-
-**Acceptance:**
-
-- [ ] The month-start question routes to full-sample intra-period pattern analysis.
-- [ ] It does not route to ordinary period-over-period attribution, cost-period analysis, or cumulative-value analysis.
-- [ ] Pattern claim follows coverage, direction consistency, uplift, stability, exception, downgrade, and data-quality rules.
-- [ ] Payday, holidays, activities, and other mechanisms stay within their evidence strength.
-- [ ] Same evidence-path shape can run a weekly or event-relative pattern case by swapping windows and candidate mechanisms.
+Current launch acceptance starts at the Post-Phase 4 Rebaseline and is proven by
+Phase 5 through Phase 8 closeout evidence. Do not use old Phase 0-4 checkbox
+items as open launch gates.
 
 ## Post-Phase 4 Rebaseline
 
