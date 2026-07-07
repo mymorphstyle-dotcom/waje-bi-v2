@@ -27,6 +27,17 @@ class GatewayRunEventsTest(unittest.TestCase):
         self.assertIn("需要用户确认", store)
         self.assertIn("payload", store)
 
+    def test_run_events_include_run_node_process_events(self):
+        store = (ROOT / "app" / "api" / "_conversationStore.ts").read_text(encoding="utf-8")
+
+        self.assertIn("waje_runtime.run_nodes", store)
+        self.assertIn("node_process", store)
+        self.assertIn("processNodeEvent", store)
+        self.assertIn("accepted_plan", store)
+        self.assertIn("capability_progress", store)
+        self.assertIn("verifier_result", store)
+        self.assertIn("repair_or_degrade", store)
+
 
 if __name__ == "__main__":
     unittest.main()

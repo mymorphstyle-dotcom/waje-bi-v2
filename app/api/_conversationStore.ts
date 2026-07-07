@@ -256,6 +256,31 @@ export async function runEvents(runId: string): Promise<RunEvent[]> {
         process: processEvent(row.event_type, row.payload),
       });
     }
+    const nodeRows = await pool().query(
+      `
+      SELECT node_name, status, payload, started_at, finished_at
+      FROM waje_runtime.run_nodes
+      WHERE run_id = $1
+      ORDER BY started_at NULLS LAST, finished_at NULLS LAST, node_id
+      `,
+      [runId],
+    );
+    for (const row of nodeRows.rows) {
+      const payload = {
+        node_name: row.node_name,
+        status: row.status,
+        payload: row.payload,
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+      };
+      events.push({
+        event: "node_process",
+        runId,
+        threadId: run.threadId,
+        payload,
+        process: processNodeEvent(row.node_name, row.status, row.payload),
+      });
+    }
     const packageRows = await pool().query(
       `
       SELECT status, payload
@@ -698,6 +723,55 @@ function processEvent(eventType: string, payload: unknown): RunProcessEvent {
   };
 }
 
+function processNodeEvent(nodeName: string, status: string, payload: unknown): RunProcessEvent {
+  if (["understand_business_intent", "decide_question_boundary", "confirm_business_understanding"].includes(nodeName)) {
+    return {
+      stage: "intent",
+      label: "理解业务问题",
+      summary: "已把用户输入绑定为本轮可执行的业务问题和边界。",
+      status,
+    };
+  }
+  if (["design_analysis_route", "accept_analysis_route"].includes(nodeName)) {
+    return {
+      stage: "accepted_plan",
+      label: "分析路径已验收",
+      summary: "已确认本轮要执行的证据路径和可接受分支。",
+      status,
+    };
+  }
+  if (["execute_capabilities", "reduce_evidence"].includes(nodeName)) {
+    return {
+      stage: "capability_progress",
+      label: "证据路径推进",
+      summary: capabilityProgressSummary(payload),
+      status,
+    };
+  }
+  if (["hard_verify_answer", "semantic_audit", "answer_verify"].includes(nodeName)) {
+    return {
+      stage: "verifier_result",
+      label: "答案边界校验",
+      summary: "已检查回答中的数字、证据引用、口径和表达强度。",
+      status,
+    };
+  }
+  if (["repair_analysis_route", "repair_answer", "generate_degraded_explanation", "generate_blocked_explanation"].includes(nodeName)) {
+    return {
+      stage: "repair_or_degrade",
+      label: repairOrDegradeLabel(nodeName),
+      summary: "已按证据和 verifier 结果调整回答路径或表达边界。",
+      status,
+    };
+  }
+  return {
+    stage: "runtime",
+    label: nodeName,
+    summary: "运行节点已更新，详细审计保留在 payload。",
+    status,
+  };
+}
+
 function firstClarificationQuestion(payload: unknown) {
   if (!payload || typeof payload !== "object") return "";
   const questions = (payload as Record<string, unknown>).questions;
@@ -705,6 +779,20 @@ function firstClarificationQuestion(payload: unknown) {
   const first = questions[0];
   if (!first || typeof first !== "object") return "";
   return String((first as Record<string, unknown>).question ?? "");
+}
+
+function capabilityProgressSummary(payload: unknown) {
+  if (!payload || typeof payload !== "object") return "已执行本轮所需证据路径。";
+  const record = payload as Record<string, unknown>;
+  const evidence = record.evidence ?? record.evidence_items ?? record.primary_evidence;
+  if (Array.isArray(evidence) && evidence.length) return `已汇总 ${evidence.length} 条证据。`;
+  return "已执行本轮所需证据路径。";
+}
+
+function repairOrDegradeLabel(nodeName: string) {
+  if (nodeName === "generate_blocked_explanation") return "当前阻断";
+  if (nodeName === "generate_degraded_explanation") return "给出有边界结论";
+  return "修正分析过程";
 }
 
 function payloadStatus(payload: unknown) {
