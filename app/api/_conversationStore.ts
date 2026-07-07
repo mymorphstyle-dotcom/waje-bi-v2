@@ -40,6 +40,12 @@ type ArtifactRecord = {
   createdAt: string;
 };
 
+type VisibleArtifactRecord = ArtifactRecord & {
+  visibleSectionIds: string[];
+  hiddenSectionCount: number;
+  answerPackage: Record<string, unknown>;
+};
+
 type RunEvent = {
   event: string;
   runId: string;
@@ -367,6 +373,76 @@ export async function requireArtifactForContinue(
   return artifact;
 }
 
+export async function readArtifactForRole(
+  artifactId: string,
+  role = "analyst",
+  action: "open" | "export" = "open",
+): Promise<VisibleArtifactRecord> {
+  if (conversationStoreMode() === "postgres") {
+    const { rows } = await pool().query(
+      `
+      SELECT
+        a.artifact_id,
+        a.thread_id,
+        a.topic_id,
+        a.snapshot_id,
+        a.permission_scope,
+        a.follow_up_context,
+        a.created_at,
+        COALESCE(NULLIF(a.payload, '{}'::jsonb), p.payload, '{}'::jsonb) AS answer_package
+      FROM waje_runtime.investigation_artifacts a
+      LEFT JOIN LATERAL (
+        SELECT payload
+        FROM waje_runtime.answer_packages
+        WHERE artifact_id = a.artifact_id OR run_id = a.run_id
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) p ON true
+      WHERE a.artifact_id = $1
+      `,
+      [artifactId],
+    );
+    const row = rows[0];
+    if (!row) throw new Error("artifact_not_found");
+    if (!canReadScope(role, row.permission_scope)) {
+      await audit(`artifact_${action}_blocked`, {
+        threadId: row.thread_id,
+        topicId: row.topic_id,
+        ref: artifactId,
+        payload: { role, permission_scope: row.permission_scope },
+      });
+      throw new Error("artifact_permission_denied");
+    }
+    const answerPackage = filterAnswerPackageForRole(row.answer_package ?? {}, role);
+    const visibleSectionIds = visibleSections(answerPackage);
+    await audit(action === "export" ? "artifact_exported" : "artifact_opened", {
+      threadId: row.thread_id,
+      topicId: row.topic_id,
+      ref: artifactId,
+      payload: { role, visibleSectionIds },
+    });
+    return {
+      id: row.artifact_id,
+      threadId: row.thread_id,
+      topicId: row.topic_id,
+      snapshotId: row.snapshot_id,
+      permissionScope: row.permission_scope,
+      followUpContext: row.follow_up_context,
+      createdAt: row.created_at,
+      visibleSectionIds,
+      hiddenSectionCount: hiddenSectionCount(row.answer_package ?? {}, answerPackage),
+      answerPackage,
+    } satisfies VisibleArtifactRecord;
+  }
+  const artifact = await requireArtifactForContinue(artifactId, role);
+  return {
+    ...artifact,
+    visibleSectionIds: [],
+    hiddenSectionCount: 0,
+    answerPackage: {},
+  };
+}
+
 export async function recordClarificationOutcome(runId: string, answer: string) {
   const run = await requireRun(runId);
   if (conversationStoreMode() === "postgres") {
@@ -494,4 +570,39 @@ function canReadScope(role: string, permissionScope: string) {
     data_owner_admin: 3,
   };
   return (rank[role] ?? 0) >= (rank[permissionScope] ?? 3);
+}
+
+function filterAnswerPackageForRole(answerPackage: Record<string, unknown>, role: string) {
+  if (role === "data_owner_admin") return answerPackage;
+  const allowed = new Set(
+    role === "analyst"
+      ? ["business_summary", "aggregate_evidence", "diagnostic_detail"]
+      : ["business_summary", "aggregate_evidence"],
+  );
+  const sections = Array.isArray(answerPackage.sections)
+    ? answerPackage.sections.filter((section) => {
+        if (!section || typeof section !== "object") return false;
+        return allowed.has(String((section as Record<string, unknown>).visibility ?? ""));
+      })
+    : [];
+  return {
+    run_id: answerPackage.run_id,
+    status: answerPackage.status,
+    package_type: answerPackage.package_type,
+    sections,
+  };
+}
+
+function visibleSections(answerPackage: Record<string, unknown>) {
+  if (!Array.isArray(answerPackage.sections)) return [];
+  return answerPackage.sections.map((section) => {
+    if (!section || typeof section !== "object") return "";
+    return String((section as Record<string, unknown>).section_id ?? "");
+  }).filter(Boolean);
+}
+
+function hiddenSectionCount(original: Record<string, unknown>, filtered: Record<string, unknown>) {
+  const originalCount = Array.isArray(original.sections) ? original.sections.length : 0;
+  const filteredCount = Array.isArray(filtered.sections) ? filtered.sections.length : 0;
+  return Math.max(0, originalCount - filteredCount);
 }

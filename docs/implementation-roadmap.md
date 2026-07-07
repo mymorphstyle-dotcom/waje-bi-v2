@@ -207,7 +207,7 @@ Phase 6 starts only after Phase 5 eval gates can classify wrong intent, wrong ba
 
 **Business reason:** Users need to see what the agent understood, what it checked, where evidence degraded, and what answer is safe to trust.
 
-Current progress (2026-07-08): Phase 7 runtime foundation now has conversation contracts, Postgres conversation schema, Python Postgres store with audit writes, production-safe TypeScript gateway store selection, thread/topic/turn/run context assembly, result reuse decisions, memory proposals, Python Agent Core bridge, and the public gateway routes for threads, messages, run events, clarifications, artifact continue, and memory proposal accept/reject. The workbench now merges persisted Postgres Answer Package runs into the existing TraceRun UI contract. Clarification answers now bind back to the pending topic, clear pending state, record the clarification outcome, and resume the same run through Agent Core. Artifact continue now persists artifact refs in Postgres, validates role visibility before creating a follow-up run, records allow/block audit events, and passes claim support only when result refs, snapshot, contract, and permission checks match. Coverage is tracked in `evals/phase7/conversation_scenarios.yaml` with 60 natural-language multi-turn scenarios.
+Current progress (2026-07-08): Phase 7 runtime foundation now has conversation contracts, Postgres conversation schema, Python Postgres store with audit writes, production-safe TypeScript gateway store selection, thread/topic/turn/run context assembly, result reuse decisions, memory proposals, Python Agent Core bridge, and the public gateway routes for threads, messages, run events, clarifications, artifact continue, artifact read/export, and memory proposal accept/reject. The workbench now merges persisted Postgres Answer Package runs into the existing TraceRun UI contract. Clarification answers now bind back to the pending topic, clear pending state, record the clarification outcome, and resume the same run through Agent Core. Artifact access now persists refs in Postgres, validates role visibility before open/continue/export, records allow/block/open/export audit events, and passes claim support only when result refs, snapshot, contract, and permission checks match. Coverage is tracked in `evals/phase7/conversation_scenarios.yaml` with 60 natural-language multi-turn scenarios.
 
 **Deliverables:**
 
@@ -217,10 +217,11 @@ Current progress (2026-07-08): Phase 7 runtime foundation now has conversation c
 - [x] Agent run workbench consumes persisted Postgres Answer Packages through the existing TraceRun contract.
 - [x] Clarification answer resume path with pending-topic binding, outcome audit, and same-run Agent Core execution.
 - [x] Continue investigation from saved artifacts with Postgres artifact refs, permission filtering, audit events, and shared Agent Core execution.
+- [x] Artifact read-only open and Markdown export with role-filtered Answer Package sections and audit records.
 - [ ] SDK decision for 21st Agent Elements or a better-fitting alternative.
 - [ ] Process event rendering for intent, accepted plan, capability progress, question tool, repair/degrade/block/skip, evidence summary, verifier result.
 - [ ] Dynamic first-screen answer cards from verified claim groups and validated visualization plan.
-- [ ] Artifact read-only sharing, permission-filtered section rendering, and static export.
+- [x] Artifact read-only sharing, permission-filtered section rendering, and static export.
 - [x] Replace the in-memory-only gateway/runtime store handoff with Postgres persistence and audit writes; development fallback remains local-only.
 
 **Acceptance:**
