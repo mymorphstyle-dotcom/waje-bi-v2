@@ -260,6 +260,7 @@ class PostgresConversationStore:
         )
 
     def record_answer_package(self, run_id: str, package: dict[str, Any]) -> None:
+        artifact_id = package.get("artifact_id") or package.get("artifact_path") or f"answer-package:{run_id}"
         self._execute(
             """
             INSERT INTO waje_runtime.answer_packages(package_id, run_id, artifact_id, status, payload)
@@ -271,11 +272,30 @@ class PostgresConversationStore:
             {
                 "package_id": f"answer-package:{run_id}",
                 "run_id": run_id,
-                "artifact_id": package.get("artifact_id") or package.get("artifact_path"),
+                "artifact_id": artifact_id,
                 "status": package.get("status", "draft"),
                 "payload": _json(package),
             },
         )
+        run = self._fetchone(
+            """
+            SELECT thread_id, topic_id
+            FROM waje_runtime.analysis_runs
+            WHERE run_id = %(run_id)s
+            """,
+            {"run_id": run_id},
+        )
+        topic_id = _field(run, "topic_id", 1) if run else None
+        if topic_id:
+            self.add_artifact(
+                artifact_id=str(artifact_id),
+                topic_id=str(topic_id),
+                follow_up_context=_follow_up_context(package),
+                snapshot_id=str(package.get("snapshot_id") or package.get("snapshot") or "unknown"),
+                permission_scope=str(package.get("permission_scope") or package.get("visibility") or "analyst"),
+                run_id=run_id,
+                payload=package,
+            )
         self._audit("answer_package_recorded", run_id=run_id, ref=run_id)
 
     def record_run_nodes(self, run_id: str, checkpoint_events: tuple[dict, ...]) -> None:
@@ -387,7 +407,35 @@ class PostgresConversationStore:
         follow_up_context: str,
         snapshot_id: str,
         permission_scope: str,
+        run_id: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
     ) -> None:
+        self._execute(
+            """
+            INSERT INTO waje_runtime.investigation_artifacts(
+              artifact_id, thread_id, topic_id, run_id, snapshot_id, permission_scope, follow_up_context, payload
+            )
+            SELECT
+              %(artifact_id)s, thread_id, topic_id, %(run_id)s, %(snapshot_id)s,
+              %(permission_scope)s, %(follow_up_context)s, %(payload)s::jsonb
+            FROM waje_runtime.conversation_topics
+            WHERE topic_id = %(topic_id)s
+            ON CONFLICT (artifact_id) DO UPDATE
+            SET snapshot_id = EXCLUDED.snapshot_id,
+                permission_scope = EXCLUDED.permission_scope,
+                follow_up_context = EXCLUDED.follow_up_context,
+                payload = EXCLUDED.payload
+            """,
+            {
+                "artifact_id": artifact_id,
+                "topic_id": topic_id,
+                "run_id": run_id,
+                "snapshot_id": snapshot_id,
+                "permission_scope": permission_scope,
+                "follow_up_context": follow_up_context,
+                "payload": _json(payload or {}),
+            },
+        )
         self._audit(
             "artifact_linked",
             topic_id=topic_id,
@@ -400,7 +448,27 @@ class PostgresConversationStore:
         )
 
     def latest_artifact_for_topic(self, topic_id: Optional[str]) -> Optional[ArtifactRef]:
-        return None
+        if not topic_id:
+            return None
+        row = self._fetchone(
+            """
+            SELECT artifact_id, topic_id, follow_up_context, snapshot_id, permission_scope
+            FROM waje_runtime.investigation_artifacts
+            WHERE topic_id = %(topic_id)s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            {"topic_id": topic_id},
+        )
+        if not row:
+            return None
+        return ArtifactRef(
+            artifact_id=_field(row, "artifact_id", 0),
+            topic_id=_field(row, "topic_id", 1),
+            follow_up_context=_field(row, "follow_up_context", 2),
+            snapshot_id=_field(row, "snapshot_id", 3),
+            permission_scope=_field(row, "permission_scope", 4),
+        )
 
     def add_memory_item(
         self,
@@ -547,3 +615,11 @@ def _field(row: Any, key: str, index: int) -> Any:
         return row[index]
     except (IndexError, TypeError):
         return None
+
+
+def _follow_up_context(package: dict[str, Any]) -> str:
+    for key in ("follow_up_context", "business_summary", "final_answer", "answer", "summary"):
+        value = package.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "已验证 Answer Package，可作为继续调查上下文。"

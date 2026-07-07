@@ -153,7 +153,7 @@ class ConversationRuntime:
         if not result:
             return (ReuseDecision("rerun", "", "no_prior_result_ref"),)
         first = result[0]
-        if role == "business_reader" and ("普通权限" in message or first.permission_scope == "analyst"):
+        if not _can_read_scope(role, first.permission_scope):
             return (ReuseDecision("blocked", first.result_ref, "permission_scope_mismatch"),)
         if current_snapshot != first.snapshot_id or "数据更新" in message or "最新数据" in message:
             return (ReuseDecision("context_only", first.result_ref, "snapshot_mismatch"),)
@@ -186,14 +186,18 @@ class ConversationRuntime:
             )
         artifact = self.store.latest_artifact_for_topic(topic.topic_id if topic else None)
         if artifact and ("基于这个结果" in message or "保存" in message or "打开" in message):
+            artifact_can_support = (
+                artifact.snapshot_id == current_snapshot
+                and _can_read_scope(role, artifact.permission_scope)
+            )
             items.append(
                 ContextItem(
                     source_type="artifact",
                     source_ref=artifact.artifact_id,
                     summary=artifact.follow_up_context,
-                    can_support_claims=artifact.snapshot_id == current_snapshot and role != "business_reader",
+                    can_support_claims=artifact_can_support,
                     visibility=artifact.permission_scope,
-                    reason="artifact_follow_up_context",
+                    reason="artifact_follow_up_context" if artifact_can_support else "artifact_context_only",
                 )
             )
         for memory in self.store.long_term_memory(owner_scope):
@@ -219,12 +223,16 @@ class ConversationRuntime:
                 )
             )
         claim_safe = all(decision.decision not in {"blocked", "context_only"} for decision in reuse_decisions)
+        artifact_context_blocked = any(
+            item.source_type == "artifact" and not item.can_support_claims
+            for item in items
+        )
         return ContextManifest(
             manifest_id=f"context-{uuid4().hex[:12]}",
             thread_id=thread_id,
             turn_id=turn_id,
             items=tuple(items),
-            can_support_claims=claim_safe,
+            can_support_claims=claim_safe and not artifact_context_blocked,
         )
 
     def _memory_proposals(
@@ -385,6 +393,11 @@ def _requested_nodes(message: str, intent: str) -> tuple[str, ...]:
 def _runtime_budget(message: str) -> dict[str, int | str]:
     deep = any(token in message for token in ("深挖", "再找原因", "为什么", "原因"))
     return {"mode": "deep_attribution" if deep else "normal", "soft_limit": 100 if deep else 50}
+
+
+def _can_read_scope(role: str, permission_scope: str) -> bool:
+    rank = {"business_reader": 1, "analyst": 2, "data_owner_admin": 3}
+    return rank.get(role, 0) >= rank.get(permission_scope, 3)
 
 
 def _topic_title(message: str) -> str:

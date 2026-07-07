@@ -30,6 +30,16 @@ type MemoryProposalRecord = {
   createdAt: string;
 };
 
+type ArtifactRecord = {
+  id: string;
+  threadId: string;
+  topicId: string;
+  snapshotId: string;
+  permissionScope: string;
+  followUpContext: string;
+  createdAt: string;
+};
+
 type RunEvent = {
   event: string;
   runId: string;
@@ -40,6 +50,7 @@ type RunEvent = {
 type MemoryStore = {
   threads: Map<string, ThreadRecord>;
   runs: Map<string, RunRecord>;
+  artifacts: Map<string, ArtifactRecord>;
   memoryProposals: Map<string, MemoryProposalRecord>;
 };
 
@@ -274,6 +285,54 @@ export async function addUserMessage(threadId: string, text: string): Promise<Me
   return message;
 }
 
+export async function requireArtifactForContinue(
+  artifactId: string,
+  role = "analyst",
+): Promise<ArtifactRecord> {
+  if (conversationStoreMode() === "postgres") {
+    const { rows } = await pool().query(
+      `
+      SELECT artifact_id, thread_id, topic_id, snapshot_id, permission_scope, follow_up_context, created_at
+      FROM waje_runtime.investigation_artifacts
+      WHERE artifact_id = $1
+      `,
+      [artifactId],
+    );
+    const row = rows[0];
+    if (!row) throw new Error("artifact_not_found");
+    if (!canReadScope(role, row.permission_scope)) {
+      await audit("artifact_continue_blocked", {
+        threadId: row.thread_id,
+        topicId: row.topic_id,
+        ref: artifactId,
+        payload: { role, permission_scope: row.permission_scope },
+      });
+      throw new Error("artifact_permission_denied");
+    }
+    await audit("artifact_continue_allowed", {
+      threadId: row.thread_id,
+      topicId: row.topic_id,
+      ref: artifactId,
+      payload: { role, permission_scope: row.permission_scope },
+    });
+    return {
+      id: row.artifact_id,
+      threadId: row.thread_id,
+      topicId: row.topic_id,
+      snapshotId: row.snapshot_id,
+      permissionScope: row.permission_scope,
+      followUpContext: row.follow_up_context,
+      createdAt: row.created_at,
+    } satisfies ArtifactRecord;
+  }
+  const artifact = memoryStore().artifacts.get(artifactId);
+  if (!artifact) throw new Error("artifact_not_found");
+  if (!canReadScope(role, artifact.permissionScope)) {
+    throw new Error("artifact_permission_denied");
+  }
+  return artifact;
+}
+
 export async function createMemoryProposal(threadId: string, text: string): Promise<MemoryProposalRecord> {
   if (conversationStoreMode() === "postgres") {
     const proposal: MemoryProposalRecord = {
@@ -348,6 +407,7 @@ function memoryStore() {
   globalStore.__wajeConversationMemoryStore ??= {
     threads: new Map(),
     runs: new Map(),
+    artifacts: new Map(),
     memoryProposals: new Map(),
   };
   return globalStore.__wajeConversationMemoryStore;
@@ -378,4 +438,13 @@ async function audit(
       JSON.stringify(fields.payload ?? {}),
     ],
   );
+}
+
+function canReadScope(role: string, permissionScope: string) {
+  const rank: Record<string, number> = {
+    business_reader: 1,
+    analyst: 2,
+    data_owner_admin: 3,
+  };
+  return (rank[role] ?? 0) >= (rank[permissionScope] ?? 3);
 }

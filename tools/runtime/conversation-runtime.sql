@@ -98,6 +98,18 @@ CREATE TABLE IF NOT EXISTS waje_runtime.answer_packages (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS waje_runtime.investigation_artifacts (
+  artifact_id text PRIMARY KEY,
+  thread_id text NOT NULL REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
+  topic_id text NOT NULL REFERENCES waje_runtime.conversation_topics(topic_id) ON DELETE CASCADE,
+  run_id text REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE SET NULL,
+  snapshot_id text NOT NULL,
+  permission_scope text NOT NULL,
+  follow_up_context text NOT NULL,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS waje_runtime.memory_items (
   memory_id text PRIMARY KEY,
   owner_scope text NOT NULL,
@@ -139,4 +151,5 @@ CREATE INDEX IF NOT EXISTS idx_conversation_topics_thread ON waje_runtime.conver
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread ON waje_runtime.conversation_turns(thread_id);
 CREATE INDEX IF NOT EXISTS idx_analysis_runs_thread ON waje_runtime.analysis_runs(thread_id);
 CREATE INDEX IF NOT EXISTS idx_result_refs_topic ON waje_runtime.result_refs(topic_id);
+CREATE INDEX IF NOT EXISTS idx_investigation_artifacts_topic ON waje_runtime.investigation_artifacts(topic_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_events_thread ON waje_runtime.audit_events(thread_id, created_at);

@@ -25,6 +25,8 @@ class AgentCoreBridgeTest(unittest.TestCase):
         package = store.answer_packages["run-agent-core"]
         self.assertEqual(package["run_id"], "run-agent-core")
         self.assertEqual(package["sections"][0]["payload"]["answer_text"], "这是持久化的业务回答。")
+        topic = store.current_topic("thread-agent-core")
+        self.assertIsNotNone(store.latest_artifact_for_topic(topic.topic_id))
         self.assertTrue(
             any(event["event_type"] == "answer_package_recorded" for event in store.audit_events)
         )
@@ -58,6 +60,9 @@ def fake_workflow(request):
         answer_package={
             "run_id": request["run_id"],
             "status": "draft",
+            "snapshot_id": "2026H1",
+            "permission_scope": "analyst",
+            "follow_up_context": "这轮回答后可以继续追问渠道、异常和口径变化。",
             "sections": [
                 {
                     "id": "summary",

@@ -21,6 +21,7 @@ class ConversationPersistenceTest(unittest.TestCase):
             "result_refs",
             "evidence_refs",
             "answer_packages",
+            "investigation_artifacts",
             "memory_items",
             "memory_proposals",
             "audit_events",

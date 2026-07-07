@@ -119,6 +119,16 @@ class InMemoryConversationStore:
         self.answer_packages[run_id] = package
         if run_id in self.runs:
             self.runs[run_id]["answer_package"] = package
+            topic_id = self.runs[run_id].get("topic_id")
+            artifact_id = package.get("artifact_id") or package.get("artifact_path") or f"answer-package:{run_id}"
+            if topic_id:
+                self.add_artifact(
+                    artifact_id=artifact_id,
+                    topic_id=topic_id,
+                    follow_up_context=_package_follow_up_context(package),
+                    snapshot_id=package.get("snapshot_id") or package.get("snapshot") or "unknown",
+                    permission_scope=package.get("permission_scope") or package.get("visibility") or "analyst",
+                )
         self.add_audit_event("answer_package_recorded", run_id=run_id, ref=run_id)
 
     def record_run_nodes(self, run_id: str, checkpoint_events: tuple[dict, ...]) -> None:
@@ -234,3 +244,11 @@ class InMemoryConversationStore:
             visibility=proposal.visibility,
             status="accepted",
         )
+
+
+def _package_follow_up_context(package: dict) -> str:
+    for key in ("follow_up_context", "business_summary", "final_answer", "answer", "summary"):
+        value = package.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "已验证 Answer Package，可作为继续调查上下文。"

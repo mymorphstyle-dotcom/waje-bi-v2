@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { addUserMessage, createRun, jsonError, requireThread } from "../../../_conversationStore";
+import { runAgentCore } from "../../../_agentCore";
+import {
+  addUserMessage,
+  createRun,
+  jsonError,
+  requireArtifactForContinue,
+  requireThread,
+} from "../../../_conversationStore";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,17 +17,25 @@ type RouteContext = { params: Promise<{ artifactId: string }> };
 export async function POST(request: NextRequest, context: RouteContext) {
   const { artifactId } = await context.params;
   const body = await request.json().catch(() => ({}));
-  const threadId = typeof body.threadId === "string" ? body.threadId : "";
+  const role = process.env.WAJE_GATEWAY_ROLE || "analyst";
   const message = typeof body.message === "string" ? body.message : "基于这个结果继续分析";
   try {
+    const artifact = await requireArtifactForContinue(artifactId, role);
+    const threadId = typeof body.threadId === "string" ? body.threadId : artifact.threadId;
+    if (threadId !== artifact.threadId) {
+      throw new Error("artifact_thread_mismatch");
+    }
     await requireThread(threadId);
     const userMessage = await addUserMessage(threadId, message);
     const run = await createRun(threadId);
+    const agentCore = await runAgentCore(threadId, run.id, message, role);
     return NextResponse.json(
       {
         artifactId,
+        artifact,
         message: userMessage,
         run,
+        agentCore,
         eventsUrl: `/api/runs/${run.id}/events`,
       },
       { status: 202 },
