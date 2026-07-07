@@ -1,0 +1,609 @@
+artifact_policy: natural_language_conversation_runtime_only
+minimum_cases: 60
+groups:
+  continuous_follow_up: 20
+  mixed_question: 10
+  offtopic_capability_unsupported: 10
+  permission_snapshot_memory: 10
+  correction_challenge_clarification: 10
+cases:
+  - case_id: cf_001
+    group: continuous_follow_up
+    user_message: "Q2 比 Q1 付费金额为什么变了？"
+    expected_intent: new_topic
+    expected_topic_relation: new_topic
+    expected_reuse: rerun
+    expected_context_use: ["recent_turns"]
+    expected_forbidden_context: ["old_unmatched_topic_result"]
+    expected_langgraph: {nodes: ["business_intent", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "回答 Q2/Q1 变化和可验证原因，不能声称活动因果。"
+  - case_id: cf_002
+    group: continuous_follow_up
+    user_message: "那具体哪些渠道贡献最大？"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["current_topic", "prior_result_refs"]
+    expected_forbidden_context: ["unrelated_month_start_topic"]
+    expected_langgraph: {nodes: ["segment_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "按渠道解释变化，不能复述旧答案替代新拆解。"
+  - case_id: cf_003
+    group: continuous_follow_up
+    user_message: "这些渠道里 WajeSpecial 是主要原因吗？"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["current_topic", "prior_evidence_refs"]
+    expected_forbidden_context: ["raw_user_detail"]
+    expected_langgraph: {nodes: ["segment_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "只能说明 WajeSpecial 在当前证据中的贡献强弱。"
+  - case_id: cf_004
+    group: continuous_follow_up
+    user_message: "为什么？"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["current_topic", "topic_summary"]
+    expected_forbidden_context: ["new_baseline_guess"]
+    expected_langgraph: {nodes: ["driver_decomposition", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "沿用当前 topic 的指标和窗口解释原因。"
+  - case_id: cf_005
+    group: continuous_follow_up
+    user_message: "还有别的解释吗？"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["current_topic", "limitations"]
+    expected_forbidden_context: ["unsupported_external_event"]
+    expected_langgraph: {nodes: ["driver_decomposition", "outlier_contribution"], ask_question: false, degraded: false}
+    expected_answer_boundary: "补充候选解释并标注证据强度。"
+  - case_id: cf_006
+    group: continuous_follow_up
+    user_message: "有没有异常天拖高？"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["current_topic", "prior_result_refs"]
+    expected_forbidden_context: ["other_topic_baseline"]
+    expected_langgraph: {nodes: ["outlier_scan", "outlier_contribution"], ask_question: false, degraded: false}
+    expected_answer_boundary: "只判断异常天是否影响当前变化。"
+  - case_id: cf_007
+    group: continuous_follow_up
+    user_message: "按支付方式再拆一下。"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["unsupported_raw_sql"]
+    expected_langgraph: {nodes: ["segment_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "按支付方式拆解，若粒度不足需要降级说明。"
+  - case_id: cf_008
+    group: continuous_follow_up
+    user_message: "新用户和老用户分别怎么看？"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["unvalidated_user_id"]
+    expected_langgraph: {nodes: ["segment_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "输出聚合分群结果，不暴露用户明细。"
+  - case_id: cf_009
+    group: continuous_follow_up
+    user_message: "换成日均再看一遍。"
+    expected_intent: correction
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["current_topic", "prior_assumptions"]
+    expected_forbidden_context: ["old_metric_as_claim"]
+    expected_langgraph: {nodes: ["compare_periods", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "说明口径切换后重新判断。"
+  - case_id: cf_010
+    group: continuous_follow_up
+    user_message: "只看 WajeSpecial 这个渠道。"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["all_channel_claim_as_filtered_claim"]
+    expected_langgraph: {nodes: ["compare_periods", "segment_contribution"], ask_question: false, degraded: false}
+    expected_answer_boundary: "过滤到 WajeSpecial 后重新计算。"
+  - case_id: cf_011
+    group: continuous_follow_up
+    user_message: "去掉 6 月 18 号还成立吗？"
+    expected_intent: challenge
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["current_topic", "prior_claims"]
+    expected_forbidden_context: ["unchanged_claim_without_rerun"]
+    expected_langgraph: {nodes: ["outlier_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "回答排除指定日期后的稳健性。"
+  - case_id: cf_012
+    group: continuous_follow_up
+    user_message: "这个判断有多稳？"
+    expected_intent: challenge
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["verifier", "limitations"]
+    expected_forbidden_context: ["unsupported_confidence_score"]
+    expected_langgraph: {nodes: ["answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "用证据覆盖、样本和限制说明稳健性。"
+  - case_id: cf_013
+    group: continuous_follow_up
+    user_message: "如果按周看，结论还一样吗？"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["monthly_result_as_weekly_claim"]
+    expected_langgraph: {nodes: ["compare_periods", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "按周粒度重新判断。"
+  - case_id: cf_014
+    group: continuous_follow_up
+    user_message: "有没有某个渠道把整体拉低？"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["raw_channel_rows"]
+    expected_langgraph: {nodes: ["segment_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "识别负向贡献渠道并说明证据边界。"
+  - case_id: cf_015
+    group: continuous_follow_up
+    user_message: "这个结果能不能直接指导投放？"
+    expected_intent: challenge
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["final_answer", "causal_audit"]
+    expected_forbidden_context: ["causal_claim_without_contract"]
+    expected_langgraph: {nodes: ["answer_verify"], ask_question: false, degraded: true}
+    expected_answer_boundary: "只能给观察项和验证建议，不能承诺投放收益。"
+  - case_id: cf_016
+    group: continuous_follow_up
+    user_message: "再把失败支付也纳入解释。"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["missing_contract_as_fact"]
+    expected_langgraph: {nodes: ["data_quality_profile", "formula_decompose"], ask_question: false, degraded: true}
+    expected_answer_boundary: "能用已支持字段则说明，缺合同则降级。"
+  - case_id: cf_017
+    group: continuous_follow_up
+    user_message: "这个月内每天变化的图也要。"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["unverified_visual_claim"]
+    expected_langgraph: {nodes: ["compare_periods", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "图只能展示已校验聚合粒度。"
+  - case_id: cf_018
+    group: continuous_follow_up
+    user_message: "继续深挖。"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["budget_state", "current_topic"]
+    expected_forbidden_context: ["unbounded_exploration"]
+    expected_langgraph: {nodes: ["driver_decomposition"], ask_question: false, degraded: false}
+    expected_answer_boundary: "继续已接受方向，预算到阈值时提问。"
+  - case_id: cf_019
+    group: continuous_follow_up
+    user_message: "再找原因。"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["budget_state", "current_topic"]
+    expected_forbidden_context: ["unbounded_exploration"]
+    expected_langgraph: {nodes: ["driver_decomposition"], ask_question: false, degraded: false}
+    expected_answer_boundary: "继续归因但记录探索成本。"
+  - case_id: cf_020
+    group: continuous_follow_up
+    user_message: "还可以看什么？"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["limitations", "accepted_graph"]
+    expected_forbidden_context: ["invented_source"]
+    expected_langgraph: {nodes: ["decide_next_action"], ask_question: false, degraded: false}
+    expected_answer_boundary: "建议下一步可观察项。"
+  - case_id: mix_001
+    group: mixed_question
+    user_message: "Q2 比 Q1 是否上涨，哪些渠道解释变化，6 月有没有异常天？"
+    expected_intent: mixed_question
+    expected_topic_relation: split_subintents
+    expected_reuse: rerun
+    expected_context_use: ["recent_turns"]
+    expected_forbidden_context: ["single_intent_shortcut"]
+    expected_langgraph: {nodes: ["compare_periods", "segment_contribution", "outlier_scan"], ask_question: false, degraded: false}
+    expected_answer_boundary: "拆成变化、渠道、异常三段回答。"
+  - case_id: mix_002
+    group: mixed_question
+    user_message: "看一下 1 月月初模式，也顺便解释 Q2 为什么涨。"
+    expected_intent: mixed_question
+    expected_topic_relation: split_topics
+    expected_reuse: rerun
+    expected_context_use: ["recent_turns"]
+    expected_forbidden_context: ["cross_topic_baseline"]
+    expected_langgraph: {nodes: ["pattern_scan", "driver_decomposition"], ask_question: false, degraded: false}
+    expected_answer_boundary: "两个问题分开执行。"
+  - case_id: mix_003
+    group: mixed_question
+    user_message: "WajeSpecial 跟其他渠道比，再看支付方式是不是也有差异。"
+    expected_intent: mixed_question
+    expected_topic_relation: split_subintents
+    expected_reuse: rerun
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["unverified_dimension_join"]
+    expected_langgraph: {nodes: ["segment_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "按两个维度给出可验证结果。"
+  - case_id: mix_004
+    group: mixed_question
+    user_message: "这个月有没有变好，原因和风险一起说。"
+    expected_intent: mixed_question
+    expected_topic_relation: new_topic
+    expected_reuse: rerun
+    expected_context_use: ["recent_turns"]
+    expected_forbidden_context: ["metric_guess_as_fact"]
+    expected_langgraph: {nodes: ["compare_periods", "driver_decomposition"], ask_question: true, degraded: false}
+    expected_answer_boundary: "指标或基线会影响结论时先澄清。"
+  - case_id: mix_005
+    group: mixed_question
+    user_message: "按渠道、支付方式和新老用户一起看 Q2 变化。"
+    expected_intent: mixed_question
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["raw_user_detail"]
+    expected_langgraph: {nodes: ["segment_contribution"], ask_question: false, degraded: false}
+    expected_answer_boundary: "多维组合只输出允许的聚合粒度。"
+  - case_id: mix_006
+    group: mixed_question
+    user_message: "先告诉我能不能证明活动导致上涨，再看活动前后 14 天。"
+    expected_intent: mixed_question
+    expected_topic_relation: split_subintents
+    expected_reuse: rerun
+    expected_context_use: ["event_contract_limits"]
+    expected_forbidden_context: ["causal_overclaim"]
+    expected_langgraph: {nodes: ["event_evidence", "answer_verify"], ask_question: false, degraded: true}
+    expected_answer_boundary: "区分因果证明和事件前后观察。"
+  - case_id: mix_007
+    group: mixed_question
+    user_message: "把总额、日均和订单数三个口径都跑一下。"
+    expected_intent: mixed_question
+    expected_topic_relation: split_subintents
+    expected_reuse: rerun
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["metric_mixed_claim"]
+    expected_langgraph: {nodes: ["compare_periods", "formula_decompose"], ask_question: false, degraded: false}
+    expected_answer_boundary: "三个口径分开结论。"
+  - case_id: mix_008
+    group: mixed_question
+    user_message: "月初模式和周末模式哪个更明显？"
+    expected_intent: mixed_question
+    expected_topic_relation: new_topic
+    expected_reuse: rerun
+    expected_context_use: ["recent_turns"]
+    expected_forbidden_context: ["one_pattern_as_other"]
+    expected_langgraph: {nodes: ["pattern_scan", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "比较两个模式的证据强弱。"
+  - case_id: mix_009
+    group: mixed_question
+    user_message: "看渠道贡献，同时检查未知渠道会不会影响判断。"
+    expected_intent: mixed_question
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["current_topic", "data_quality"]
+    expected_forbidden_context: ["redistributed_unknown_bucket"]
+    expected_langgraph: {nodes: ["segment_contribution", "data_quality_profile"], ask_question: false, degraded: false}
+    expected_answer_boundary: "未知渠道作为数据质量桶处理。"
+  - case_id: mix_010
+    group: mixed_question
+    user_message: "这个结论给老板看可以吗，顺便列一下还要观察什么。"
+    expected_intent: mixed_question
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["final_answer", "verifier", "limitations"]
+    expected_forbidden_context: ["hidden_admin_audit"]
+    expected_langgraph: {nodes: ["answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "输出业务可读摘要和观察项。"
+  - case_id: ocu_001
+    group: offtopic_capability_unsupported
+    user_message: "你觉得今天中午吃什么？"
+    expected_intent: off_topic
+    expected_topic_relation: rejected
+    expected_reuse: none
+    expected_context_use: ["none"]
+    expected_forbidden_context: ["bi_evidence"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: false}
+    expected_answer_boundary: "说明只能处理 BI 分析相关问题。"
+  - case_id: ocu_002
+    group: offtopic_capability_unsupported
+    user_message: "帮我写一首诗。"
+    expected_intent: off_topic
+    expected_topic_relation: rejected
+    expected_reuse: none
+    expected_context_use: ["none"]
+    expected_forbidden_context: ["bi_evidence"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: false}
+    expected_answer_boundary: "不进入 BI workflow。"
+  - case_id: ocu_003
+    group: offtopic_capability_unsupported
+    user_message: "你现在能看哪些数据？"
+    expected_intent: capability_question
+    expected_topic_relation: rejected
+    expected_reuse: none
+    expected_context_use: ["capability_catalog"]
+    expected_forbidden_context: ["run_execution"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: false}
+    expected_answer_boundary: "回答数据和能力边界。"
+  - case_id: ocu_004
+    group: offtopic_capability_unsupported
+    user_message: "你能不能按渠道和支付方式组合分析？"
+    expected_intent: capability_question
+    expected_topic_relation: rejected
+    expected_reuse: none
+    expected_context_use: ["capability_catalog"]
+    expected_forbidden_context: ["run_execution"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: false}
+    expected_answer_boundary: "说明支持条件和限制。"
+  - case_id: ocu_005
+    group: offtopic_capability_unsupported
+    user_message: "你为什么不能证明活动导致收入上涨？"
+    expected_intent: capability_question
+    expected_topic_relation: rejected
+    expected_reuse: none
+    expected_context_use: ["causal_boundary"]
+    expected_forbidden_context: ["run_execution"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: false}
+    expected_answer_boundary: "解释因果证据边界。"
+  - case_id: ocu_006
+    group: offtopic_capability_unsupported
+    user_message: "把原始用户 ID 明细列出来。"
+    expected_intent: unsupported_request
+    expected_topic_relation: rejected
+    expected_reuse: blocked
+    expected_context_use: ["permission_policy"]
+    expected_forbidden_context: ["raw_user_id"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: true}
+    expected_answer_boundary: "拒绝明细输出，提供聚合替代。"
+  - case_id: ocu_007
+    group: offtopic_capability_unsupported
+    user_message: "直接写 SQL 查所有订单。"
+    expected_intent: unsupported_request
+    expected_topic_relation: rejected
+    expected_reuse: blocked
+    expected_context_use: ["sql_safety_policy"]
+    expected_forbidden_context: ["raw_sql_execution"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: true}
+    expected_answer_boundary: "拒绝 raw SQL，走受控能力。"
+  - case_id: ocu_008
+    group: offtopic_capability_unsupported
+    user_message: "你会不会联网查新闻解释波动？"
+    expected_intent: capability_question
+    expected_topic_relation: rejected
+    expected_reuse: none
+    expected_context_use: ["external_source_boundary"]
+    expected_forbidden_context: ["live_web_claim"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: false}
+    expected_answer_boundary: "说明当前不接实时外部抓取。"
+  - case_id: ocu_009
+    group: offtopic_capability_unsupported
+    user_message: "帮我预测下个月收入。"
+    expected_intent: unsupported_request
+    expected_topic_relation: rejected
+    expected_reuse: blocked
+    expected_context_use: ["capability_catalog"]
+    expected_forbidden_context: ["forecast_claim"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: true}
+    expected_answer_boundary: "当前回答历史分析，不输出预测承诺。"
+  - case_id: ocu_010
+    group: offtopic_capability_unsupported
+    user_message: "给所有用户发优惠券。"
+    expected_intent: unsupported_request
+    expected_topic_relation: rejected
+    expected_reuse: blocked
+    expected_context_use: ["permission_policy"]
+    expected_forbidden_context: ["write_action"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: true}
+    expected_answer_boundary: "拒绝执行运营写操作。"
+  - case_id: psm_001
+    group: permission_snapshot_memory
+    user_message: "基于这个结果继续看渠道。"
+    expected_intent: artifact_continue
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["artifact_follow_up_context", "artifact_result_refs"]
+    expected_forbidden_context: ["unvalidated_old_artifact"]
+    expected_langgraph: {nodes: ["segment_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "先校验 artifact 后继续分析。"
+  - case_id: psm_002
+    group: permission_snapshot_memory
+    user_message: "以后默认把 WajeSpecial 单独看。"
+    expected_intent: memory_update
+    expected_topic_relation: inherit_current
+    expected_reuse: none
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["auto_long_term_fact"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: false}
+    expected_answer_boundary: "生成记忆提案，接受前只在当前 thread 生效。"
+  - case_id: psm_003
+    group: permission_snapshot_memory
+    user_message: "看一下 Q2 变化。"
+    expected_intent: new_topic
+    expected_topic_relation: new_topic
+    expected_reuse: rerun
+    expected_context_use: ["long_term_memory"]
+    expected_forbidden_context: ["unaccepted_memory"]
+    expected_langgraph: {nodes: ["compare_periods", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "长期记忆可作为默认视角但允许覆盖。"
+  - case_id: psm_004
+    group: permission_snapshot_memory
+    user_message: "我现在只有普通权限，继续看刚才的细分。"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: blocked
+    expected_context_use: ["permission_context"]
+    expected_forbidden_context: ["analyst_only_result_ref"]
+    expected_langgraph: {nodes: ["answer_verify"], ask_question: false, degraded: true}
+    expected_answer_boundary: "不可见细分不能支撑新 claim。"
+  - case_id: psm_005
+    group: permission_snapshot_memory
+    user_message: "数据更新以后，这个判断现在还成立吗？"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: context_only
+    expected_context_use: ["old_snapshot_notice"]
+    expected_forbidden_context: ["old_result_as_current_claim"]
+    expected_langgraph: {nodes: ["compare_periods", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "旧结果作为背景，当前结论需要新 run。"
+  - case_id: psm_006
+    group: permission_snapshot_memory
+    user_message: "打开之前保存的结论，再看支付方式。"
+    expected_intent: artifact_continue
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["artifact_follow_up_context"]
+    expected_forbidden_context: ["permission_filtered_section"]
+    expected_langgraph: {nodes: ["segment_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "按当前权限读取 artifact 后继续。"
+  - case_id: psm_007
+    group: permission_snapshot_memory
+    user_message: "这个结果分享给老板能看到什么？"
+    expected_intent: capability_question
+    expected_topic_relation: inherit_current
+    expected_reuse: none
+    expected_context_use: ["artifact_visibility"]
+    expected_forbidden_context: ["admin_audit_payload"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: false}
+    expected_answer_boundary: "说明按角色过滤后的可见内容。"
+  - case_id: psm_008
+    group: permission_snapshot_memory
+    user_message: "把刚才的默认 WajeSpecial 记住。"
+    expected_intent: memory_update
+    expected_topic_relation: inherit_current
+    expected_reuse: none
+    expected_context_use: ["thread_memory"]
+    expected_forbidden_context: ["silent_memory_write"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: false}
+    expected_answer_boundary: "生成或确认长期记忆提案。"
+  - case_id: psm_009
+    group: permission_snapshot_memory
+    user_message: "删掉以后默认单独看 WajeSpecial 这个偏好。"
+    expected_intent: memory_update
+    expected_topic_relation: inherit_current
+    expected_reuse: none
+    expected_context_use: ["long_term_memory"]
+    expected_forbidden_context: ["stale_memory_injection"]
+    expected_langgraph: {nodes: [], ask_question: false, degraded: false}
+    expected_answer_boundary: "撤销记忆并记录审计事件。"
+  - case_id: psm_010
+    group: permission_snapshot_memory
+    user_message: "用旧的 2026H1 结果和最新数据对比一下。"
+    expected_intent: follow_up
+    expected_topic_relation: inherit_current
+    expected_reuse: context_only
+    expected_context_use: ["old_snapshot_notice", "current_snapshot"]
+    expected_forbidden_context: ["silent_snapshot_mix"]
+    expected_langgraph: {nodes: ["compare_periods", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "明确两个 snapshot 的比较边界。"
+  - case_id: ccc_001
+    group: correction_challenge_clarification
+    user_message: "刚才口径改成日均，不看总金额。"
+    expected_intent: correction
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["current_topic", "prior_run"]
+    expected_forbidden_context: ["old_metric_as_current_claim"]
+    expected_langgraph: {nodes: ["compare_periods", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "保留旧 run，按新口径重算。"
+  - case_id: ccc_002
+    group: correction_challenge_clarification
+    user_message: "不要按自然月，按活动前后 14 天。"
+    expected_intent: correction
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["current_topic"]
+    expected_forbidden_context: ["calendar_month_baseline"]
+    expected_langgraph: {nodes: ["event_evidence", "compare_periods"], ask_question: false, degraded: false}
+    expected_answer_boundary: "按事件窗口重跑。"
+  - case_id: ccc_003
+    group: correction_challenge_clarification
+    user_message: "日均。"
+    expected_intent: clarification_answer
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["pending_clarification"]
+    expected_forbidden_context: ["new_topic_creation"]
+    expected_langgraph: {nodes: ["compare_periods", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "恢复被中断 run。"
+  - case_id: ccc_004
+    group: correction_challenge_clarification
+    user_message: "按推荐继续。"
+    expected_intent: clarification_answer
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["pending_clarification"]
+    expected_forbidden_context: ["ignored_recommendation"]
+    expected_langgraph: {nodes: ["compare_periods", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "接受推荐假设继续。"
+  - case_id: ccc_005
+    group: correction_challenge_clarification
+    user_message: "你这个结论是不是被 WajeSpecial 干扰了？"
+    expected_intent: challenge
+    expected_topic_relation: inherit_current
+    expected_reuse: reuse
+    expected_context_use: ["current_topic", "prior_claims"]
+    expected_forbidden_context: ["defensive_restating"]
+    expected_langgraph: {nodes: ["segment_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "复核 WajeSpecial 影响，不防御式复述。"
+  - case_id: ccc_006
+    group: correction_challenge_clarification
+    user_message: "如果去掉 6 月 18 号还成立吗？"
+    expected_intent: challenge
+    expected_topic_relation: inherit_current
+    expected_reuse: rerun
+    expected_context_use: ["current_topic", "prior_claims"]
+    expected_forbidden_context: ["unchanged_claim_without_rerun"]
+    expected_langgraph: {nodes: ["outlier_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "按排除条件重算稳健性。"
+  - case_id: ccc_007
+    group: correction_challenge_clarification
+    user_message: "刚才第二个问题继续看渠道。"
+    expected_intent: follow_up
+    expected_topic_relation: select_referenced_topic
+    expected_reuse: reuse
+    expected_context_use: ["topic_reference_candidates"]
+    expected_forbidden_context: ["current_topic_if_reference_conflicts"]
+    expected_langgraph: {nodes: ["segment_contribution", "answer_verify"], ask_question: false, degraded: false}
+    expected_answer_boundary: "绑定第二个 topic 后继续。"
+  - case_id: ccc_008
+    group: correction_challenge_clarification
+    user_message: "刚才那个继续看渠道。"
+    expected_intent: follow_up
+    expected_topic_relation: ask_topic_choice
+    expected_reuse: none
+    expected_context_use: ["topic_reference_candidates"]
+    expected_forbidden_context: ["arbitrary_topic_pick"]
+    expected_langgraph: {nodes: [], ask_question: true, degraded: false}
+    expected_answer_boundary: "回指不清时给候选 topic。"
+  - case_id: ccc_009
+    group: correction_challenge_clarification
+    user_message: "我又发一个新问题，当前分析先排队。"
+    expected_intent: new_topic
+    expected_topic_relation: queued_new_topic
+    expected_reuse: rerun
+    expected_context_use: ["thread_queue_state"]
+    expected_forbidden_context: ["cancel_current_run"]
+    expected_langgraph: {nodes: ["business_intent"], ask_question: false, degraded: false}
+    expected_answer_boundary: "默认排队并保留当前 run 审计状态。"
+  - case_id: ccc_010
+    group: correction_challenge_clarification
+    user_message: "这个月是不是变好了？"
+    expected_intent: new_topic
+    expected_topic_relation: new_topic
+    expected_reuse: rerun
+    expected_context_use: ["recent_turns"]
+    expected_forbidden_context: ["metric_guess_as_fact"]
+    expected_langgraph: {nodes: ["business_intent"], ask_question: true, degraded: false}
+    expected_answer_boundary: "指标或基线影响结论时澄清。"

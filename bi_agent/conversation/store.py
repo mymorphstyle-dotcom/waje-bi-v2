@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+from collections import defaultdict
+from typing import Optional
+from uuid import uuid4
+
+from bi_agent.conversation.models import (
+    ArtifactRef,
+    MemoryItem,
+    MemoryProposal,
+    ResultRefRecord,
+    ThreadState,
+    TopicState,
+)
+
+
+class InMemoryConversationStore:
+    def __init__(self) -> None:
+        self.threads: dict[str, ThreadState] = {}
+        self.topics: dict[str, TopicState] = {}
+        self.thread_topics: dict[str, list[str]] = defaultdict(list)
+        self.result_refs: dict[str, list[ResultRefRecord]] = defaultdict(list)
+        self.artifacts: dict[str, ArtifactRef] = {}
+        self.memory_items: dict[str, list[MemoryItem]] = defaultdict(list)
+        self.memory_proposals: dict[str, MemoryProposal] = {}
+
+    def create_thread(self, thread_id: Optional[str] = None, *, owner_id: str = "user") -> ThreadState:
+        thread_id = thread_id or f"thread-{uuid4().hex[:12]}"
+        thread = ThreadState(thread_id=thread_id, owner_id=owner_id)
+        self.threads[thread_id] = thread
+        return thread
+
+    def get_thread(self, thread_id: str) -> ThreadState:
+        if thread_id not in self.threads:
+            return self.create_thread(thread_id)
+        return self.threads[thread_id]
+
+    def create_topic(self, thread_id: str, *, title: str, summary: str = "") -> TopicState:
+        self.get_thread(thread_id)
+        topic_id = f"topic-{uuid4().hex[:12]}"
+        topic = TopicState(
+            topic_id=topic_id,
+            thread_id=thread_id,
+            title=title,
+            summary=summary or title,
+        )
+        self.topics[topic_id] = topic
+        self.thread_topics[thread_id].append(topic_id)
+        if not self.threads[thread_id].current_topic_id:
+            self.threads[thread_id].current_topic_id = topic_id
+        return topic
+
+    def topic(self, topic_id: Optional[str]) -> Optional[TopicState]:
+        if not topic_id:
+            return None
+        return self.topics.get(topic_id)
+
+    def topics_for_thread(self, thread_id: str) -> tuple[TopicState, ...]:
+        return tuple(
+            self.topics[topic_id]
+            for topic_id in self.thread_topics.get(thread_id, [])
+            if topic_id in self.topics
+        )
+
+    def current_topic(self, thread_id: str) -> Optional[TopicState]:
+        thread = self.get_thread(thread_id)
+        return self.topic(thread.current_topic_id)
+
+    def set_current_topic(self, thread_id: str, topic_id: str) -> None:
+        self.get_thread(thread_id).current_topic_id = topic_id
+
+    def set_pending_clarification(self, thread_id: str, topic_id: str, clarification_id: str) -> None:
+        thread = self.get_thread(thread_id)
+        thread.pending_clarification_topic_id = topic_id
+        thread.pending_clarification_id = clarification_id
+
+    def clear_pending_clarification(self, thread_id: str) -> None:
+        thread = self.get_thread(thread_id)
+        thread.pending_clarification_topic_id = None
+        thread.pending_clarification_id = ""
+
+    def add_turn(self, thread_id: str, turn: dict) -> None:
+        self.get_thread(thread_id).turns.append(turn)
+
+    def add_result_ref(
+        self,
+        topic_id: str,
+        *,
+        result_ref: str,
+        snapshot_id: str,
+        contract_version: str,
+        permission_scope: str,
+        semantic_scope: str,
+    ) -> None:
+        self.result_refs[topic_id].append(
+            ResultRefRecord(
+                topic_id=topic_id,
+                result_ref=result_ref,
+                snapshot_id=snapshot_id,
+                contract_version=contract_version,
+                permission_scope=permission_scope,
+                semantic_scope=semantic_scope,
+            )
+        )
+
+    def results_for_topic(self, topic_id: Optional[str]) -> tuple[ResultRefRecord, ...]:
+        if not topic_id:
+            return ()
+        return tuple(self.result_refs.get(topic_id, ()))
+
+    def add_artifact(
+        self,
+        *,
+        artifact_id: str,
+        topic_id: str,
+        follow_up_context: str,
+        snapshot_id: str,
+        permission_scope: str,
+    ) -> None:
+        self.artifacts[artifact_id] = ArtifactRef(
+            artifact_id=artifact_id,
+            topic_id=topic_id,
+            follow_up_context=follow_up_context,
+            snapshot_id=snapshot_id,
+            permission_scope=permission_scope,
+        )
+
+    def latest_artifact_for_topic(self, topic_id: Optional[str]) -> Optional[ArtifactRef]:
+        if not topic_id:
+            return None
+        for artifact in reversed(tuple(self.artifacts.values())):
+            if artifact.topic_id == topic_id:
+                return artifact
+        return None
+
+    def add_memory_item(
+        self,
+        *,
+        owner_scope: str,
+        text: str,
+        source_ref: str,
+        visibility: str,
+        status: str,
+    ) -> MemoryItem:
+        item = MemoryItem(
+            memory_id=f"memory-{uuid4().hex[:12]}",
+            owner_scope=owner_scope,
+            text=text,
+            source_ref=source_ref,
+            visibility=visibility,
+            status=status,
+        )
+        self.memory_items[owner_scope].append(item)
+        return item
+
+    def long_term_memory(self, owner_scope: str) -> tuple[MemoryItem, ...]:
+        return tuple(item for item in self.memory_items.get(owner_scope, ()) if item.status == "accepted")
+
+    def add_memory_proposal(self, proposal: MemoryProposal) -> None:
+        self.memory_proposals[proposal.proposal_id] = proposal
+
+    def accept_memory_proposal(self, proposal_id: str) -> Optional[MemoryItem]:
+        proposal = self.memory_proposals.get(proposal_id)
+        if not proposal:
+            return None
+        return self.add_memory_item(
+            owner_scope=proposal.owner_scope,
+            text=proposal.text,
+            source_ref=proposal.source_ref,
+            visibility=proposal.visibility,
+            status="accepted",
+        )

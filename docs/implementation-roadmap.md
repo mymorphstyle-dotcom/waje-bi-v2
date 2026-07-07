@@ -207,16 +207,21 @@ Phase 6 starts only after Phase 5 eval gates can classify wrong intent, wrong ba
 
 **Business reason:** Users need to see what the agent understood, what it checked, where evidence degraded, and what answer is safe to trust.
 
+Current progress (2026-07-08): Phase 7 runtime foundation now has conversation contracts, an in-memory Postgres-ready store seam, thread/topic/turn/run context assembly, result reuse decisions, memory proposals, and the public gateway routes for threads, messages, run events, clarifications, artifact continue, and memory proposal accept/reject. Coverage is tracked in `evals/phase7/conversation_scenarios.yaml` with 60 natural-language multi-turn scenarios.
+
 **Deliverables:**
 
-- [ ] TypeScript frontend/gateway with thread UI and streaming gateway.
+- [x] TypeScript gateway routes for thread creation, message submission, run event stream handles, clarifications, artifact continue, and memory proposal decisions.
+- [x] Conversation runtime contracts for `Thread`, `Topic`, `Turn`, `Run`, `ContextManifest`, `ReuseDecision`, `MemoryItem`, and `MemoryProposal`.
 - [ ] SDK decision for 21st Agent Elements or a better-fitting alternative.
 - [ ] Process event rendering for intent, accepted plan, capability progress, question tool, repair/degrade/block/skip, evidence summary, verifier result.
 - [ ] Dynamic first-screen answer cards from verified claim groups and validated visualization plan.
 - [ ] Artifact save, read-only sharing, permission-filtered access, static export, and continue-investigation entry.
+- [ ] Replace the in-memory gateway/runtime store seam with Postgres persistence and audit writes.
 
 **Acceptance:**
 
+- [x] Conversation scenario suite covers at least 60 natural-language cases across follow-up, mixed questions, off-topic/tool/unsupported inputs, permissions/snapshots/memory, correction/challenge/clarification.
 - [ ] Frontend renders WAJE-owned Answer Package and visualization plan.
 - [ ] Frontend does not infer business truth from raw evidence payloads.
 - [ ] Question tool supports up to 3-4 short questions, up to 3 options each, recommended inference, and `tell the agent to do differently`.
