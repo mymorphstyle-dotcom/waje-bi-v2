@@ -478,6 +478,8 @@ class PostgresConversationStore:
         source_ref: str,
         visibility: str,
         status: str,
+        refresh_rule: str = "refresh_on_contract_or_scope_change",
+        revocation_path: str = "memory_proposal_revoke_or_admin_action",
     ) -> MemoryItem:
         item = MemoryItem(
             memory_id=f"memory-{uuid4().hex[:12]}",
@@ -486,15 +488,19 @@ class PostgresConversationStore:
             source_ref=source_ref,
             visibility=visibility,
             status=status,
+            refresh_rule=refresh_rule,
+            revocation_path=revocation_path,
         )
         self._execute(
             """
             INSERT INTO waje_runtime.memory_items(
-              memory_id, owner_scope, text, source_ref, visibility, status, ttl, confidence
+              memory_id, owner_scope, text, source_ref, visibility, status,
+              ttl, confidence, refresh_rule, revocation_path
             )
             VALUES (
               %(memory_id)s, %(owner_scope)s, %(text)s, %(source_ref)s,
-              %(visibility)s, %(status)s, %(ttl)s, %(confidence)s
+              %(visibility)s, %(status)s, %(ttl)s, %(confidence)s,
+              %(refresh_rule)s, %(revocation_path)s
             )
             """,
             item.__dict__,
@@ -505,7 +511,8 @@ class PostgresConversationStore:
     def long_term_memory(self, owner_scope: str) -> tuple[MemoryItem, ...]:
         rows = self._fetchall(
             """
-            SELECT memory_id, owner_scope, text, source_ref, visibility, status, ttl, confidence
+            SELECT memory_id, owner_scope, text, source_ref, visibility, status,
+                   ttl, confidence, refresh_rule, revocation_path
             FROM waje_runtime.memory_items
             WHERE owner_scope = %(owner_scope)s AND status = 'accepted' AND revoked_at IS NULL
             ORDER BY created_at DESC
@@ -522,6 +529,8 @@ class PostgresConversationStore:
                 status=_field(row, "status", 5),
                 ttl=_field(row, "ttl", 6),
                 confidence=_field(row, "confidence", 7),
+                refresh_rule=_field(row, "refresh_rule", 8),
+                revocation_path=_field(row, "revocation_path", 9),
             )
             for row in rows
         )

@@ -119,9 +119,17 @@ CREATE TABLE IF NOT EXISTS waje_runtime.memory_items (
   status text NOT NULL,
   ttl text NOT NULL DEFAULT 'until_revoked',
   confidence text NOT NULL DEFAULT 'user_confirmed',
+  refresh_rule text NOT NULL DEFAULT 'refresh_on_contract_or_scope_change',
+  revocation_path text NOT NULL DEFAULT 'memory_proposal_revoke_or_admin_action',
   created_at timestamptz NOT NULL DEFAULT now(),
   revoked_at timestamptz
 );
+
+ALTER TABLE waje_runtime.memory_items
+  ADD COLUMN IF NOT EXISTS refresh_rule text NOT NULL DEFAULT 'refresh_on_contract_or_scope_change';
+
+ALTER TABLE waje_runtime.memory_items
+  ADD COLUMN IF NOT EXISTS revocation_path text NOT NULL DEFAULT 'memory_proposal_revoke_or_admin_action';
 
 CREATE TABLE IF NOT EXISTS waje_runtime.memory_proposals (
   proposal_id text PRIMARY KEY,

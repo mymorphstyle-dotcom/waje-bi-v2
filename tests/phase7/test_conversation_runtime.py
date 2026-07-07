@@ -77,6 +77,20 @@ class ConversationRuntimeTest(unittest.TestCase):
     def test_context_manifest_and_reuse_are_claim_safe(self):
         runtime = _seed_runtime()
 
+        reusable = runtime.handle_message(
+            "thread-phase7",
+            "那具体哪些渠道贡献最大？",
+        )
+        result_items = [
+            item for item in reusable.context_manifest.items if item.source_type == "result_ref"
+        ]
+        self.assertEqual(len(result_items), 1)
+        self.assertEqual(result_items[0].source_ref, "result:q2-q1:paid_amount")
+        self.assertTrue(result_items[0].can_support_claims)
+        self.assertEqual(result_items[0].claim_use, "reuse")
+        self.assertEqual(result_items[0].source_version, "contracts-v1:2026H1")
+        self.assertTrue(reusable.context_manifest.can_support_claims)
+
         blocked = runtime.handle_message(
             "thread-phase7",
             "我现在只有普通权限，继续看刚才的细分。",
@@ -85,6 +99,11 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(blocked.reuse_decisions[0].decision, "blocked")
         self.assertFalse(blocked.context_manifest.can_support_claims)
         self.assertIn("permission_scope_mismatch", blocked.reuse_decisions[0].reason)
+        blocked_result_items = [
+            item for item in blocked.context_manifest.items if item.source_type == "result_ref"
+        ]
+        self.assertTrue(blocked_result_items[0].expired)
+        self.assertEqual(blocked_result_items[0].claim_use, "blocked")
 
         stale = runtime.handle_message(
             "thread-phase7",
@@ -94,6 +113,11 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(stale.reuse_decisions[0].decision, "context_only")
         self.assertFalse(stale.context_manifest.can_support_claims)
         self.assertIn("snapshot_mismatch", stale.reuse_decisions[0].reason)
+        stale_result_items = [
+            item for item in stale.context_manifest.items if item.source_type == "result_ref"
+        ]
+        self.assertTrue(stale_result_items[0].expired)
+        self.assertEqual(stale_result_items[0].claim_use, "context_only")
 
     def test_memory_update_creates_audited_proposal_without_long_term_write(self):
         runtime = _seed_runtime()
@@ -108,6 +132,20 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(len(result.memory_proposals), 1)
         self.assertEqual(result.memory_proposals[0].status, "proposed")
         self.assertEqual(runtime.store.long_term_memory("org-default"), before)
+
+    def test_memory_items_have_refresh_and_revocation_metadata(self):
+        store = InMemoryConversationStore()
+        item = store.add_memory_item(
+            owner_scope="org-default",
+            text="默认把 WajeSpecial 单独观察。",
+            source_ref="memory:accepted:wajespecial",
+            visibility="analyst",
+            status="accepted",
+        )
+
+        self.assertEqual(item.ttl, "until_revoked")
+        self.assertEqual(item.refresh_rule, "refresh_on_contract_or_scope_change")
+        self.assertEqual(item.revocation_path, "memory_proposal_revoke_or_admin_action")
 
     def test_clarification_answer_resumes_pending_topic_even_when_current_topic_changed(self):
         store = InMemoryConversationStore()

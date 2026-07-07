@@ -30,6 +30,8 @@ class ConversationPersistenceTest(unittest.TestCase):
         for table in required_tables:
             with self.subTest(table=table):
                 self.assertIn(f"waje_runtime.{table}", CONVERSATION_SCHEMA_SQL)
+        self.assertIn("refresh_rule", CONVERSATION_SCHEMA_SQL)
+        self.assertIn("revocation_path", CONVERSATION_SCHEMA_SQL)
 
     def test_store_writes_audit_events_for_state_changes(self):
         connection = FakeConnection()

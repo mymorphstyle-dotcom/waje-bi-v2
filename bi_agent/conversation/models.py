@@ -24,6 +24,10 @@ class ContextItem:
     can_support_claims: bool
     visibility: str = "analyst"
     reason: str = ""
+    permission_scope: str = ""
+    source_version: str = ""
+    expired: bool = False
+    claim_use: str = "context_only"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -100,6 +104,8 @@ class MemoryItem:
     status: str
     ttl: str = "until_revoked"
     confidence: str = "user_confirmed"
+    refresh_rule: str = "refresh_on_contract_or_scope_change"
+    revocation_path: str = "memory_proposal_revoke_or_admin_action"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

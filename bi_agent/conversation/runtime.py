@@ -110,6 +110,7 @@ class ConversationRuntime:
             user_message,
             role,
             current_snapshot,
+            contract_version,
             reuse_decisions,
             owner_scope,
             pending_clarification_id if intent_name == "clarification_answer" else "",
@@ -335,6 +336,7 @@ class ConversationRuntime:
         message: str,
         role: str,
         current_snapshot: str,
+        contract_version: str,
         reuse_decisions: tuple[ReuseDecision, ...],
         owner_scope: str,
         pending_clarification_id: str = "",
@@ -348,6 +350,9 @@ class ConversationRuntime:
                     summary="用户已回答上一轮澄清问题，本轮按该选择恢复执行。",
                     can_support_claims=False,
                     reason="clarification_outcome",
+                    permission_scope=role,
+                    source_version=contract_version,
+                    claim_use="context_only",
                 )
             )
         if topic:
@@ -356,7 +361,27 @@ class ConversationRuntime:
                     source_type="topic",
                     source_ref=topic.topic_id,
                     summary=topic.summary,
-                    can_support_claims=True,
+                    can_support_claims=False,
+                    reason="topic_context_only",
+                    permission_scope=role,
+                    source_version=contract_version,
+                    claim_use="context_only",
+                )
+            )
+        for decision in reuse_decisions:
+            if not decision.result_ref:
+                continue
+            items.append(
+                ContextItem(
+                    source_type="result_ref",
+                    source_ref=decision.result_ref,
+                    summary=f"上一轮结果引用，当前复用判断为 {decision.decision}。",
+                    can_support_claims=decision.decision == "reuse",
+                    reason=decision.reason,
+                    permission_scope=role,
+                    source_version=f"{contract_version}:{current_snapshot}",
+                    expired=decision.decision in {"context_only", "blocked"},
+                    claim_use=decision.decision,
                 )
             )
         artifact = self.store.latest_artifact_for_topic(topic.topic_id if topic else None)
@@ -373,6 +398,10 @@ class ConversationRuntime:
                     can_support_claims=artifact_can_support,
                     visibility=artifact.permission_scope,
                     reason="artifact_follow_up_context" if artifact_can_support else "artifact_context_only",
+                    permission_scope=artifact.permission_scope,
+                    source_version=artifact.snapshot_id,
+                    expired=not artifact_can_support,
+                    claim_use="reuse" if artifact_can_support else "context_only",
                 )
             )
         for memory in self.store.long_term_memory(owner_scope):
@@ -385,6 +414,9 @@ class ConversationRuntime:
                         can_support_claims=False,
                         visibility=memory.visibility,
                         reason="preference_only",
+                        permission_scope=memory.visibility,
+                        source_version=memory.ttl,
+                        claim_use="preference_only",
                     )
                 )
         if not items:
@@ -395,9 +427,13 @@ class ConversationRuntime:
                     summary="本轮没有可复用 BI 证据上下文。",
                     can_support_claims=False,
                     reason="no_context",
+                    permission_scope=role,
+                    source_version=contract_version,
+                    claim_use="context_only",
                 )
             )
         claim_safe = all(decision.decision not in {"blocked", "context_only"} for decision in reuse_decisions)
+        has_claim_support = any(item.can_support_claims for item in items)
         artifact_context_blocked = any(
             item.source_type == "artifact" and not item.can_support_claims
             for item in items
@@ -407,7 +443,7 @@ class ConversationRuntime:
             thread_id=thread_id,
             turn_id=turn_id,
             items=tuple(items),
-            can_support_claims=claim_safe and not artifact_context_blocked,
+            can_support_claims=has_claim_support and claim_safe and not artifact_context_blocked,
         )
 
     def _memory_proposals(

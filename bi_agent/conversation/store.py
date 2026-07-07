@@ -215,6 +215,8 @@ class InMemoryConversationStore:
         source_ref: str,
         visibility: str,
         status: str,
+        refresh_rule: str = "refresh_on_contract_or_scope_change",
+        revocation_path: str = "memory_proposal_revoke_or_admin_action",
     ) -> MemoryItem:
         item = MemoryItem(
             memory_id=f"memory-{uuid4().hex[:12]}",
@@ -223,6 +225,8 @@ class InMemoryConversationStore:
             source_ref=source_ref,
             visibility=visibility,
             status=status,
+            refresh_rule=refresh_rule,
+            revocation_path=revocation_path,
         )
         self.memory_items[owner_scope].append(item)
         return item
