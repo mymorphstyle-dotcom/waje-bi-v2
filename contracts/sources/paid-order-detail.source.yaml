@@ -1,32 +1,36 @@
-contract_version: "0.1"
-source_id: paid_order_detail_2026_h1
+contract_version: "0.2"
+source_id: paid_order_detail_20240101_20260704
 business_name: 付费订单明细真实数据源合同
 review_status: accepted_current_snapshot_2026-07-05
 data_contract_state: contract_backed
 business_evidence_state: quantifiable
 
 source_file:
-  path: data/raw/2026-01-01_2026-06-30.csv
-  bytes: 8337257507
+  path: /Users/luka/Downloads/dapan_pay_data.zip
+  bytes: 2747935872
   encoding: utf-8
-  rows_profiled: 38941583
+  rows_profiled: 75984922
   columns_profiled: 23
   malformed_rows: 0
   date_range:
-    start: "2026-01-01"
-    end: "2026-06-30"
+    start: "2024-01-01"
+    end: "2026-07-04"
+  archive_members:
+    - pay_data/2024-01-01_2024-12-31.csv
+    - pay_data/2025-01-01_2025-12-31.csv
+    - pay_data/2026-01-01_2026-07-04.csv
 
 source_snapshot:
-  exported_on: "2026-07-04"
+  exported_on: "2026-07-05"
   export_time_precision: date_only
   coverage:
-    basis: complete_2026_january_through_june_dataset
+    basis: current_full_payment_detail_dataset
     business_date_basis: 支付完成时间 converted to Africa/Lagos
-    start: "2026-01-01"
-    end: "2026-06-30"
+    start: "2024-01-01"
+    end: "2026-07-04"
   late_arrivals_or_status_backfill:
-    decision_status: confirmed_none
-    owner_confirmation_date: "2026-07-05"
+    decision_status: not_observed_in_current_intake
+    owner_confirmation_date: pending
   update_policy:
     later_data_updates: new_dataset_run_or_artifact_version
     historical_answers: do_not_rewrite_prior_answers
@@ -36,7 +40,7 @@ owner_acceptance:
   accepted_by:
     - business_owner
     - data_owner
-  acceptance_scope: current 2026-01-01 through 2026-06-30 paid_order_detail snapshot
+  acceptance_scope: current paid_order_detail snapshot using the accepted status, dedup, currency, and business-date policies
   acceptance_status: accepted_for_phase_1_review_and_phase_2_compiler_prep
 
 storage_boundary:
@@ -46,10 +50,12 @@ storage_boundary:
   dev_clickhouse_http_port: 18123
   dev_clickhouse_native_port: 19000
   analytical_database: waje_bi
-  raw_table: paid_order_detail_raw
-  clean_table: paid_order_success_clean
-  metadata_table: load_metadata
-  active_parts_size: 3.57 GiB
+  raw_table: paid_order_detail_raw_20240101_20260704
+  clean_table: paid_order_success_clean_20240101_20260704
+  daily_summary_table: paid_order_success_daily_20240101_20260704
+  latest_key_helper_table: paid_order_success_latest_key_20240101_20260704
+  metadata_table: load_metadata_20240101_20260704
+  active_parts_size: 7.17 GiB
   analytical_fact_table: dev_clickhouse_fact_table_loaded
   runtime_contract_record: dev_postgres_runtime_mirror_initialized
   status: dev_clickhouse_loaded_and_dev_postgres_mirror_initialized
@@ -136,9 +142,15 @@ paid_amount_boundary:
   duplicate_success_rule: keep latest 支付完成时间
   overlap_rule: ignore order_success when same 订单id has pay_success
   cleaned_profile:
-    paid_records: 23858847
-    paid_amount_ngn: 51172015308.0
-    duplicate_success_rows_removed: 14
+    raw_rows: 75984922
+    raw_success_rows: 41234678
+    paid_records: 41234677
+    paid_users: 2436300
+    paid_amount_ngn: 88881490051.0
+    duplicate_success_rows_removed: 1
+    invalid_success_rows_excluded: 0
+    clean_rows_above_latest_key_count: 0
+    raw_date_mismatch_success_rows: 25719
 
 reviewed_field_decisions:
   channel_field:

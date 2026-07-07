@@ -38,9 +38,18 @@ cases:
       ORDER BY week, weekday
 
   - case_id: custom_q2_vs_q1
+    question: "2026年Q2相比Q1，付费金额有没有明显变化？"
     pattern_family: custom_baseline
     time_window: "2026-01-01..2026-06-30"
     expected_status: passed
+    baseline:
+      label: Q1
+      start: "2026-01-01"
+      end: "2026-04-01"
+    target:
+      label: Q2
+      start: "2026-04-01"
+      end: "2026-07-01"
     pattern_params:
       period_key: period
       group_key: group

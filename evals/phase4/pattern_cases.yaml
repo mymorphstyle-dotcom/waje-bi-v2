@@ -1,5 +1,6 @@
 cases:
   - case_id: month_start
+    question: "全量样本看，2024年1月到2026年5月每个月月初的付费金额是不是都比月中和月末高一些？"
     pattern_family: intra_period
     time_window: "2024-01..2026-05"
     window_definition:
@@ -109,6 +110,7 @@ cases:
       - {month: "2026-05", phase: end, amount: 96}
 
   - case_id: weekly_payday_like
+    question: "全量样本看，每周五的付费金额是不是比周一到周日的基线更高？"
     pattern_family: weekly
     time_window: "2024-01..2026-05"
     window_definition:
@@ -137,6 +139,7 @@ cases:
       - {week: "2026-W03", weekday: tuesday, amount: 101}
 
   - case_id: event_relative_campaign
+    question: "活动期间的付费金额相对活动前是否更高，这个事件相对窗口模式是否成立？"
     pattern_family: event_relative
     time_window: "2024-01..2026-05"
     window_definition:
@@ -162,6 +165,7 @@ cases:
       - {event_id: launch_c, window: during, amount: 124}
 
   - case_id: rolling_recovery
+    question: "付费金额是否存在连续滚动窗口恢复并高于前一窗口高点的模式？"
     pattern_family: rolling
     time_window: "2024-01..2026-05"
     window_definition:
@@ -181,6 +185,7 @@ cases:
       - {window: "2026-01-21..2026-01-31", amount: 119, baseline_high: 100}
 
   - case_id: custom_baseline_release
+    question: "发布后目标窗口相比发布前基线窗口，付费金额是否明显更高？"
     pattern_family: custom_baseline
     time_window: "2024-01..2026-05"
     window_definition:

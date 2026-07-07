@@ -2,13 +2,43 @@ import json
 import tempfile
 import unittest
 
-from bi_agent.runtime.answer_package import verify_answer_package
+from bi_agent.runtime.answer_package import build_answer_package, verify_answer_package
 from bi_agent.runtime.langgraph_workflow import run_pattern_workflow
 from bi_agent.runtime.artifacts import filter_artifact_for_role
 from tests.phase4.fake_llm import FakeLLMClient
 
 
 class WorkflowArtifactsAnswerTest(unittest.TestCase):
+    def test_answer_package_keeps_causal_audit_in_admin_audit_only(self):
+        package = build_answer_package(
+            run_id="causal-audit-package",
+            draft_claims=[],
+            evidence=[],
+            checkpoint_events=[],
+            proposed_graph=[],
+            accepted_graph=[],
+            rejected_or_degraded_mutations=[],
+            validator_results=[],
+            sql_text="SELECT 1",
+            sql_hash="hash",
+            artifact_audit={},
+            causal_audit={"causal_assessment": "candidate_hypothesis"},
+            causal_evidence_dossier={"target_claim": "候选机制"},
+        )
+
+        summary_payload = package["sections"][0]["payload"]
+        admin_payload = package["admin_audit"]
+
+        self.assertNotIn("causal_evidence_dossier", summary_payload)
+        self.assertEqual(
+            admin_payload["causal_audit"]["causal_assessment"],
+            "candidate_hypothesis",
+        )
+        self.assertEqual(
+            admin_payload["causal_evidence_dossier"]["target_claim"],
+            "候选机制",
+        )
+
     def test_langgraph_failure_does_not_publish_business_conclusion(self):
         result = run_pattern_workflow(
             {"force_langgraph_failure": True, "llm_client": FakeLLMClient()}
@@ -71,9 +101,11 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 "reduce_evidence",
                 "decide_next_action",
                 "interpret_evidence",
+                "audit_causal_implications",
                 "synthesize_answer",
                 "semantic_audit",
                 "hard_verify_answer",
+                "final_business_summary",
                 "persist_artifact",
             ],
         )
@@ -81,6 +113,11 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertIn("proposed_graph", artifact)
         self.assertIn("validator_results", artifact)
         self.assertIn("llm_calls", artifact["admin_audit"])
+        summary = artifact["sections"][0]["payload"]
+        self.assertIn("final_business_summary", summary)
+        self.assertIn("我对问题的理解", summary["final_business_summary"])
+        self.assertIn("分析脉络", summary["final_business_summary"])
+        self.assertIn("最终结论", summary["final_business_summary"])
 
     def test_business_artifact_sections_expose_sql_hash_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -156,6 +193,86 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 for warning in admin["admin_audit"]["verifier"]["warnings"]
             )
         )
+
+    def test_final_business_summary_enforces_user_facing_shape(self):
+        fake = FakeLLMClient(
+            {
+                "final_business_summary": {
+                    "summary_text": "paid_amount rose. pattern_scan says ok.",
+                }
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "final-summary-shape",
+                    "llm_client": fake,
+                }
+            )
+
+        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
+        self.assertIn("我对问题的理解", summary)
+        self.assertIn("分析脉络", summary)
+        self.assertIn("关键发现", summary)
+        self.assertIn("最终结论", summary)
+        self.assertIn("需要注意", summary)
+        self.assertNotIn("paid_amount", summary)
+        self.assertNotIn("pattern_scan", summary)
+
+    def test_final_business_summary_allows_bounded_insight_without_exact_claim_copy(self):
+        fake = FakeLLMClient(
+            {
+                "final_business_summary": {
+                    "summary_text": (
+                        "我对问题的理解是：你想判断全样本付费金额是否存在周期内模式。\n"
+                        "分析脉络：系统先确认数据口径，再比较目标阶段和基线阶段。\n"
+                        "关键发现：中位提升 20.0%，方向命中率 100.0%，共有 29 个可比周期。\n"
+                        "最终结论：这个现象支持一个有边界的周期内观察，但仍然停留在统计相关层面。\n"
+                        "需要注意：洞察上可以继续观察支付节奏和用户结构，但不能归因。"
+                    ),
+                }
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "final-summary-insight",
+                    "llm_client": fake,
+                }
+            )
+
+        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
+        self.assertIn("洞察上可以继续观察支付节奏和用户结构", summary)
+        self.assertNotIn("周期内付费金额模式在 2024-01..2026-05 观察到", summary)
+
+    def test_final_business_summary_allows_negated_attribution_boundary(self):
+        fake = FakeLLMClient(
+            {
+                "final_business_summary": {
+                    "summary_text": (
+                        "我对问题的理解是：你想判断全样本付费金额是否存在周期内模式。\n"
+                        "分析脉络：系统先确认数据口径，再比较目标阶段和基线阶段。\n"
+                        "关键发现：中位提升 20.0%，方向命中率 100.0%，共有 29 个可比周期。\n"
+                        "最终结论：当前支持一个有边界的周期内观察，但不能归因于特定原因。\n"
+                        "需要注意：洞察上可以继续观察支付节奏和用户结构。"
+                    ),
+                }
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "final-summary-negated-attribution",
+                    "llm_client": fake,
+                }
+            )
+
+        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
+        self.assertIn("不能归因于特定原因", summary)
+        self.assertIn("洞察上可以继续观察支付节奏和用户结构", summary)
 
     def test_medium_pattern_blocks_reliable_wording(self):
         verifier = verify_answer_package(

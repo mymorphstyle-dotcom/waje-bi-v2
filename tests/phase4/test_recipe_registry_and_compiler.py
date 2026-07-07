@@ -116,6 +116,40 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
             )
         )
 
+    def test_compiler_uses_registry_capabilities(self):
+        compiled = compile_graph(
+            question_family="pattern_explanation",
+            target_metric="paid_amount",
+            pattern_family="intra_period",
+            requested_nodes=("compare_period_phases", "raw_sql"),
+        )
+
+        self.assertEqual(compiled.status, "degraded")
+        self.assertIn("compare_period_phases", compiled.mutations.accepted_graph)
+        self.assertIn("pattern_scan", compiled.mutations.accepted_graph)
+        self.assertIn("raw_sql", compiled.mutations.rejected_or_degraded)
+
+    def test_compiler_rejects_known_capability_for_unsupported_question_family(self):
+        compiled = compile_graph(
+            question_family="pattern_explanation",
+            target_metric="paid_amount",
+            pattern_family="weekly",
+            requested_nodes=("metric_coverage_profile", "weekday_calendar_compare"),
+        )
+
+        self.assertEqual(compiled.status, "degraded")
+        self.assertIn("weekday_calendar_compare", compiled.mutations.accepted_graph)
+        self.assertNotIn("metric_coverage_profile", compiled.mutations.accepted_graph)
+        self.assertIn("metric_coverage_profile", compiled.mutations.rejected_or_degraded)
+        self.assertTrue(
+            any(
+                item.action == "rejected"
+                and item.capability == "metric_coverage_profile"
+                and item.reason == "unsupported_question_family"
+                for item in compiled.mutations.records
+            )
+        )
+
     def test_non_pattern_recipe_compiles_as_degraded_dry_run_skeleton(self):
         registry = load_recipe_registry()
         compiled = compile_graph(
@@ -135,6 +169,31 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
                 for item in compiled.mutations.records
             )
         )
+
+    def test_custom_baseline_comparison_accepts_harness_route(self):
+        compiled = compile_graph(
+            question_family="custom_baseline_comparison",
+            target_metric="paid_amount",
+            pattern_family="custom_baseline",
+            requested_nodes=(
+                "data_quality_profile",
+                "compare_periods",
+                "evidence_reduce",
+                "answer_verify",
+            ),
+        )
+
+        self.assertEqual(compiled.status, "accepted")
+        self.assertEqual(
+            compiled.mutations.accepted_graph,
+            (
+                "data_quality_profile",
+                "compare_periods",
+                "evidence_reduce",
+                "answer_verify",
+            ),
+        )
+        self.assertFalse(compiled.mutations.rejected_or_degraded)
 
     def test_non_pattern_recipe_records_supported_proposed_nodes_outside_skeleton(self):
         registry = load_recipe_registry()

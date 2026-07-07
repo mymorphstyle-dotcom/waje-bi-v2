@@ -8,6 +8,7 @@ from bi_agent.runtime.models import (
     MutationRecord,
     RecipeEntry,
 )
+from bi_agent.runtime.capability_registry import get_capability_card, public_capability_ids
 from bi_agent.runtime.recipe_registry import load_recipe_registry
 
 
@@ -21,7 +22,10 @@ REQUIRED_PATTERN_PATHS = (
     "answer_verify",
 )
 
-SUPPORTED_CAPABILITIES = frozenset((*REQUIRED_PATTERN_PATHS, "joint_attribution"))
+SUPPORTED_CAPABILITIES = frozenset(
+    (*REQUIRED_PATTERN_PATHS, "joint_attribution", *public_capability_ids())
+)
+PUBLIC_CAPABILITIES = frozenset(public_capability_ids())
 
 
 def compile_graph(
@@ -56,7 +60,18 @@ def compile_graph(
         proposed_graph = recipe.subgraph_nodes
 
     unknown = tuple(node for node in proposed_graph if node not in SUPPORTED_CAPABILITIES)
-    known_requested = tuple(node for node in proposed_graph if node in SUPPORTED_CAPABILITIES)
+    unsupported_for_family = tuple(
+        node
+        for node in proposed_graph
+        if node in PUBLIC_CAPABILITIES
+        and node not in REQUIRED_PATTERN_PATHS
+        and question_family not in get_capability_card(node).supported_question_families
+    )
+    known_requested = tuple(
+        node
+        for node in proposed_graph
+        if node in SUPPORTED_CAPABILITIES and node not in unsupported_for_family
+    )
     records = tuple(
         MutationRecord(
             action="rejected",
@@ -64,6 +79,17 @@ def compile_graph(
             reason="unknown_capability",
         )
         for node in unknown
+    )
+    records = (
+        *records,
+        *(
+            MutationRecord(
+                action="rejected",
+                capability=node,
+                reason="unsupported_question_family",
+            )
+            for node in unsupported_for_family
+        ),
     )
 
     if question_family == "pattern_explanation":
@@ -81,11 +107,22 @@ def compile_graph(
             ),
         )
         return _compiled(
-            status="accepted" if not unknown else "degraded",
+            status="accepted" if not unknown and not unsupported_for_family else "degraded",
             target_metric=target_metric,
             accepted=accepted,
             proposed=proposed_graph,
-            rejected_or_degraded=unknown,
+            rejected_or_degraded=_dedupe((*unknown, *unsupported_for_family)),
+            records=records,
+        )
+
+    if question_family == "custom_baseline_comparison" and known_requested:
+        accepted = _dedupe(known_requested)
+        return _compiled(
+            status="accepted" if not unknown and not unsupported_for_family else "degraded",
+            target_metric=target_metric,
+            accepted=accepted,
+            proposed=proposed_graph,
+            rejected_or_degraded=_dedupe((*unknown, *unsupported_for_family)),
             records=records,
         )
 
@@ -115,7 +152,9 @@ def compile_graph(
         target_metric=target_metric,
         accepted=accepted,
         proposed=proposed_graph,
-        rejected_or_degraded=_dedupe((*unknown, *accepted, *skipped_supported)),
+        rejected_or_degraded=_dedupe(
+            (*unknown, *unsupported_for_family, *accepted, *skipped_supported)
+        ),
         records=records,
         node_status="degraded",
     )

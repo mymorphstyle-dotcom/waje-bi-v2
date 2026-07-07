@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 from tools.phase4.validate_phase4 import (
     _load_local_env,
+    _status_from_answer_package,
     run_eval_case,
     run_fixture_eval,
     run_real_2026h1_eval,
@@ -245,6 +247,48 @@ cases:
             ).query_hash,
         )
 
+    def test_real_eval_keeps_llm_env_available_for_workflow(self):
+        env = {
+            "WAJE_CLICKHOUSE_HOST": "localhost",
+            "WAJE_CLICKHOUSE_PORT": "8123",
+            "WAJE_CLICKHOUSE_USER": "reader",
+            "WAJE_CLICKHOUSE_PASSWORD": "secret",
+            "WAJE_CLICKHOUSE_DATABASE": "waje_bi",
+            "WAJE_CLICKHOUSE_SECURE": "false",
+            "WAJE_LLM_PROVIDER": "openai_compatible",
+            "WAJE_LLM_BASE_URL": "https://api.deepseek.com",
+            "WAJE_LLM_MODEL": "deepseek-v4-flash",
+            "WAJE_LLM_API_KEY": "test-key",
+            "WAJE_PHASE4_PATTERN_SQL": (
+                "SELECT month, phase, sum(amount) AS amount "
+                "FROM accepted_paid_success GROUP BY month, phase"
+            ),
+        }
+        seen = {}
+
+        def fake_workflow(_request):
+            seen["model"] = os.environ.get("WAJE_LLM_MODEL")
+            seen["api_key"] = os.environ.get("WAJE_LLM_API_KEY")
+            return SimpleNamespace(
+                status="failed",
+                failure_reason="sentinel",
+                answer_package=None,
+                artifact_path="",
+            )
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "tools.phase4.validate_phase4.ClickHouseRuntime.from_env",
+                return_value=FakeRealRuntime(),
+            ), patch(
+                "tools.phase4.validate_phase4.run_pattern_workflow",
+                side_effect=fake_workflow,
+            ):
+                run_real_eval(environ=env)
+
+        self.assertEqual(seen["model"], "deepseek-v4-flash")
+        self.assertEqual(seen["api_key"], "test-key")
+
     def test_fixture_cli_exit_code_fails_on_degraded_or_blocked(self):
         self.assertEqual(exit_code_for_result("fixture", "passed"), 0)
         self.assertEqual(exit_code_for_result("fixture", "degraded"), 1)
@@ -276,7 +320,7 @@ cases:
         self.assertTrue(result.passed)
         self.assertFalse(result.mismatches)
 
-    def test_real_eval_blocks_when_history_is_too_short(self):
+    def test_real_eval_degrades_when_history_is_too_short_but_query_succeeded(self):
         case = {
             "case_id": "short_history",
             "pattern_family": "intra_period",
@@ -298,10 +342,77 @@ cases:
                 llm_client=FakeLLMClient(),
             )
 
-        self.assertEqual(result.status, "blocked")
-        self.assertEqual(result.reason, "external_dependency_blocked")
-        self.assertEqual(result.owner, "data_engineering_owner")
+        self.assertEqual(result.status, "degraded")
+        self.assertIn("insufficient_comparable_periods", result.reason)
+        self.assertEqual(result.owner, "")
         self.assertFalse(result.business_conclusion_published)
+
+    def test_status_uses_primary_compare_evidence_not_only_pattern_scan(self):
+        package = {
+            "final_explanation": {"status": "passed"},
+            "sections": [
+                {
+                    "section_id": "evidence",
+                    "payload": {
+                        "evidence": [
+                            {
+                                "capability_id": "compare_periods",
+                                "typed_payload": {
+                                    "pattern_family": "custom_baseline",
+                                    "median_uplift": 0.52,
+                                    "direction_ratio": 1.0,
+                                    "comparable_periods": 2,
+                                },
+                                "strength": "high",
+                                "wording_limit": "supported",
+                                "limitations": [],
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+
+        status, reason = _status_from_answer_package(package, "custom_baseline")
+
+        self.assertEqual(status, "passed")
+        self.assertEqual(reason, "pattern_established")
+
+    def test_eval_case_passes_business_question_and_baseline_labels(self):
+        case = {
+            "case_id": "q2_vs_q1_labels",
+            "question": "2026年Q2相比Q1付费金额有没有变化？",
+            "pattern_family": "custom_baseline",
+            "time_window": "2026-01-01..2026-06-30",
+            "baseline": {"label": "Q1"},
+            "target": {"label": "Q2"},
+            "pattern_params": {
+                "period_key": "period",
+                "group_key": "group",
+                "target_group": "target",
+                "baseline_group": "baseline",
+                "min_periods": 1,
+            },
+            "required_capabilities": ["data_quality_check", "pattern_scan"],
+            "fixture_rows": [
+                {"period": "h1", "group": "baseline", "amount": 100},
+                {"period": "h1", "group": "target", "amount": 120},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_eval_case(
+                case,
+                mode="fixture",
+                artifact_root=tmpdir,
+                llm_client=FakeLLMClient(),
+            )
+            with open(result.artifact_path, encoding="utf-8") as handle:
+                artifact = json.load(handle)
+        answer_text = artifact["sections"][0]["payload"]["answer_text"]
+
+        self.assertIn("Q2", answer_text)
+        self.assertIn("Q1", answer_text)
 
     def test_eval_case_fails_when_llm_audit_is_missing(self):
         case = {

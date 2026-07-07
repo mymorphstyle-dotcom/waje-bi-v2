@@ -15,12 +15,12 @@ source:
       real_data_expected_on: "2026-07-05"
       runtime_source_status: current_snapshot_source_contract_accepted
   accepted_source_contracts:
-    - source_id: paid_order_detail_2026_h1
+    - source_id: paid_order_detail_20240101_20260704
       file: contracts/sources/paid-order-detail.source.yaml
       review_status: accepted_current_snapshot_2026-07-05
-      snapshot_exported_on: "2026-07-04"
-      coverage_start: "2026-01-01"
-      coverage_end: "2026-06-30"
+      snapshot_exported_on: "2026-07-05"
+      coverage_start: "2024-01-01"
+      coverage_end: "2026-07-04"
   evidence_linked_source_contracts:
     - source_id: market_dashboard_2024_2026
       file: contracts/sources/market-dashboard.source.yaml
@@ -117,9 +117,14 @@ semantic_boundary:
     decided_on: "2026-07-05"
     accepted_snapshot:
       source_contract: contracts/sources/paid-order-detail.source.yaml
-      exported_on: "2026-07-04"
-      coverage: complete_2026_january_through_june_dataset
-      late_arrivals_or_status_backfill: none_recorded_for_this_snapshot
+      source_id: paid_order_detail_20240101_20260704
+      exported_on: "2026-07-05"
+      coverage: current_full_payment_detail_dataset_2024-01-01_through_2026-07-04
+      late_arrivals_or_status_backfill: not_observed_in_current_intake
+      runtime_tables:
+        raw_table: paid_order_detail_raw_20240101_20260704
+        clean_table: paid_order_success_clean_20240101_20260704
+        daily_summary_table: paid_order_success_daily_20240101_20260704
   materiality_policy:
     decision_status: accepted_initial_policy
     decided_on: "2026-07-05"
@@ -466,7 +471,7 @@ quality_guards:
 
 known_gaps:
   - gap_id: physical_source_binding
-    description: Current 2026-01-01 through 2026-06-30 paid_order_detail source binding is accepted and loaded into the dev Postgres contract mirror; production runtime schema expansion remains later-phase work.
+    description: Current 2024-01-01 through 2026-07-04 paid_order_detail source binding is accepted and loaded into the dev Postgres contract mirror; production runtime schema expansion remains later-phase work.
     data_contract_state: contract_backed
     expected_owner: data_owner
   - gap_id: currency_policy

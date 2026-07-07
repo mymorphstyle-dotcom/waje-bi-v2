@@ -1,6 +1,10 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
+import re
+from time import perf_counter
 import warnings
-from typing import Any, Optional, TypedDict
+from typing import Any, Mapping, Optional, TypedDict
 
 from langchain_core._api.deprecation import LangChainPendingDeprecationWarning
 
@@ -23,10 +27,18 @@ from bi_agent.capabilities.pattern_scan import scan_pattern
 from bi_agent.capabilities.segment_bridge import segment_bridge
 from bi_agent.runtime.answer_package import build_answer_package
 from bi_agent.runtime.artifacts import persist_artifact, to_jsonable
+from bi_agent.runtime.capability_harness import (
+    PATTERN_COMPARE_CAPABILITIES,
+    execute_capability,
+)
+from bi_agent.runtime.capability_models import CapabilityRequest
+from bi_agent.runtime.capability_registry import llm_capability_cards
 from bi_agent.runtime.compiler import compile_graph
+from bi_agent.runtime.exploration_budget import default_budget, record_capability_call
 from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
 from bi_agent.runtime.llm_prompts import build_prompt
 from bi_agent.runtime.sql_safety import validate_select_only
+from bi_agent.runtime.wording import CAUSAL_WORDING, SINGLE_PERIOD_CONFIDENCE
 
 
 NON_RETRYABLE_FAILURE_TYPES = frozenset(
@@ -40,8 +52,21 @@ LLM_REQUIRED_TASKS = (
     "data_coverage_interpretation",
     "next_action",
     "evidence_interpretation",
+    "causal_audit",
     "answer_synthesis",
     "semantic_audit",
+)
+ROUTE_BLOCKED_CAPABILITY_IDS = frozenset(
+    {
+        "evidence_reduce",
+        "metric_coverage_profile",
+        "metric_timeseries",
+        "component_contribution",
+        "segment_breakdown",
+        "segment_shift_compare",
+        "candidate_dimension_screen",
+        "change_point_scan",
+    }
 )
 
 
@@ -52,6 +77,7 @@ class WorkflowState(TypedDict, total=False):
     validator_results: list[dict[str, Any]]
     llm_calls: list[dict[str, Any]]
     llm_client: Any
+    budget_state: Any
     intent: dict[str, Any]
     boundary_decision: dict[str, Any]
     clarification_outcome: dict[str, Any]
@@ -68,11 +94,14 @@ class WorkflowState(TypedDict, total=False):
     evidence_brief: dict[str, Any]
     next_action: dict[str, Any]
     evidence_interpretation: dict[str, Any]
+    causal_evidence_dossier: dict[str, Any]
+    causal_audit: dict[str, Any]
     answer_text: str
     draft_claims: list[dict[str, Any]]
     semantic_audit: dict[str, Any]
     verifier: dict[str, Any]
     final_explanation: dict[str, Any]
+    final_business_summary: str
     answer_package: dict[str, Any]
     artifact_path: str
 
@@ -170,6 +199,7 @@ def build_pattern_graph():
         ("promotion_policy_gate", _promotion_policy_gate),
         ("execute_joint_attribution", _execute_joint_attribution),
         ("interpret_evidence", _interpret_evidence),
+        ("audit_causal_implications", _audit_causal_implications),
         ("synthesize_answer", _synthesize_answer),
         ("semantic_audit", _semantic_audit),
         ("sanitize_answer", _sanitize_answer),
@@ -177,6 +207,7 @@ def build_pattern_graph():
         ("repair_answer", _repair_answer),
         ("generate_degraded_explanation", _generate_degraded_explanation),
         ("generate_blocked_explanation", _generate_blocked_explanation),
+        ("final_business_summary", _final_business_summary),
         ("persist_artifact", _persist_artifact),
     ):
         graph.add_node(node, _retrying_node(node, func))
@@ -251,7 +282,8 @@ def build_pattern_graph():
         },
     )
     graph.add_edge("execute_joint_attribution", "reduce_evidence")
-    graph.add_edge("interpret_evidence", "synthesize_answer")
+    graph.add_edge("interpret_evidence", "audit_causal_implications")
+    graph.add_edge("audit_causal_implications", "synthesize_answer")
     graph.add_edge("synthesize_answer", "semantic_audit")
     graph.add_conditional_edges(
         "semantic_audit",
@@ -268,15 +300,16 @@ def build_pattern_graph():
         "hard_verify_answer",
         _route_after_hard_verify,
         {
-            "passed": "persist_artifact",
+            "passed": "final_business_summary",
             "repair": "repair_answer",
             "ask": "generate_clarification",
             "degrade": "generate_degraded_explanation",
         },
     )
     graph.add_edge("repair_answer", "semantic_audit")
-    graph.add_edge("generate_degraded_explanation", "persist_artifact")
-    graph.add_edge("generate_blocked_explanation", "persist_artifact")
+    graph.add_edge("generate_degraded_explanation", "final_business_summary")
+    graph.add_edge("generate_blocked_explanation", "final_business_summary")
+    graph.add_edge("final_business_summary", "persist_artifact")
     graph.add_edge("persist_artifact", END)
     return graph.compile()
 
@@ -285,29 +318,32 @@ def _retrying_node(node_name, func):
     def run(state: WorkflowState) -> WorkflowState:
         max_attempts = 2
         for attempt in range(1, max_attempts + 1):
+            started = perf_counter()
             event = _checkpoint(state, node_name, attempt)
             try:
                 result = func(state)
-                event["status"] = "completed"
+                _finish_checkpoint(event, "completed", started)
+                if node_name == "persist_artifact":
+                    _refresh_persisted_answer_package(result)
                 return result
             except WorkflowFailure as exc:
-                event["status"] = "failed"
                 event["failure_type"] = exc.failure_type
                 event["reason"] = str(exc)
                 if (
                     exc.failure_type not in NON_RETRYABLE_FAILURE_TYPES
                     and attempt < max_attempts
                 ):
-                    event["status"] = "retrying"
+                    _finish_checkpoint(event, "retrying", started)
                     continue
+                _finish_checkpoint(event, "failed", started)
                 raise
             except Exception as exc:
-                event["status"] = "failed"
                 event["failure_type"] = "technical"
                 event["reason"] = str(exc)
                 if attempt < max_attempts:
-                    event["status"] = "retrying"
+                    _finish_checkpoint(event, "retrying", started)
                     continue
+                _finish_checkpoint(event, "failed", started)
                 raise WorkflowFailure(str(exc), failure_type="technical")
         return state
 
@@ -322,35 +358,117 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
     output = _invoke_llm(
         state,
         "business_intent",
-        {
-            "question": request.get("question", "Explain the paid amount pattern."),
-            "question_family_hint": request.get("question_family", "pattern_explanation"),
-            "target_metric_hint": request.get("target_metric", "paid_amount"),
-            "pattern_family_hint": request.get("pattern_family", "intra_period"),
-            "scope_hint": request.get("scope", "full_sample"),
-            "time_window_hint": request.get("time_window", "2024-01..2026-05"),
-        },
+        _business_intent_payload(request),
     )
     state["intent"] = {
-        "question_family": request.get("question_family")
-        or output.get("question_family")
-        or "pattern_explanation",
-        "target_metric": request.get("target_metric")
-        or output.get("target_metric")
-        or "paid_amount",
+        "question_family": output.get("question_family") or "pattern_explanation",
+        "target_metric": _normalize_target_metric(
+            request.get("target_metric")
+            or output.get("target_metric")
+            or "paid_amount"
+        ),
         "pattern_family": request.get("pattern_family")
         or output.get("pattern_family")
         or "intra_period",
         "pattern_params": dict(request.get("pattern_params", {})),
-        "scope": request.get("scope") or output.get("scope") or "full_sample",
+        "scope": _normalize_scope(
+            request.get("scope") or output.get("scope") or "full_sample"
+        ),
         "time_window": request.get("time_window")
         or output.get("time_window")
         or "2024-01..2026-05",
-        "target_claim": output.get("target_claim", "pattern_explanation"),
+        "target_claim": _normalize_target_claim(
+            output.get("target_claim", "pattern_explanation")
+        ),
         "baseline_candidates": list(output.get("baseline_candidates", [])),
-        "requested_nodes": tuple(request.get("requested_nodes", ())),
+        "baseline": request.get("baseline") or output.get("baseline") or {},
+        "target": request.get("target") or output.get("target") or {},
+        "requested_nodes": (),
     }
     return state
+
+
+def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "question": request.get("question", "Explain the paid amount question.")
+    }
+    context = {
+        key: request[key]
+        for key in (
+            "target_metric",
+            "pattern_family",
+            "pattern_params",
+            "scope",
+            "time_window",
+            "baseline",
+            "target",
+        )
+        if key in request and not _empty_business_context_value(request[key])
+    }
+    if context:
+        payload["bound_business_context"] = context
+    return payload
+
+
+def _normalize_scope(scope: Any) -> str:
+    if isinstance(scope, Mapping):
+        scope = (
+            scope.get("value")
+            or scope.get("type")
+            or scope.get("label")
+            or scope.get("scope")
+        )
+    value = str(scope or "").strip()
+    aliases = {
+        "all",
+        "all_sample",
+        "entire_sample",
+        "full",
+        "full sample",
+        "full_sample",
+        "overall",
+        "全部",
+        "全量",
+        "全量样本",
+        "全样本",
+        "整体",
+        "整体样本",
+        "全体",
+    }
+    if value.lower() in aliases:
+        return "full_sample"
+    return value or "full_sample"
+
+
+def _normalize_target_claim(value: Any) -> str:
+    text = str(value or "pattern_explanation")
+    return text.replace("统计显著", "符合重要性规则").replace("显著", "明显")
+
+
+def _normalize_target_metric(metric: Any) -> str:
+    value = str(metric or "").strip()
+    aliases = {
+        "paid_amount",
+        "payment_amount",
+        "paid_amount_ngn",
+        "daily_paid_amount",
+        "avg_paid_amount",
+        "avg_daily_paid_amount",
+        "daily_average_paid_amount",
+    }
+    if value in aliases:
+        return "paid_amount"
+    return value or "paid_amount"
+
+
+def _empty_business_context_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and not value:
+        return True
+    if isinstance(value, (dict, list, tuple, set)) and not value:
+        return True
+    return False
 
 
 def _decide_question_boundary(state: WorkflowState) -> WorkflowState:
@@ -402,6 +520,7 @@ def _generate_clarification(state: WorkflowState) -> WorkflowState:
     )
     state["clarification_outcome"] = {
         "status": "user_selected" if choice else "question_tool_opened",
+        "boundary_status": state["boundary_decision"].get("boundary_status"),
         "questions": output.get("questions")
         or state["boundary_decision"].get("clarification_questions", []),
         "recommended_assumption": output.get("recommended_assumption")
@@ -435,29 +554,26 @@ def _confirm_business_understanding(state: WorkflowState) -> WorkflowState:
 
 def _design_analysis_route(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "design_analysis_route")
-    request = state["request"]
+    budget = state.get("budget_state") or default_budget("ordinary")
+    state["budget_state"] = budget
     output = _invoke_llm(
         state,
         "analysis_route",
         {
             "intent": state["intent"],
             "confirmed_understanding": state["confirmed_understanding"],
-            "known_capabilities": (
-                "data_quality_check",
-                "pattern_scan",
-                "formula_decompose",
-                "event_evidence",
-                "segment_bridge",
-                "outlier_scan",
-                "joint_attribution",
-                "answer_verify",
-            ),
-            "requested_nodes_hint": tuple(request.get("requested_nodes", ())),
+            "known_capabilities": _route_capability_cards(),
+            "budget_state": budget.to_llm_summary(),
         },
     )
-    requested = tuple(output.get("requested_nodes") or request.get("requested_nodes", ()))
+    requested = _requested_node_ids(
+        output.get("requested_nodes"),
+        excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
+    )
+    requested = _normalize_route_requested_nodes(requested, state["intent"])
     if not requested:
         requested = ("pattern_scan",)
+    output = _align_route_output_to_requested(output, requested)
     state["analysis_route"] = {**output, "requested_nodes": requested}
     state["intent"]["requested_nodes"] = requested
     return state
@@ -489,7 +605,14 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
             "repair_attempt": state["repair_attempts"],
         },
     )
-    requested = tuple(output.get("requested_nodes") or ("pattern_scan",))
+    requested = _requested_node_ids(
+        output.get("requested_nodes"),
+        excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
+    )
+    requested = _normalize_route_requested_nodes(requested, state["intent"])
+    if not requested:
+        requested = ("pattern_scan",)
+    output = _align_route_output_to_requested(output, requested)
     state["analysis_route"] = {**state["analysis_route"], **output, "requested_nodes": requested}
     state["intent"]["requested_nodes"] = requested
     return state
@@ -548,17 +671,47 @@ def _validate_runtime_binding(state: WorkflowState) -> WorkflowState:
 
 def _interpret_data_coverage(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "interpret_data_coverage")
-    state["coverage_interpretation"] = _invoke_llm(
+    coverage = _invoke_llm(
         state,
         "data_coverage_interpretation",
         {
             "intent": state["intent"],
             "schema_summary": state["schema"],
+            "data_result_summary": _data_result_summary(
+                state["request"].get("rows") or []
+            ),
             "validator_results": state["validator_results"],
             "sql_hash": state["sql_hash"],
         },
     )
+    if coverage.get("coverage_status") == "blocked":
+        block_reason = _local_coverage_block_reason(state)
+        if block_reason:
+            coverage = {**coverage, "local_block_reason": block_reason}
+        else:
+            coverage = {
+                **coverage,
+                "coverage_status": "sufficient",
+                "local_override": "blocked_without_local_evidence",
+            }
+    state["coverage_interpretation"] = coverage
     return state
+
+
+def _data_result_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    fields = list(rows[0].keys()) if rows else []
+    value_counts = {}
+    for field in fields:
+        values = {str(row.get(field)) for row in rows if field in row}
+        if len(values) <= 30:
+            value_counts[field] = sorted(values)
+        else:
+            value_counts[field] = {"distinct_count": len(values)}
+    return {
+        "row_count": len(rows),
+        "fields": fields,
+        "field_values": value_counts,
+    }
 
 
 def _execute_capabilities(state: WorkflowState) -> WorkflowState:
@@ -568,6 +721,91 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
     evidence = []
     compiled = state["compiled_graph"]
     capabilities = tuple(compiled.mutations.accepted_graph)
+    budget = state.get("budget_state") or default_budget("ordinary")
+
+    if "data_quality_profile" in capabilities:
+        evidence.append(
+            execute_capability(
+                CapabilityRequest(
+                    run_id=state["run_id"],
+                    accepted_graph_id=f"{state['run_id']}:accepted_graph",
+                    graph_version=1,
+                    capability_id="data_quality_profile",
+                    question_family=state["intent"]["question_family"],
+                    target_claim=state["intent"].get("target_claim", ""),
+                    claim_type="contract_coverage_and_trust_boundary",
+                    metric=state["intent"]["target_metric"],
+                    scope=state["intent"]["scope"],
+                    time_window=state["intent"]["time_window"],
+                    baseline=state["intent"].get("baseline", {}),
+                    target=state["intent"].get("target", {}),
+                    grain=state["intent"]["pattern_family"],
+                    filters={},
+                    dimensions=(),
+                    contract_versions={},
+                    role=state["request"].get("role", "analyst"),
+                    budget_state=budget,
+                    llm_business_reason="检查本次聚合结果是否足以支撑业务判断。",
+                    params={
+                        "rows": rows,
+                        "result_refs": query_ref,
+                        "required_fields": tuple(
+                            state["request"].get("required_fields", ())
+                        ),
+                    },
+                )
+            )
+        )
+        budget = record_capability_call(budget)
+
+    for capability_id in (
+        capability
+        for capability in capabilities
+        if capability in PATTERN_COMPARE_CAPABILITIES
+    ):
+        pattern_family = state["intent"]["pattern_family"]
+        pattern_params = dict(state["intent"].get("pattern_params", {}))
+        if pattern_family == "intra_period":
+            pattern_params.setdefault("target_phase", "start")
+        target = state["intent"].get("target") or {
+            "label": _target_label_from_pattern_params(pattern_params)
+        }
+        baseline = state["intent"].get("baseline") or {
+            "label": _baseline_label_from_pattern_params(pattern_params)
+        }
+        evidence.append(
+            execute_capability(
+                CapabilityRequest(
+                    run_id=state["run_id"],
+                    accepted_graph_id=f"{state['run_id']}:accepted_graph",
+                    graph_version=1,
+                    capability_id=capability_id,
+                    question_family=state["intent"]["question_family"],
+                    target_claim=state["intent"].get("target_claim", ""),
+                    claim_type=state["intent"].get("target_claim", ""),
+                    metric=state["intent"]["target_metric"],
+                    scope=state["intent"]["scope"],
+                    time_window=state["intent"]["time_window"],
+                    baseline=baseline,
+                    target=target,
+                    grain=pattern_family,
+                    filters={},
+                    dimensions=(),
+                    contract_versions={},
+                    role=state["request"].get("role", "analyst"),
+                    budget_state=budget,
+                    llm_business_reason="执行已接受的业务对比能力。",
+                    params={
+                        "rows": rows,
+                        "result_refs": query_ref,
+                        "pattern_family": pattern_family,
+                        **pattern_params,
+                    },
+                )
+            )
+        )
+        budget = record_capability_call(budget)
+    state["budget_state"] = budget
 
     if "data_quality_check" in capabilities:
         evidence.append(
@@ -626,12 +864,14 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
 
 def _reduce_evidence(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "reduce_evidence")
-    pattern_ref = f"pattern_scan:{state['intent']['pattern_family']}"
-    pattern = _evidence_by_ref(state.get("evidence", [])).get(pattern_ref, {})
+    pattern = _pattern_evidence(state)
+    pattern_ref = pattern.get(
+        "evidence_ref", f"pattern_scan:{state['intent']['pattern_family']}"
+    )
     state["evidence_brief"] = {
         "pattern_ref": pattern_ref,
         "pattern_status": pattern.get("strength", "insufficient"),
-        "pattern_established": bool(pattern.get("established")),
+        "pattern_established": _evidence_established(pattern),
         "wording_limit": pattern.get("wording_limit", "unknown"),
         "limitations": sorted(
             {
@@ -673,12 +913,144 @@ def _promotion_direction(state: WorkflowState) -> WorkflowState:
 
 def _promotion_policy_gate(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "promotion_policy_gate")
-    requested = tuple(state.get("analysis_route", {}).get("promotion", {}).get("requested_nodes", ()))
+    requested = _requested_node_ids(
+        state.get("analysis_route", {}).get("promotion", {}).get("requested_nodes", ())
+    )
     if "joint_attribution" in requested:
         _current_event(state)["route"] = "accepted"
     else:
         _current_event(state)["route"] = "degraded_or_skip"
     return state
+
+
+def _route_capability_cards() -> list[dict[str, Any]]:
+    return [
+        card
+        for card in llm_capability_cards()
+        if card.get("capability_id") not in ROUTE_BLOCKED_CAPABILITY_IDS
+    ]
+
+
+def _normalize_route_requested_nodes(
+    nodes: tuple[str, ...],
+    intent: Mapping[str, Any],
+) -> tuple[str, ...]:
+    normalized = []
+    for node in nodes:
+        value = node
+        if (
+            intent.get("pattern_family") == "custom_baseline"
+            and node == "rolling_window_compare"
+        ):
+            value = "compare_periods"
+        normalized.append(value)
+    return tuple(dict.fromkeys(normalized))
+
+
+def _align_route_output_to_requested(
+    output: Mapping[str, Any],
+    requested: tuple[str, ...],
+) -> dict[str, Any]:
+    value = dict(output)
+    visible_text = json.dumps(
+        {
+            "route_summary": value.get("route_summary", ""),
+            "expected_evidence": value.get("expected_evidence", []),
+            "decision_summary": value.get("decision_summary", ""),
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+    stale_tokens = {
+        "metric_timeseries",
+        "rolling_window_compare",
+        "指标时间序列",
+        "滚动窗口对比",
+    }
+    if not any(token in visible_text for token in stale_tokens):
+        return value
+    labels = _capability_path_labels(requested)
+    value["route_summary"] = f"本次采用{labels}完成分析，路径已按当前问题口径和可执行能力对齐。"
+    value["expected_evidence"] = [
+        f"{label}：产出本次业务判断需要的证据和限制说明。"
+        for label in _capability_labels(requested)
+    ]
+    value["decision_summary"] = (
+        "已移除不适合当前口径或当前未执行的候选路径，保留可执行的业务分析能力。"
+    )
+    return value
+
+
+def _requested_node_ids(
+    nodes: Any,
+    *,
+    excluded: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
+    result = []
+    for item in nodes or ():
+        if isinstance(item, str):
+            value = item
+        elif isinstance(item, dict):
+            value = (
+                item.get("capability_id")
+                or item.get("capability")
+                or item.get("node_id")
+                or item.get("node")
+                or item.get("id")
+            )
+        else:
+            value = ""
+        if value and value not in excluded:
+            result.append(str(value))
+    return tuple(dict.fromkeys(result))
+
+
+def _target_label_from_pattern_params(pattern_params: dict[str, Any]) -> str:
+    value = (
+        pattern_params.get("target_phase")
+        or pattern_params.get("target_group")
+        or pattern_params.get("target_weekdays")
+        or pattern_params.get("target_weekday")
+        or pattern_params.get("target_window")
+        or pattern_params.get("target_bucket")
+        or "target"
+    )
+    return _business_label(value)
+
+
+def _baseline_label_from_pattern_params(pattern_params: dict[str, Any]) -> str:
+    value = (
+        pattern_params.get("baseline_phase")
+        or pattern_params.get("baseline_group")
+        or pattern_params.get("baseline_weekdays")
+        or pattern_params.get("baseline_weekday")
+        or pattern_params.get("baseline_window")
+        or pattern_params.get("baseline_bucket")
+        or "baseline"
+    )
+    return _business_label(value)
+
+
+def _target_label(state: WorkflowState) -> str:
+    intent = state.get("intent", {})
+    label = intent.get("target", {}).get("label")
+    if label:
+        return str(label)
+    return _target_label_from_pattern_params(dict(intent.get("pattern_params", {})))
+
+
+def _baseline_label(state: WorkflowState) -> str:
+    intent = state.get("intent", {})
+    label = intent.get("baseline", {}).get("label")
+    if label:
+        return str(label)
+    return _baseline_label_from_pattern_params(dict(intent.get("pattern_params", {})))
+
+
+def _business_label(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(item) for item in value)
+    return str(value)
 
 
 def _execute_joint_attribution(state: WorkflowState) -> WorkflowState:
@@ -697,16 +1069,142 @@ def _execute_joint_attribution(state: WorkflowState) -> WorkflowState:
 
 def _interpret_evidence(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "interpret_evidence")
-    state["evidence_interpretation"] = _invoke_llm(
+    state["evidence_interpretation"] = _normalize_evidence_interpretation_output(
+        _invoke_llm(
+            state,
+            "evidence_interpretation",
+            {
+                "intent": state["intent"],
+                "evidence_brief": state["evidence_brief"],
+                "evidence": state["evidence"],
+            },
+        ),
         state,
-        "evidence_interpretation",
+    )
+    return state
+
+
+def _audit_causal_implications(state: WorkflowState) -> WorkflowState:
+    _maybe_force_node_failure(state, "audit_causal_implications")
+    dossier = _build_causal_evidence_dossier(state)
+    state["causal_evidence_dossier"] = dossier
+    state["causal_audit"] = _invoke_llm(
+        state,
+        "causal_audit",
         {
-            "intent": state["intent"],
-            "evidence_brief": state["evidence_brief"],
-            "evidence": state["evidence"],
+            "intent": state.get("intent", {}),
+            "evidence_brief": state.get("evidence_brief", {}),
+            "evidence": state.get("evidence", []),
+            "evidence_interpretation": state.get("evidence_interpretation", {}),
+            "causal_evidence_dossier": dossier,
         },
     )
     return state
+
+
+def _build_causal_evidence_dossier(state: WorkflowState) -> dict[str, Any]:
+    intent = state.get("intent", {})
+    pattern = _pattern_evidence(state)
+    payload = pattern.get("typed_payload", {})
+    limitations = list(state.get("evidence_brief", {}).get("limitations", ()))
+    median_uplift = payload.get("median_uplift")
+    return {
+        "target_claim": intent.get("target_claim", ""),
+        "question_family": intent.get("question_family", ""),
+        "scope": intent.get("scope", ""),
+        "time_window": intent.get("time_window", ""),
+        "observed_pattern": {
+            "metric": _business_metric_label(state),
+            "pattern_family": payload.get("pattern_family") or intent.get("pattern_family"),
+            "effect_size": median_uplift,
+            "direction": _direction_from_median_uplift(median_uplift),
+            "direction_ratio": payload.get("direction_ratio"),
+            "comparable_periods": payload.get("comparable_periods"),
+            "strength": pattern.get("strength"),
+            "wording_limit": pattern.get("wording_limit"),
+            "limitations": limitations,
+        },
+        "temporal_order": {
+            "known": False,
+            "summary": "当前证据未提供可验证的先后顺序。",
+        },
+        "comparison_context": {
+            "baseline": _baseline_label(state),
+            "target": _target_label(state),
+            "control_or_counterfactual": "none",
+            "summary": "当前证据来自已执行的业务对比路径。",
+        },
+        "segment_consistency": [],
+        "event_overlap": [],
+        "alternative_explanations": [],
+        "negative_evidence": limitations,
+        "missing_evidence": [
+            "缺少独立因果验证、对照或机制证据。",
+        ],
+        "data_limits": limitations,
+    }
+
+
+def _direction_from_median_uplift(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    if value > 0:
+        return "target_higher"
+    if value < 0:
+        return "target_lower"
+    return "none"
+
+
+def _normalize_evidence_interpretation_output(
+    output: dict[str, Any], state: WorkflowState
+) -> dict[str, Any]:
+    return {
+        key: _normalize_evidence_interpretation_text(value, state)
+        if isinstance(value, str)
+        else value
+        for key, value in output.items()
+    }
+
+
+def _normalize_evidence_interpretation_text(value: str, state: WorkflowState) -> str:
+    normalized = _normalize_custom_baseline_direction(value, state)
+    if _pattern_has_negative_answer_evidence(state):
+        normalized = _businessize_negative_pattern_text(normalized)
+    return normalized
+
+
+def _businessize_negative_pattern_text(value: str) -> str:
+    value = value.replace("目标索赔", "目标声明")
+    value = value.replace("方向比", "方向一致性")
+    value = value.replace("90个数据点", "90个阶段聚合点")
+    value = re.sub(
+        r"中位提升为-(\d+(?:\.\d+)?)%",
+        r"中位变化为下降 \1%",
+        value,
+    )
+    value = re.sub(
+        r"全部月份均未超过重要性阈值（?0?\.03）?",
+        "正向月份也未达到当前重要性阈值",
+        value,
+    )
+    value = value.replace("低于重要性阈值的限制", "变化幅度不足以支持目标声明")
+    return value
+
+
+def _normalize_custom_baseline_direction(value: str, state: WorkflowState) -> str:
+    intent = state.get("intent", {})
+    if intent.get("pattern_family") != "custom_baseline":
+        return value
+    baseline = str(intent.get("baseline", {}).get("label") or "")
+    target = str(intent.get("target", {}).get("label") or "")
+    if not baseline or not target:
+        return value
+    return (
+        value.replace(f"{baseline} 相比 {target}", f"{target} 相比 {baseline}")
+        .replace(f"{baseline}相比{target}", f"{target} 相比 {baseline}")
+        .replace("中位数提升", "对比提升")
+        .replace("中位数下降", "对比下降")
+    )
 
 
 def _synthesize_answer(state: WorkflowState) -> WorkflowState:
@@ -720,6 +1218,7 @@ def _synthesize_answer(state: WorkflowState) -> WorkflowState:
             "evidence_brief": state["evidence_brief"],
             "evidence": state["evidence"],
             "evidence_refs": [item.get("evidence_ref") for item in state["evidence"]],
+            "answer_context": _answer_synthesis_context(state),
         },
     )
     state["answer_text"] = _weaken_unsupported_causal_wording(output.get("answer_text", ""))
@@ -727,8 +1226,7 @@ def _synthesize_answer(state: WorkflowState) -> WorkflowState:
         output.get("claims"),
         state,
     )
-    if _single_period_pattern(state):
-        state["answer_text"] = state["draft_claims"][0]["text"]
+    _ensure_business_narrative_answer(state)
     return state
 
 
@@ -740,7 +1238,10 @@ def _semantic_audit(state: WorkflowState) -> WorkflowState:
         {
             "answer_text": state.get("answer_text", ""),
             "draft_claims": state["draft_claims"],
+            "evidence": state.get("evidence", []),
             "evidence_brief": state["evidence_brief"],
+            "evidence_refs": [item.get("evidence_ref") for item in state.get("evidence", [])],
+            "answer_context": _answer_synthesis_context(state),
             "wording_boundary": "causal and main-driver wording require explicit supporting evidence",
         },
     )
@@ -779,20 +1280,20 @@ def _repair_answer(state: WorkflowState) -> WorkflowState:
             "semantic_audit": state["semantic_audit"],
             "verifier": state.get("verifier", {}),
             "evidence_brief": state["evidence_brief"],
+            "answer_context": _answer_synthesis_context(state),
         },
     )
     state["answer_text"] = _weaken_unsupported_causal_wording(
         output.get("answer_text", state.get("answer_text", ""))
     )
     state["draft_claims"] = _claims_from_llm_or_default(output.get("claims"), state)
-    if _single_period_pattern(state):
-        state["answer_text"] = state["draft_claims"][0]["text"]
+    _ensure_business_narrative_answer(state)
     return state
 
 
 def _generate_degraded_explanation(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "generate_degraded_explanation")
-    state["final_explanation"] = _invoke_llm(
+    output = _invoke_llm(
         state,
         "degraded_explanation",
         {
@@ -801,6 +1302,7 @@ def _generate_degraded_explanation(state: WorkflowState) -> WorkflowState:
             "verifier": state.get("verifier", {}),
         },
     )
+    state["final_explanation"] = _sanitize_terminal_explanation(output, state, "degraded")
     if "evidence" not in state:
         state["evidence"] = []
     if "draft_claims" not in state:
@@ -811,7 +1313,7 @@ def _generate_degraded_explanation(state: WorkflowState) -> WorkflowState:
 def _generate_blocked_explanation(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "generate_blocked_explanation")
     if "final_explanation" not in state:
-        state["final_explanation"] = _invoke_llm(
+        output = _invoke_llm(
             state,
             "blocked_explanation",
             {
@@ -820,6 +1322,7 @@ def _generate_blocked_explanation(state: WorkflowState) -> WorkflowState:
                 "validator_results": state.get("validator_results", []),
             },
         )
+        state["final_explanation"] = _sanitize_terminal_explanation(output, state, "blocked")
     if "evidence" not in state:
         state["evidence"] = []
     if "draft_claims" not in state:
@@ -827,9 +1330,39 @@ def _generate_blocked_explanation(state: WorkflowState) -> WorkflowState:
     return state
 
 
+def _final_business_summary(state: WorkflowState) -> WorkflowState:
+    _maybe_force_node_failure(state, "final_business_summary")
+    output = _invoke_llm(
+        state,
+        "final_business_summary",
+        {
+            "intent": state.get("intent", {}),
+            "confirmed_understanding": state.get("confirmed_understanding", {}),
+            "accepted_graph": to_jsonable(
+                state.get("compiled_graph").mutations.accepted_graph
+                if state.get("compiled_graph")
+                else ()
+            ),
+            "evidence_brief": state.get("evidence_brief", {}),
+            "evidence_interpretation": state.get("evidence_interpretation", {}),
+            "answer_text": state.get("answer_text", ""),
+            "claims": state.get("draft_claims", []),
+            "semantic_audit": state.get("semantic_audit", {}),
+            "verifier": state.get("verifier", {}),
+            "final_explanation": state.get("final_explanation", {}),
+            "checkpoint_summary": _checkpoint_summary(state),
+        },
+    )
+    state["final_business_summary"] = _weaken_unsupported_causal_wording(
+        output.get("summary_text", "")
+    )
+    if _final_summary_needs_display_repair(state["final_business_summary"], state):
+        state["final_business_summary"] = _final_business_summary_fallback(state)
+    return state
+
+
 def _persist_artifact(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "persist_artifact")
-    _current_event(state)["status"] = "completed"
     package = _build_answer_package_from_state(state)
     artifact_path = persist_artifact(
         package,
@@ -869,8 +1402,26 @@ def _route_after_coverage(state: WorkflowState) -> str:
     if status == "blocked":
         return "block"
     if status == "coverage_gap_but_answerable":
-        return "degrade"
+        return "sufficient"
     return "sufficient"
+
+
+def _local_coverage_block_reason(state: WorkflowState) -> str:
+    for result in state.get("validator_results", ()):
+        if not result.get("ok", True):
+            return str(result.get("validator") or "validator_failed")
+    rows = list(state.get("request", {}).get("rows") or [])
+    if not rows:
+        return "no_rows"
+    required_fields = tuple(state.get("request", {}).get("required_fields") or ())
+    if required_fields:
+        available_fields: set[str] = set()
+        for row in rows:
+            available_fields.update(str(field) for field in row.keys())
+        missing = [field for field in required_fields if field not in available_fields]
+        if missing:
+            return "missing_required_fields"
+    return ""
 
 
 def _route_after_next_action(state: WorkflowState) -> str:
@@ -896,8 +1447,24 @@ def _route_after_next_action(state: WorkflowState) -> str:
         if _pattern_supports_bounded_answer(state):
             _current_event(state)["route"] = "degrade_overridden_to_bounded_answer"
             return "synthesize"
+        if _pattern_has_negative_answer_evidence(state):
+            state["next_action"] = {
+                **state.get("next_action", {}),
+                "next_action": "synthesize_answer",
+                "decision_summary": (
+                    "当前数据足以回答这个假设，但证据不支持目标模式；"
+                    "进入答案合成，输出不支持的业务结论和限制项。"
+                ),
+            }
+            _current_event(state)["route"] = "degrade_overridden_to_negative_answer"
+            return "synthesize"
         return "degrade"
-    return "synthesize" if _pattern_supports_bounded_answer(state) else "degrade"
+    return (
+        "synthesize"
+        if _pattern_supports_bounded_answer(state)
+        or _pattern_has_negative_answer_evidence(state)
+        else "degrade"
+    )
 
 
 def _route_after_promotion_policy(state: WorkflowState) -> str:
@@ -955,8 +1522,11 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         semantic_audit=state.get("semantic_audit", {}),
         final_explanation=state.get("final_explanation", {}),
         answer_text=state.get("answer_text", ""),
+        final_business_summary=state.get("final_business_summary", ""),
         coverage_interpretation=state.get("coverage_interpretation", {}),
         clarification_outcome=state.get("clarification_outcome", {}),
+        causal_audit=state.get("causal_audit", {}),
+        causal_evidence_dossier=state.get("causal_evidence_dossier", {}),
     )
 
 
@@ -979,9 +1549,44 @@ def _checkpoint(state: WorkflowState, node_name: str, attempt: int) -> dict[str,
         "status": "running",
         "label": _BUSINESS_LABELS.get(node_name, node_name),
         "llm": node_name in _LLM_NODE_NAMES,
+        "started_at": _utc_now(),
     }
     state["checkpoint_events"].append(event)
     return event
+
+
+def _finish_checkpoint(event: dict[str, Any], status: str, started: float) -> None:
+    event["status"] = status
+    event["finished_at"] = _utc_now()
+    event["duration_ms"] = round((perf_counter() - started) * 1000, 3)
+
+
+def _refresh_persisted_answer_package(state: WorkflowState) -> None:
+    package = state.get("answer_package")
+    if not package:
+        return
+    package["checkpoint_events"] = to_jsonable(state.get("checkpoint_events", ()))
+    state["answer_package"] = package
+    persist_artifact(
+        package,
+        artifact_root=state["request"].get("artifact_root", "artifacts/phase-4"),
+    )
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _checkpoint_summary(state: WorkflowState) -> list[dict[str, Any]]:
+    return [
+        {
+            "label": event.get("label"),
+            "status": event.get("status"),
+            "route": event.get("route"),
+            "llm": event.get("llm"),
+        }
+        for event in state.get("checkpoint_events", ())
+    ]
 
 
 def _current_event(state: WorkflowState) -> dict[str, Any]:
@@ -1010,9 +1615,8 @@ def _evidence_by_ref(evidence: list[dict[str, Any]]) -> dict[str, dict[str, Any]
 
 
 def _pattern_supports_bounded_answer(state: WorkflowState) -> bool:
-    pattern_ref = f"pattern_scan:{state['intent']['pattern_family']}"
-    pattern = _evidence_by_ref(state.get("evidence", [])).get(pattern_ref, {})
-    if pattern.get("established"):
+    pattern = _pattern_evidence(state)
+    if _evidence_established(pattern):
         return True
     return pattern.get("strength") in {"high", "medium"} and pattern.get("wording_limit") in {
         "supported",
@@ -1020,15 +1624,30 @@ def _pattern_supports_bounded_answer(state: WorkflowState) -> bool:
     }
 
 
+def _pattern_has_negative_answer_evidence(state: WorkflowState) -> bool:
+    pattern = _pattern_evidence(state)
+    if not pattern:
+        return False
+    limitations = set(state.get("evidence_brief", {}).get("limitations", ()))
+    if limitations & {"no_rows", "no_comparable_periods", "insufficient_values"}:
+        return False
+    try:
+        comparable_periods = int(pattern.get("typed_payload", {}).get("comparable_periods", 0))
+    except (TypeError, ValueError):
+        comparable_periods = 0
+    if comparable_periods <= 0:
+        return False
+    return bool(limitations & {"weak_direction", "below_materiality_floor"})
+
+
 def _sanitize_to_bounded_pattern_answer(state: WorkflowState) -> None:
     claim = _default_claim_from_evidence(state)
     state["draft_claims"] = [claim]
-    state["answer_text"] = claim["text"]
+    state["answer_text"] = _business_narrative_answer(state, claim)
 
 
 def _single_period_pattern(state: WorkflowState) -> bool:
-    pattern_ref = f"pattern_scan:{state['intent']['pattern_family']}"
-    pattern = _evidence_by_ref(state.get("evidence", [])).get(pattern_ref, {})
+    pattern = _pattern_evidence(state)
     try:
         return int(pattern.get("typed_payload", {}).get("comparable_periods", 0)) <= 1
     except (TypeError, ValueError):
@@ -1040,27 +1659,666 @@ def _claims_from_llm_or_default(claims: Any, state: WorkflowState) -> list[dict[
     return [_default_claim_from_evidence(state)]
 
 
+def _ensure_business_narrative_answer(state: WorkflowState) -> None:
+    claims = state.get("draft_claims") or []
+    if not claims:
+        return
+    answer_text = state.get("answer_text", "")
+    if _answer_needs_business_narrative(answer_text) or (
+        _single_period_pattern(state) and _answer_has_single_period_overclaim(answer_text)
+    ):
+        state["answer_text"] = _business_narrative_answer(state, claims[0])
+
+
+def _answer_needs_business_narrative(text: Any) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return True
+    required_marker_groups = (
+        ("理解",),
+        ("分析思路", "分析路径", "怎么分析", "证据路径"),
+        ("关键发现", "发现"),
+        ("结论",),
+        ("需要注意", "注意", "继续观察", "可观察"),
+    )
+    return any(not any(marker in value for marker in group) for group in required_marker_groups)
+
+
+def _answer_has_single_period_overclaim(text: Any) -> bool:
+    value = str(text or "").lower()
+    markers = (
+        "high-confidence",
+        "non-random",
+        "statistically significant",
+        "统计显著",
+        "显著规律",
+        "可靠规律",
+        "稳定规律",
+        "非随机",
+    )
+    return any(marker in value for marker in markers)
+
+
+def _answer_synthesis_context(state: WorkflowState) -> dict[str, Any]:
+    claim = _default_claim_from_evidence(state)
+    pattern = _pattern_evidence(state)
+    payload = pattern.get("typed_payload", {})
+    return {
+        "question_understanding": _question_understanding_sentence(state),
+        "analysis_path": _analysis_path_sentence(state),
+        "key_findings": {
+            "claim_text": claim["text"],
+            "pattern_family": state["intent"]["pattern_family"],
+            "pattern_label": _pattern_label(state["intent"]["pattern_family"]),
+            "metric_label": _business_metric_label(state),
+            "median_uplift": payload.get("median_uplift"),
+            "direction_ratio": payload.get("direction_ratio"),
+            "comparable_periods": payload.get("comparable_periods"),
+            "min_periods": payload.get("min_periods"),
+            "materiality_floor": payload.get("materiality_floor"),
+            "strength": pattern.get("strength"),
+            "wording_limit": pattern.get("wording_limit"),
+            "established": pattern.get("established"),
+        },
+        "evidence_boundary": _attention_sentence(state),
+        "causal_evidence_dossier": state.get("causal_evidence_dossier", {}),
+        "causal_audit": state.get("causal_audit", {}),
+        "required_answer_shape": [
+            "我对问题的理解",
+            "分析思路",
+            "关键发现",
+            "结论",
+            "需要注意",
+        ],
+    }
+
+
+def _business_narrative_answer(state: WorkflowState, claim: dict[str, Any]) -> str:
+    return "\n".join(
+        (
+            _question_understanding_sentence(state),
+            _analysis_path_sentence(state),
+            _key_findings_sentence(state),
+            _conclusion_sentence(state, claim),
+            _attention_sentence(state),
+        )
+    )
+
+
+def _final_summary_needs_display_repair(text: Any, state: WorkflowState) -> bool:
+    value = str(text or "")
+    markers = ("我对问题的理解", "分析脉络", "关键发现", "最终结论", "需要注意")
+    if any(marker not in value for marker in markers) or _has_internal_visible_token(value):
+        return True
+    if _final_summary_has_unsupported_wording(value, state):
+        return True
+    claims = state.get("draft_claims") or []
+    if not claims and _pattern_evidence(state):
+        return not _final_summary_covers_pattern_evidence(value, state)
+    return bool(
+        claims
+        and not _final_summary_covers_claim(value, claims[0], state)
+    )
+
+
+def _final_summary_covers_claim(
+    text: str,
+    claim: dict[str, Any],
+    state: WorkflowState,
+) -> bool:
+    numbers = claim.get("numbers", {})
+    required = []
+    if "median_uplift" in numbers:
+        required.append(_format_percent(abs(numbers.get("median_uplift") or 0)))
+    if state.get("intent", {}).get("pattern_family") == "custom_baseline":
+        return _text_covers_required_values(text, required)
+    if "direction_ratio" in numbers:
+        required.append(_format_percent(numbers.get("direction_ratio")))
+    if "comparable_periods" in numbers:
+        required.append(str(numbers.get("comparable_periods")))
+    return _text_covers_required_values(text, required)
+
+
+def _final_summary_covers_pattern_evidence(text: str, state: WorkflowState) -> bool:
+    pattern = _pattern_evidence(state)
+    payload = pattern.get("typed_payload", {})
+    required = []
+    if "median_uplift" in payload:
+        required.append(_format_percent(abs(payload.get("median_uplift") or 0)))
+    if state.get("intent", {}).get("pattern_family") == "custom_baseline":
+        return _text_covers_required_values(text, required)
+    if "direction_ratio" in payload:
+        required.append(_format_percent(payload.get("direction_ratio")))
+    if "comparable_periods" in payload:
+        required.append(str(payload.get("comparable_periods")))
+    return _text_covers_required_values(text, required)
+
+
+def _text_covers_required_values(text: str, required: list[str]) -> bool:
+    for item in required:
+        if not item:
+            continue
+        compact_percent = item.replace(".0%", "%")
+        if item not in text and compact_percent not in text:
+            return False
+    return True
+
+
+def _final_summary_has_unsupported_wording(text: str, state: WorkflowState) -> bool:
+    if any(token in text for token in ("语义审计", "硬验证", "硬校验", "verifier")):
+        return True
+    if _has_materiality_data_volume_drift(text, state):
+        return True
+    if _has_unsupported_comparable_period_drift(text, state):
+        return True
+    if _repair_path_invents_fixed_future_window(text):
+        return True
+    if any(token in text for token in ("全年或多年", "合同条款")):
+        return True
+    if _single_period_pattern(state) and any(
+        token in text for token in ("证据充分", "充分支持", "可靠结论")
+    ):
+        return True
+    if _single_period_pattern(state) and SINGLE_PERIOD_CONFIDENCE.search(text):
+        return True
+    if _has_positive_causal_wording(text):
+        evidence_by_ref = _evidence_by_ref(state.get("evidence", []))
+        refs = tuple((state.get("draft_claims") or [{}])[0].get("evidence_refs", ()))
+        return not any(
+            evidence_by_ref.get(ref, {}).get("evidence_type") == "causal_evidence"
+            for ref in refs
+        )
+    return False
+
+
+def _has_positive_causal_wording(text: str) -> bool:
+    for sentence in re.split(r"[。；;.!?？\n]+", text):
+        if not CAUSAL_WORDING.search(sentence):
+            continue
+        if any(
+            marker in sentence
+            for marker in ("不能", "无法", "不可", "不支持", "缺乏", "没有", "暂不")
+        ):
+            continue
+        return True
+    return False
+
+
+def _final_business_summary_fallback(state: WorkflowState) -> str:
+    claims = state.get("draft_claims") or []
+    if claims:
+        return "\n".join(
+            (
+                _question_understanding_sentence(state),
+                _analysis_path_sentence(state).replace("分析思路：", "分析脉络：", 1),
+                _key_findings_sentence(state),
+                _conclusion_sentence(state, claims[0]).replace("结论：", "最终结论：", 1),
+                _attention_sentence(state),
+            )
+        )
+
+    final = state.get("final_explanation", {})
+    explanation = _businessize_internal_tokens(str(final.get("explanation") or "当前证据不足。"))
+    repair_path = _businessize_internal_tokens(str(final.get("repair_path") or "补充证据后重跑。"))
+    key_findings = (
+        _key_findings_sentence(state)
+        if _pattern_evidence(state)
+        else f"关键发现：{explanation}"
+    )
+    return "\n".join(
+        (
+            _question_understanding_sentence(state),
+            "分析脉络：我先确认问题边界、数据口径和可执行分析路径，再检查当前证据是否足以支持这个结论。",
+            key_findings,
+            "最终结论：当前证据不足以发布这个主结论。",
+            f"需要注意：{repair_path}",
+        )
+        )
+
+
+def _question_understanding_sentence(state: WorkflowState) -> str:
+    intent = state["intent"]
+    metric = _business_metric_label(state)
+    scope = _scope_label(intent.get("scope"))
+    time_window = intent.get("time_window", "")
+    question = str(state.get("request", {}).get("question") or "").strip()
+    target_label = str(intent.get("target", {}).get("label") or "")
+    baseline_label = str(intent.get("baseline", {}).get("label") or "")
+    if intent.get("pattern_family") == "custom_baseline" and target_label and baseline_label:
+        base = (
+            f"我对问题的理解是：你想看 {target_label} 相比 {baseline_label} 的{metric}"
+            f"是否有明显变化，口径是{scope}，观察窗口是 {time_window}。"
+        )
+    else:
+        base = (
+            f"我对问题的理解是：你想判断{_pattern_label(intent.get('pattern_family', ''))}"
+            f"在 {time_window} 是否成立，指标是{scope}的{metric}。"
+        )
+    if question:
+        return f"{base} 原始问题是：{question}"
+    return base
+
+
+def _analysis_path_sentence(state: WorkflowState) -> str:
+    intent = state["intent"]
+    target_label = str(intent.get("target", {}).get("label") or "")
+    baseline_label = str(intent.get("baseline", {}).get("label") or "")
+    compiled = state.get("compiled_graph")
+    accepted_graph = tuple(compiled.mutations.accepted_graph) if compiled else ()
+    capability_labels = _capability_path_labels(accepted_graph)
+    if intent.get("pattern_family") == "custom_baseline":
+        comparison = (
+            f"把 {baseline_label} 作为基线、{target_label} 作为目标窗口"
+            if target_label and baseline_label
+            else "把已绑定的基准窗口和目标窗口"
+        )
+        evaluation_scope = "证据强度和限制项"
+    else:
+        comparison = f"按{_pattern_label(intent.get('pattern_family', ''))}的业务口径"
+        evaluation_scope = "证据强度、可比周期和限制项"
+    return (
+        f"分析思路：我先确认数据口径和覆盖范围，再{comparison}做聚合对比，"
+        f"随后使用{capability_labels}评估{evaluation_scope}。"
+    )
+
+
+def _key_findings_sentence(state: WorkflowState) -> str:
+    intent = state["intent"]
+    pattern = _pattern_evidence(state)
+    payload = pattern.get("typed_payload", {})
+    median_uplift = payload.get("median_uplift")
+    direction_ratio = payload.get("direction_ratio")
+    comparable_periods = payload.get("comparable_periods")
+    min_periods = payload.get("min_periods")
+    materiality_floor = payload.get("materiality_floor")
+    target_label = str(intent.get("target", {}).get("label") or "")
+    baseline_label = str(intent.get("baseline", {}).get("label") or "")
+    metric = _business_metric_label(state)
+    if intent.get("pattern_family") == "custom_baseline":
+        subject = (
+            f"{target_label} 相比 {baseline_label}"
+            if target_label and baseline_label
+            else "目标窗口相比基准窗口"
+        )
+        change = f"{metric}{_change_word(median_uplift)} {_format_percent(abs(median_uplift or 0))}"
+        return (
+            f"关键发现：{subject}，核心结果是{change}，"
+            f"超过当前重要性阈值 {_format_percent(materiality_floor)}。"
+        )
+    else:
+        subject = _pattern_label(intent.get("pattern_family", ""))
+        change = _median_change_phrase(median_uplift)
+    return (
+        f"关键发现：{subject}，核心结果是{change}，方向命中率 "
+        f"{_format_percent(direction_ratio)}，当前有 {comparable_periods} 个可比周期；"
+        f"本轮要求的最低可比周期是 {min_periods}，"
+        f"当前重要性阈值是 {_format_percent(materiality_floor)}。"
+    )
+
+
+def _conclusion_sentence(state: WorkflowState, claim: dict[str, Any]) -> str:
+    pattern = _pattern_evidence(state)
+    payload = pattern.get("typed_payload", {})
+    median_uplift = _as_float(payload.get("median_uplift"))
+    materiality_floor = _as_float(payload.get("materiality_floor"))
+    if median_uplift is None or materiality_floor is None:
+        return f"结论：{claim['text']}"
+    if _pattern_has_negative_answer_evidence(state):
+        target_claim = str(state.get("intent", {}).get("target_claim") or "这个目标模式")
+        return f"结论：当前证据不支持“{target_claim}”。{claim['text']}"
+    if abs(median_uplift) >= materiality_floor:
+        return f"结论：按当前重要性阈值，这个窗口内有可观察的明显变化。{claim['text']}"
+    return f"结论：按当前重要性阈值，目前不足以支持明显变化。{claim['text']}"
+
+
+def _median_change_phrase(value: Any) -> str:
+    numeric = _as_float(value)
+    if numeric is None:
+        return "中位变化未知"
+    if numeric > 0:
+        return f"中位提升 {_format_percent(numeric)}"
+    if numeric < 0:
+        return f"中位下降 {_format_percent(abs(numeric))}"
+    return "中位变化 0.0%"
+
+
+def _attention_sentence(state: WorkflowState) -> str:
+    intent = state.get("intent", {})
+    pattern = _pattern_evidence(state)
+    payload = pattern.get("typed_payload", {})
+    comparable_periods = payload.get("comparable_periods")
+    limitations = tuple(state.get("evidence_brief", {}).get("limitations", ()))
+    notes = []
+    if _as_int(comparable_periods) <= 1:
+        if intent.get("pattern_family") == "custom_baseline":
+            notes.append("这是一组目标期对基准期的窗口对比，结论只适用于当前窗口，不能外推为长期稳定规律")
+        else:
+            notes.append("当前只有 1 个可比周期，适合做窗口对比，不能外推为长期稳定规律")
+    if "insufficient_comparable_periods" in limitations:
+        notes.append("可比周期数不足，后续需要补充更多周期验证稳定性")
+    if "weak_direction" in limitations:
+        notes.append("方向一致性不足，结论要保留波动可能")
+    if "below_materiality_floor" in limitations:
+        notes.append("变化幅度未达到当前重要性阈值")
+    if "no_event_contract_or_matches" in limitations:
+        notes.append("暂时没有事件或机制证据，不能解释变化由什么原因造成")
+    if "no_comparable_periods" in limitations:
+        notes.append("当前没有可比周期，无法形成观察性对比结论")
+    if not notes:
+        notes.append("后续可以继续跟踪新周期、异常日、渠道或用户结构，确认这个变化是否延续")
+    return "需要注意：" + "；".join(dict.fromkeys(notes)) + "。"
+
+
+def _capability_path_labels(accepted_graph: tuple[str, ...]) -> str:
+    selected = _capability_labels(accepted_graph)
+    if not selected:
+        return "已接受分析路径"
+    return "、".join(dict.fromkeys(selected))
+
+
+def _capability_labels(accepted_graph: tuple[str, ...]) -> list[str]:
+    labels = {
+        "data_quality_check": "数据质量检查",
+        "data_quality_profile": "数据质量检查",
+        "pattern_scan": "对比模式检验",
+        "compare_periods": "周期对比",
+        "compare_period_phases": "周期对比",
+        "answer_verify": "答案校验",
+        "formula_decompose": "指标口径拆解",
+        "event_evidence": "事件或机制证据检查",
+        "segment_bridge": "分群结构检查",
+        "outlier_scan": "异常波动检查",
+        "joint_attribution": "组合归因",
+    }
+    return [labels.get(item, item) for item in accepted_graph if item in labels]
+
+
+def _pattern_evidence(state: WorkflowState) -> dict[str, Any]:
+    pattern_family = state["intent"]["pattern_family"]
+    for item in state.get("evidence", []):
+        if item.get("capability_id") not in PATTERN_COMPARE_CAPABILITIES:
+            continue
+        if item.get("typed_payload", {}).get("pattern_family") == pattern_family:
+            return item
+    by_ref = _evidence_by_ref(state.get("evidence", []))
+    legacy = by_ref.get(f"pattern_scan:{pattern_family}")
+    if legacy:
+        return legacy
+    return {}
+
+
+def _evidence_established(evidence: dict[str, Any]) -> bool:
+    if "established" in evidence:
+        return bool(evidence.get("established"))
+    return evidence.get("strength") in {"high", "medium"} and evidence.get(
+        "wording_limit"
+    ) == "supported"
+
+
+def _sanitize_terminal_explanation(
+    explanation: dict[str, Any],
+    state: WorkflowState,
+    status: str,
+) -> dict[str, Any]:
+    value = dict(explanation or {})
+    value["status"] = status
+    visible_text = " ".join(
+        str(value.get(key, "")) for key in ("explanation", "owner", "repair_path")
+    )
+    if _has_internal_visible_token(visible_text):
+        return _terminal_explanation_fallback(state, status)
+    if _has_materiality_data_volume_drift(visible_text, state):
+        return _terminal_explanation_fallback(state, status)
+    if _has_unsupported_comparable_period_drift(visible_text, state):
+        return _terminal_explanation_fallback(state, status)
+    if _has_degraded_data_collection_or_contract_drift(visible_text, state):
+        return _terminal_explanation_fallback(state, status)
+    owner = str(value.get("owner") or "")
+    if (
+        not owner
+        or _has_internal_visible_token(owner)
+        or _owner_drifts_to_data_quality(owner, state, status)
+    ):
+        value["owner"] = _terminal_owner(state, status)
+    repair_path = str(value.get("repair_path") or "")
+    if not repair_path or _has_internal_visible_token(repair_path):
+        value["repair_path"] = _terminal_repair_path(state, status)
+    if _repair_path_invents_fixed_future_window(repair_path):
+        value["repair_path"] = _terminal_repair_path(state, status)
+    return value
+
+
+def _has_materiality_data_volume_drift(text: str, state: WorkflowState) -> bool:
+    limitations = tuple(state.get("evidence_brief", {}).get("limitations", ()))
+    if "below_materiality_floor" not in limitations:
+        return False
+    return any(
+        phrase in text
+        for phrase in (
+            "数据量低于",
+            "样本量",
+            "调整重要性阈值以确认",
+            "提升数据敏感性",
+            "数据源完整性",
+            "提取逻辑",
+            "数据质量不足",
+            "调整重要性阈值",
+            "重新评估付费金额的重要性阈值",
+            "复核重要性阈值",
+        )
+    )
+
+
+def _has_unsupported_comparable_period_drift(text: str, state: WorkflowState) -> bool:
+    limitations = tuple(state.get("evidence_brief", {}).get("limitations", ()))
+    if any(
+        item in limitations
+        for item in ("insufficient_comparable_periods", "no_comparable_periods")
+    ):
+        return False
+    return any(
+        phrase in text
+        for phrase in (
+            "可比较期间数量不足",
+            "可比周期数不足",
+            "可比较月份不足",
+            "可比较期间不足",
+        )
+    )
+
+
+def _repair_path_invents_fixed_future_window(text: str) -> bool:
+    return bool(re.search(r"\d+\s*个月(?:以上|后|内)", text))
+
+
+def _has_degraded_data_collection_or_contract_drift(text: str, state: WorkflowState) -> bool:
+    limitations = tuple(state.get("evidence_brief", {}).get("limitations", ()))
+    data_gap = any(
+        item in limitations
+        for item in (
+            "no_rows",
+            "insufficient_values",
+            "insufficient_comparable_periods",
+            "no_comparable_periods",
+        )
+    )
+    if not data_gap and any(token in text for token in ("收集更多数据", "积累更多月度数据")):
+        return True
+    if "合同依据" in text:
+        return True
+    return False
+
+
+def _owner_drifts_to_data_quality(owner: str, state: WorkflowState, status: str) -> bool:
+    return (
+        any(token in owner for token in ("数据质量", "数据工程", "数据治理", "数据运营"))
+        and _terminal_owner(state, status) == "业务分析负责人"
+    )
+
+
+def _terminal_explanation_fallback(state: WorkflowState, status: str) -> dict[str, Any]:
+    return {
+        "status": status,
+        "explanation": _terminal_explanation_text(state, status),
+        "owner": _terminal_owner(state, status),
+        "repair_path": _terminal_repair_path(state, status),
+    }
+
+
+def _terminal_explanation_text(state: WorkflowState, status: str) -> str:
+    if status == "blocked":
+        reasons = _business_validator_reasons(state.get("validator_results", ()))
+        if not reasons:
+            reasons = ("当前存在权限、合同、数据覆盖或问题边界硬限制",)
+        return "当前不能发布业务结论。主要原因：" + "；".join(reasons) + "。"
+    limitations = tuple(state.get("evidence_brief", {}).get("limitations", ()))
+    reasons = _business_limitation_reasons(limitations)
+    if not reasons:
+        reasons = ("当前证据强度不足，不能支撑主业务结论",)
+    return "当前降级处理，不能发布主业务结论。主要原因：" + "；".join(reasons) + "。"
+
+
+def _business_limitation_reasons(limitations: tuple[str, ...]) -> tuple[str, ...]:
+    mapping = {
+        "insufficient_comparable_periods": "可比周期数不足",
+        "weak_direction": "方向一致性不足",
+        "below_materiality_floor": "变化幅度低于当前重要性阈值",
+        "no_event_contract_or_matches": "缺少可支持机制解释的事件证据",
+        "no_comparable_periods": "没有可比周期",
+        "insufficient_values": "可用于异常判断的数据点不足",
+        "no_rows": "当前查询没有返回可分析数据",
+    }
+    reasons = [mapping.get(item) for item in limitations if mapping.get(item)]
+    return tuple(dict.fromkeys(reasons))
+
+
+def _business_validator_reasons(validator_results: Any) -> tuple[str, ...]:
+    reasons = []
+    for item in validator_results or ():
+        if item.get("ok", True):
+            continue
+        reason = str(item.get("reason") or "校验未通过")
+        reasons.append(_strip_internal_tokens(reason))
+    return tuple(dict.fromkeys(reasons))
+
+
+def _terminal_owner(state: WorkflowState, status: str) -> str:
+    if status == "blocked":
+        return "数据工程负责人"
+    limitations = tuple(state.get("evidence_brief", {}).get("limitations", ()))
+    if any(item in limitations for item in ("no_rows", "insufficient_values")):
+        return "数据工程负责人"
+    return "业务分析负责人"
+
+
+def _terminal_repair_path(state: WorkflowState, status: str) -> str:
+    if status == "blocked":
+        return "先修复权限、合同、数据覆盖或问题边界后重跑。"
+    limitations = tuple(state.get("evidence_brief", {}).get("limitations", ()))
+    actions = []
+    if "insufficient_comparable_periods" in limitations or "no_comparable_periods" in limitations:
+        actions.append("补充更多可比周期")
+    if "below_materiality_floor" in limitations or "weak_direction" in limitations:
+        actions.append("继续观察新周期并复核方向一致性")
+    if "no_event_contract_or_matches" in limitations:
+        actions.append("补充事件或机制证据")
+    if "insufficient_values" in limitations or "no_rows" in limitations:
+        actions.append("检查数据覆盖和聚合口径")
+    if not actions:
+        actions.append("补充证据后重跑")
+    return "；".join(dict.fromkeys(actions)) + "。"
+
+
+def _has_internal_visible_token(text: Any) -> bool:
+    value = str(text or "")
+    tokens = (
+        "paid_amount",
+        "payment_amount",
+        "phase",
+        "pattern_status",
+        "pattern_established",
+        "wording_limit",
+        "pattern_scan",
+        "data_quality_check",
+        "evidence_ref",
+        "custom_baseline",
+        "intra_period",
+        "event_evidence",
+        "segment_bridge",
+        "outlier_scan",
+        "data_engineering_owner",
+        "business_analysis_owner",
+    )
+    return any(token in value for token in tokens)
+
+
+def _businessize_internal_tokens(text: str) -> str:
+    value = text
+    replacements = {
+        "paid_amount": "付费金额",
+        "payment_amount": "付费金额",
+        "pattern_status": "模式状态",
+        "pattern_established": "模式是否成立",
+        "wording_limit": "措辞边界",
+        "pattern_scan": "模式检验",
+        "data_quality_check": "数据质量检查",
+        "evidence_ref": "证据引用",
+        "custom_baseline": "自定义基线对比",
+        "intra_period": "周期内对比",
+    }
+    for source, target in replacements.items():
+        value = value.replace(source, target)
+    return value
+
+
+def _strip_internal_tokens(text: str) -> str:
+    return _businessize_internal_tokens(text)
+
+
 def _default_claim_from_evidence(state: WorkflowState) -> dict[str, Any]:
     pattern_family = state["intent"]["pattern_family"]
-    pattern = _evidence_by_ref(state.get("evidence", [])).get(f"pattern_scan:{pattern_family}", {})
+    pattern = _pattern_evidence(state)
     payload = pattern.get("typed_payload", {})
     median_uplift = payload.get("median_uplift")
     comparable_periods = payload.get("comparable_periods")
     direction_ratio = payload.get("direction_ratio")
     limitation_text = (
-        " Mechanism evidence is unavailable."
+        " 机制证据暂不可用。"
         if "no_event_contract_or_matches" in state.get("evidence_brief", {}).get("limitations", ())
         else ""
     )
-    period_label = "comparable period" if comparable_periods == 1 else "comparable periods"
+    target_label = str(state["intent"].get("target", {}).get("label") or "")
+    baseline_label = str(state["intent"].get("baseline", {}).get("label") or "")
+    metric = _business_metric_label(state)
+    negative_prefix = ""
+    if _pattern_has_negative_answer_evidence(state):
+        target_claim = str(state.get("intent", {}).get("target_claim") or "目标模式")
+        negative_prefix = f"当前证据不支持“{target_claim}”。"
+    if pattern_family == "custom_baseline":
+        subject = (
+            f"{target_label} 相比 {baseline_label}"
+            if target_label and baseline_label
+            else "目标窗口相比基准窗口"
+        )
+        text = (
+            f"{negative_prefix}"
+            f"{subject} 在 {state['intent']['time_window']} 观察到："
+            f"{metric}{_change_word(median_uplift)} {_format_percent(abs(median_uplift or 0))}。"
+            f"{limitation_text}"
+        )
+    else:
+        text = (
+            f"{negative_prefix}"
+            f"{_pattern_label(pattern_family)}在 {state['intent']['time_window']} 观察到："
+            f"{_median_change_phrase(median_uplift)}，"
+            f"方向命中率 {_format_percent(direction_ratio)}，"
+            f"{comparable_periods} 个可比周期。{limitation_text}"
+        )
     return {
-        "text": (
-            f"{_pattern_label(pattern_family)} is observed in {state['intent']['time_window']} "
-            f"with median uplift {_format_percent(median_uplift)}, "
-            f"direction ratio {_format_percent(direction_ratio)}, and "
-            f"{comparable_periods} {period_label}.{limitation_text}"
-        ),
-        "evidence_refs": [f"pattern_scan:{pattern_family}"],
+        "text": text,
+        "evidence_refs": [
+            pattern.get("evidence_ref", f"pattern_scan:{pattern_family}")
+        ],
         "numbers": {
             "median_uplift": median_uplift,
             "comparable_periods": comparable_periods,
@@ -1071,30 +2329,80 @@ def _default_claim_from_evidence(state: WorkflowState) -> dict[str, Any]:
     }
 
 
+def _change_word(value: Any) -> str:
+    try:
+        return "下降" if float(value) < 0 else "提升"
+    except (TypeError, ValueError):
+        return "变化"
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _as_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _metric_label(metric: Any) -> str:
+    return {
+        "paid_amount": "付费金额",
+        "payment_amount": "付费金额",
+        "revenue": "收入",
+    }.get(str(metric or ""), str(metric or "目标指标"))
+
+
+def _business_metric_label(state: Mapping[str, Any]) -> str:
+    intent = state.get("intent", {})
+    metric = _metric_label(intent.get("target_metric"))
+    text = " ".join(
+        str(value or "")
+        for value in (
+            intent.get("target_claim"),
+            state.get("request", {}).get("question") if isinstance(state.get("request"), dict) else "",
+        )
+    )
+    if metric == "付费金额" and any(marker in text for marker in ("日均", "日平均")):
+        return "日均付费金额"
+    return metric
+
+
+def _scope_label(scope: Any) -> str:
+    return {
+        "full_sample": "全样本",
+    }.get(str(scope or ""), str(scope or "当前范围"))
+
+
 def _pattern_label(pattern_family: str) -> str:
     return {
-        "weekly": "Weekly paid amount pattern",
-        "rolling": "Rolling paid amount pattern",
-        "custom_baseline": "Custom-baseline paid amount comparison",
-        "intra_period": "Intra-period paid amount pattern",
-        "event_relative": "Event-relative paid amount pattern",
-        "lag_recovery": "Lag/recovery paid amount pattern",
-    }.get(pattern_family, f"{pattern_family} paid amount pattern")
+        "weekly": "周维度付费金额模式",
+        "rolling": "滚动窗口付费金额模式",
+        "custom_baseline": "自定义基线付费金额对比",
+        "intra_period": "周期内付费金额模式",
+        "event_relative": "事件相对窗口付费金额模式",
+        "lag_recovery": "滞后/恢复付费金额模式",
+    }.get(pattern_family, f"{pattern_family} 付费金额模式")
 
 
 def _weaken_unsupported_causal_wording(text: Any) -> str:
     value = str(text or "")
     value = value.replace(
         "No event-based causes were identified to explain the pattern.",
-        "No event-based mechanism evidence was identified for the pattern.",
+        "没有匹配到可支持因果表达的事件证据。",
     )
     value = value.replace(
         "No causal events were matched, so the pattern's underlying driver remains unclear.",
-        "No event-based mechanism evidence was matched, so the business mechanism remains unclear.",
+        "没有匹配到可支持因果表达的事件证据，业务机制仍不明确。",
     )
     value = value.replace(
         "No event-based explanations are available due to insufficient evidence.",
-        "Event-based explanation evidence is insufficient.",
+        "事件解释证据不足。",
     )
     return value
 
@@ -1138,9 +2446,11 @@ _LLM_NODE_NAMES = frozenset(
         "decide_next_action",
         "promotion_direction",
         "interpret_evidence",
+        "audit_causal_implications",
         "synthesize_answer",
         "semantic_audit",
         "repair_answer",
+        "final_business_summary",
         "generate_degraded_explanation",
         "generate_blocked_explanation",
     }
@@ -1166,11 +2476,13 @@ _BUSINESS_LABELS = {
     "promotion_policy_gate": "组合归因门禁",
     "execute_joint_attribution": "执行组合归因",
     "interpret_evidence": "解释证据和业务含义",
+    "audit_causal_implications": "审计因果和业务含义",
     "synthesize_answer": "生成业务答案草稿",
     "semantic_audit": "语义审计答案",
     "sanitize_answer": "收敛为有边界答案",
     "hard_verify_answer": "答案硬验收",
     "repair_answer": "按校验反馈修答案",
+    "final_business_summary": "整理最终业务总结",
     "generate_degraded_explanation": "生成降级说明",
     "generate_blocked_explanation": "生成阻断说明",
     "persist_artifact": "保存审计结果并返回draft",

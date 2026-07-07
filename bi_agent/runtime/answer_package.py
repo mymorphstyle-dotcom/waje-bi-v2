@@ -22,8 +22,11 @@ def build_answer_package(
     semantic_audit: Optional[Mapping[str, Any]] = None,
     final_explanation: Optional[Mapping[str, Any]] = None,
     answer_text: str = "",
+    final_business_summary: str = "",
     coverage_interpretation: Optional[Mapping[str, Any]] = None,
     clarification_outcome: Optional[Mapping[str, Any]] = None,
+    causal_audit: Optional[Mapping[str, Any]] = None,
+    causal_evidence_dossier: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
     semantic_audit = {} if semantic_audit is None else semantic_audit
@@ -34,11 +37,20 @@ def build_answer_package(
     clarification_outcome = (
         {} if clarification_outcome is None else clarification_outcome
     )
+    causal_audit = {} if causal_audit is None else causal_audit
+    causal_evidence_dossier = (
+        {} if causal_evidence_dossier is None else causal_evidence_dossier
+    )
     visible_limitations = collect_visible_limitations(evidence)
     verifier = verify_answer_package(
         draft_claims=draft_claims,
         evidence=evidence,
         visible_limitations=visible_limitations,
+    )
+    claim_groups = build_claim_groups(
+        draft_claims=draft_claims,
+        evidence=evidence,
+        verifier=verifier,
     )
     ordinary_audit = {"sql_hash": sql_hash}
     admin_audit = {
@@ -51,6 +63,8 @@ def build_answer_package(
         "semantic_audit": to_jsonable(semantic_audit),
         "coverage_interpretation": to_jsonable(coverage_interpretation),
         "clarification_outcome": to_jsonable(clarification_outcome),
+        "causal_audit": to_jsonable(causal_audit),
+        "causal_evidence_dossier": to_jsonable(causal_evidence_dossier),
     }
 
     return {
@@ -71,7 +85,9 @@ def build_answer_package(
                 "visibility": "business_summary",
                 "payload": {
                     "answer_text": answer_text,
+                    "final_business_summary": final_business_summary,
                     "claims": to_jsonable(draft_claims),
+                    "claim_groups": claim_groups,
                     "limitations": visible_limitations,
                     "sql_hash": sql_hash,
                     "final_explanation": to_jsonable(final_explanation),
@@ -100,6 +116,42 @@ def build_answer_package(
     }
 
 
+def build_claim_groups(
+    *,
+    draft_claims: Sequence[Mapping[str, Any]],
+    evidence: Sequence[Mapping[str, Any]],
+    verifier: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    evidence_by_ref = {item.get("evidence_ref"): item for item in evidence}
+    groups = []
+    for claim in draft_claims:
+        refs = list(claim.get("evidence_refs", ()))
+        ref_items = [evidence_by_ref[ref] for ref in refs if ref in evidence_by_ref]
+        first = ref_items[0] if ref_items else {}
+        limitations = []
+        for item in ref_items:
+            for limitation in item.get("limitations", ()):
+                if limitation not in limitations:
+                    limitations.append(limitation)
+        groups.append(
+            {
+                "text": claim.get("text", ""),
+                "scope": claim.get("scope"),
+                "baseline": claim.get("baseline", {}),
+                "target": claim.get("target", {}),
+                "target_metric": claim.get("target_metric"),
+                "time_window": claim.get("time_window"),
+                "evidence_refs": refs,
+                "evidence_type": first.get("evidence_type"),
+                "strength": first.get("strength"),
+                "wording_limit": first.get("wording_limit"),
+                "limitations": limitations,
+                "verifier_status": verifier.get("status"),
+            }
+        )
+    return groups
+
+
 def verify_answer_package(
     *,
     draft_claims: Sequence[Mapping[str, Any]],
@@ -121,6 +173,18 @@ def verify_answer_package(
                         "evidence_ref": ref,
                     }
                 )
+
+        if claim.get("claim_strength") == "strong" and any(
+            evidence_by_ref[ref].get("wording_limit")
+            not in {"supported", "stable_pattern"}
+            for ref in valid_refs
+        ):
+            errors.append(
+                {
+                    "code": "strong_claim_without_supported_wording",
+                    "claim_index": index,
+                }
+            )
 
         for key, expected in claim.get("numbers", {}).items():
             if not any(

@@ -60,7 +60,7 @@ backlog:
     reviewed_progress:
       decided_on: "2026-07-05"
       export_date: "2026-07-04"
-      coverage: complete_2026_january_through_june_dataset
+      coverage: current_full_payment_detail_dataset_2024-01-01_through_2026-07-04
       late_arrivals_or_status_backfill: none_recorded_for_this_snapshot
       update_policy: later_updates_create_new_run_or_artifact_version
       accepted_source_contract: contracts/sources/paid-order-detail.source.yaml
@@ -94,7 +94,7 @@ backlog:
         - amount_and_currency_distribution
         - refund_or_status_backfill_signals
         - masked_sensitive_field_statistics
-    launch_impact: Current 2026-01-01 through 2026-06-30 paid_amount source binding is accepted for Phase 1 review and Phase 2 compiler prep; dev Postgres contract mirror is initialized.
+    launch_impact: Current 2024-01-01 through 2026-07-04 paid_amount source binding is accepted for Phase 1 review and Phase 2 compiler prep; dev Postgres contract mirror is initialized.
     upgrade_path: Expand production runtime mirror schema and future snapshot versioning rules in later phases.
 
   - backlog_id: currency_policy

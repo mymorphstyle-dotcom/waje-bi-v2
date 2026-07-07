@@ -17,6 +17,12 @@ class FakeLLMClient:
                 "model": "fake-model",
                 "prompt_version": prompt_version,
                 "response_id": f"fake-{task}",
+                "messages": [dict(message) for message in messages],
+                "required_keys": list(required_keys),
+                "raw_response_content": "{}",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "finished_at": "2026-01-01T00:00:00+00:00",
+                "duration_ms": 0.0,
                 "input_hash": f"input-{task}",
                 "output_hash": f"output-{task}",
                 "usage": {},
@@ -88,7 +94,7 @@ DEFAULT_OUTPUTS = {
         "evidence_boundary": "No causal claim.",
     },
     "answer_synthesis": {
-        "answer_text": "Draft answer based on verified evidence refs.",
+        "answer_text": "基于已验证证据引用生成答案草稿。",
         "claims": None,
     },
     "semantic_audit": {
@@ -96,20 +102,39 @@ DEFAULT_OUTPUTS = {
         "extracted_claims": [],
         "issues": [],
     },
+    "causal_audit": {
+        "causal_assessment": "candidate_hypothesis",
+        "publishable_wording": "可以作为候选解释，不能写成已证明原因。",
+        "supporting_reasons": ["当前证据显示可观察现象，但缺少对照或机制验证。"],
+        "main_risks": ["替代解释仍然可能成立。"],
+        "alternative_explanations": [],
+        "missing_checks": ["补充分群一致性、事件重合和对照证据。"],
+        "recommended_next_analysis": ["继续检查候选机制是否在不同分群中一致。"],
+        "answer_guidance": "最终答案应分开写已验证事实、候选解释和后续观察。",
+    },
     "answer_repair": {
-        "answer_text": "Repaired draft answer.",
+        "answer_text": "已按校验反馈修正答案草稿。",
         "claims": None,
+    },
+    "final_business_summary": {
+        "summary_text": (
+            "我对问题的理解是：用户要确认当前付费金额模式是否成立。\n"
+            "分析脉络：系统完成了业务意图绑定、分析路径验收、数据覆盖检查、证据执行和答案校验。\n"
+            "关键发现：证据支持有边界的业务结论。\n"
+            "最终结论：保留通过 verifier 的结论。\n"
+            "需要注意：后续仍要观察限制项和新周期表现。"
+        ),
     },
     "degraded_explanation": {
         "status": "degraded",
-        "explanation": "Evidence is limited.",
+        "explanation": "当前证据有限。",
         "owner": "data_engineering_owner",
-        "repair_path": "add stronger evidence.",
+        "repair_path": "补充更强证据。",
     },
     "blocked_explanation": {
         "status": "blocked",
-        "explanation": "A hard boundary blocks the run.",
+        "explanation": "当前存在硬边界，无法继续执行。",
         "owner": "data_engineering_owner",
-        "repair_path": "fix the blocking boundary.",
+        "repair_path": "修复阻断边界。",
     },
 }

@@ -123,7 +123,28 @@ Detailed breakdown: [docs/phase-1-contract-foundation-breakdown.md](/Users/luka/
 - [ ] Payday, holidays, activities, and other mechanisms stay within their evidence strength.
 - [ ] Same evidence-path shape can run a weekly or event-relative pattern case by swapping windows and candidate mechanisms.
 
+## Post-Phase 4 Rebaseline
+
+Date: 2026-07-07
+
+Current evidence: Phase 4 full-period retest has 10 live ClickHouse cases with 3 passed, 7 degraded, 0 blocked, and 0 failed. The pattern slice is runnable, Answer Package drafts exist, final summaries include evidence numbers, and replay has enough audit material for development review.
+
+Future phases should follow this order:
+
+1. **Phase 5: Answer safety and eval gates.** Harden claim groups, verifier behavior, implicit clarification, failure attribution, and route-drift measurement on the existing pattern slice.
+2. **Phase 6: Question-family expansion.** Add the remaining question families only after Phase 5 can classify wrong intent, wrong baseline, weak evidence, route drift, and unsupported claims without manual log reading.
+3. **Phase 7: Frontend agent shell.** Build user-facing investigation UX on top of stable Answer Package and replay semantics.
+4. **Phase 8: Production gates.** Add release-grade observability, permissions, rerun comparability, rollback, and health checks after the workflow and UI contract are stable.
+
+Deliberate deferrals:
+
+- Route drift between `compare_periods`, `compare_period_phases`, and `rolling_window_compare` remains measured in Phase 5 before adding deterministic compiler rules.
+- Broad composite-intent handling belongs to Phase 6. Phase 5 only tests whether latent ambiguity should trigger clarification.
+- Production dashboards and release operations stay in Phase 8.
+
 ## Phase 5: Answer Package, Verifier, And Eval
+
+Current plan: [docs/superpowers/plans/2026-07-07-phase-5-from-phase-4-state.md](/Users/luka/work/waje-bi-v2/docs/superpowers/plans/2026-07-07-phase-5-from-phase-4-state.md:1)
 
 **Goal:** Make final answers auditable and regression-tested.
 
@@ -131,10 +152,14 @@ Detailed breakdown: [docs/phase-1-contract-foundation-breakdown.md](/Users/luka/
 
 **Deliverables:**
 
-- [ ] Claim group contract implemented for conclusion text, scope, baseline, target metric, evidence refs, evidence type, strength, supported wording, disallowed wording, limitations, related visual blocks, and verifier status.
-- [ ] Answer verifier checks numbers, scope, baseline, evidence refs, wording, disabled/degraded paths, and visual blocks.
-- [ ] Launch eval harness using real user wording plus structured expectation packages.
-- [ ] Failure attribution labels for business failure type and system responsibility point.
+- [ ] Claim group contract implemented and emitted in Answer Package summary.
+- [ ] Answer verifier blocks unsupported strong claims and records visible limitations.
+- [ ] Independent Causal Auditor LLM reviews causal implications and mechanism hypotheses from a structured evidence dossier.
+- [ ] Local verifier remains a mechanical evidence checker for refs, numbers, scope, permissions, metric contracts, and auditor wording boundary.
+- [ ] Launch eval harness uses real user wording plus structured expectation packages.
+- [ ] Failure attribution labels include business failure type and system responsibility point.
+- [ ] Implicit clarification eval suite covers latent ambiguity that can change claim quality.
+- [ ] Route drift measurement records observed drift and impact without auto-promoting guardrails.
 
 **Acceptance:**
 
@@ -146,6 +171,8 @@ Detailed breakdown: [docs/phase-1-contract-foundation-breakdown.md](/Users/luka/
 ## Phase 6: Capability Expansion Across Eight Question Families
 
 **Goal:** Expand from the first pattern slice into the full baseline question-family matrix.
+
+Phase 6 starts only after Phase 5 eval gates can classify wrong intent, wrong baseline, weak evidence, route drift, and unsupported claims without manual log reading.
 
 **Business reason:** Paid amount impact and retrospective questions are multi-capability workflows, so launch needs all eight families represented end to end.
 

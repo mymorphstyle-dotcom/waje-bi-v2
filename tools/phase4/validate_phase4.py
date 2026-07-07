@@ -26,6 +26,37 @@ REAL_2026H1_CASE_FILE = ROOT / "evals" / "phase4" / "real_2026h1_pattern_cases.y
 DEFAULT_ARTIFACT_ROOT = ROOT / "artifacts" / "phase-4"
 REAL_SQL_ENV = "WAJE_PHASE4_PATTERN_SQL"
 REPAIR_PATH = "provide read-only ClickHouse env vars and accepted physical binding"
+PRIMARY_PATTERN_EVIDENCE_CAPABILITIES = frozenset(
+    {
+        "pattern_scan",
+        "compare_period_phases",
+        "compare_periods",
+        "rolling_window_compare",
+        "weekday_calendar_compare",
+        "event_window_compare",
+    }
+)
+
+
+def classify_route_drift(
+    *,
+    pattern_family: str,
+    accepted_graph: Sequence[str],
+    primary_evidence_capability: str,
+    expected_primary_capabilities: Sequence[str],
+    eval_status: str,
+) -> dict[str, str | bool]:
+    observed = primary_evidence_capability not in set(expected_primary_capabilities)
+    impact = "none"
+    if observed:
+        impact = "conclusion" if eval_status in {"failed", "blocked"} else "evidence_shape"
+    return {
+        "route_drift_observed": observed,
+        "route_drift_impact": impact,
+        "guardrail_promotion": "requires_human_review"
+        if observed
+        else "not_applicable",
+    }
 
 
 @dataclass(frozen=True)
@@ -192,39 +223,39 @@ def run_real_eval(
             )
         query_result = runtime.aggregate(sql, query_id=f"phase4-{case_id}")
 
-    if not query_result.ok:
-        return EvalCaseResult(
-            case_id=case["case_id"],
-            pattern_family=case["pattern_family"],
-            status="failed",
-            reason=query_result.reason or "clickhouse_query_failed",
-            non_real_data=False,
-            owner="data_engineering_owner",
-            repair_path="inspect ClickHouse query failure and accepted physical binding",
-            business_conclusion_published=False,
-            diagnostics={
-                "query_error": query_result.reason,
-                "query_hash": query_result.query_hash or validation.query_hash,
-                "validator_results": (
-                    {
-                        "validator": "sql_safety",
-                        "ok": validation.ok,
-                        "reason": validation.reason,
-                        "sql_hash": validation.query_hash,
-                    },
-                ),
-            },
-        )
+        if not query_result.ok:
+            return EvalCaseResult(
+                case_id=case["case_id"],
+                pattern_family=case["pattern_family"],
+                status="failed",
+                reason=query_result.reason or "clickhouse_query_failed",
+                non_real_data=False,
+                owner="data_engineering_owner",
+                repair_path="inspect ClickHouse query failure and accepted physical binding",
+                business_conclusion_published=False,
+                diagnostics={
+                    "query_error": query_result.reason,
+                    "query_hash": query_result.query_hash or validation.query_hash,
+                    "validator_results": (
+                        {
+                            "validator": "sql_safety",
+                            "ok": validation.ok,
+                            "reason": validation.reason,
+                            "sql_hash": validation.query_hash,
+                        },
+                    ),
+                },
+            )
 
-    real_case = dict(case)
-    real_case["fixture_rows"] = list(query_result.rows)
-    return run_eval_case(
-        real_case,
-        mode="real",
-        artifact_root=artifact_root,
-        sql_text=sql,
-        llm_client=llm_client,
-    )
+        real_case = dict(case)
+        real_case["fixture_rows"] = list(query_result.rows)
+        return run_eval_case(
+            real_case,
+            mode="real",
+            artifact_root=artifact_root,
+            sql_text=sql,
+            llm_client=llm_client,
+        )
 
 
 def run_real_2026h1_eval(
@@ -282,6 +313,9 @@ def run_eval_case(
         "requested_nodes": tuple(case.get("required_capabilities", ())),
         "allow_question_interrupt": False,
     }
+    for key in ("question", "baseline", "target"):
+        if key in case:
+            request[key] = case[key]
     if sql_text:
         request["sql_text"] = sql_text
     if llm_client is not None:
@@ -321,23 +355,6 @@ def run_eval_case(
     status, reason = _status_from_answer_package(
         result.answer_package, case["pattern_family"]
     )
-    if mode == "real" and "insufficient_comparable_periods" in reason:
-        return EvalCaseResult(
-            case_id=case["case_id"],
-            pattern_family=case["pattern_family"],
-            status="blocked",
-            reason="external_dependency_blocked",
-            artifact_path=result.artifact_path,
-            non_real_data=False,
-            owner="data_engineering_owner",
-            repair_path=(
-                "provide enough accepted ClickHouse history for the requested "
-                f"{case.get('time_window', 'time window')}; current binding "
-                f"returned {reason}"
-            ),
-            business_conclusion_published=False,
-            diagnostics={"pattern_limitations": reason},
-        )
     return EvalCaseResult(
         case_id=case["case_id"],
         pattern_family=case["pattern_family"],
@@ -416,20 +433,25 @@ def _status_from_answer_package(
         (
             item
             for item in evidence
-            if item.get("capability") == "pattern_scan"
-            and item.get("pattern_family") == pattern_family
+            if _evidence_capability(item) in PRIMARY_PATTERN_EVIDENCE_CAPABILITIES
+            and _evidence_pattern_family(item) == pattern_family
         ),
         None,
     )
     data_quality = next(
-        (item for item in evidence if item.get("capability") == "data_quality_check"),
+        (
+            item
+            for item in evidence
+            if _evidence_capability(item)
+            in {"data_quality_check", "data_quality_profile"}
+        ),
         None,
     )
-    if data_quality and data_quality.get("limitations"):
-        return "degraded", ",".join(data_quality["limitations"])
+    if data_quality and _evidence_limitations(data_quality):
+        return "degraded", ",".join(_evidence_limitations(data_quality))
     if pattern is None:
-        return "failed", "missing_pattern_scan_evidence"
-    limitation_reason = ",".join(tuple(pattern.get("limitations", ())))
+        return "failed", "missing_primary_pattern_evidence"
+    limitation_reason = ",".join(_evidence_limitations(pattern))
     if final.get("status") == "blocked":
         return "blocked", final.get("explanation") or limitation_reason or "blocked"
     if final.get("status") == "degraded":
@@ -438,14 +460,51 @@ def _status_from_answer_package(
             for item in (limitation_reason, final.get("explanation", "degraded"))
             if item
         )
-    if pattern.get("established"):
+    if _evidence_established_for_eval(pattern):
         return "passed", "pattern_established"
-    limitations = tuple(pattern.get("limitations", ()))
+    limitations = _evidence_limitations(pattern)
     return "degraded", ",".join(limitations) or "pattern_not_established"
+
+
+def _evidence_capability(item: Mapping[str, Any]) -> str:
+    return str(item.get("capability_id") or item.get("capability") or "")
+
+
+def _evidence_pattern_family(item: Mapping[str, Any]) -> str:
+    payload = item.get("typed_payload", {})
+    return str(item.get("pattern_family") or payload.get("pattern_family") or "")
+
+
+def _evidence_limitations(item: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(str(value) for value in item.get("limitations", ()) if value)
+
+
+def _evidence_established_for_eval(item: Mapping[str, Any]) -> bool:
+    if "established" in item:
+        return bool(item.get("established"))
+    payload = item.get("typed_payload", {})
+    if "established" in payload:
+        return bool(payload.get("established"))
+    if _evidence_limitations(item):
+        return False
+    return item.get("wording_limit") == "supported" and item.get("strength") in {
+        "high",
+        "medium",
+    }
 
 
 def _has_required_llm_audit(package: Mapping[str, Any]) -> bool:
     calls = package.get("admin_audit", {}).get("llm_calls", ())
+    if any(
+        not call.get("messages")
+        or "required_keys" not in call
+        or "raw_response_content" not in call
+        or "started_at" not in call
+        or "finished_at" not in call
+        or "duration_ms" not in call
+        for call in calls
+    ):
+        return False
     seen = {call.get("task") for call in calls}
     common = {
         "business_intent",
@@ -459,8 +518,13 @@ def _has_required_llm_audit(package: Mapping[str, Any]) -> bool:
         "evidence_interpretation",
         "answer_synthesis",
         "semantic_audit",
+        "final_business_summary",
     }
-    terminal_path = {"degraded_explanation", "blocked_explanation"}
+    terminal_path = {
+        "degraded_explanation",
+        "blocked_explanation",
+        "final_business_summary",
+    }
     return common.issubset(seen) and (
         answer_path.issubset(seen) or bool(terminal_path & seen)
     )
