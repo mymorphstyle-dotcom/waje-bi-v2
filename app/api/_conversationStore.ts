@@ -983,22 +983,74 @@ function canReadScope(role: string, permissionScope: string) {
 
 function filterAnswerPackageForRole(answerPackage: Record<string, unknown>, role: string) {
   if (role === "data_owner_admin") return answerPackage;
-  const allowed = new Set(
-    role === "analyst"
-      ? ["business_summary", "aggregate_evidence", "diagnostic_detail"]
-      : ["business_summary", "aggregate_evidence"],
-  );
+  const allowed = allowedVisibilitiesForRole(role);
   const sections = Array.isArray(answerPackage.sections)
     ? answerPackage.sections.filter((section) => {
         if (!section || typeof section !== "object") return false;
         return allowed.has(String((section as Record<string, unknown>).visibility ?? ""));
-      })
+      }).map((section) => filterSectionPayloadForRole(section as Record<string, unknown>, allowed))
     : [];
   return {
     run_id: answerPackage.run_id,
     status: answerPackage.status,
     package_type: answerPackage.package_type,
     sections,
+  };
+}
+
+function allowedVisibilitiesForRole(role: string) {
+  return new Set(
+    role === "analyst"
+      ? ["business_summary", "aggregate_evidence", "diagnostic_detail"]
+      : ["business_summary", "aggregate_evidence"],
+  );
+}
+
+function filterSectionPayloadForRole(section: Record<string, unknown>, allowed: Set<string>) {
+  if (section.section_id !== "summary") return section;
+  const payload = section.payload;
+  if (!payload || typeof payload !== "object") return section;
+  return {
+    ...section,
+    payload: filterSummaryPayloadForRole(
+      payload as Record<string, unknown>,
+      allowed,
+      String(section.visibility ?? ""),
+    ),
+  };
+}
+
+function filterSummaryPayloadForRole(
+  payload: Record<string, unknown>,
+  allowed: Set<string>,
+  fallbackVisibility: string,
+) {
+  return {
+    ...payload,
+    claims: filterVisibleItems(payload.claims, allowed, fallbackVisibility),
+    claim_groups: filterVisibleItems(payload.claim_groups, allowed, fallbackVisibility),
+    visualization_plan: filterVisibleVisualizationPlan(
+      payload.visualization_plan,
+      allowed,
+      fallbackVisibility,
+    ),
+  };
+}
+
+function filterVisibleItems(value: unknown, allowed: Set<string>, fallbackVisibility: string) {
+  if (!Array.isArray(value)) return value;
+  return value.filter((item) => {
+    if (!item || typeof item !== "object") return false;
+    return allowed.has(String((item as Record<string, unknown>).visibility ?? fallbackVisibility));
+  });
+}
+
+function filterVisibleVisualizationPlan(value: unknown, allowed: Set<string>, fallbackVisibility: string) {
+  if (!value || typeof value !== "object") return value;
+  const plan = value as Record<string, unknown>;
+  return {
+    ...plan,
+    blocks: filterVisibleItems(plan.blocks, allowed, fallbackVisibility),
   };
 }
 
