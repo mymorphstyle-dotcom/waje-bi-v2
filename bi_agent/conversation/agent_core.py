@@ -9,6 +9,7 @@ from uuid import uuid4
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
+from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult, run_pattern_workflow
 
 
@@ -150,6 +151,8 @@ class ConversationAgentCore:
         package = dict(result.answer_package)
         package["run_id"] = run_id
         package["artifact_path"] = result.artifact_path
+        context_manifest = _manifest_with_answer_sources(context_manifest, package)
+        self.store.record_context_manifest(context_manifest)
         accepted_graph = (
             package.get("accepted_graph")
             or package.get("admin_audit", {}).get("accepted_graph")
@@ -208,6 +211,8 @@ def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
     run_id = str(request.get("run_id") or f"run-{uuid4().hex[:12]}")
     question = str(request.get("question") or request.get("user_message") or "")
     requested_nodes = list(request.get("requested_nodes") or [])
+    compiled = _compile_dry_run_graph(requested_nodes)
+    accepted_graph = list(compiled.mutations.accepted_graph)
     answer_text = _dry_run_answer_text(question)
     evidence_ref = f"artifact:{run_id}:dry_run"
     return WorkflowRunResult(
@@ -249,12 +254,35 @@ def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
                     },
                 }
             ],
-            "accepted_graph": requested_nodes,
+            "accepted_graph": accepted_graph,
             "llm_calls": [],
-            "admin_audit": {"verifier": {"status": "skipped_dry_run"}, "accepted_graph": requested_nodes},
+            "admin_audit": {
+                "verifier": {"status": "skipped_dry_run"},
+                "accepted_graph": accepted_graph,
+                "compiler_status": compiled.status,
+                "compiler_mutations": {
+                    "proposed_graph": list(compiled.mutations.proposed_graph),
+                    "accepted_graph": accepted_graph,
+                    "rejected_or_degraded": list(compiled.mutations.rejected_or_degraded),
+                },
+            },
         },
         artifact_path=f"{request.get('artifact_root', 'artifacts/phase-7')}/{run_id}.json",
         checkpoint_events=({"node": "dry_run_workflow", "status": "completed"},),
+    )
+
+
+def _compile_dry_run_graph(requested_nodes: list[str]):
+    families = ["paid_amount_change_explanation"]
+    if any(node in requested_nodes for node in ("segment_contribution", "joint_attribution")):
+        families.append("segment_or_factor_attribution")
+    if any(node in requested_nodes for node in ("outlier_scan", "outlier_contribution")):
+        families.append("anomaly_or_black_swan_review")
+    return compile_graph(
+        question_family=families[0],
+        target_metric="payment_amount",
+        requested_nodes=requested_nodes,
+        question_families=families,
     )
 
 
@@ -264,6 +292,48 @@ def _dry_run_answer_text(question: str) -> str:
     if "移除" in question or "异常" in question or "复算" in question:
         return "演练回答：已按聚合口径移除异常影响后复算，用来判断方向是否仍成立。"
     return f"演练回答：{question}"
+
+
+def _manifest_with_answer_sources(manifest: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
+    refs = _claim_evidence_refs(package)
+    if not refs:
+        return manifest
+    updated = dict(manifest)
+    items = list(updated.get("items") or [])
+    existing = {str(item.get("source_ref")) for item in items if isinstance(item, dict)}
+    for ref in refs:
+        if ref in existing:
+            continue
+        items.append(
+            {
+                "source_type": ref.split(":", 1)[0],
+                "source_ref": ref,
+                "summary": "Answer Package 生成的可审计证据引用。",
+                "can_support_claims": True,
+                "visibility": "analyst",
+                "reason": "answer_package_claim_source",
+                "permission_scope": package.get("permission_scope") or "analyst",
+                "source_version": package.get("snapshot_id") or "dry-run",
+                "expired": False,
+                "claim_use": "evidence",
+            }
+        )
+    updated["items"] = items
+    updated["can_support_claims"] = True
+    return updated
+
+
+def _claim_evidence_refs(package: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for section in package.get("sections", []):
+        payload = section.get("payload", {}) if isinstance(section, dict) else {}
+        claims = payload.get("claims")
+        if not isinstance(claims, list):
+            continue
+        for claim in claims:
+            if isinstance(claim, dict):
+                refs.extend(str(ref) for ref in claim.get("evidence_refs", []) if ref)
+    return list(dict.fromkeys(refs))
 
 
 def main(argv: Optional[list[str]] = None) -> int:
