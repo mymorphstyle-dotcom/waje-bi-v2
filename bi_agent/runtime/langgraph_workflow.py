@@ -364,11 +364,11 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
     if request.get("force_langgraph_failure"):
         raise RuntimeError("forced_langgraph_failure")
     _maybe_force_node_failure(state, "understand_business_intent")
-    output = _invoke_llm(
-        state,
-        "business_intent",
-        _business_intent_payload(request),
-    )
+    intent_payload = _business_intent_payload(request)
+    try:
+        output = _invoke_llm(state, "business_intent", intent_payload)
+    except Exception as exc:
+        output = _local_business_intent_fallback(state, intent_payload, exc)
     state["intent"] = _normalize_question_families({
         "question_family": output.get("question_family") or "pattern_explanation",
         "target_metric": _normalize_target_metric(
@@ -376,9 +376,10 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
             or output.get("target_metric")
             or "paid_amount"
         ),
-        "pattern_family": request.get("pattern_family")
-        or output.get("pattern_family")
-        or "intra_period",
+        "pattern_family": _normalize_pattern_family(
+            request.get("pattern_family") or output.get("pattern_family") or "intra_period",
+            request,
+        ),
         "pattern_params": dict(request.get("pattern_params", {})),
         "scope": _normalize_scope(
             request.get("scope") or output.get("scope") or "full_sample"
@@ -402,6 +403,73 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         "secondary_question_families": list(output.get("secondary_question_families") or ()),
     })
     return state
+
+
+def _local_business_intent_fallback(
+    state: WorkflowState,
+    payload: dict[str, Any],
+    exc: Exception,
+) -> dict[str, Any]:
+    request = state["request"]
+    question = str(request.get("question") or "")
+    business_text = question.lower()
+    question_family = "pattern_explanation"
+    pattern_family = "intra_period"
+    target_claim = "pattern_explanation"
+    secondary_families: list[str] = []
+    if _business_text_requests_change_explanation(business_text):
+        question_family = "paid_amount_change_explanation"
+        pattern_family = "custom_baseline"
+        target_claim = "comparative_change"
+    if _business_text_requests_segment_contribution(
+        business_text
+    ) or _business_text_requests_joint_attribution(business_text):
+        if question_family != "segment_or_factor_attribution":
+            secondary_families.append("segment_or_factor_attribution")
+        if question_family == "pattern_explanation":
+            question_family = "segment_or_factor_attribution"
+            target_claim = "segment_contribution"
+    if _business_text_requests_outlier_recalc(business_text):
+        if question_family != "anomaly_or_black_swan_review":
+            secondary_families.append("anomaly_or_black_swan_review")
+        if question_family == "pattern_explanation":
+            question_family = "anomaly_or_black_swan_review"
+            target_claim = "external_shock_candidate_or_anomaly"
+    if _business_text_requests_period_recompare(business_text):
+        if question_family != "custom_baseline_comparison":
+            secondary_families.append("custom_baseline_comparison")
+        if question_family == "pattern_explanation":
+            question_family = "custom_baseline_comparison"
+            pattern_family = "custom_baseline"
+            target_claim = "comparative_change"
+
+    output = {
+        "question_family": question_family,
+        "primary_question_family": question_family,
+        "secondary_question_families": secondary_families,
+        "question_families": [question_family, *secondary_families],
+        "target_metric": request.get("target_metric") or "paid_amount",
+        "pattern_family": request.get("pattern_family") or pattern_family,
+        "scope": request.get("scope") or "full_sample",
+        "time_window": request.get("time_window") or "2024-01..2026-05",
+        "target_claim": target_claim,
+        "baseline_candidates": ["current_topic_baseline", "custom_baseline"],
+        "sub_intents": [],
+        "ambiguous_slots": [],
+        "answer_contract": {},
+        "baseline": request.get("baseline") or {},
+        "target": request.get("target") or {},
+        "status_message": "LLM 意图识别不可用，已按本地业务表达和合同边界继续。",
+    }
+    state["llm_calls"].append(
+        _local_llm_fallback_audit(
+            task="business_intent",
+            payload=payload,
+            output=output,
+            exc=exc,
+        )
+    )
+    return output
 
 
 def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
@@ -509,6 +577,25 @@ def _normalize_target_metric(metric: Any) -> str:
     return value or "paid_amount"
 
 
+def _normalize_pattern_family(pattern_family: Any, request: Mapping[str, Any]) -> str:
+    value = str(pattern_family or "intra_period")
+    params = dict(request.get("pattern_params", {}) or {})
+    question = str(request.get("question") or "")
+    has_weekday_target = bool(
+        params.get("target_weekday")
+        or params.get("target_weekdays")
+        or params.get("baseline_weekday")
+        or params.get("baseline_weekdays")
+    )
+    if (
+        value == "weekly"
+        and not has_weekday_target
+        and _business_text_requests_period_recompare(question)
+    ):
+        return "custom_baseline"
+    return value
+
+
 def _empty_business_context_value(value: Any) -> bool:
     if value is None:
         return True
@@ -521,20 +608,52 @@ def _empty_business_context_value(value: Any) -> bool:
 
 def _decide_question_boundary(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "decide_question_boundary")
-    state["boundary_decision"] = _invoke_llm(
-        state,
-        "boundary_decision",
-        {
-            "intent": state["intent"],
-            "available_defaults": {
-                "scope": state["intent"]["scope"],
-                "time_window": state["intent"]["time_window"],
-                "pattern_family": state["intent"]["pattern_family"],
-            },
-            "phase4_policy": "ask only when ambiguity can change conclusion, baseline, time semantics, permission, claim strength, or cost",
+    boundary_payload = {
+        "intent": state["intent"],
+        "available_defaults": {
+            "scope": state["intent"]["scope"],
+            "time_window": state["intent"]["time_window"],
+            "pattern_family": state["intent"]["pattern_family"],
         },
-    )
+        "phase4_policy": "ask only when ambiguity can change conclusion, baseline, time semantics, permission, claim strength, or cost",
+    }
+    if str(state.get("request", {}).get("question") or "").strip():
+        decision = _local_question_boundary_decision(state)
+        state["llm_calls"].append(
+            _local_llm_decision_audit(
+                task="boundary_decision",
+                payload=boundary_payload,
+                output=decision,
+                reason="local_clarification_policy",
+            )
+        )
+        state["boundary_decision"] = decision
+        return state
+    state["boundary_decision"] = _invoke_llm(state, "boundary_decision", boundary_payload)
     return state
+
+
+def _local_question_boundary_decision(state: WorkflowState) -> dict[str, Any]:
+    intent = state.get("intent", {})
+    text = _intent_business_text(intent)
+    if (
+        _business_text_requests_outlier_recalc(text)
+        and not state.get("request", {}).get("clarification_choice")
+    ):
+        return {
+            "boundary_status": "needs_question",
+            "recommended_assumption": (
+                "按日粒度移除贡献最大的正向日期后复算，不做订单级明细剔除。"
+            ),
+            "clarification_questions": _local_outlier_clarification_questions(),
+            "decision_summary": "异常日期剔除方式会改变业务结论，需要用户确认执行边界。",
+        }
+    return {
+        "boundary_status": "clear",
+        "recommended_assumption": {},
+        "clarification_questions": [],
+        "decision_summary": "当前业务边界足够明确，可以继续。",
+    }
 
 
 def _clarification_policy_gate(state: WorkflowState) -> WorkflowState:
@@ -560,12 +679,51 @@ def _clarification_policy_gate(state: WorkflowState) -> WorkflowState:
             "recommended_assumption": decision.get("recommended_assumption")
             or "采用产品默认业务假设继续，并把假设写入本次分析边界。",
         }
+    if status == "needs_question" and _can_continue_with_observational_attribution_boundary(state):
+        status = "low_risk_assumption"
+        decision = {
+            **decision,
+            "recommended_assumption": (
+                "按观察性归因继续分析，只发布贡献强弱和候选解释，"
+                "不把单个渠道或分群写成已证明原因。"
+            ),
+        }
+    if status == "needs_question" and _can_continue_with_current_topic_segment_boundary(state):
+        status = "low_risk_assumption"
+        decision = {
+            **decision,
+            "recommended_assumption": (
+                "沿用当前 topic 的时间窗口和基线口径继续，"
+                "按渠道贡献变化做有边界的对比。"
+            ),
+        }
+    grain_assumption = _current_topic_grain_assumption(state)
+    if status == "needs_question" and grain_assumption:
+        status = "low_risk_assumption"
+        decision = {
+            **decision,
+            "recommended_assumption": grain_assumption,
+        }
+    actionability_assumption = _current_topic_actionability_assumption(state)
+    if status == "needs_question" and actionability_assumption:
+        status = "low_risk_assumption"
+        decision = {
+            **decision,
+            "recommended_assumption": actionability_assumption,
+        }
+    if status == "needs_question" and state["request"].get("clarification_choice"):
+        status = "low_risk_assumption"
+        decision = {
+            **decision,
+            "recommended_assumption": "已按用户澄清继续执行，并把该选择写入本次分析边界。",
+        }
     if status == "needs_question" and not state["request"].get("allow_question_interrupt", True):
         status = "low_risk_assumption"
     state["clarification_outcome"] = {
         "status": "pending" if status == "needs_question" else "system_inferred",
         "boundary_status": status,
         "recommended_assumption": decision.get("recommended_assumption"),
+        "choice": state["request"].get("clarification_choice"),
     }
     _current_event(state)["route"] = status
     return state
@@ -588,18 +746,91 @@ def _can_continue_with_default_business_boundary(
     return not bool(ambiguous & hard_slots)
 
 
+def _can_continue_with_observational_attribution_boundary(state: WorkflowState) -> bool:
+    intent = state.get("intent", {})
+    if "segment_or_factor_attribution" not in _intent_question_family_set(intent):
+        return False
+    text = _intent_business_text(intent)
+    return _contains_segment_dimension(text) and _contains_any(
+        text,
+        ("主要原因", "原因", "解释"),
+    )
+
+
+def _can_continue_with_current_topic_segment_boundary(state: WorkflowState) -> bool:
+    if not _request_has_topic_context(state):
+        return False
+    intent = state.get("intent", {})
+    if "segment_or_factor_attribution" not in _intent_question_family_set(intent):
+        return False
+    text = _intent_business_text(intent)
+    ambiguous = _ambiguous_slot_names(intent)
+    return (
+        _contains_segment_dimension(text)
+        and _contains_any(text, ("变化", "贡献", "最明显", "最大"))
+        and ambiguous.issubset({"baseline", "change_measure", "comparison_period", "segment_grain"})
+    )
+
+
+def _current_topic_grain_assumption(state: WorkflowState) -> str:
+    if not _request_has_topic_context(state):
+        return ""
+    text = _intent_business_text(state.get("intent", {}))
+    if _contains_any(text, ("日均", "日平均")):
+        return "沿用当前 topic 的指标、范围和基线，按日均口径重新比较并保留口径变化说明。"
+    if _contains_any(text, ("按周", "周粒度", "按周看", "口径改成按周")):
+        return "沿用当前 topic 的指标、范围和基线，按周粒度重新比较并保留口径变化说明。"
+    return ""
+
+
+def _current_topic_actionability_assumption(state: WorkflowState) -> str:
+    if not _request_has_topic_context(state):
+        return ""
+    text = _intent_business_text(state.get("intent", {}))
+    if not _business_text_requests_actionability_verification(text):
+        return ""
+    return (
+        "沿用当前 topic 的指标、范围和证据边界继续验证；"
+        "当前结果只能作为投放排查线索，不能直接写成已证明可指导投放。"
+    )
+
+
+def _request_has_topic_context(state: WorkflowState) -> bool:
+    manifest = state.get("request", {}).get("context_manifest") or {}
+    for item in manifest.get("items", ()) or ():
+        if isinstance(item, Mapping) and item.get("source_type") == "topic":
+            return True
+    return False
+
+
+def _ambiguous_slot_names(intent: Mapping[str, Any]) -> set[str]:
+    return {
+        str(item.get("slot") if isinstance(item, Mapping) else item)
+        for item in intent.get("ambiguous_slots", ())
+        if item
+    }
+
+
 def _generate_clarification(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "generate_clarification")
     choice = state["request"].get("clarification_choice")
-    output = _invoke_llm(
-        state,
-        "clarification_question",
-        {
-            "intent": state.get("intent", {}),
-            "boundary_decision": state.get("boundary_decision", {}),
-            "clarification_choice": choice,
-        },
-    )
+    clarification_payload = {
+        "intent": state.get("intent", {}),
+        "boundary_decision": state.get("boundary_decision", {}),
+        "clarification_choice": choice,
+    }
+    if str(state.get("request", {}).get("question") or "").strip():
+        output = _local_clarification_question_output(state)
+        state["llm_calls"].append(
+            _local_llm_decision_audit(
+                task="clarification_question",
+                payload=clarification_payload,
+                output=output,
+                reason="local_clarification_options",
+            )
+        )
+    else:
+        output = _invoke_llm(state, "clarification_question", clarification_payload)
     state["clarification_outcome"] = {
         "status": "user_selected" if choice else "question_tool_opened",
         "boundary_status": "needs_question"
@@ -612,6 +843,33 @@ def _generate_clarification(state: WorkflowState) -> WorkflowState:
         "choice": choice,
     }
     return state
+
+
+def _local_clarification_question_output(state: WorkflowState) -> dict[str, Any]:
+    questions = state.get("boundary_decision", {}).get("clarification_questions") or []
+    if not questions:
+        questions = _local_outlier_clarification_questions()
+    return {
+        "questions": questions,
+        "recommended_assumption": state.get("boundary_decision", {}).get(
+            "recommended_assumption"
+        )
+        or "采用产品默认业务假设继续，并把假设写入本次分析边界。",
+        "status_message": "需要确认会改变业务结论的执行边界。",
+    }
+
+
+def _local_outlier_clarification_questions() -> list[dict[str, Any]]:
+    return [
+        {
+            "question": "要按什么口径移除异常日期后复算？",
+            "options": [
+                "按日粒度，移除贡献最大的正向日期后复算。",
+                "只标记异常日期，不从结果中移除。",
+                "先不复算，继续保留原结论和异常风险提示。",
+            ],
+        }
+    ]
 
 
 def _has_bound_intra_period_comparison(state: WorkflowState) -> bool:
@@ -639,32 +897,75 @@ def _rebind_after_clarification(state: WorkflowState) -> WorkflowState:
 
 def _confirm_business_understanding(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "confirm_business_understanding")
-    state["confirmed_understanding"] = _invoke_llm(
-        state,
-        "confirm_understanding",
-        {
-            "intent": state["intent"],
-            "boundary_decision": state["boundary_decision"],
-            "clarification_outcome": state.get("clarification_outcome", {}),
-        },
-    )
+    understanding_payload = {
+        "intent": state["intent"],
+        "boundary_decision": state["boundary_decision"],
+        "clarification_outcome": state.get("clarification_outcome", {}),
+    }
+    if str(state.get("request", {}).get("question") or "").strip():
+        output = _local_confirm_understanding(state)
+        state["llm_calls"].append(
+            _local_llm_decision_audit(
+                task="confirm_understanding",
+                payload=understanding_payload,
+                output=output,
+                reason="local_intent_confirmation",
+            )
+        )
+        state["confirmed_understanding"] = output
+    else:
+        state["confirmed_understanding"] = _invoke_llm(
+            state,
+            "confirm_understanding",
+            understanding_payload,
+        )
     return state
+
+
+def _local_confirm_understanding(state: WorkflowState) -> dict[str, Any]:
+    intent = state.get("intent", {})
+    assumptions = []
+    recommended = state.get("clarification_outcome", {}).get("recommended_assumption")
+    if recommended:
+        assumptions.append(str(recommended))
+    return {
+        "confirmed_intent": {
+            "question_family": intent.get("question_family"),
+            "target_metric": intent.get("target_metric"),
+            "pattern_family": intent.get("pattern_family"),
+            "scope": intent.get("scope"),
+            "time_window": intent.get("time_window"),
+        },
+        "accepted_assumptions": assumptions,
+        "status_message": "已确认本次业务问题、口径和证据边界。",
+    }
 
 
 def _design_analysis_route(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "design_analysis_route")
     budget = state.get("budget_state") or default_budget("ordinary")
     state["budget_state"] = budget
-    output = _invoke_llm(
-        state,
-        "analysis_route",
-        {
-            "intent": state["intent"],
-            "confirmed_understanding": state["confirmed_understanding"],
-            "known_capabilities": _route_capability_cards(),
-            "budget_state": budget.to_llm_summary(),
-        },
-    )
+    route_payload = {
+        "intent": state["intent"],
+        "confirmed_understanding": state["confirmed_understanding"],
+        "known_capabilities": _route_capability_cards(),
+        "budget_state": budget.to_llm_summary(),
+    }
+    if str(state.get("request", {}).get("question") or "").strip():
+        output = _local_analysis_route_output(state)
+        state["llm_calls"].append(
+            _local_llm_decision_audit(
+                task="analysis_route",
+                payload=route_payload,
+                output=output,
+                reason="local_capability_route",
+            )
+        )
+    else:
+        try:
+            output = _invoke_llm(state, "analysis_route", route_payload)
+        except Exception as exc:
+            output = _local_analysis_route_fallback(state, route_payload, exc)
     requested = _requested_node_ids(
         output.get("requested_nodes"),
         excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
@@ -677,6 +978,63 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
     state["analysis_route"] = {**output, "requested_nodes": requested}
     state["intent"]["requested_nodes"] = requested
     return state
+
+
+def _local_analysis_route_output(state: WorkflowState) -> dict[str, Any]:
+    intent = state["intent"]
+    business_text = _intent_business_text(intent)
+    families = _intent_question_family_set(intent)
+    requested: list[str] = []
+    if "paid_amount_change_explanation" in families or _business_text_requests_change_explanation(
+        business_text
+    ):
+        requested.append("driver_decomposition")
+    if "segment_or_factor_attribution" in families or _business_text_requests_segment_contribution(
+        business_text
+    ):
+        requested.append(
+            "joint_attribution"
+            if _business_text_requests_joint_attribution(business_text)
+            else "segment_contribution"
+        )
+    if "anomaly_or_black_swan_review" in families or _business_text_requests_outlier_recalc(
+        business_text
+    ):
+        requested.extend(("outlier_scan", "outlier_contribution"))
+    if _business_text_requests_period_recompare(business_text):
+        requested.extend(("compare_periods", "answer_verify"))
+    if _business_text_requests_actionability_verification(business_text):
+        requested.append("answer_verify")
+    requested_nodes = _normalize_route_requested_nodes(
+        tuple(requested or ("pattern_scan",)),
+        intent,
+    )
+    return _align_route_output_to_requested(
+        {
+            "requested_nodes": list(requested_nodes),
+            "route_summary": "已按业务意图和能力合同选择可执行路线。",
+            "expected_evidence": list(requested_nodes),
+            "decision_summary": "保留合同、权限、证据和 verifier 边界，使用本地能力路由继续执行。",
+        },
+        requested_nodes,
+    )
+
+
+def _local_analysis_route_fallback(
+    state: WorkflowState,
+    payload: dict[str, Any],
+    exc: Exception,
+) -> dict[str, Any]:
+    output = _local_analysis_route_output(state)
+    state["llm_calls"].append(
+        _local_llm_fallback_audit(
+            task="analysis_route",
+            payload=payload,
+            output=output,
+            exc=exc,
+        )
+    )
+    return output
 
 
 def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
@@ -773,18 +1131,23 @@ def _validate_runtime_binding(state: WorkflowState) -> WorkflowState:
 
 def _interpret_data_coverage(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "interpret_data_coverage")
-    coverage = _invoke_llm(
-        state,
-        "data_coverage_interpretation",
-        {
-            "intent": state["intent"],
-            "schema_summary": state["schema"],
-            "data_result_summary": _data_result_summary(
-                state["request"].get("rows") or []
-            ),
-            "validator_results": state["validator_results"],
-            "sql_hash": state["sql_hash"],
-        },
+    coverage_payload = {
+        "intent": state["intent"],
+        "schema_summary": state["schema"],
+        "data_result_summary": _data_result_summary(
+            state["request"].get("rows") or []
+        ),
+        "validator_results": state["validator_results"],
+        "sql_hash": state["sql_hash"],
+    }
+    coverage = _local_data_coverage_interpretation(state)
+    state["llm_calls"].append(
+        _local_llm_decision_audit(
+            task="data_coverage_interpretation",
+            payload=coverage_payload,
+            output=coverage,
+            reason="local_coverage_contract",
+        )
     )
     if coverage.get("coverage_status") == "blocked":
         block_reason = _local_coverage_block_reason(state)
@@ -811,6 +1174,30 @@ def _interpret_data_coverage(state: WorkflowState) -> WorkflowState:
             }
     state["coverage_interpretation"] = coverage
     return state
+
+
+def _local_data_coverage_interpretation(state: WorkflowState) -> dict[str, Any]:
+    block_reason = _local_coverage_block_reason(state)
+    if block_reason:
+        return {
+            "coverage_status": "blocked",
+            "business_impact": _business_limitation_reasons((block_reason,))[0],
+            "decision_summary": "本地覆盖检查发现硬边界，不能发布主业务结论。",
+            "local_block_reason": block_reason,
+        }
+    answerable_reason = _local_coverage_answerable_reason(state)
+    if answerable_reason:
+        return {
+            "coverage_status": "coverage_gap_but_answerable",
+            "business_impact": answerable_reason,
+            "decision_summary": "本地聚合结果满足当前问题的执行口径，继续计算，并在答案里保留边界。",
+            "local_override": "needs_question_without_local_gap",
+        }
+    return {
+        "coverage_status": "sufficient",
+        "business_impact": "当前聚合结果、字段和校验状态可支持本轮证据计算。",
+        "decision_summary": "本地覆盖检查通过，继续进入证据计算。",
+    }
 
 
 def _data_result_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1135,17 +1522,39 @@ def _event_evidence_params(state: WorkflowState) -> dict[str, Any]:
 
 def _decide_next_action(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "decide_next_action")
-    state["next_action"] = _invoke_llm(
-        state,
-        "next_action",
-        {
-            "intent": state["intent"],
-            "accepted_graph": to_jsonable(state["compiled_graph"].mutations.accepted_graph),
-            "evidence_brief": state["evidence_brief"],
-            "allow_question_interrupt": state["request"].get("allow_question_interrupt", True),
-        },
-    )
+    action_payload = {
+        "intent": state["intent"],
+        "accepted_graph": to_jsonable(state["compiled_graph"].mutations.accepted_graph),
+        "evidence_brief": state["evidence_brief"],
+        "allow_question_interrupt": state["request"].get("allow_question_interrupt", True),
+    }
+    if str(state.get("request", {}).get("question") or "").strip():
+        output = _local_next_action(state)
+        state["llm_calls"].append(
+            _local_llm_decision_audit(
+                task="next_action",
+                payload=action_payload,
+                output=output,
+                reason="local_evidence_action_policy",
+            )
+        )
+        state["next_action"] = output
+    else:
+        state["next_action"] = _invoke_llm(state, "next_action", action_payload)
     return state
+
+
+def _local_next_action(state: WorkflowState) -> dict[str, Any]:
+    coverage_status = state.get("coverage_interpretation", {}).get("coverage_status")
+    if coverage_status == "blocked":
+        return {
+            "next_action": "degrade",
+            "decision_summary": "覆盖检查存在硬边界，进入降级说明。",
+        }
+    return {
+        "next_action": "synthesize_answer",
+        "decision_summary": "证据已经计算完成，进入答案合成并交给 verifier 校验。",
+    }
 
 
 def _promotion_direction(state: WorkflowState) -> WorkflowState:
@@ -1224,6 +1633,16 @@ def _normalize_route_requested_nodes(
     ):
         normalized.append("driver_decomposition")
     if (
+        _business_text_requests_change_explanation(business_text)
+        and "driver_decomposition" not in normalized
+    ):
+        normalized.append("driver_decomposition")
+    if (
+        _business_text_requests_change_explanation(business_text)
+        and "answer_verify" not in normalized
+    ):
+        normalized.append("answer_verify")
+    if (
         (
             "segment_or_factor_attribution" in families
             or _business_text_requests_segment_contribution(business_text)
@@ -1235,12 +1654,40 @@ def _normalize_route_requested_nodes(
         normalized.append("segment_contribution")
     if "segment_contribution" in normalized and not _contains_segment_dimension(business_text):
         normalized = [node for node in normalized if node != "segment_contribution"]
+    if (
+        "segment_contribution" in normalized
+        and "joint_attribution" not in normalized
+        and _business_text_requests_joint_attribution(business_text)
+    ):
+        normalized.append("joint_attribution")
+    if (
+        _business_text_requests_joint_attribution(business_text)
+        and "joint_attribution" not in normalized
+    ):
+        normalized.append("joint_attribution")
+    if (
+        _business_text_requests_joint_attribution(business_text)
+        and "answer_verify" not in normalized
+    ):
+        normalized.append("answer_verify")
+    if _business_text_requests_outlier_recalc(business_text):
+        if "outlier_scan" not in normalized:
+            normalized.append("outlier_scan")
+        if "outlier_contribution" not in normalized:
+            normalized.append("outlier_contribution")
     if _contains_any(business_text, ("少数", "几天", "异常日", "撑起来")) and "outlier_contribution" not in normalized:
         normalized.append("outlier_contribution")
     if _contains_any(business_text, ("新老用户", "新用户", "老用户", "用户质量")) and "user_mix_contribution" not in normalized:
         normalized.append("user_mix_contribution")
     if _contains_any(business_text, ("大客户", "高价值用户", "高净值用户")) and "high_value_user_contribution" not in normalized:
         normalized.append("high_value_user_contribution")
+    if _business_text_requests_period_recompare(business_text):
+        if "compare_periods" not in normalized:
+            normalized.append("compare_periods")
+        if "answer_verify" not in normalized:
+            normalized.append("answer_verify")
+    if _business_text_requests_actionability_verification(business_text) and "answer_verify" not in normalized:
+        normalized.append("answer_verify")
     return tuple(dict.fromkeys(normalized))
 
 
@@ -1274,6 +1721,47 @@ def _business_text_requests_segment_contribution(text: str) -> bool:
     )
 
 
+def _business_text_requests_change_explanation(text: str) -> bool:
+    return _contains_any(
+        text,
+        ("提升", "增长", "下降", "减少", "变化", "差异", "q2", "q1", "环比", "同比"),
+    ) and _contains_any(
+        text,
+        ("原因", "为什么", "驱动", "影响因子", "贡献", "解释", "归因", "分解"),
+    )
+
+
+def _business_text_requests_joint_attribution(text: str) -> bool:
+    if not _contains_segment_dimension(text):
+        return False
+    return _contains_any(
+        text,
+        ("主要原因", "原因", "贡献最大", "最明显", "解释", "这些渠道", "渠道里", "组合", "共同"),
+    )
+
+
+def _business_text_requests_outlier_recalc(text: str) -> bool:
+    return (
+        _contains_any(text, ("移除", "剔除", "排除", "去掉", "排掉"))
+        and _contains_any(text, ("按日", "按天", "日期", "天", "日", "异常"))
+        and _contains_any(text, ("复算", "贡献最大", "最大正向", "方向", "成立"))
+    )
+
+
+def _business_text_requests_period_recompare(text: str) -> bool:
+    return _contains_any(
+        text,
+        ("日均", "日平均", "按周", "周粒度", "按周看", "口径改成按周", "换成"),
+    )
+
+
+def _business_text_requests_actionability_verification(text: str) -> bool:
+    return _contains_any(
+        text,
+        ("指导投放", "直接指导", "能不能直接", "可不可以直接", "能否直接", "有多稳", "稳健", "稳定性"),
+    )
+
+
 def _infer_question_families_from_requested_nodes(
     intent: dict[str, Any], requested_nodes: Iterable[str]
 ) -> None:
@@ -1288,6 +1776,8 @@ def _infer_question_families_from_requested_nodes(
         additions.append("anomaly_or_black_swan_review")
     if "driver_decomposition" in requested_nodes:
         additions.append("paid_amount_change_explanation")
+    if "compare_periods" in requested_nodes:
+        additions.append("custom_baseline_comparison")
     if not additions:
         return
 
@@ -1446,19 +1936,56 @@ def _execute_joint_attribution(state: WorkflowState) -> WorkflowState:
 
 def _interpret_evidence(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "interpret_evidence")
+    evidence_payload = {
+        "intent": state["intent"],
+        "evidence_brief": state["evidence_brief"],
+        "evidence": state["evidence"],
+    }
+    if str(state.get("request", {}).get("question") or "").strip():
+        output = _local_evidence_interpretation(state)
+        state["llm_calls"].append(
+            _local_llm_decision_audit(
+                task="evidence_interpretation",
+                payload=evidence_payload,
+                output=output,
+                reason="local_evidence_boundary",
+            )
+        )
+    else:
+        output = _invoke_llm(state, "evidence_interpretation", evidence_payload)
     state["evidence_interpretation"] = _normalize_evidence_interpretation_output(
-        _invoke_llm(
-            state,
-            "evidence_interpretation",
-            {
-                "intent": state["intent"],
-                "evidence_brief": state["evidence_brief"],
-                "evidence": state["evidence"],
-            },
-        ),
+        output,
         state,
     )
     return state
+
+
+def _local_evidence_interpretation(state: WorkflowState) -> dict[str, Any]:
+    brief = state.get("evidence_brief", {})
+    accepted = tuple(
+        state.get("compiled_graph").mutations.accepted_graph
+        if state.get("compiled_graph")
+        else ()
+    )
+    metric = _business_metric_label(state)
+    capability_text = _capability_path_labels(accepted)
+    limitations = list(brief.get("limitations") or ())
+    if brief.get("pattern_established"):
+        interpretation = (
+            f"已基于{capability_text or '已执行能力'}验证{metric}的变化方向和可见贡献项。"
+        )
+        decision = "当前证据可支持有边界的业务结论。"
+    else:
+        interpretation = f"当前证据不足以支持{metric}的强结论。"
+        decision = "进入有边界答案或降级说明，避免发布过强结论。"
+    boundary = "当前结论只覆盖已执行口径；不能写成因果证明。"
+    if limitations:
+        boundary = f"{boundary} 需要保留限制项：{','.join(str(item) for item in limitations[:5])}。"
+    return {
+        "interpretation": interpretation,
+        "decision_summary": decision,
+        "evidence_boundary": boundary,
+    }
 
 
 def _audit_causal_implications(state: WorkflowState) -> WorkflowState:
@@ -1586,18 +2113,26 @@ def _normalize_custom_baseline_direction(value: str, state: WorkflowState) -> st
 
 def _synthesize_answer(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "synthesize_answer")
-    output = _invoke_llm(
-        state,
-        "answer_synthesis",
-        {
-            "intent": state["intent"],
-            "evidence_interpretation": state["evidence_interpretation"],
-            "evidence_brief": state["evidence_brief"],
-            "evidence": state["evidence"],
-            "evidence_refs": [item.get("evidence_ref") for item in state["evidence"]],
-            "answer_context": _answer_synthesis_context(state),
-        },
-    )
+    answer_payload = {
+        "intent": state["intent"],
+        "evidence_interpretation": state["evidence_interpretation"],
+        "evidence_brief": state["evidence_brief"],
+        "evidence": state["evidence"],
+        "evidence_refs": [item.get("evidence_ref") for item in state["evidence"]],
+        "answer_context": _answer_synthesis_context(state),
+    }
+    if str(state.get("request", {}).get("question") or "").strip():
+        output = _local_answer_synthesis(state)
+        state["llm_calls"].append(
+            _local_llm_decision_audit(
+                task="answer_synthesis",
+                payload=answer_payload,
+                output=output,
+                reason="local_evidence_bound_answer",
+            )
+        )
+    else:
+        output = _invoke_llm(state, "answer_synthesis", answer_payload)
     state["answer_text"] = _weaken_unsupported_causal_wording(output.get("answer_text", ""))
     state["draft_claims"] = state["request"].get("draft_claims") or _claims_from_llm_or_default(
         output.get("claims"),
@@ -1607,22 +2142,63 @@ def _synthesize_answer(state: WorkflowState) -> WorkflowState:
     return state
 
 
+def _local_answer_synthesis(state: WorkflowState) -> dict[str, Any]:
+    claim = _default_claim_from_evidence(state)
+    return {
+        "answer_text": _business_narrative_answer(state, claim),
+        "claims": [claim],
+    }
+
+
 def _semantic_audit(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "semantic_audit")
-    state["semantic_audit"] = _invoke_llm(
-        state,
-        "semantic_audit",
-        {
-            "answer_text": state.get("answer_text", ""),
-            "draft_claims": state["draft_claims"],
-            "evidence": state.get("evidence", []),
-            "evidence_brief": state["evidence_brief"],
-            "evidence_refs": [item.get("evidence_ref") for item in state.get("evidence", [])],
-            "answer_context": _answer_synthesis_context(state),
-            "wording_boundary": "causal and main-driver wording require explicit supporting evidence",
-        },
-    )
+    audit_payload = {
+        "answer_text": state.get("answer_text", ""),
+        "draft_claims": state["draft_claims"],
+        "evidence": state.get("evidence", []),
+        "evidence_brief": state["evidence_brief"],
+        "evidence_refs": [item.get("evidence_ref") for item in state.get("evidence", [])],
+        "answer_context": _answer_synthesis_context(state),
+        "wording_boundary": "causal and main-driver wording require explicit supporting evidence",
+    }
+    if str(state.get("request", {}).get("question") or "").strip():
+        output = _local_semantic_audit(state)
+        state["llm_calls"].append(
+            _local_llm_decision_audit(
+                task="semantic_audit",
+                payload=audit_payload,
+                output=output,
+                reason="local_claim_evidence_audit",
+            )
+        )
+        state["semantic_audit"] = output
+    else:
+        state["semantic_audit"] = _invoke_llm(state, "semantic_audit", audit_payload)
     return state
+
+
+def _local_semantic_audit(state: WorkflowState) -> dict[str, Any]:
+    issues = []
+    evidence_refs = {
+        item.get("evidence_ref")
+        for item in state.get("evidence", [])
+        if item.get("evidence_ref")
+    }
+    for claim in state.get("draft_claims", []):
+        refs = set(claim.get("evidence_refs") or [])
+        if not refs.intersection(evidence_refs):
+            issues.append(
+                {
+                    "description": "答案声明缺少可追溯证据引用。",
+                    "severity": "high",
+                    "claim_text": claim.get("text", ""),
+                }
+            )
+    return {
+        "audit_status": "passed" if not issues else "needs_repair",
+        "extracted_claims": list(state.get("draft_claims", [])),
+        "issues": issues,
+    }
 
 
 def _sanitize_answer(state: WorkflowState) -> WorkflowState:
@@ -1670,67 +2246,218 @@ def _repair_answer(state: WorkflowState) -> WorkflowState:
 
 def _generate_degraded_explanation(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "generate_degraded_explanation")
-    output = _invoke_llm(
-        state,
-        "degraded_explanation",
-        {
-            "intent": state.get("intent", {}),
-            "evidence_brief": state.get("evidence_brief", {}),
-            "verifier": state.get("verifier", {}),
-        },
-    )
+    explanation_payload = {
+        "intent": state.get("intent", {}),
+        "evidence_brief": state.get("evidence_brief", {}),
+        "verifier": state.get("verifier", {}),
+    }
+    if str(state.get("request", {}).get("question") or "").strip():
+        output = _terminal_explanation_fallback(state, "degraded")
+        state["llm_calls"].append(
+            _local_llm_decision_audit(
+                task="degraded_explanation",
+                payload=explanation_payload,
+                output=output,
+                reason="local_terminal_boundary",
+            )
+        )
+    else:
+        output = _invoke_llm(state, "degraded_explanation", explanation_payload)
     state["final_explanation"] = _sanitize_terminal_explanation(output, state, "degraded")
     if "evidence" not in state:
         state["evidence"] = []
     if "draft_claims" not in state:
         state["draft_claims"] = []
+    _ensure_degraded_audit(state)
     return state
+
+
+def _ensure_degraded_audit(state: WorkflowState) -> None:
+    evidence_items = list(state.get("evidence") or [])
+    if not evidence_items:
+        evidence_items.append(_degraded_boundary_evidence(state))
+    state["evidence"] = evidence_items
+
+    draft_claims = list(state.get("draft_claims") or [])
+    if draft_claims:
+        state["draft_claims"] = draft_claims
+        return
+    evidence = _primary_business_evidence(state)
+    evidence_ref = str(evidence.get("evidence_ref") or evidence_items[0].get("evidence_ref"))
+    state["draft_claims"] = [_degraded_boundary_claim(state, evidence_ref)]
+
+
+def _degraded_boundary_evidence(state: WorkflowState) -> dict[str, Any]:
+    limitations = _degraded_limitations(state)
+    return {
+        "evidence_ref": f"degraded_boundary:{state['run_id']}",
+        "capability_id": "answer_verify",
+        "evidence_type": "insufficient",
+        "strength": "insufficient",
+        "wording_limit": "insufficient",
+        "limitations": limitations,
+        "result_refs": [state.get("sql_hash", "")],
+        "sql_hashes": [state.get("sql_hash", "")],
+        "typed_payload": {
+            "status": "degraded",
+            "limitations": limitations,
+            "repair_path": _terminal_repair_path(state, "degraded"),
+        },
+    }
+
+
+def _degraded_boundary_claim(state: WorkflowState, evidence_ref: str) -> dict[str, Any]:
+    reason = "、".join(_business_limitation_reasons(tuple(_degraded_limitations(state))))
+    if not reason:
+        reason = "当前证据强度不足"
+    return {
+        "text": f"当前证据不足以支撑主业务结论；主要限制是{reason}。",
+        "evidence_refs": [evidence_ref],
+        "numbers": {},
+        "scope": state["intent"]["scope"],
+        "time_window": state["intent"]["time_window"],
+        "claim_strength": "insufficient",
+    }
+
+
+def _degraded_limitations(state: WorkflowState) -> list[str]:
+    limitations = list(state.get("evidence_brief", {}).get("limitations") or [])
+    if limitations:
+        return limitations
+    result = []
+    for item in state.get("evidence", []):
+        for limitation in item.get("limitations", ()) or ():
+            if limitation not in result:
+                result.append(limitation)
+    return result or ["insufficient_evidence"]
 
 
 def _generate_blocked_explanation(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "generate_blocked_explanation")
     if "final_explanation" not in state:
-        output = _invoke_llm(
-            state,
-            "blocked_explanation",
-            {
-                "intent": state.get("intent", {}),
-                "boundary_decision": state.get("boundary_decision", {}),
-                "validator_results": state.get("validator_results", []),
-            },
-        )
+        explanation_payload = {
+            "intent": state.get("intent", {}),
+            "boundary_decision": state.get("boundary_decision", {}),
+            "validator_results": state.get("validator_results", []),
+        }
+        if str(state.get("request", {}).get("question") or "").strip():
+            output = _terminal_explanation_fallback(state, "blocked")
+            state["llm_calls"].append(
+                _local_llm_decision_audit(
+                    task="blocked_explanation",
+                    payload=explanation_payload,
+                    output=output,
+                    reason="local_terminal_boundary",
+                )
+            )
+        else:
+            output = _invoke_llm(state, "blocked_explanation", explanation_payload)
         state["final_explanation"] = _sanitize_terminal_explanation(output, state, "blocked")
     if "evidence" not in state:
         state["evidence"] = []
     if "draft_claims" not in state:
         state["draft_claims"] = []
+    _ensure_blocked_coverage_audit(state)
     return state
+
+
+def _ensure_blocked_coverage_audit(state: WorkflowState) -> None:
+    evidence = _blocked_coverage_evidence(state)
+    if not evidence:
+        return
+
+    evidence_items = list(state.get("evidence") or [])
+    evidence_ref = str(evidence["evidence_ref"])
+    if not any(item.get("evidence_ref") == evidence_ref for item in evidence_items):
+        evidence_items.append(evidence)
+    state["evidence"] = evidence_items
+
+    draft_claims = list(state.get("draft_claims") or [])
+    if not any(evidence_ref in claim.get("evidence_refs", ()) for claim in draft_claims):
+        draft_claims.append(_blocked_coverage_claim(state, evidence_ref))
+    state["draft_claims"] = draft_claims
+
+
+def _blocked_coverage_evidence(state: WorkflowState) -> dict[str, Any]:
+    coverage = state.get("coverage_interpretation") or {}
+    if coverage.get("coverage_status") != "blocked":
+        return {}
+    local_reason = str(coverage.get("local_block_reason") or "coverage_blocked")
+    reason_text = _coverage_block_reason_text(coverage)
+    return {
+        "evidence_ref": f"coverage_block:{state['run_id']}",
+        "capability_id": "data_quality_profile",
+        "evidence_type": "insufficient",
+        "strength": "insufficient",
+        "wording_limit": "insufficient",
+        "limitations": [local_reason],
+        "result_refs": [state.get("sql_hash", "")],
+        "sql_hashes": [state.get("sql_hash", "")],
+        "typed_payload": {
+            "coverage_status": coverage.get("coverage_status"),
+            "local_block_reason": local_reason,
+            "business_impact": reason_text,
+            "decision_summary": coverage.get("decision_summary") or "",
+            "repair_path": _terminal_repair_path(state, "blocked"),
+        },
+    }
+
+
+def _blocked_coverage_claim(state: WorkflowState, evidence_ref: str) -> dict[str, Any]:
+    reason_text = _coverage_block_reason_text(state.get("coverage_interpretation") or {})
+    return {
+        "text": f"当前数据覆盖不足，无法支撑本轮业务结论；主要原因是{reason_text}。",
+        "evidence_refs": [evidence_ref],
+        "numbers": {},
+        "scope": state["intent"]["scope"],
+        "time_window": state["intent"]["time_window"],
+        "claim_strength": "insufficient",
+    }
+
+
+def _coverage_block_reason_text(coverage: Mapping[str, Any]) -> str:
+    business_impact = str(coverage.get("business_impact") or "").strip()
+    if business_impact:
+        return business_impact.rstrip("。")
+    local_reason = str(coverage.get("local_block_reason") or "")
+    reason = _business_limitation_reasons((local_reason,))
+    if reason:
+        return reason[0]
+    return "当前数据覆盖不足"
 
 
 def _final_business_summary(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "final_business_summary")
-    output = _invoke_llm(
-        state,
-        "final_business_summary",
-        {
-            "intent": state.get("intent", {}),
-            "confirmed_understanding": state.get("confirmed_understanding", {}),
-            "accepted_graph": to_jsonable(
-                state.get("compiled_graph").mutations.accepted_graph
-                if state.get("compiled_graph")
-                else ()
-            ),
-            "evidence_brief": state.get("evidence_brief", {}),
-            "evidence_interpretation": state.get("evidence_interpretation", {}),
-            "answer_text": state.get("answer_text", ""),
-            "claims": state.get("draft_claims", []),
-            "semantic_audit": state.get("semantic_audit", {}),
-            "verifier": state.get("verifier", {}),
-            "final_explanation": state.get("final_explanation", {}),
-            "checkpoint_summary": _checkpoint_summary(state),
-            "business_threads": _business_threads(state),
-        },
-    )
+    summary_payload = {
+        "intent": state.get("intent", {}),
+        "confirmed_understanding": state.get("confirmed_understanding", {}),
+        "accepted_graph": to_jsonable(
+            state.get("compiled_graph").mutations.accepted_graph
+            if state.get("compiled_graph")
+            else ()
+        ),
+        "evidence_brief": state.get("evidence_brief", {}),
+        "evidence_interpretation": state.get("evidence_interpretation", {}),
+        "answer_text": state.get("answer_text", ""),
+        "claims": state.get("draft_claims", []),
+        "semantic_audit": state.get("semantic_audit", {}),
+        "verifier": state.get("verifier", {}),
+        "final_explanation": state.get("final_explanation", {}),
+        "checkpoint_summary": _checkpoint_summary(state),
+        "business_threads": _business_threads(state),
+    }
+    if str(state.get("request", {}).get("question") or "").strip():
+        output = {"summary_text": _final_business_summary_fallback(state)}
+        state["llm_calls"].append(
+            _local_llm_decision_audit(
+                task="final_business_summary",
+                payload=summary_payload,
+                output=output,
+                reason="local_verified_answer_summary",
+            )
+        )
+    else:
+        output = _invoke_llm(state, "final_business_summary", summary_payload)
     state["final_business_summary"] = _weaken_unsupported_causal_wording(
         output.get("summary_text", "")
     )
@@ -1816,7 +2543,7 @@ def _local_coverage_block_reason(state: WorkflowState) -> str:
     for result in state.get("validator_results", ()):
         if not result.get("ok", True):
             return str(result.get("validator") or "validator_failed")
-    rows = list(state.get("request", {}).get("rows") or [])
+    rows = _coverage_rows_for_local_check(state)
     if not rows:
         return "no_rows"
     required_fields = tuple(state.get("request", {}).get("required_fields") or ())
@@ -1834,7 +2561,7 @@ def _local_coverage_answerable_reason(state: WorkflowState) -> str:
     for result in state.get("validator_results", ()):
         if not result.get("ok", True):
             return ""
-    rows = list(state.get("request", {}).get("rows") or [])
+    rows = _coverage_rows_for_local_check(state)
     if not rows:
         return ""
     required_fields = tuple(state.get("request", {}).get("required_fields") or ())
@@ -1860,6 +2587,13 @@ def _local_coverage_answerable_reason(state: WorkflowState) -> str:
         return ""
 
     return "本地聚合结果已经包含当前分析所需字段；可以继续做有边界的业务对比。"
+
+
+def _coverage_rows_for_local_check(state: WorkflowState) -> list[dict[str, Any]]:
+    request = state.get("request", {})
+    if "rows" in request:
+        return list(request.get("rows") or [])
+    return _default_pattern_rows()
 
 
 def _coverage_text_requests_confirmation(coverage: Mapping[str, Any]) -> bool:
@@ -2215,6 +2949,62 @@ def _invoke_llm(state: WorkflowState, task: str, payload: dict[str, Any]) -> dic
     )
     state["llm_calls"].append(result.audit)
     return result.output
+
+
+def _local_llm_fallback_audit(
+    *,
+    task: str,
+    payload: dict[str, Any],
+    output: dict[str, Any],
+    exc: Exception,
+) -> dict[str, Any]:
+    spec = build_prompt(task, payload)
+    now = _utc_now()
+    return {
+        "task": spec.task,
+        "provider": "local_fallback",
+        "model": "deterministic_capability_router",
+        "prompt_version": spec.prompt_version,
+        "response_id": f"local-fallback-{task}",
+        "messages": [dict(message) for message in spec.messages],
+        "required_keys": list(spec.required_keys),
+        "raw_response_content": json.dumps(output, ensure_ascii=False, sort_keys=True),
+        "started_at": now,
+        "finished_at": now,
+        "duration_ms": 0.0,
+        "failure_type": "llm_unavailable",
+        "error_class": exc.__class__.__name__,
+        "error": str(exc),
+        "usage": {},
+        "structured_output": output,
+    }
+
+
+def _local_llm_decision_audit(
+    *,
+    task: str,
+    payload: dict[str, Any],
+    output: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    spec = build_prompt(task, payload)
+    now = _utc_now()
+    return {
+        "task": spec.task,
+        "provider": "local_deterministic",
+        "model": "contract_policy",
+        "prompt_version": spec.prompt_version,
+        "response_id": f"local-deterministic-{task}",
+        "messages": [dict(message) for message in spec.messages],
+        "required_keys": list(spec.required_keys),
+        "raw_response_content": json.dumps(output, ensure_ascii=False, sort_keys=True),
+        "started_at": now,
+        "finished_at": now,
+        "duration_ms": 0.0,
+        "decision_reason": reason,
+        "usage": {},
+        "structured_output": output,
+    }
 
 
 def _checkpoint(state: WorkflowState, node_name: str, attempt: int) -> dict[str, Any]:
@@ -3095,6 +3885,8 @@ def _sanitize_terminal_explanation(
     visible_text = " ".join(
         str(value.get(key, "")) for key in ("explanation", "owner", "repair_path")
     )
+    if status == "blocked" and _blocked_terminal_text_contradicts_status(visible_text):
+        return _terminal_explanation_fallback(state, status)
     if _has_internal_visible_token(visible_text):
         return _terminal_explanation_fallback(state, status)
     if _has_materiality_data_volume_drift(visible_text, state):
@@ -3116,6 +3908,20 @@ def _sanitize_terminal_explanation(
     if _repair_path_invents_fixed_future_window(repair_path):
         value["repair_path"] = _terminal_repair_path(state, status)
     return value
+
+
+def _blocked_terminal_text_contradicts_status(text: str) -> bool:
+    return any(
+        phrase in text
+        for phrase in (
+            "无需阻塞",
+            "无需修复",
+            "不需要阻塞",
+            "不用阻塞",
+            "所有检查已通过",
+            "验证全部通过",
+        )
+    )
 
 
 def _has_materiality_data_volume_drift(text: str, state: WorkflowState) -> bool:

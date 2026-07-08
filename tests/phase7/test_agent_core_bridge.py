@@ -34,6 +34,40 @@ class AgentCoreBridgeTest(unittest.TestCase):
             any(event["event_type"] == "answer_package_recorded" for event in store.audit_events)
         )
 
+    def test_agent_core_returns_context_manifest_with_current_run_evidence_refs(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-agent-core-evidence", owner_id="analyst-1")
+        core = ConversationAgentCore(store, workflow_runner=fake_workflow)
+
+        result = core.run_message(
+            thread_id="thread-agent-core-evidence",
+            run_id="run-agent-core-evidence",
+            user_message="Q2 比 Q1 付费金额为什么变了？",
+            role="analyst",
+        )
+
+        refs = {
+            item["source_ref"]
+            for item in result["context_manifest"]["items"]
+            if item.get("can_support_claims") is True
+        }
+        self.assertIn("evidence:fake-workflow", refs)
+        self.assertTrue(result["context_manifest"]["can_support_claims"])
+
+    def test_agent_core_creates_thread_before_initial_run_insert(self):
+        store = StrictThreadStore()
+        core = ConversationAgentCore(store, workflow_runner=fake_workflow)
+
+        result = core.run_message(
+            thread_id="thread-agent-core-strict",
+            run_id="run-agent-core-strict",
+            user_message="Q2 比 Q1 付费金额为什么变了？",
+            role="analyst",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("thread-agent-core-strict", store.threads)
+
     def test_agent_core_does_not_run_langgraph_for_capability_question(self):
         store = InMemoryConversationStore()
         store.create_thread("thread-agent-core", owner_id="analyst-1")
@@ -114,6 +148,33 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertIn("clarification_response", case["turns"][3])
         self.assertFalse(any("case_id" in item for item in cases))
 
+    def test_live_conversation_cases_include_long_thread_stress_set(self):
+        from tools.phase7.run_live_conversation_system_test import load_cases
+
+        cases = load_cases("evals/phase7/conversation_scenarios.yaml")
+        matches = [item for item in cases if item["id"] == "q2_q1_long_thread_stress"]
+        self.assertTrue(matches)
+        case = matches[0]
+        required = {
+            capability
+            for turn in case["turns"]
+            for capability in turn.get("expect", {}).get("required_capabilities", ())
+        }
+
+        self.assertEqual(case["group"], "long_thread_stress")
+        self.assertGreaterEqual(len(case["turns"]), 8)
+        self.assertTrue(any("clarification_response" in turn for turn in case["turns"]))
+        self.assertTrue(
+            {
+                "driver_decomposition",
+                "segment_contribution",
+                "joint_attribution",
+                "outlier_scan",
+                "outlier_contribution",
+                "answer_verify",
+            }.issubset(required)
+        )
+
     def test_live_conversation_harness_runs_clarification_and_resumes_same_topic(self):
         from tempfile import TemporaryDirectory
 
@@ -164,6 +225,41 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 )
                 self.assertEqual(turn["expectation_review"]["missing_final_answer_text"], [])
         self.assertIn("outlier_contribution", clarification_turn["resumed_accepted_graph"])
+
+    def test_agent_core_passes_clarification_answer_as_workflow_choice(self):
+        captured: dict[str, object] = {}
+
+        def workflow(request):
+            captured.update(request)
+            return fake_workflow(request)
+
+        store = InMemoryConversationStore()
+        store.create_thread("thread-clarification-choice", owner_id="analyst-1")
+        core = ConversationAgentCore(store, workflow_runner=workflow)
+
+        first = core.run_message(
+            thread_id="thread-clarification-choice",
+            run_id="run-initial-choice",
+            user_message="Q2 相比 Q1 付费金额为什么变了？",
+        )
+        captured.clear()
+        waiting = core.run_message(
+            thread_id="thread-clarification-choice",
+            run_id="run-waiting-choice",
+            user_message="如果去掉异常天还成立吗？",
+        )
+        resumed = core.run_message(
+            thread_id="thread-clarification-choice",
+            run_id="run-resumed-choice",
+            user_message="按日粒度，移除贡献最大的正向日期后复算，不做订单级明细剔除。",
+        )
+
+        self.assertEqual(first["status"], "completed")
+        self.assertEqual(waiting["status"], "waiting_for_clarification")
+        self.assertEqual(resumed["status"], "completed")
+        self.assertIn("clarification_choice", captured)
+        self.assertEqual(captured["clarification_choice"]["outlier_removal_strategy"], "daily_remove_top_positive_day")
+        self.assertIn("answer_text", captured["clarification_choice"])
 
     def test_follow_up_hints_route_user_mix_and_high_value_capabilities(self):
         store = InMemoryConversationStore()
@@ -226,6 +322,59 @@ class AgentCoreBridgeTest(unittest.TestCase):
             review["claim_evidence_review"]["unsupported_evidence_refs"],
             ["artifact:missing"],
         )
+
+    def test_live_harness_accepts_current_run_evidence_manifest_refs_without_prefix(self):
+        from tools.phase7.run_live_conversation_system_test import _expectation_review
+
+        review = _expectation_review(
+            {"expect": {"final_answer_contains": ["结论"]}},
+            {"intent": "follow_up", "topic_relation": "inherit_current"},
+            {
+                "intent": "follow_up",
+                "topic_relation": "inherit_current",
+                "answer_package": {
+                    "sections": [
+                        {
+                            "payload": {
+                                "answer_text": "结论",
+                                "claims": [
+                                    {
+                                        "text": "结论",
+                                        "evidence_refs": ["coverage_block:run-1"],
+                                    }
+                                ],
+                            }
+                        },
+                        {
+                            "payload": {
+                                "evidence": [
+                                    {
+                                        "evidence_ref": "coverage_block:run-1",
+                                        "evidence_type": "insufficient",
+                                    }
+                                ]
+                            }
+                        },
+                    ]
+                },
+                "context_manifest": {
+                    "can_support_claims": True,
+                    "items": [
+                        {
+                            "source_type": "evidence",
+                            "source_ref": "coverage_block:run-1",
+                            "can_support_claims": True,
+                            "claim_use": "evidence",
+                        }
+                    ],
+                },
+            },
+            [],
+        )
+
+        self.assertTrue(review["claim_support_policy_passed"])
+        self.assertEqual(review["claim_evidence_review"]["unsupported_evidence_refs"], [])
+        self.assertTrue(review["passed"])
 
     def test_live_harness_rejects_context_only_manifest_refs_for_claims(self):
         from tools.phase7.run_live_conversation_system_test import _expectation_review
@@ -378,6 +527,33 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )
         self.assertTrue(_strict_quality_failed({"quality_review": review}))
 
+    def test_live_harness_uses_fresh_thread_for_each_case_run(self):
+        from tools.phase7.run_live_conversation_system_test import _case_thread_id
+
+        first = _case_thread_id({"id": "q2_q1_wajespecial_long_followup"})
+        second = _case_thread_id({"id": "q2_q1_wajespecial_long_followup"})
+
+        self.assertTrue(first.startswith("live-q2_q1_wajespecial_long_followup-"))
+        self.assertTrue(second.startswith("live-q2_q1_wajespecial_long_followup-"))
+        self.assertNotEqual(first, second)
+
+    def test_live_harness_separates_real_and_dry_run_artifacts(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _default_artifact_dir,
+            _run_mode,
+        )
+
+        self.assertEqual(
+            _default_artifact_dir(real_llm=False, real_clickhouse=False),
+            Path("artifacts/phase7/live-conversation-dry-run"),
+        )
+        self.assertEqual(
+            _default_artifact_dir(real_llm=True, real_clickhouse=True),
+            Path("artifacts/phase7/live-conversation-real"),
+        )
+        self.assertEqual(_run_mode(real_llm=False, real_clickhouse=False), "dry_run")
+        self.assertEqual(_run_mode(real_llm=True, real_clickhouse=True), "real_llm_real_clickhouse")
+
 
 def fake_workflow(request):
     return WorkflowRunResult(
@@ -393,7 +569,28 @@ def fake_workflow(request):
                 {
                     "id": "summary",
                     "visibility": "business_summary",
-                    "payload": {"answer_text": "这是持久化的业务回答。"},
+                    "payload": {
+                        "answer_text": "这是持久化的业务回答。",
+                        "claims": [
+                            {
+                                "text": "这是持久化的业务回答。",
+                                "evidence_refs": ["evidence:fake-workflow"],
+                            }
+                        ],
+                    },
+                },
+                {
+                    "id": "evidence",
+                    "visibility": "aggregate_evidence",
+                    "payload": {
+                        "evidence": [
+                            {
+                                "evidence_ref": "evidence:fake-workflow",
+                                "evidence_type": "statistical_association",
+                                "strength": "medium",
+                            }
+                        ]
+                    },
                 }
             ],
             "admin_audit": {"verifier": {"status": "passed"}},
@@ -409,6 +606,20 @@ def fake_failed_workflow(request):
         run_id=request["run_id"],
         failure_reason="synthetic_failure",
     )
+
+
+class StrictThreadStore(InMemoryConversationStore):
+    def upsert_run(self, run_id, *, thread_id, turn_id="", topic_id="", status, request=None):
+        if thread_id not in self.threads:
+            raise AssertionError("thread must exist before run insert")
+        return super().upsert_run(
+            run_id,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            topic_id=topic_id,
+            status=status,
+            request=request,
+        )
 
 
 if __name__ == "__main__":

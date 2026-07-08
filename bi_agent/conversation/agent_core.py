@@ -42,6 +42,7 @@ class ConversationAgentCore:
     ) -> dict[str, Any]:
         role = str((permission_context or {}).get("role") or role or "analyst")
         run_id = run_id or f"run-{uuid4().hex[:12]}"
+        self.store.get_thread(thread_id)
         self.store.upsert_run(run_id, thread_id=thread_id, status="running")
         if clarification:
             self.store.add_audit_event(
@@ -115,6 +116,11 @@ class ConversationAgentCore:
             }
 
         request = turn.run_request.to_dict()
+        clarification_choice = _clarification_choice_from_answer(
+            user_message,
+            turn.turn_intent.intent,
+            explicit_choice=clarification,
+        )
         request["context_manifest"] = context_manifest
         request["reuse_decisions"] = [decision.to_dict() for decision in turn.reuse_decisions]
         request.update(
@@ -128,6 +134,8 @@ class ConversationAgentCore:
                 "clarification_answer": clarification,
             }
         )
+        if clarification_choice:
+            request["clarification_choice"] = clarification_choice
         self.store.upsert_run(
             run_id,
             thread_id=thread_id,
@@ -172,6 +180,8 @@ class ConversationAgentCore:
             or package.get("admin_audit", {}).get("accepted_graph")
             or []
         )
+        context_manifest = _manifest_with_current_run_evidence(context_manifest, package, role)
+        self.store.record_context_manifest(context_manifest)
         self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
         self.store.record_answer_package(run_id, package)
         self.store.upsert_run(
@@ -219,6 +229,37 @@ def _conversation_llm_from_env() -> Any:
         return OpenAICompatibleLLMClient.from_env()
     except Exception:
         return None
+
+
+def _clarification_choice_from_answer(
+    user_message: str,
+    intent: str,
+    *,
+    explicit_choice: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if explicit_choice:
+        return dict(explicit_choice)
+    if intent != "clarification_answer":
+        return {}
+    choice: dict[str, Any] = {"answer_text": user_message}
+    if _looks_like_daily_outlier_removal_choice(user_message):
+        choice.update(
+            {
+                "outlier_removal_strategy": "daily_remove_top_positive_day",
+                "period_grain": "day",
+                "removal_policy": "top_positive_contribution_periods",
+                "max_removed_periods": 1,
+            }
+        )
+    return choice
+
+
+def _looks_like_daily_outlier_removal_choice(text: str) -> bool:
+    return (
+        any(token in text for token in ("移除", "剔除", "排除", "去掉", "排掉"))
+        and any(token in text for token in ("按日", "按天", "日期", "天", "日"))
+        and any(token in text for token in ("复算", "贡献最大", "最大正向"))
+    )
 
 
 def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
@@ -399,7 +440,74 @@ def _manifest_with_dry_run_source(manifest: dict[str, Any], run_id: str, role: s
         )
     updated["items"] = items
     updated["can_support_claims"] = True
+    updated.setdefault("claim_use_policy", {})["can_support_bi_claim"] = True
     return updated
+
+
+def _manifest_with_current_run_evidence(
+    manifest: dict[str, Any],
+    package: dict[str, Any],
+    role: str,
+) -> dict[str, Any]:
+    refs = _claim_evidence_refs(package)
+    if not refs:
+        return manifest
+    updated = dict(manifest)
+    items = list(updated.get("items") or [])
+    existing = {str(item.get("source_ref")) for item in items if isinstance(item, dict)}
+    snapshot = str(package.get("snapshot_id") or package.get("snapshot") or "current-run")
+    for ref in refs:
+        if ref in existing:
+            continue
+        items.append(
+            {
+                "source_type": "evidence",
+                "source_ref": ref,
+                "summary": "本轮 workflow 产出的可审计证据引用。",
+                "can_support_claims": True,
+                "visibility": role,
+                "reason": "current_run_evidence",
+                "permission_scope": role,
+                "source_version": snapshot,
+                "expired": False,
+                "claim_use": "evidence",
+            }
+        )
+    updated["items"] = items
+    updated["can_support_claims"] = True
+    updated.setdefault("claim_use_policy", {})["can_support_bi_claim"] = True
+    return updated
+
+
+def _claim_evidence_refs(package: dict[str, Any]) -> list[str]:
+    evidence_refs = _package_evidence_refs(package)
+    refs: list[str] = []
+    for section in package.get("sections", []):
+        payload = section.get("payload", {}) if isinstance(section, dict) else {}
+        claims = payload.get("claims", [])
+        if not isinstance(claims, list):
+            continue
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            for ref in claim.get("evidence_refs", []):
+                ref = str(ref)
+                if ref and ref in evidence_refs and ref not in refs:
+                    refs.append(ref)
+    return refs
+
+
+def _package_evidence_refs(package: dict[str, Any]) -> set[str]:
+    refs: set[str] = set()
+    for section in package.get("sections", []):
+        payload = section.get("payload", {}) if isinstance(section, dict) else {}
+        evidence_items = payload.get("evidence", [])
+        if not isinstance(evidence_items, list):
+            continue
+        for item in evidence_items:
+            if isinstance(item, dict) and item.get("evidence_ref"):
+                refs.add(str(item["evidence_ref"]))
+    return refs
 
 
 def _dry_run_claim_source_ref(request: dict[str, Any]) -> str:

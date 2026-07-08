@@ -23,6 +23,7 @@ export async function GET() {
   const checks = await Promise.all([
     gatewayHealth(),
     postgresHealth(),
+    llmHealth(),
     pythonHealth("python_bi_agent_core", "import bi_agent.conversation.agent_core"),
     pythonHealth(
       "langgraph_adapter",
@@ -38,6 +39,22 @@ export async function GET() {
 
 function gatewayHealth(): HealthCheck {
   return { name: "frontend_gateway", status: "ok", detail: "route_responded" };
+}
+
+function llmHealth(): HealthCheck {
+  const missing = [];
+  if (!process.env.WAJE_LLM_MODEL) missing.push("WAJE_LLM_MODEL");
+  if (
+    !process.env.WAJE_LLM_API_KEY &&
+    !process.env.OPENAI_API_KEY &&
+    !process.env.DEEPSEEK_API_KEY
+  ) {
+    missing.push("WAJE_LLM_API_KEY|OPENAI_API_KEY|DEEPSEEK_API_KEY");
+  }
+  if (missing.length) {
+    return { name: "llm_access", status: "failed", detail: `missing_env:${missing.join(",")}` };
+  }
+  return { name: "llm_access", status: "ok", detail: "model_and_key_configured" };
 }
 
 async function postgresHealth(): Promise<HealthCheck> {

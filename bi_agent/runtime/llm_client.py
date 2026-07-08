@@ -2,17 +2,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 import re
+import signal
+import threading
 from time import perf_counter
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Iterator, Mapping, Optional, Sequence
 
 from openai import OpenAI
 
 
-DEFAULT_TIMEOUT_SECONDS = 900
+DEFAULT_TIMEOUT_SECONDS = 90
+DEFAULT_MAX_OUTPUT_TOKENS = 1600
 
 
 @dataclass(frozen=True)
@@ -29,6 +33,10 @@ class LLMOutputError(RuntimeError):
     pass
 
 
+class LLMTimeoutError(RuntimeError):
+    pass
+
+
 class OpenAICompatibleLLMClient:
     def __init__(
         self,
@@ -37,11 +45,14 @@ class OpenAICompatibleLLMClient:
         model: str,
         api_key: str,
         base_url: str = "",
-        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     ):
         self.provider = provider
         self.model = model
         self.base_url = base_url
+        self.timeout_seconds = timeout_seconds
+        self.max_output_tokens = max_output_tokens
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url or None,
@@ -65,9 +76,21 @@ class OpenAICompatibleLLMClient:
         base_url = env.get("WAJE_LLM_BASE_URL", "").strip()
         timeout_text = env.get("WAJE_LLM_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS))
         try:
-            timeout_seconds = int(timeout_text)
+            timeout_seconds = float(timeout_text)
         except ValueError as exc:
             raise LLMConfigurationError("invalid_llm_timeout") from exc
+        if timeout_seconds <= 0:
+            raise LLMConfigurationError("invalid_llm_timeout")
+        max_output_tokens_text = env.get(
+            "WAJE_LLM_MAX_OUTPUT_TOKENS",
+            str(DEFAULT_MAX_OUTPUT_TOKENS),
+        )
+        try:
+            max_output_tokens = int(max_output_tokens_text)
+        except ValueError as exc:
+            raise LLMConfigurationError("invalid_llm_max_output_tokens") from exc
+        if max_output_tokens <= 0:
+            raise LLMConfigurationError("invalid_llm_max_output_tokens")
 
         if provider not in {"openai", "openai_compatible"}:
             raise LLMConfigurationError("unsupported_llm_provider")
@@ -81,6 +104,7 @@ class OpenAICompatibleLLMClient:
             api_key=api_key,
             base_url=base_url,
             timeout_seconds=timeout_seconds,
+            max_output_tokens=max_output_tokens,
         )
 
     def invoke_json(
@@ -93,11 +117,14 @@ class OpenAICompatibleLLMClient:
     ) -> LLMResult:
         started = perf_counter()
         started_at = _utc_now()
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[dict(message) for message in messages],
-            response_format={"type": "json_object"},
-        )
+        with _wall_clock_timeout(self.timeout_seconds):
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[dict(message) for message in messages],
+                response_format={"type": "json_object"},
+                temperature=0,
+                max_tokens=self.max_output_tokens,
+            )
         content = response.choices[0].message.content or "{}"
         output = _localize_narrative_fields(_parse_json_object(content))
         missing = [key for key in required_keys if key not in output]
@@ -122,10 +149,33 @@ class OpenAICompatibleLLMClient:
                 "input_hash": _hash_json(messages),
                 "output_hash": _hash_json(output),
                 "base_url_hash": _hash_text(self.base_url) if self.base_url else "",
+                "max_output_tokens": self.max_output_tokens,
                 "usage": _usage_dict(getattr(response, "usage", None)),
                 "structured_output": output,
             },
         )
+
+
+@contextmanager
+def _wall_clock_timeout(seconds: float) -> Iterator[None]:
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _raise_timeout(signum, frame):
+        raise LLMTimeoutError(f"llm_request_timeout:{seconds:g}s")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    signal.signal(signal.SIGALRM, _raise_timeout)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
 
 
 def _parse_json_object(content: str) -> dict[str, Any]:

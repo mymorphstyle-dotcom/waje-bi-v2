@@ -119,6 +119,18 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertTrue(stale_result_items[0].expired)
         self.assertEqual(stale_result_items[0].claim_use, "context_only")
 
+    def test_runtime_records_turn_before_context_manifest(self):
+        store = StrictTurnStore()
+        runtime = ConversationRuntime(store)
+
+        result = runtime.handle_message(
+            "thread-runtime-strict",
+            "Q2 比 Q1 付费金额为什么变了？",
+        )
+
+        self.assertEqual(result.topic_relation, "new_topic")
+        self.assertEqual(store.saved_manifest_turn_ids, [result.turn_id])
+
     def test_memory_update_creates_audited_proposal_without_long_term_write(self):
         runtime = _seed_runtime()
         before = runtime.store.long_term_memory("org-default")
@@ -447,6 +459,32 @@ class ConversationRuntimeTest(unittest.TestCase):
             any(event["event"] == "conversation_orchestrator_llm_evaluated" for event in result.audit_events)
         )
 
+    def test_clear_followup_uses_local_orchestrator_without_llm_call(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-local-route", owner_id="analyst-1")
+        topic = store.create_topic(
+            "thread-local-route",
+            title="Q2 vs Q1",
+            summary="当前 topic 关注 Q2 相比 Q1 的变化。",
+        )
+        store.set_current_topic("thread-local-route", topic.topic_id)
+        fake = FakeConversationLLM(
+            {
+                "intent": "new_topic",
+                "topic_relation": "new_topic",
+                "business_summary": "不应调用。",
+                "confidence": 0.99,
+            }
+        )
+        runtime = ConversationRuntime(store, llm_client=fake)
+
+        result = runtime.handle_message("thread-local-route", "这些变化在哪些渠道最明显？")
+
+        self.assertEqual(result.turn_intent.intent, "follow_up")
+        self.assertEqual(result.topic_relation, "inherit_current")
+        self.assertEqual(result.turn_intent.decision_source, "local_conversation_orchestrator")
+        self.assertEqual(fake.calls, [])
+
     def test_local_guard_blocks_unsupported_request_even_when_llm_disagrees(self):
         store = InMemoryConversationStore()
         store.create_thread("thread-llm-guard", owner_id="analyst-1")
@@ -480,10 +518,10 @@ class ConversationRuntimeTest(unittest.TestCase):
         )
         runtime = ConversationRuntime(store, llm_client=fake)
 
-        result = runtime.handle_message("thread-llm-fallback", "那具体哪些渠道贡献最大？")
+        result = runtime.handle_message("thread-llm-fallback", "刚才那个具体是哪个 topic？")
 
         self.assertEqual(result.turn_intent.intent, "follow_up")
-        self.assertEqual(result.topic_relation, "inherit_current")
+        self.assertEqual(result.topic_relation, "ask_topic_choice")
         self.assertEqual(result.turn_intent.decision_source, "local_conversation_orchestrator_fallback")
 
 
@@ -554,6 +592,21 @@ def build_metric_clarification_runtime() -> ConversationRuntime:
     runtime = ConversationRuntime(store)
     store.create_thread("thread-metric-clarify", owner_id="analyst-1")
     return runtime
+
+
+class StrictTurnStore(InMemoryConversationStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.saved_manifest_turn_ids = []
+
+    def save_context_manifest(self, manifest):
+        payload = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest)
+        thread = self.get_thread(payload["thread_id"])
+        turn_exists = any(turn.get("turn_id") == payload["turn_id"] for turn in thread.turns)
+        if not turn_exists:
+            raise AssertionError("turn must exist before context manifest insert")
+        self.saved_manifest_turn_ids.append(payload["turn_id"])
+        return super().save_context_manifest(manifest)
 
 
 class FakeConversationLLM:

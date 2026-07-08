@@ -15,6 +15,7 @@ class HealthChecksTest(unittest.TestCase):
             "frontend_gateway",
             "python_bi_agent_core",
             "postgres_runtime_store",
+            "llm_access",
             "clickhouse_access",
             "langgraph_adapter",
         ):
@@ -22,6 +23,8 @@ class HealthChecksTest(unittest.TestCase):
                 self.assertIn(check, route)
 
         self.assertIn("SELECT 1", route)
+        self.assertIn("WAJE_LLM_MODEL", route)
+        self.assertIn("WAJE_LLM_API_KEY", route)
         self.assertIn("ClickHouseRuntime.from_env", route)
         self.assertIn("build_pattern_graph", route)
         self.assertNotIn("run_pattern_workflow", route)

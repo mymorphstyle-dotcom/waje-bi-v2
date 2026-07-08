@@ -140,8 +140,6 @@ class ConversationRuntime:
             owner_scope,
             pending_clarification_id if intent_name == "clarification_answer" else "",
         )
-        self.store.save_context_manifest(manifest)
-        self.store.save_reuse_decisions(thread_id, turn_id, reuse_decisions)
         memory_proposals = self._memory_proposals(
             thread_id,
             turn_id,
@@ -246,6 +244,8 @@ class ConversationRuntime:
             response_boundary=_response_boundary(intent_name),
         )
         self.store.add_turn(thread_id, result.to_dict())
+        self.store.save_context_manifest(manifest)
+        self.store.save_reuse_decisions(thread_id, turn_id, reuse_decisions)
         if intent_name == "clarification_answer":
             if open_clarification:
                 self.store.save_clarification_state(
@@ -266,6 +266,13 @@ class ConversationRuntime:
     ) -> dict[str, Any]:
         local = _local_orchestration(local_intent, local_topic_relation, message)
         if not self.llm_client:
+            return local
+        if not _should_use_llm_orchestrator(
+            local_intent,
+            local_topic_relation,
+            message,
+            allow_clarification_answer,
+        ):
             return local
 
         spec = build_prompt(
@@ -575,6 +582,31 @@ def _local_orchestration(intent: str, topic_relation: str, message: str) -> dict
         "decision_source": "local_conversation_orchestrator",
         "business_summary": _intent_summary(intent, message),
     }
+
+
+def _should_use_llm_orchestrator(
+    local_intent: str,
+    local_topic_relation: str,
+    message: str,
+    allow_clarification_answer: bool,
+) -> bool:
+    if allow_clarification_answer:
+        return False
+    if local_intent in LOCAL_GUARDED_INTENTS:
+        return True
+    if local_topic_relation in {
+        "ask_topic_choice",
+        "select_referenced_topic",
+        "split_topics",
+        "split_subintents",
+        "queued_new_topic",
+    }:
+        return True
+    if local_intent in {"mixed_question", "capability_question", "memory_update"}:
+        return True
+    if local_intent == "challenge":
+        return "是不是被" in message
+    return False
 
 
 def _validated_orchestration(

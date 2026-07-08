@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import yaml
 
@@ -262,10 +263,14 @@ def _traceable_refs(answer_package: dict[str, Any], context_manifest: dict[str, 
     refs: set[str] = set()
     for item in context_manifest.get("items", []):
         source_ref = str(item.get("source_ref", "")) if isinstance(item, dict) else ""
+        source_type = str(item.get("source_type", "")) if isinstance(item, dict) else ""
         if (
             isinstance(item, dict)
             and source_ref
-            and source_ref.startswith(("evidence:", "result:", "artifact:", "memory:"))
+            and (
+                source_type in {"evidence", "result", "artifact", "memory"}
+                or source_ref.startswith(("evidence:", "result:", "artifact:", "memory:"))
+            )
             and item.get("can_support_claims") is True
             and item.get("claim_use") not in {"context_only", "preference_only", "blocked"}
         ):
@@ -301,14 +306,34 @@ def _missing_inputs_from_error(exc: Exception, *, real_llm: bool = False, real_c
     return list(dict.fromkeys(missing))
 
 
+def _case_thread_id(case: dict[str, Any]) -> str:
+    return f"live-{case['id']}-{uuid4().hex[:8]}"
+
+
+def _run_mode(*, real_llm: bool, real_clickhouse: bool) -> str:
+    if real_llm and real_clickhouse:
+        return "real_llm_real_clickhouse"
+    if real_llm:
+        return "real_llm"
+    if real_clickhouse:
+        return "real_clickhouse"
+    return "dry_run"
+
+
+def _default_artifact_dir(*, real_llm: bool, real_clickhouse: bool) -> Path:
+    suffix = "real" if real_llm or real_clickhouse else "dry-run"
+    return Path(f"artifacts/phase7/live-conversation-{suffix}")
+
+
 def run_case(
     core: ConversationAgentCore,
     case: dict[str, Any],
     artifact_dir: Path,
     *,
     strict_quality: bool = False,
+    run_mode: str = "dry_run",
 ) -> dict[str, Any]:
-    thread_id = f"live-{case['id']}"
+    thread_id = _case_thread_id(case)
     turns: list[dict[str, Any]] = []
     for index, turn in enumerate(case["turns"], start=1):
         result = core.run_message(thread_id=thread_id, user_message=turn["user"])
@@ -355,6 +380,8 @@ def run_case(
     strict_quality_failed = any(turn.get("strict_quality_failed") for turn in turns)
     output = {
         "case_id": case["id"],
+        "thread_id": thread_id,
+        "run_mode": run_mode,
         "status": "failed" if expectation_failed or strict_quality_failed else "passed",
         "strict_quality": strict_quality,
         "strict_quality_failed": strict_quality_failed,
@@ -380,13 +407,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cases", default="evals/phase7/conversation_scenarios.yaml")
     parser.add_argument("--case")
-    parser.add_argument("--artifact-dir", default="artifacts/phase7/live-conversation")
+    parser.add_argument("--artifact-dir")
     parser.add_argument("--real-llm", action="store_true")
     parser.add_argument("--real-clickhouse", action="store_true")
     parser.add_argument("--strict-quality", action="store_true")
     args = parser.parse_args()
 
     load_env_file()
+    run_mode = _run_mode(real_llm=args.real_llm, real_clickhouse=args.real_clickhouse)
+    artifact_dir = Path(args.artifact_dir) if args.artifact_dir else _default_artifact_dir(
+        real_llm=args.real_llm,
+        real_clickhouse=args.real_clickhouse,
+    )
     selected = select_cases(load_cases(args.cases), args.case)
     try:
         core = ConversationAgentCore.from_environment(
@@ -397,18 +429,19 @@ def main() -> None:
             run_case(
                 core,
                 case,
-                Path(args.artifact_dir),
+                artifact_dir,
                 strict_quality=args.strict_quality,
+                run_mode=run_mode,
             )
             for case in selected
         ]
     except RuntimeError as exc:
-        artifact_dir = Path(args.artifact_dir)
         artifact_dir.mkdir(parents=True, exist_ok=True)
         artifact_name = f"{args.case}.json" if args.case else "environment_blocked.json"
         case_id = args.case or "environment_blocked"
         blocked = {
             "case_id": case_id,
+            "run_mode": run_mode,
             "status": "blocked",
             "final_turn_status": "blocked",
             "run_id": None,
