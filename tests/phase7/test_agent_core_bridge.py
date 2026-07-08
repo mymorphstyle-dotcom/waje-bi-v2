@@ -20,6 +20,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["accepted_graph"], [])
         self.assertEqual(store.runs["run-agent-core"]["status"], "completed")
         self.assertTrue(store.context_manifests)
         self.assertTrue(store.answer_packages)
@@ -136,8 +137,41 @@ class AgentCoreBridgeTest(unittest.TestCase):
             with self.subTest(turn=turn["index"]):
                 self.assertTrue(turn["expectation_review"]["intent_passed"])
                 self.assertTrue(turn["expectation_review"]["topic_relation_passed"])
+                self.assertTrue(turn["expectation_review"]["context_manifest_present"])
+                self.assertTrue(turn["expectation_review"]["claim_support_policy_passed"])
                 self.assertEqual(turn["expectation_review"]["missing_final_answer_text"], [])
         self.assertIn("outlier_contribution", clarification_turn["resumed_accepted_graph"])
+
+    def test_live_harness_loads_local_env_without_overriding_shell(self):
+        import os
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import load_env_file
+
+        with TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text(
+                "WAJE_RUNTIME_DATABASE_URL=postgres://local\nWAJE_LLM_MODEL=deepseek-chat\n",
+                encoding="utf-8",
+            )
+            old_database_url = os.environ.pop("WAJE_RUNTIME_DATABASE_URL", None)
+            old_model = os.environ.get("WAJE_LLM_MODEL")
+            os.environ["WAJE_LLM_MODEL"] = "shell-model"
+            try:
+                loaded = load_env_file(str(env_path))
+                self.assertIn("WAJE_RUNTIME_DATABASE_URL", loaded)
+                self.assertNotIn("WAJE_LLM_MODEL", loaded)
+                self.assertEqual(os.environ["WAJE_RUNTIME_DATABASE_URL"], "postgres://local")
+                self.assertEqual(os.environ["WAJE_LLM_MODEL"], "shell-model")
+            finally:
+                if old_database_url is None:
+                    os.environ.pop("WAJE_RUNTIME_DATABASE_URL", None)
+                else:
+                    os.environ["WAJE_RUNTIME_DATABASE_URL"] = old_database_url
+                if old_model is None:
+                    os.environ.pop("WAJE_LLM_MODEL", None)
+                else:
+                    os.environ["WAJE_LLM_MODEL"] = old_model
 
 
 def fake_workflow(request):

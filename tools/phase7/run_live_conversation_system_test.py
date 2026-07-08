@@ -30,6 +30,36 @@ def select_cases(cases: list[dict[str, Any]], case_id: str | None) -> list[dict[
     return [case for case in cases if case["id"] == case_id]
 
 
+def load_env_file(path: str = ".env") -> list[str]:
+    env_path = Path(path)
+    if not env_path.exists():
+        return []
+    loaded: list[str] = []
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = _strip_env_value(value.strip())
+        loaded.append(key)
+    return loaded
+
+
+def _strip_env_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    if " #" in value:
+        return value.split(" #", 1)[0].strip()
+    return value
+
+
 def _effective_result(turn_record: dict[str, Any]) -> dict[str, Any]:
     if turn_record.get("resumed_status"):
         return {
@@ -82,6 +112,11 @@ def _expectation_review(
         for text in expect.get("final_answer_contains", [])
         if text not in _answer_text(effective_result.get("answer_package") or {})
     ]
+    manifest = effective_result.get("context_manifest")
+    manifest_present = isinstance(manifest, dict) and bool(manifest)
+    claim_support_ok = manifest_present and (
+        bool(manifest.get("can_support_claims")) or not _has_verifiable_claims(effective_result.get("answer_package") or {})
+    )
     clarification_ok = True
     if expect.get("allow_clarification"):
         clarification_ok = (
@@ -102,12 +137,16 @@ def _expectation_review(
         "clarification_passed": clarification_ok,
         "final_answer_contains": list(expect.get("final_answer_contains", [])),
         "missing_final_answer_text": missing_answer_text,
+        "context_manifest_present": manifest_present,
+        "claim_support_policy_passed": claim_support_ok,
         "required_capabilities": required,
         "missing_required_capabilities": missing,
         "passed": (
             intent_ok
             and relation_ok
             and clarification_ok
+            and manifest_present
+            and claim_support_ok
             and not missing
             and not missing_answer_text
         ),
@@ -133,6 +172,15 @@ def _answer_text(answer_package: dict[str, Any]) -> str:
             if isinstance(value, str):
                 parts.append(value)
     return "\n".join(parts)
+
+
+def _has_verifiable_claims(answer_package: dict[str, Any]) -> bool:
+    for section in answer_package.get("sections", []):
+        payload = section.get("payload", {}) if isinstance(section, dict) else {}
+        claims = payload.get("claims")
+        if isinstance(claims, list) and claims:
+            return True
+    return False
 
 
 def _missing_inputs_from_error(exc: Exception, *, real_llm: bool = False, real_clickhouse: bool = False) -> list[str]:
@@ -231,6 +279,7 @@ def main() -> None:
     parser.add_argument("--real-clickhouse", action="store_true")
     args = parser.parse_args()
 
+    load_env_file()
     selected = select_cases(load_cases(args.cases), args.case)
     try:
         core = ConversationAgentCore.from_environment(

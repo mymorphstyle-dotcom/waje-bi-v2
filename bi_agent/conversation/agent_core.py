@@ -153,7 +153,7 @@ class ConversationAgentCore:
         accepted_graph = (
             package.get("accepted_graph")
             or package.get("admin_audit", {}).get("accepted_graph")
-            or request.get("requested_nodes", [])
+            or []
         )
         self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
         self.store.record_answer_package(run_id, package)
