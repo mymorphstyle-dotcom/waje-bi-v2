@@ -193,6 +193,22 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(resumed.topic_id, first.topic_id)
         self.assertIsNotNone(resumed.run_request)
 
+    def test_outlier_variant_question_triggers_outlier_strategy_clarification(self):
+        store = InMemoryConversationStore()
+        runtime = ConversationRuntime(store)
+        store.create_thread("thread-outlier-variant", owner_id="analyst-1")
+        first = runtime.handle_message("thread-outlier-variant", "Q2 相比 Q1 付费金额为什么变了？")
+
+        result = runtime.handle_message("thread-outlier-variant", "剔除异常日后还成立吗？")
+
+        self.assertEqual(result.turn_intent.intent, "challenge")
+        self.assertTrue(result.needs_clarification)
+        self.assertEqual(result.topic_id, first.topic_id)
+        self.assertEqual(
+            result.clarification.reason,
+            "outlier_removal_strategy_changes_business_answer",
+        )
+
     def test_ambiguous_question_creates_structured_clarification_without_starting_run(self):
         store = InMemoryConversationStore()
         runtime = ConversationRuntime(store)

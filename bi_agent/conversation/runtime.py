@@ -126,7 +126,9 @@ class ConversationRuntime:
         )
         for proposal in memory_proposals:
             self.store.add_memory_proposal(proposal)
-        needs_clarification = topic_relation == "ask_topic_choice" or _needs_clarification(user_message)
+        needs_clarification = intent_name != "clarification_answer" and (
+            topic_relation == "ask_topic_choice" or _needs_clarification(user_message)
+        )
         clarification = (
             _build_clarification(turn_id, user_message, topic_relation)
             if needs_clarification
@@ -559,7 +561,9 @@ def _classify_intent(message: str, has_pending_clarification: bool) -> str:
         return "correction"
     if _is_mixed(text):
         return "mixed_question"
-    if any(token in text for token in ("是不是被", "去掉", "有多稳", "指导投放")):
+    if _is_outlier_removal_question(text) or any(
+        token in text for token in ("是不是被", "去掉", "有多稳", "指导投放")
+    ):
         return "challenge"
     if _looks_new_topic(text):
         return "new_topic"
@@ -650,12 +654,11 @@ def _must_rerun(message: str, intent: str, relation: str) -> bool:
 
 
 def _needs_clarification(message: str) -> bool:
-    return any(
+    return _is_outlier_removal_question(message) or any(
         token in message
         for token in (
             "这个月是不是变好了",
             "这个月有没有变好",
-            "去掉异常天还成立吗",
         )
     )
 
@@ -694,7 +697,7 @@ def _build_clarification(
             questions=(question,),
         )
 
-    if "去掉异常天还成立吗" in message:
+    if _is_outlier_removal_question(message):
         question = ClarificationQuestion(
             question_id="outlier_removal_strategy",
             question="你想按什么规则移除异常影响？",
@@ -756,6 +759,14 @@ def _looks_like_clarification_answer(text: str) -> bool:
     return text in {"日均。", "日均", "按推荐继续。", "按推荐继续"} or (
         any(token in text for token in ("按日", "复算", "移除", "异常"))
         and any(token in text for token in ("粒度", "日期", "订单级", "明细"))
+    )
+
+
+def _is_outlier_removal_question(text: str) -> bool:
+    removal_tokens = ("移除", "剔除", "排除", "去掉", "排掉")
+    outlier_tokens = ("异常", "波峰", "波动", "日期", "天", "日")
+    return any(token in text for token in removal_tokens) and any(
+        token in text for token in outlier_tokens
     )
 
 
