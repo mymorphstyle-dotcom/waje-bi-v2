@@ -223,13 +223,15 @@ def _claims(answer_package: dict[str, Any]) -> list[dict[str, Any]]:
 def _traceable_refs(answer_package: dict[str, Any], context_manifest: dict[str, Any]) -> set[str]:
     refs: set[str] = set()
     for item in context_manifest.get("items", []):
+        source_ref = str(item.get("source_ref", "")) if isinstance(item, dict) else ""
         if (
             isinstance(item, dict)
-            and item.get("source_ref")
+            and source_ref
+            and source_ref.startswith(("evidence:", "result:", "artifact:", "memory:"))
             and item.get("can_support_claims") is True
             and item.get("claim_use") not in {"context_only", "preference_only", "blocked"}
         ):
-            refs.add(str(item["source_ref"]))
+            refs.add(source_ref)
     return refs
 
 

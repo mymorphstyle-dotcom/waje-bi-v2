@@ -256,6 +256,51 @@ class AgentCoreBridgeTest(unittest.TestCase):
             ["topic-1"],
         )
 
+    def test_live_harness_rejects_topic_refs_even_when_marked_claim_supporting(self):
+        from tools.phase7.run_live_conversation_system_test import _expectation_review
+
+        review = _expectation_review(
+            {"expect": {"final_answer_contains": ["结论"]}},
+            {"intent": "follow_up", "topic_relation": "inherit_current"},
+            {
+                "intent": "follow_up",
+                "topic_relation": "inherit_current",
+                "answer_package": {
+                    "sections": [
+                        {
+                            "payload": {
+                                "answer_text": "结论",
+                                "claims": [
+                                    {
+                                        "text": "结论",
+                                        "evidence_refs": ["topic-1"],
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                "context_manifest": {
+                    "can_support_claims": True,
+                    "items": [
+                        {
+                            "source_type": "topic",
+                            "source_ref": "topic-1",
+                            "can_support_claims": True,
+                            "claim_use": "evidence",
+                        }
+                    ],
+                },
+            },
+            [],
+        )
+
+        self.assertFalse(review["claim_support_policy_passed"])
+        self.assertEqual(
+            review["claim_evidence_review"]["unsupported_evidence_refs"],
+            ["topic-1"],
+        )
+
     def test_live_harness_loads_local_env_without_overriding_shell(self):
         import os
         from tempfile import TemporaryDirectory
