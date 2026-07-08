@@ -87,6 +87,22 @@ class AgentCoreBridgeTest(unittest.TestCase):
             )
         )
 
+    def test_agent_core_failed_workflow_still_returns_context_manifest(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-agent-core", owner_id="analyst-1")
+        core = ConversationAgentCore(store, workflow_runner=fake_failed_workflow)
+
+        result = core.run_message(
+            thread_id="thread-agent-core",
+            run_id="run-failed-workflow",
+            user_message="Q2 比 Q1 付费金额为什么变了？",
+            role="analyst",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("context_manifest", result)
+        self.assertTrue(result["context_manifest"])
+
     def test_live_conversation_case_schema_supports_clarification_resume(self):
         from tools.phase7.run_live_conversation_system_test import load_cases
 
@@ -148,6 +164,44 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 self.assertEqual(turn["expectation_review"]["missing_final_answer_text"], [])
         self.assertIn("outlier_contribution", clarification_turn["resumed_accepted_graph"])
 
+    def test_live_harness_rejects_claim_refs_without_traceable_source(self):
+        from tools.phase7.run_live_conversation_system_test import _expectation_review
+
+        review = _expectation_review(
+            {"expect": {"final_answer_contains": ["结论"]}},
+            {"intent": "follow_up", "topic_relation": "inherit_current"},
+            {
+                "intent": "follow_up",
+                "topic_relation": "inherit_current",
+                "answer_package": {
+                    "sections": [
+                        {
+                            "payload": {
+                                "answer_text": "结论",
+                                "claims": [
+                                    {
+                                        "text": "结论",
+                                        "evidence_refs": ["artifact:missing"],
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                "context_manifest": {
+                    "can_support_claims": True,
+                    "items": [],
+                },
+            },
+            [],
+        )
+
+        self.assertFalse(review["claim_support_policy_passed"])
+        self.assertEqual(
+            review["claim_evidence_review"]["unsupported_evidence_refs"],
+            ["artifact:missing"],
+        )
+
     def test_live_harness_loads_local_env_without_overriding_shell(self):
         import os
         from tempfile import TemporaryDirectory
@@ -201,6 +255,14 @@ def fake_workflow(request):
         },
         artifact_path="artifacts/phase-7/run-agent-core/answer_package.json",
         checkpoint_events=({"node": "persist_artifact", "status": "completed"},),
+    )
+
+
+def fake_failed_workflow(request):
+    return WorkflowRunResult(
+        status="failed",
+        run_id=request["run_id"],
+        failure_reason="synthetic_failure",
     )
 
 

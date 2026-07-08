@@ -145,6 +145,7 @@ class ConversationAgentCore:
                 "topic_id": turn.topic_id,
                 "intent": turn.turn_intent.intent,
                 "topic_relation": turn.topic_relation,
+                "context_manifest": context_manifest,
                 "failure_reason": result.failure_reason,
             }
 
@@ -295,7 +296,7 @@ def _dry_run_answer_text(question: str) -> str:
 
 
 def _manifest_with_answer_sources(manifest: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
-    refs = _claim_evidence_refs(package)
+    refs = _package_evidence_refs(package)
     if not refs:
         return manifest
     updated = dict(manifest)
@@ -323,16 +324,19 @@ def _manifest_with_answer_sources(manifest: dict[str, Any], package: dict[str, A
     return updated
 
 
-def _claim_evidence_refs(package: dict[str, Any]) -> list[str]:
+def _package_evidence_refs(package: dict[str, Any]) -> list[str]:
     refs: list[str] = []
+    artifact_path = package.get("artifact_path")
+    if isinstance(artifact_path, str) and artifact_path:
+        refs.append(f"artifact:{artifact_path}")
     for section in package.get("sections", []):
         payload = section.get("payload", {}) if isinstance(section, dict) else {}
-        claims = payload.get("claims")
-        if not isinstance(claims, list):
+        evidence = payload.get("evidence")
+        if not isinstance(evidence, list):
             continue
-        for claim in claims:
-            if isinstance(claim, dict):
-                refs.extend(str(ref) for ref in claim.get("evidence_refs", []) if ref)
+        for item in evidence:
+            if isinstance(item, dict) and item.get("evidence_ref"):
+                refs.append(str(item["evidence_ref"]))
     return list(dict.fromkeys(refs))
 
 
