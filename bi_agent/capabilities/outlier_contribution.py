@@ -111,7 +111,7 @@ def outlier_contribution(
             direction_preserved,
             evaluate_direction=direction_after_removal,
         ),
-        "claim_boundary": "这是异常敏感性复算，只能说明移除高贡献周期后的方向变化，不能证明异常是原因。",
+        "claim_boundary": _claim_boundary(direction_after_removal),
     }
     if direction_after_removal:
         typed_payload["direction_preserved_after_top_positive"] = direction_preserved
@@ -157,3 +157,9 @@ def _business_readout(remaining_delta, direction_preserved, *, evaluate_directio
     if direction_preserved:
         return f"移除最大正向贡献周期后，剩余变化方向{direction}。"
     return f"移除最大正向贡献周期后，剩余变化方向发生变化，当前{direction}。"
+
+
+def _claim_boundary(evaluate_direction):
+    if not evaluate_direction:
+        return "这是异常敏感性复算，本轮只输出移除高贡献周期后的剩余变化值，不评价方向是否保持，也不能证明异常是原因。"
+    return "这是异常敏感性复算，只能说明移除高贡献周期后的方向变化，不能证明异常是原因。"

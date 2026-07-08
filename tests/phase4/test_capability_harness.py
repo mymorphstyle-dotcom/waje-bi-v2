@@ -327,6 +327,63 @@ class CapabilityHarnessTest(unittest.TestCase):
         self.assertIn("missing_high_value_indicator", result.limitations)
         self.assertIn("不能验证", result.typed_payload["business_readout"])
 
+    def test_high_value_user_contribution_rejects_threshold_mismatch_bucket(self):
+        result = run_capability(
+            "high_value_user_contribution",
+            {
+                "rows": [
+                    {
+                        "period": "Q1",
+                        "group": "baseline",
+                        "bucket": "top_10_percent",
+                        "amount": 100,
+                        "paid_users": 10,
+                    },
+                    {
+                        "period": "Q1",
+                        "group": "target",
+                        "bucket": "top_20",
+                        "amount": 180,
+                        "paid_users": 12,
+                    },
+                ],
+                "threshold_policy": {"type": "top_percentile", "value": 0.95},
+            },
+        )
+
+        self.assertEqual(result.wording_limit, "insufficient")
+        self.assertIn("missing_high_value_indicator", result.limitations)
+        self.assertEqual(result.typed_payload["high_value_amount"], 0.0)
+
+    def test_high_value_user_contribution_degrades_partial_explicit_aggregate_fields(self):
+        result = run_capability(
+            "high_value_user_contribution",
+            {
+                "rows": [
+                    {
+                        "period": "Q1",
+                        "group": "baseline",
+                        "amount": 100,
+                        "paid_users": 10,
+                        "high_value_amount": 80,
+                    },
+                    {
+                        "period": "Q1",
+                        "group": "target",
+                        "amount": 180,
+                        "paid_users": 12,
+                        "high_value_paid_users": 9,
+                    },
+                ],
+                "threshold_policy": {"type": "top_percentile", "value": 0.95},
+            },
+        )
+
+        self.assertEqual(result.wording_limit, "insufficient")
+        self.assertIn("partial_high_value_aggregate_fields", result.limitations)
+        self.assertNotIn("high_value_amount_share", result.typed_payload)
+        self.assertIn("字段不完整", result.typed_payload["business_readout"])
+
 
 if __name__ == "__main__":
     unittest.main()

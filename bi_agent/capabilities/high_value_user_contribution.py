@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Iterable, Mapping
 
 from bi_agent.capabilities import make_evidence_envelope
@@ -18,12 +19,13 @@ def high_value_user_contribution(
     aggregate_rows = []
     supported_indicator_rows = 0
     unsupported_indicator_rows = 0
+    partial_explicit_fields = False
     for row in rows:
         if row.get(group_key) in (None, ""):
             continue
         amount = _number(row.get(amount_key)) or 0.0
         paid_users = _number(row.get(users_key)) or 0.0
-        high_value_amount, high_value_paid_users, indicator_source = _high_value_totals(
+        high_value_amount, high_value_paid_users, indicator_source, row_limitation = _high_value_totals(
             row,
             amount=amount,
             paid_users=paid_users,
@@ -38,6 +40,9 @@ def high_value_user_contribution(
         }
         if row.get("bucket") not in (None, ""):
             aggregate_row["bucket"] = str(row.get("bucket"))
+        if row_limitation:
+            aggregate_row["row_limitation"] = row_limitation
+            partial_explicit_fields = True
         if indicator_source:
             aggregate_row["indicator_source"] = indicator_source
             supported_indicator_rows += 1
@@ -68,6 +73,26 @@ def high_value_user_contribution(
                 "claim_boundary": "没有聚合结果时，不能写高价值用户贡献结论。",
             },
             limitations=("no_aggregate_high_value_rows",),
+            result_refs=result_refs,
+        )
+    if partial_explicit_fields:
+        return make_evidence_envelope(
+            "high_value_user_contribution",
+            evidence_type="insufficient_evidence",
+            strength="low",
+            wording_limit="insufficient",
+            typed_payload={
+                "privacy_policy": "aggregate_only",
+                "threshold_policy": policy,
+                "rows": aggregate_rows,
+                "total_amount": total_amount,
+                "total_paid_users": total_users,
+                "high_value_amount": high_value_amount,
+                "high_value_paid_users": high_value_users,
+                "business_readout": "当前显式高价值聚合字段不完整，不能验证高价值金额和高价值用户数的统一口径。",
+                "claim_boundary": "高价值聚合字段不完整时，不能写高价值分层贡献或金额占比结论。",
+            },
+            limitations=("partial_high_value_aggregate_fields",),
             result_refs=result_refs,
         )
     if supported_indicator_rows == 0:
@@ -136,28 +161,31 @@ def _high_value_totals(
     amount: float,
     paid_users: float,
     policy: Mapping[str, Any],
-) -> tuple[float, float, str]:
+) -> tuple[float, float, str, str | None]:
     explicit_amount = _number(row.get("high_value_amount"))
     explicit_users = _number(row.get("high_value_paid_users"))
     if explicit_amount is not None or explicit_users is not None:
-        return explicit_amount or 0.0, explicit_users or 0.0, "embedded_totals"
+        if explicit_amount is None or explicit_users is None:
+            return 0.0, 0.0, "", "partial_high_value_aggregate_fields"
+        return explicit_amount, explicit_users, "embedded_totals", None
 
     high_value_flag = _boolish(row.get("is_high_value"))
     if high_value_flag is not None:
-        return _flagged_totals(high_value_flag, amount, paid_users) + ("is_high_value",)
+        flagged_amount, flagged_users = _flagged_totals(high_value_flag, amount, paid_users)
+        return flagged_amount, flagged_users, "is_high_value", None
 
     percentile = _ratio(row.get("value_percentile"))
     threshold = _top_percentile_threshold(policy)
     if percentile is not None and threshold is not None:
-        return _flagged_totals(percentile >= threshold, amount, paid_users) + (
-            "value_percentile",
-        )
+        flagged_amount, flagged_users = _flagged_totals(percentile >= threshold, amount, paid_users)
+        return flagged_amount, flagged_users, "value_percentile", None
 
     bucket_flag = _bucket_is_high_value(row.get("bucket"), policy)
     if bucket_flag is not None:
-        return _flagged_totals(bucket_flag, amount, paid_users) + ("bucket",)
+        flagged_amount, flagged_users = _flagged_totals(bucket_flag, amount, paid_users)
+        return flagged_amount, flagged_users, "bucket", None
 
-    return 0.0, 0.0, ""
+    return 0.0, 0.0, "", None
 
 
 def _flagged_totals(is_high_value: bool, amount: float, paid_users: float) -> tuple[float, float]:
@@ -207,21 +235,27 @@ def _bucket_is_high_value(value: Any, policy: Mapping[str, Any]) -> bool | None:
         return True
     threshold = _top_percentile_threshold(policy)
     if threshold is None:
-        return True if "top" in collapsed else None
-    top_share = int(round((1 - threshold) * 100))
-    percentile = int(round(threshold * 100))
-    positive_tokens = (
-        f"p{percentile}",
-        f"top_{top_share}",
-        f"top{top_share}",
-        f"top_{top_share}_percent",
-        f"top_{top_share}_pct",
-    )
-    if any(token in collapsed for token in positive_tokens):
-        return True
-    if "top" in collapsed:
-        return True
+        return None
+    parsed = _bucket_percentile_match(collapsed)
+    if parsed is not None:
+        return True if parsed >= threshold else None
     return False if any(token in collapsed for token in ("mid", "regular", "base")) else None
+
+
+def _bucket_percentile_match(collapsed: str) -> float | None:
+    if match := re.search(r"(?:^|_)p(\d{1,3})(?:_plus|plus|th|th_percentile|percentile|$)", collapsed):
+        return int(match.group(1)) / 100
+    if match := re.search(r"(?:^|_)(\d{1,3})(?:th|st|nd|rd)?_percentile(?:$|_)", collapsed):
+        return int(match.group(1)) / 100
+    if match := re.search(r"(?:^|_)top_(\d{1,3})_percent(?:$|_)", collapsed):
+        top_share = int(match.group(1))
+        if 0 < top_share <= 100:
+            return 1 - (top_share / 100)
+    if match := re.search(r"(?:^|_)top(\d{1,3})pct(?:$|_)", collapsed):
+        top_share = int(match.group(1))
+        if 0 < top_share <= 100:
+            return 1 - (top_share / 100)
+    return None
 
 
 def _business_readout(
