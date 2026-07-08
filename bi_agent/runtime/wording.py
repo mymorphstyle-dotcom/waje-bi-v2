@@ -88,6 +88,8 @@ def _has_positive_causal_wording(text: str) -> bool:
             )
         ):
             continue
+        if any(marker in sentence for marker in ("是否", "是不是", "有没有", "能否", "能不能")):
+            continue
         return True
     return False
 

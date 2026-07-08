@@ -5,18 +5,20 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 import hashlib
 import json
+import multiprocessing
 import os
+import queue
 import re
 import signal
 import threading
 from time import perf_counter
-from typing import Any, Iterator, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from openai import OpenAI
 
 
-DEFAULT_TIMEOUT_SECONDS = 90
-DEFAULT_MAX_OUTPUT_TOKENS = 1600
+DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_MAX_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -46,13 +48,17 @@ class OpenAICompatibleLLMClient:
         api_key: str,
         base_url: str = "",
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
-        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     ):
         self.provider = provider
         self.model = model
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
-        self.max_output_tokens = max_output_tokens
+        self.max_attempts = max_attempts
+        self._api_key = api_key
+        self._request_worker: Callable[
+            [dict[str, Any], Sequence[Mapping[str, str]]], dict[str, Any]
+        ] | None = None
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url or None,
@@ -81,16 +87,6 @@ class OpenAICompatibleLLMClient:
             raise LLMConfigurationError("invalid_llm_timeout") from exc
         if timeout_seconds <= 0:
             raise LLMConfigurationError("invalid_llm_timeout")
-        max_output_tokens_text = env.get(
-            "WAJE_LLM_MAX_OUTPUT_TOKENS",
-            str(DEFAULT_MAX_OUTPUT_TOKENS),
-        )
-        try:
-            max_output_tokens = int(max_output_tokens_text)
-        except ValueError as exc:
-            raise LLMConfigurationError("invalid_llm_max_output_tokens") from exc
-        if max_output_tokens <= 0:
-            raise LLMConfigurationError("invalid_llm_max_output_tokens")
 
         if provider not in {"openai", "openai_compatible"}:
             raise LLMConfigurationError("unsupported_llm_provider")
@@ -104,7 +100,6 @@ class OpenAICompatibleLLMClient:
             api_key=api_key,
             base_url=base_url,
             timeout_seconds=timeout_seconds,
-            max_output_tokens=max_output_tokens,
         )
 
     def invoke_json(
@@ -117,19 +112,19 @@ class OpenAICompatibleLLMClient:
     ) -> LLMResult:
         started = perf_counter()
         started_at = _utc_now()
-        with _wall_clock_timeout(self.timeout_seconds):
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=[dict(message) for message in messages],
-                response_format={"type": "json_object"},
-                temperature=0,
-                max_tokens=self.max_output_tokens,
-            )
-        content = response.choices[0].message.content or "{}"
-        output = _localize_narrative_fields(_parse_json_object(content))
-        missing = [key for key in required_keys if key not in output]
-        if missing:
-            raise LLMOutputError(f"missing_llm_output_keys:{','.join(missing)}")
+        messages_payload = [dict(message) for message in messages]
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                response_payload = self._request_json_once(messages_payload)
+                content = response_payload["content"] or "{}"
+                output = _localize_narrative_fields(_parse_json_object(content))
+                missing = [key for key in required_keys if key not in output]
+                if missing:
+                    raise LLMOutputError(f"missing_llm_output_keys:{','.join(missing)}")
+                break
+            except Exception:
+                if attempt >= self.max_attempts:
+                    raise
         finished_at = _utc_now()
 
         return LLMResult(
@@ -139,21 +134,124 @@ class OpenAICompatibleLLMClient:
                 "provider": self.provider,
                 "model": self.model,
                 "prompt_version": prompt_version,
-                "response_id": getattr(response, "id", ""),
-                "messages": [dict(message) for message in messages],
+                "response_id": response_payload.get("response_id", ""),
+                "messages": messages_payload,
                 "required_keys": list(required_keys),
                 "raw_response_content": content,
                 "started_at": started_at,
                 "finished_at": finished_at,
                 "duration_ms": round((perf_counter() - started) * 1000, 3),
+                "attempt_count": attempt,
                 "input_hash": _hash_json(messages),
                 "output_hash": _hash_json(output),
                 "base_url_hash": _hash_text(self.base_url) if self.base_url else "",
-                "max_output_tokens": self.max_output_tokens,
-                "usage": _usage_dict(getattr(response, "usage", None)),
+                "usage": dict(response_payload.get("usage") or {}),
                 "structured_output": output,
             },
         )
+
+    def _request_json_once(self, messages: Sequence[Mapping[str, str]]) -> dict[str, Any]:
+        if isinstance(self._client, OpenAI):
+            return _request_openai_json_in_subprocess(
+                {
+                    "api_key": self._api_key,
+                    "base_url": self.base_url,
+                    "timeout_seconds": self.timeout_seconds,
+                    "model": self.model,
+                },
+                [dict(message) for message in messages],
+                self.timeout_seconds,
+                request_worker=self._request_worker or _request_openai_json_once,
+            )
+        with _wall_clock_timeout(self.timeout_seconds):
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[dict(message) for message in messages],
+                response_format={"type": "json_object"},
+                temperature=0,
+            )
+        return {
+            "response_id": getattr(response, "id", ""),
+            "content": response.choices[0].message.content or "{}",
+            "usage": _usage_dict(getattr(response, "usage", None)),
+        }
+
+
+def _request_openai_json_in_subprocess(
+    config: dict[str, Any],
+    messages: Sequence[Mapping[str, str]],
+    timeout_seconds: float,
+    *,
+    request_worker: Callable[
+        [dict[str, Any], Sequence[Mapping[str, str]]], dict[str, Any]
+    ] | None = None,
+) -> dict[str, Any]:
+    request_worker = request_worker or _request_openai_json_once
+    ctx = _process_context()
+    output_queue = ctx.Queue(maxsize=1)
+    process = ctx.Process(
+        target=_openai_request_child,
+        args=(config, [dict(message) for message in messages], output_queue, request_worker),
+    )
+    process.start()
+    process.join(timeout_seconds)
+    if process.is_alive():
+        process.kill()
+        process.join()
+        raise LLMTimeoutError(f"llm_request_timeout:{timeout_seconds:g}s")
+    try:
+        child_result = output_queue.get_nowait()
+    except queue.Empty as exc:
+        raise RuntimeError(f"llm_subprocess_failed:exitcode={process.exitcode}") from exc
+    if not child_result.get("ok"):
+        raise RuntimeError(str(child_result.get("error") or "llm_subprocess_error"))
+    return dict(child_result["result"])
+
+
+def _process_context():
+    try:
+        return multiprocessing.get_context("spawn")
+    except ValueError:
+        return multiprocessing.get_context()
+
+
+def _openai_request_child(
+    config: dict[str, Any],
+    messages: Sequence[Mapping[str, str]],
+    output_queue: Any,
+    request_worker: Callable[[dict[str, Any], Sequence[Mapping[str, str]]], dict[str, Any]],
+) -> None:
+    try:
+        output_queue.put(
+            {
+                "ok": True,
+                "result": request_worker(config, messages),
+            }
+        )
+    except BaseException as exc:
+        output_queue.put({"ok": False, "error": str(exc)})
+
+
+def _request_openai_json_once(
+    config: dict[str, Any],
+    messages: Sequence[Mapping[str, str]],
+) -> dict[str, Any]:
+    client = OpenAI(
+        api_key=config["api_key"],
+        base_url=config.get("base_url") or None,
+        timeout=config["timeout_seconds"],
+    )
+    response = client.chat.completions.create(
+        model=config["model"],
+        messages=[dict(message) for message in messages],
+        response_format={"type": "json_object"},
+        temperature=0,
+    )
+    return {
+        "response_id": getattr(response, "id", ""),
+        "content": response.choices[0].message.content or "{}",
+        "usage": _usage_dict(getattr(response, "usage", None)),
+    }
 
 
 @contextmanager

@@ -275,6 +275,112 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertIn("user_mix_contribution", result.run_request.requested_nodes)
         self.assertIn("high_value_user_contribution", result.run_request.requested_nodes)
 
+    def test_revenue_diagnostic_language_routes_to_general_capabilities(self):
+        cases = (
+            (
+                "最近付费金额是否存在固定规律，比如周末更高、月初更高、晚上更高？"
+                "这个规律主要由哪个渠道、地区、用户类型或玩法带动？",
+                {"pattern_scan", "segment_contribution", "joint_attribution", "answer_verify"},
+            ),
+            (
+                "当前收入健康吗？是靠正常用户增长带动，还是靠少数大额用户、"
+                "短期活动或异常渠道拉动？收入结构里最大的风险点是什么？",
+                {
+                    "driver_decomposition",
+                    "user_mix_contribution",
+                    "high_value_user_contribution",
+                    "outlier_scan",
+                    "data_quality_profile",
+                    "event_evidence",
+                    "answer_verify",
+                },
+            ),
+            (
+                "相比前一天、近 7 日均值、上周同日，昨天付费金额为什么变化？"
+                "哪些指标偏离了正常水平？",
+                {
+                    "compare_periods",
+                    "rolling_window_compare",
+                    "driver_decomposition",
+                    "answer_verify",
+                },
+            ),
+            (
+                "这个结论的数据证据够不够？是否存在数据延迟、渠道归因异常、"
+                "支付状态缺失、重复订单或异常用户影响判断？",
+                {
+                    "data_quality_profile",
+                    "segment_contribution",
+                    "joint_attribution",
+                    "outlier_scan",
+                    "answer_verify",
+                },
+            ),
+        )
+
+        for message, expected_nodes in cases:
+            with self.subTest(message=message):
+                store = InMemoryConversationStore()
+                runtime = ConversationRuntime(store)
+                store.create_thread("thread-revenue-diagnostics", owner_id="analyst-1")
+                runtime.handle_message(
+                    "thread-revenue-diagnostics",
+                    "昨天付费金额为什么变化？",
+                )
+
+                result = runtime.handle_message("thread-revenue-diagnostics", message)
+
+                self.assertIsNotNone(result.run_request)
+                self.assertTrue(expected_nodes.issubset(set(result.run_request.requested_nodes)))
+
+    def test_first_business_question_creates_topic_then_time_wording_inherits(self):
+        store = InMemoryConversationStore()
+        runtime = ConversationRuntime(store)
+        store.create_thread("thread-revenue-topic-reuse", owner_id="analyst-1")
+
+        first = runtime.handle_message(
+            "thread-revenue-topic-reuse",
+            "昨天付费金额为什么上涨/下跌？",
+        )
+        second = runtime.handle_message(
+            "thread-revenue-topic-reuse",
+            "相比前一天、近 7 日均值、上周同日，昨天付费金额为什么变化？",
+        )
+
+        self.assertEqual(first.turn_intent.intent, "new_topic")
+        self.assertEqual(first.topic_relation, "new_topic")
+        self.assertEqual(second.turn_intent.intent, "follow_up")
+        self.assertEqual(second.topic_relation, "inherit_current")
+        self.assertEqual(first.topic_id, second.topic_id)
+
+    def test_live_conversation_cases_include_revenue_diagnostic_question_set(self):
+        from tools.phase7.run_live_conversation_system_test import load_cases
+
+        expected_questions = [
+            "昨天付费金额为什么上涨/下跌？主要是首充人数、付费频次、单笔付费金额，还是支付成功率等因素变化导致的",
+            "最近付费金额是否存在固定规律，比如周末更高、月初更高、晚上更高？这个规律主要由哪个渠道、地区、用户类型或玩法带动？",
+            "昨天的活动、投放预算、素材更换、版本更新、支付通道、节日或外部事件，是否影响了付费金额？",
+            "当前收入健康吗？是靠正常用户增长带动，还是靠少数大额用户、短期活动或异常渠道拉动？收入结构里最大的风险点是什么？",
+            "昨天收入变化最大的是哪个一级渠道、地区、设备、包、支付方式或玩法？对收入影响最大的 3 个因子分别是什么？",
+            "昨天有没有异常波动？如果有，是哪个渠道、支付通道、地区、设备、玩法或大额用户造成的？",
+            "相比前一天、近 7 日均值、上周同日，昨天付费金额为什么变化？哪些指标偏离了正常水平？",
+            "这个结论的数据证据够不够？是否存在数据延迟、渠道归因异常、支付状态缺失、重复订单或异常用户影响判断？",
+        ]
+        cases = load_cases("evals/phase7/conversation_scenarios.yaml")
+        case = next(
+            item
+            for item in cases
+            if item["id"] == "paid_amount_revenue_diagnostics_8_question_set"
+        )
+
+        self.assertEqual(case["group"], "production_revenue_diagnostics")
+        self.assertEqual([turn["user"] for turn in case["turns"]], expected_questions)
+        self.assertEqual(case["turns"][0]["expect"]["topic_relation"], "create")
+        self.assertTrue(
+            all(turn["expect"]["topic_relation"] == "inherit" for turn in case["turns"][1:])
+        )
+        self.assertTrue(all(turn["expect"].get("major_nodes") for turn in case["turns"]))
+
     def test_live_harness_rejects_claim_refs_without_traceable_source(self):
         from tools.phase7.run_live_conversation_system_test import _expectation_review
 
@@ -341,6 +447,14 @@ class AgentCoreBridgeTest(unittest.TestCase):
                                     {
                                         "text": "结论",
                                         "evidence_refs": ["coverage_block:run-1"],
+                                        "context_manifest_ref": "manifest-coverage-block",
+                                        "reuse_decisions": [
+                                            {
+                                                "decision": "rerun",
+                                                "result_ref": "",
+                                                "reason": "current_run_evidence",
+                                            }
+                                        ],
                                     }
                                 ],
                             }
@@ -358,6 +472,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     ]
                 },
                 "context_manifest": {
+                    "manifest_id": "manifest-coverage-block",
                     "can_support_claims": True,
                     "items": [
                         {
@@ -465,6 +580,50 @@ class AgentCoreBridgeTest(unittest.TestCase):
             ["topic-1"],
         )
 
+    def test_live_harness_rejects_claims_missing_manifest_or_reuse_decision(self):
+        from tools.phase7.run_live_conversation_system_test import _expectation_review
+
+        review = _expectation_review(
+            {"expect": {"final_answer_contains": ["结论"]}},
+            {"intent": "follow_up", "topic_relation": "inherit_current"},
+            {
+                "intent": "follow_up",
+                "topic_relation": "inherit_current",
+                "answer_package": {
+                    "sections": [
+                        {
+                            "payload": {
+                                "answer_text": "结论",
+                                "claims": [
+                                    {
+                                        "text": "结论",
+                                        "evidence_refs": ["evidence:1"],
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                "context_manifest": {
+                    "manifest_id": "context-1",
+                    "can_support_claims": True,
+                    "items": [
+                        {
+                            "source_type": "evidence",
+                            "source_ref": "evidence:1",
+                            "can_support_claims": True,
+                            "claim_use": "evidence",
+                        }
+                    ],
+                },
+            },
+            [],
+        )
+
+        self.assertFalse(review["claim_support_policy_passed"])
+        self.assertEqual(review["claim_evidence_review"]["missing_context_manifest_ref"], [0])
+        self.assertEqual(review["claim_evidence_review"]["missing_reuse_decision_indexes"], [0])
+
     def test_live_harness_loads_local_env_without_overriding_shell(self):
         import os
         from tempfile import TemporaryDirectory
@@ -556,6 +715,11 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
 
 def fake_workflow(request):
+    manifest = request.get("context_manifest") or {}
+    reuse_decisions = list(
+        request.get("reuse_decisions")
+        or [{"decision": "rerun", "result_ref": "", "reason": "test_default"}]
+    )
     return WorkflowRunResult(
         status="draft",
         run_id=request["run_id"],
@@ -575,6 +739,8 @@ def fake_workflow(request):
                             {
                                 "text": "这是持久化的业务回答。",
                                 "evidence_refs": ["evidence:fake-workflow"],
+                                "context_manifest_ref": str(manifest.get("manifest_id") or ""),
+                                "reuse_decisions": reuse_decisions,
                             }
                         ],
                     },

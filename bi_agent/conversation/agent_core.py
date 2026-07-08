@@ -295,6 +295,10 @@ def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
                                 "text": answer_text,
                                 "claim_strength": "dry_run_context",
                                 "evidence_refs": [evidence_ref],
+                                "context_manifest_ref": str(
+                                    (request.get("context_manifest") or {}).get("manifest_id") or ""
+                                ),
+                                "reuse_decisions": list(request.get("reuse_decisions") or []),
                             }
                         ],
                     },
@@ -349,9 +353,16 @@ def _compile_dry_run_graph(requested_nodes: list[str]):
 def _dry_run_answer_text(question: str) -> str:
     if "WajeSpecial" in question:
         return "演练回答：WajeSpecial 只能作为候选解释，还不能直接说成主要原因。"
-    if "移除" in question or "异常" in question or "复算" in question:
+    if _is_dry_run_outlier_recalculation(question):
         return "演练回答：已按聚合口径移除异常影响后复算，用来判断方向是否仍成立。"
     return f"演练回答：{question}"
+
+
+def _is_dry_run_outlier_recalculation(question: str) -> bool:
+    return "复算" in question or (
+        any(token in question for token in ("移除", "剔除", "排除", "去掉", "排掉"))
+        and any(token in question for token in ("异常", "波峰", "波动", "日期", "天", "日"))
+    )
 
 
 def _dry_run_final_answer(answer_text: str, accepted_graph: list[str]) -> str:

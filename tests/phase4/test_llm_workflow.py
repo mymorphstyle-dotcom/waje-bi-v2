@@ -3,6 +3,7 @@ import tempfile
 import time
 import unittest
 
+from bi_agent.runtime import llm_client as llm_client_module
 from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.exploration_budget import default_budget
 from bi_agent.runtime.langgraph_workflow import (
@@ -14,6 +15,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _execute_capabilities,
     _execute_joint_attribution,
     _final_business_summary_fallback,
+    _final_summary_has_unsupported_wording,
     _final_summary_needs_display_repair,
     _infer_question_families_from_requested_nodes,
     _normalize_evidence_interpretation_output,
@@ -25,6 +27,8 @@ from bi_agent.runtime.langgraph_workflow import (
     repair_final_answer_with_verified_claim,
     _route_after_next_action,
     _sanitize_terminal_explanation,
+    _understand_business_intent,
+    WorkflowFailure,
     run_pattern_workflow,
 )
 from bi_agent.runtime.llm_client import (
@@ -35,6 +39,23 @@ from bi_agent.runtime.llm_client import (
 )
 from bi_agent.runtime.llm_prompts import build_prompt, validate_prompt_specs
 from tests.phase4.fake_llm import FakeLLMClient
+
+
+def spawn_safe_fake_llm_request(config, messages):
+    return {
+        "response_id": "subprocess-response",
+        "content": '{"ok": true}',
+        "usage": {},
+    }
+
+
+def spawn_safe_stuck_llm_request(config, messages):
+    time.sleep(2)
+    return {
+        "response_id": "too-late",
+        "content": '{"ok": true}',
+        "usage": {},
+    }
 
 
 def _llm_input_payload(answer_package, task):
@@ -460,6 +481,70 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.answer_package["context_manifest_ref"], "context-manifest-1")
         self.assertEqual(result.answer_package["reuse_decisions"], reuse_decisions)
 
+    def test_claims_carry_context_manifest_and_reuse_decisions(self):
+        fake = FakeLLMClient()
+        reuse_decisions = [
+            {
+                "source_ref": "result:q2-q1",
+                "decision": "reuse",
+                "reason": "validated_same_thread_scope",
+                "can_support_claim": True,
+                "requires_rerun": False,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "claim-context-audit",
+                    "llm_client": fake,
+                    "context_manifest": {"manifest_id": "context-claim-audit"},
+                    "reuse_decisions": reuse_decisions,
+                }
+            )
+
+        claims = result.answer_package["sections"][0]["payload"]["claims"]
+        self.assertTrue(claims)
+        for claim in claims:
+            self.assertEqual(claim["context_manifest_ref"], "context-claim-audit")
+            self.assertEqual(claim["reuse_decisions"], reuse_decisions)
+
+    def test_request_draft_claims_are_wrapped_with_context_audit(self):
+        fake = FakeLLMClient()
+        reuse_decisions = [
+            {
+                "source_ref": "result:q2-q1",
+                "decision": "reuse",
+                "reason": "validated_same_thread_scope",
+                "can_support_claim": True,
+                "requires_rerun": False,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "request-draft-claim-context-audit",
+                    "llm_client": fake,
+                    "context_manifest": {"manifest_id": "context-request-draft-claim"},
+                    "reuse_decisions": reuse_decisions,
+                    "draft_claims": [
+                        {
+                            "text": "外部传入 claim 也必须进入统一证据链审计。",
+                            "evidence_refs": ["pattern_scan:intra_period"],
+                            "numbers": {"median_uplift": 0.2},
+                            "scope": "full_sample",
+                            "time_window": "2024-01..2026-05",
+                        }
+                    ],
+                }
+            )
+
+        claims = result.answer_package["sections"][0]["payload"]["claims"]
+        self.assertEqual(claims[0]["text"], "外部传入 claim 也必须进入统一证据链审计。")
+        self.assertEqual(claims[0]["context_manifest_ref"], "context-request-draft-claim")
+        self.assertEqual(claims[0]["reuse_decisions"], reuse_decisions)
+
     def test_answer_prompts_remove_unlisted_claims_and_action_advice(self):
         for task in ("answer_synthesis", "answer_repair"):
             messages = build_prompt(task, {"answer_context": {}}).messages
@@ -497,29 +582,24 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertIn("observed increase/decrease", text)
         self.assertIn("do not write statistical association", text)
+        self.assertIn("当前证据能把排查方向收敛到", text)
 
     def test_degraded_explanation_sanitizes_unsupported_period_and_threshold_advice(self):
-        sanitized = _sanitize_terminal_explanation(
-            {
-                "status": "degraded",
-                "explanation": "变化幅度低于重要性阈值，同时可比较期间数量不足，无法确认模式。",
-                "owner": "业务分析师",
-                "repair_path": "建议调整重要性阈值，或扩大时间窗口。",
-            },
-            {
-                "evidence_brief": {
-                    "limitations": ["below_materiality_floor", "weak_direction"],
-                }
-            },
-            "degraded",
-        )
-
-        text = " ".join(
-            str(sanitized.get(key, "")) for key in ("explanation", "repair_path")
-        )
-        self.assertNotIn("可比较期间数量不足", text)
-        self.assertNotIn("调整重要性阈值", text)
-        self.assertIn("变化幅度低于当前重要性阈值", text)
+        with self.assertRaisesRegex(WorkflowFailure, "materiality_drift"):
+            _sanitize_terminal_explanation(
+                {
+                    "status": "degraded",
+                    "explanation": "变化幅度低于重要性阈值，同时可比较期间数量不足，无法确认模式。",
+                    "owner": "业务分析师",
+                    "repair_path": "建议调整重要性阈值，或扩大时间窗口。",
+                },
+                {
+                    "evidence_brief": {
+                        "limitations": ["below_materiality_floor", "weak_direction"],
+                    }
+                },
+                "degraded",
+            )
 
     def test_degraded_explanation_sanitizes_invented_future_window(self):
         sanitized = _sanitize_terminal_explanation(
@@ -541,32 +621,25 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("继续观察新周期", sanitized["repair_path"])
 
     def test_degraded_explanation_sanitizes_contract_and_data_collection_drift(self):
-        sanitized = _sanitize_terminal_explanation(
-            {
-                "status": "degraded",
-                "explanation": "未发现明确的事件或合同依据，因此模式无法确认。",
-                "owner": "分析团队",
-                "repair_path": "建议收集更多数据并积累更多月度数据。",
-            },
-            {
-                "evidence_brief": {
-                    "limitations": [
-                        "below_materiality_floor",
-                        "weak_direction",
-                        "no_event_contract_or_matches",
-                    ],
-                }
-            },
-            "degraded",
-        )
-
-        text = " ".join(
-            str(sanitized.get(key, "")) for key in ("explanation", "repair_path")
-        )
-        self.assertNotIn("合同依据", text)
-        self.assertNotIn("收集更多数据", text)
-        self.assertNotIn("积累更多月度数据", text)
-        self.assertIn("补充事件或机制证据", text)
+        with self.assertRaisesRegex(WorkflowFailure, "data_or_contract_drift"):
+            _sanitize_terminal_explanation(
+                {
+                    "status": "degraded",
+                    "explanation": "未发现明确的事件或合同依据，因此模式无法确认。",
+                    "owner": "分析团队",
+                    "repair_path": "建议收集更多数据并积累更多月度数据。",
+                },
+                {
+                    "evidence_brief": {
+                        "limitations": [
+                            "below_materiality_floor",
+                            "weak_direction",
+                            "no_event_contract_or_matches",
+                        ],
+                    }
+                },
+                "degraded",
+            )
 
     def test_fixed_future_window_detection_does_not_flag_calendar_dates(self):
         self.assertFalse(
@@ -608,7 +681,83 @@ class LLMWorkflowTest(unittest.TestCase):
                 required_keys=[],
             )
 
-    def test_llm_client_caps_json_completion_tokens(self):
+    def test_llm_client_retries_transient_failures_three_times(self):
+        attempts = {"count": 0}
+
+        class ResponseMessage:
+            content = '{"ok": true}'
+
+        class ResponseChoice:
+            message = ResponseMessage()
+
+        class Response:
+            id = "response-retry-success"
+            choices = [ResponseChoice()]
+            usage = None
+
+        class FlakyCompletions:
+            def create(self, **kwargs):
+                attempts["count"] += 1
+                if attempts["count"] < 3:
+                    raise RuntimeError("temporary-network-error")
+                return Response()
+
+        class FlakyChat:
+            completions = FlakyCompletions()
+
+        class FlakyClient:
+            chat = FlakyChat()
+
+        client = OpenAICompatibleLLMClient(
+            provider="openai_compatible",
+            model="retry-model",
+            api_key="test-key",
+        )
+        client._client = FlakyClient()
+
+        result = client.invoke_json(
+            task="business_intent",
+            prompt_version="test",
+            messages=[{"role": "user", "content": "{}"}],
+            required_keys=["ok"],
+        )
+
+        self.assertEqual(result.output["ok"], True)
+        self.assertEqual(attempts["count"], 3)
+        self.assertEqual(result.audit["attempt_count"], 3)
+
+    def test_llm_client_raises_after_three_failed_attempts(self):
+        attempts = {"count": 0}
+
+        class FailingCompletions:
+            def create(self, **kwargs):
+                attempts["count"] += 1
+                raise RuntimeError("temporary-network-error")
+
+        class FailingChat:
+            completions = FailingCompletions()
+
+        class FailingClient:
+            chat = FailingChat()
+
+        client = OpenAICompatibleLLMClient(
+            provider="openai_compatible",
+            model="retry-model",
+            api_key="test-key",
+        )
+        client._client = FailingClient()
+
+        with self.assertRaisesRegex(RuntimeError, "temporary-network-error"):
+            client.invoke_json(
+                task="business_intent",
+                prompt_version="test",
+                messages=[{"role": "user", "content": "{}"}],
+                required_keys=["ok"],
+            )
+
+        self.assertEqual(attempts["count"], 3)
+
+    def test_llm_client_does_not_cap_json_completion_tokens(self):
         captured = {}
 
         class ResponseMessage:
@@ -637,7 +786,6 @@ class LLMWorkflowTest(unittest.TestCase):
             provider="openai_compatible",
             model="capturing-model",
             api_key="test-key",
-            max_output_tokens=321,
         )
         client._client = CapturingClient()
 
@@ -649,9 +797,45 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertEqual(result.output["ok"], True)
-        self.assertEqual(captured["max_tokens"], 321)
+        self.assertNotIn("max_tokens", captured)
+        self.assertNotIn("max_completion_tokens", captured)
         self.assertEqual(captured["temperature"], 0)
-        self.assertEqual(result.audit["max_output_tokens"], 321)
+
+    def test_llm_client_runs_openai_provider_call_in_subprocess(self):
+        self.assertEqual(llm_client_module._process_context().get_start_method(), "spawn")
+        client = OpenAICompatibleLLMClient(
+            provider="openai_compatible",
+            model="subprocess-model",
+            api_key="test-key",
+        )
+        client._request_worker = spawn_safe_fake_llm_request
+        result = client.invoke_json(
+            task="business_intent",
+            prompt_version="test",
+            messages=[{"role": "user", "content": "{}"}],
+            required_keys=["ok"],
+        )
+
+        self.assertEqual(result.output["ok"], True)
+        self.assertEqual(result.audit["response_id"], "subprocess-response")
+        self.assertEqual(result.audit["attempt_count"], 1)
+
+    def test_llm_client_kills_stuck_subprocess_without_workflow_retry(self):
+        client = OpenAICompatibleLLMClient(
+            provider="openai_compatible",
+            model="subprocess-model",
+            api_key="test-key",
+            timeout_seconds=0.01,
+            max_attempts=1,
+        )
+        client._request_worker = spawn_safe_stuck_llm_request
+        with self.assertRaisesRegex(LLMTimeoutError, "llm_request_timeout"):
+            client.invoke_json(
+                task="business_intent",
+                prompt_version="test",
+                messages=[{"role": "user", "content": "{}"}],
+                required_keys=["ok"],
+            )
 
     def test_llm_narrative_fallback_keeps_machine_tokens(self):
         output = _localize_narrative_fields(
@@ -1533,7 +1717,7 @@ class LLMWorkflowTest(unittest.TestCase):
             for call in result.answer_package["admin_audit"]["llm_calls"]
             if call["task"] == "data_coverage_interpretation"
         )
-        self.assertEqual(coverage_audit["provider"], "local_deterministic")
+        self.assertEqual(coverage_audit["provider"], "fake")
         audit_tasks = [call["task"] for call in result.answer_package["admin_audit"]["llm_calls"]]
         for task in fake.calls:
             self.assertIn(task, audit_tasks)
@@ -1549,7 +1733,28 @@ class LLMWorkflowTest(unittest.TestCase):
             self.assertIn("finished_at", event)
             self.assertGreaterEqual(event["duration_ms"], 0)
 
-    def test_analysis_route_uses_local_capability_route_for_business_question(self):
+    def test_business_question_uses_llm_for_confirm_understanding(self):
+        fake = FakeLLMClient()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "confirm-understanding-llm",
+                    "llm_client": fake,
+                    "question": "Q2 相比 Q1 付费金额为什么变了？",
+                }
+            )
+
+        self.assertEqual(result.status, "draft")
+        self.assertIn("confirm_understanding", fake.calls)
+        confirm_audit = next(
+            call
+            for call in result.answer_package["admin_audit"]["llm_calls"]
+            if call["task"] == "confirm_understanding"
+        )
+        self.assertEqual(confirm_audit["provider"], "fake")
+
+    def test_analysis_route_llm_failure_fails_without_local_fallback(self):
         class TimeoutOnRouteLLM(FakeLLMClient):
             def invoke_json(self, *, task, prompt_version, messages, required_keys):
                 if task == "analysis_route":
@@ -1571,20 +1776,264 @@ class LLMWorkflowTest(unittest.TestCase):
                     "llm_client": fake,
                     "question": "Q2相比Q1付费金额提升的主要原因是什么？",
                 }
+        )
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn("analysis_route", fake.calls)
+        self.assertIsNone(result.answer_package)
+
+    def test_business_question_uses_llm_for_next_action(self):
+        fake = FakeLLMClient()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "next-action-llm",
+                    "llm_client": fake,
+                    "question": "Q2 相比 Q1 付费金额为什么变了？",
+                }
             )
 
         self.assertEqual(result.status, "draft")
-        self.assertNotIn("analysis_route", fake.calls)
-        route_audit = next(
+        self.assertIn("next_action", fake.calls)
+        next_action_audit = next(
             call
             for call in result.answer_package["admin_audit"]["llm_calls"]
-            if call["task"] == "analysis_route"
+            if call["task"] == "next_action"
         )
-        self.assertEqual(route_audit["provider"], "local_deterministic")
-        self.assertIn(
-            "driver_decomposition",
-            result.answer_package["accepted_graph"],
+        self.assertEqual(next_action_audit["provider"], "fake")
+
+    def test_next_action_llm_failure_fails_without_local_fallback(self):
+        class TimeoutOnNextActionLLM(FakeLLMClient):
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                if task == "next_action":
+                    self.calls.append(task)
+                    raise TimeoutError("llm_response_timeout")
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
+
+        fake = TimeoutOnNextActionLLM()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "next-action-timeout",
+                    "llm_client": fake,
+                    "question": "Q2 相比 Q1 付费金额为什么变了？",
+                }
+            )
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn("next_action", fake.calls)
+        self.assertIsNone(result.answer_package)
+
+    def test_business_question_answer_nodes_fail_without_local_fallback(self):
+        for failing_task in (
+            "evidence_interpretation",
+            "answer_synthesis",
+            "semantic_audit",
+            "final_business_summary",
+        ):
+            with self.subTest(failing_task=failing_task):
+                class TimeoutOnAnswerNodeLLM(FakeLLMClient):
+                    def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                        if task == failing_task:
+                            self.calls.append(task)
+                            raise TimeoutError("llm_response_timeout")
+                        return super().invoke_json(
+                            task=task,
+                            prompt_version=prompt_version,
+                            messages=messages,
+                            required_keys=required_keys,
+                        )
+
+                fake = TimeoutOnAnswerNodeLLM()
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    result = run_pattern_workflow(
+                        {
+                            "artifact_root": tmpdir,
+                            "run_id": f"{failing_task}-timeout",
+                            "llm_client": fake,
+                            "question": "Q2 相比 Q1 付费金额为什么变了？",
+                        }
+                    )
+
+                self.assertEqual(result.status, "failed")
+                self.assertIn(failing_task, fake.calls)
+                self.assertEqual(fake.calls.count(failing_task), 1)
+                self.assertIsNone(result.answer_package)
+
+    def test_business_question_terminal_nodes_fail_without_local_fallback(self):
+        class TimeoutOnTerminalNodeLLM(FakeLLMClient):
+            def __init__(self, failing_task, overrides=None):
+                super().__init__(overrides)
+                self.failing_task = failing_task
+
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                if task == self.failing_task:
+                    self.calls.append(task)
+                    raise TimeoutError("llm_response_timeout")
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
+
+        degraded_fake = TimeoutOnTerminalNodeLLM(
+            "degraded_explanation",
+            {
+                "business_intent": {
+                    "question_family": "custom_baseline_comparison",
+                    "pattern_family": "custom_baseline",
+                    "target_metric": "paid_amount",
+                    "scope": "full_sample",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "target_claim": "判断 Q2 相比 Q1 日均付费金额是否仍成立",
+                },
+                "analysis_route": {
+                    "requested_nodes": [
+                        "data_quality_profile",
+                        "compare_periods",
+                        "answer_verify",
+                    ],
+                },
+                "next_action": {"next_action": "degrade"},
+            },
         )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            degraded_result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "degraded-terminal-timeout",
+                    "llm_client": degraded_fake,
+                    "question": "换成日均再看一遍。",
+                    "rows": [{"period": "q1", "group": "baseline", "amount": 100}],
+                    "pattern_family": "custom_baseline",
+                    "pattern_params": {
+                        "period_key": "period",
+                        "group_key": "group",
+                        "target_group": "target",
+                        "baseline_group": "baseline",
+                        "min_periods": 2,
+                    },
+                }
+            )
+
+        self.assertEqual(degraded_result.status, "failed")
+        self.assertIn("degraded_explanation", degraded_fake.calls)
+        self.assertEqual(degraded_fake.calls.count("degraded_explanation"), 1)
+        self.assertIsNone(degraded_result.answer_package)
+
+        blocked_fake = TimeoutOnTerminalNodeLLM(
+            "blocked_explanation",
+            {
+                "data_coverage_interpretation": {
+                    "coverage_status": "blocked",
+                    "business_impact": "当前查询没有返回可分析数据。",
+                    "decision_summary": "不能发布付费金额变化结论。",
+                }
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            blocked_result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "blocked-terminal-timeout",
+                    "llm_client": blocked_fake,
+                    "question": "昨天付费金额为什么变了？",
+                    "rows": [],
+                }
+            )
+
+        self.assertEqual(blocked_result.status, "failed")
+        self.assertIn("blocked_explanation", blocked_fake.calls)
+        self.assertEqual(blocked_fake.calls.count("blocked_explanation"), 1)
+        self.assertIsNone(blocked_result.answer_package)
+
+    def test_final_business_summary_verification_failure_fails_without_local_fallback(self):
+        fake = FakeLLMClient(
+            {
+                "final_business_summary": {
+                    "summary_text": "我已经完成检查，但这里没有保留通过校验的业务结论。"
+                }
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "final-summary-verification-failed",
+                    "llm_client": fake,
+                    "question": "Q2 相比 Q1 付费金额为什么变了？",
+                }
+            )
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn("final_business_summary", fake.calls)
+        self.assertIsNone(result.answer_package)
+
+    def test_terminal_explanation_rejected_output_fails_without_local_fallback(self):
+        degraded_fake = FakeLLMClient(
+            {
+                "next_action": {"next_action": "synthesize_answer"},
+                "degraded_explanation": {
+                    "status": "degraded",
+                    "explanation": "pattern_status: low; wording_limit: insufficient.",
+                    "owner": "pattern_scan:intra_period",
+                    "repair_path": "Inspect evidence_ref.",
+                },
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            degraded_result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "degraded-rejected-output",
+                    "llm_client": degraded_fake,
+                    "rows": [{"month": "2026-01", "phase": "start", "amount": 100}],
+                    "time_window": "2026-01..2026-06",
+                    "pattern_params": {"target_phase": "start", "min_periods": 6},
+                }
+            )
+
+        self.assertEqual(degraded_result.status, "failed")
+        self.assertIn("degraded_explanation", degraded_fake.calls)
+        self.assertIsNone(degraded_result.answer_package)
+
+        blocked_fake = FakeLLMClient(
+            {
+                "data_coverage_interpretation": {
+                    "coverage_status": "blocked",
+                    "business_impact": "当前查询没有返回可分析数据。",
+                    "decision_summary": "不能发布付费金额变化结论。",
+                },
+                "blocked_explanation": {
+                    "status": "not_blocked",
+                    "explanation": "所有检查已通过，无需阻塞。",
+                    "owner": "业务分析师",
+                    "repair_path": "无需修复。",
+                },
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            blocked_result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "blocked-rejected-output",
+                    "llm_client": blocked_fake,
+                    "rows": [],
+                }
+            )
+
+        self.assertEqual(blocked_result.status, "failed")
+        self.assertIn("blocked_explanation", blocked_fake.calls)
+        self.assertIsNone(blocked_result.answer_package)
 
     def test_business_intent_llm_timeout_falls_back_to_local_intent(self):
         class TimeoutOnIntentLLM(FakeLLMClient):
@@ -2261,6 +2710,56 @@ class LLMWorkflowTest(unittest.TestCase):
             any("target_weekday" in str(error) for error in errors)
         )
 
+    def test_business_intent_preserves_llm_pattern_params(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "pattern_explanation",
+                    "pattern_family": "weekly",
+                    "pattern_params": {
+                        "week_key": "week",
+                        "weekday_key": "weekday",
+                        "target_weekdays": [6, 7],
+                        "baseline_weekdays": [1, 2, 3, 4, 5],
+                    },
+                }
+            }
+        )
+        state = {
+            "request": {"question": "最近付费金额是不是周末更高？"},
+            "run_id": "intent-pattern-params",
+            "llm_client": fake,
+            "llm_calls": [],
+        }
+
+        _understand_business_intent(state)
+
+        self.assertEqual(state["intent"]["pattern_family"], "weekly")
+        self.assertEqual(state["intent"]["pattern_params"]["target_weekdays"], [6, 7])
+        self.assertEqual(state["intent"]["pattern_params"]["baseline_weekdays"], [1, 2, 3, 4, 5])
+
+    def test_business_intent_binds_weekend_pattern_params_from_business_text(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "pattern_explanation",
+                    "pattern_family": "weekly",
+                    "pattern_params": {},
+                }
+            }
+        )
+        state = {
+            "request": {"question": "最近付费金额是否存在固定规律，比如周末更高？"},
+            "run_id": "intent-weekend-default",
+            "llm_client": fake,
+            "llm_calls": [],
+        }
+
+        _understand_business_intent(state)
+
+        self.assertEqual(state["intent"]["pattern_params"]["target_weekdays"], [6, 7])
+        self.assertEqual(state["intent"]["pattern_params"]["baseline_weekdays"], [1, 2, 3, 4, 5])
+
     def test_route_normalization_keeps_answer_verify_for_actionability_challenges(self):
         nodes = _normalize_route_requested_nodes(
             ("data_quality_profile",),
@@ -2647,19 +3146,9 @@ class LLMWorkflowTest(unittest.TestCase):
                 }
             )
 
-        final_explanation = result.answer_package["sections"][0]["payload"][
-            "final_explanation"
-        ]
-        visible_text = " ".join(
-            str(final_explanation.get(key, ""))
-            for key in ("explanation", "owner", "repair_path")
-        )
-        self.assertEqual(final_explanation["status"], "degraded")
-        self.assertNotIn("pattern_status", visible_text)
-        self.assertNotIn("pattern_established", visible_text)
-        self.assertNotIn("wording_limit", visible_text)
-        self.assertNotIn("pattern_scan", visible_text)
-        self.assertNotIn("evidence_ref", visible_text)
+        self.assertEqual(result.status, "failed")
+        self.assertIn("degraded_explanation_rejected:internal_tokens", result.failure_reason)
+        self.assertIsNone(result.answer_package)
 
     def test_degraded_explanation_rejects_data_volume_materiality_drift(self):
         state = {
@@ -2675,14 +3164,8 @@ class LLMWorkflowTest(unittest.TestCase):
             "repair_path": "补充更多历史数据。",
         }
 
-        final_explanation = _sanitize_terminal_explanation(output, state, "degraded")
-
-        visible_text = " ".join(
-            str(final_explanation.get(key, ""))
-            for key in ("explanation", "owner", "repair_path")
-        )
-        self.assertNotIn("数据量低于", visible_text)
-        self.assertIn("变化幅度低于当前重要性阈值", visible_text)
+        with self.assertRaisesRegex(WorkflowFailure, "materiality_drift"):
+            _sanitize_terminal_explanation(output, state, "degraded")
 
     def test_degraded_explanation_reassigns_quality_owner_when_limits_are_business(self):
         state = {
@@ -2716,14 +3199,8 @@ class LLMWorkflowTest(unittest.TestCase):
             "repair_path": "检查数据源完整性和提取逻辑。",
         }
 
-        final_explanation = _sanitize_terminal_explanation(output, state, "degraded")
-
-        visible_text = " ".join(
-            str(final_explanation.get(key, ""))
-            for key in ("explanation", "owner", "repair_path")
-        )
-        self.assertNotIn("数据源完整性", visible_text)
-        self.assertEqual(final_explanation["owner"], "业务分析负责人")
+        with self.assertRaisesRegex(WorkflowFailure, "materiality_drift"):
+            _sanitize_terminal_explanation(output, state, "degraded")
 
     def test_degraded_explanation_rejects_data_quality_drift_for_business_limits(self):
         state = {
@@ -2739,9 +3216,8 @@ class LLMWorkflowTest(unittest.TestCase):
             "repair_path": "延长观察周期。",
         }
 
-        final_explanation = _sanitize_terminal_explanation(output, state, "degraded")
-
-        self.assertIn("变化幅度低于当前重要性阈值", final_explanation["explanation"])
+        with self.assertRaisesRegex(WorkflowFailure, "materiality_drift"):
+            _sanitize_terminal_explanation(output, state, "degraded")
 
     def test_noninteractive_coverage_question_continues_when_validators_pass(self):
         fake = FakeLLMClient(
@@ -2851,7 +3327,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertNotIn("确认", visible)
         self.assertNotIn("无法直接", visible)
 
-    def test_local_custom_baseline_coverage_continues_as_answerable_warning(self):
+    def test_llm_block_without_local_data_failure_continues_as_answerable_warning(self):
         fake = FakeLLMClient(
             {
                 "data_coverage_interpretation": {
@@ -2896,7 +3372,7 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(
             coverage["local_override"],
-            "needs_question_without_local_gap",
+            "blocked_without_local_evidence",
         )
 
     def test_blocked_coverage_emits_auditable_evidence_and_claim(self):
@@ -2908,10 +3384,10 @@ class LLMWorkflowTest(unittest.TestCase):
                     "decision_summary": "不能发布付费金额变化结论。",
                 },
                 "blocked_explanation": {
-                    "status": "not_blocked",
-                    "explanation": "所有检查已通过，无需阻塞。",
+                    "status": "blocked",
+                    "explanation": "当前查询没有返回可分析数据，不能发布付费金额变化结论。",
                     "owner": "业务分析师",
-                    "repair_path": "无需修复。",
+                    "repair_path": "先恢复支付金额聚合数据后重跑。",
                 },
             }
         )
@@ -3348,6 +3824,40 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertNotIn("due to", summary["claims"][0]["text"])
         self.assertFalse(result.answer_package["admin_audit"]["verifier"]["warnings"])
 
+    def test_final_summary_allows_causal_question_wording_without_published_cause(self):
+        state = {
+            "intent": {"pattern_family": "custom_baseline"},
+            "evidence": [
+                {
+                    "evidence_ref": "event_evidence:inline",
+                    "evidence_type": "insufficient_evidence",
+                    "typed_payload": {},
+                }
+            ],
+            "draft_claims": [
+                {
+                    "text": "活动窗口证据只能作为候选机制检查。",
+                    "evidence_refs": ["event_evidence:inline"],
+                    "numbers": {},
+                }
+            ],
+        }
+        summary = (
+            "我对问题的理解是：你想判断活动是否导致付费金额变化。\n"
+            "分析脉络：我检查了事件窗口和付费金额变化。\n"
+            "关键发现：目前只能看到事件窗口和指标变化的对应关系。\n"
+            "最终结论：当前证据不能把活动写成已证明原因。\n"
+            "需要注意：还需要补充事件和投放证据。"
+        )
+
+        self.assertFalse(_final_summary_has_unsupported_wording(summary, state))
+        self.assertTrue(
+            _final_summary_has_unsupported_wording(
+                summary.replace("不能把活动写成已证明原因", "活动导致了付费金额变化"),
+                state,
+            )
+        )
+
     def _run_q2_q1_joint_attribution_workflow(self):
         fake = FakeLLMClient(
             {
@@ -3373,15 +3883,6 @@ class LLMWorkflowTest(unittest.TestCase):
                             "time_window": "2026-01-01..2026-06-30",
                         }
                     ],
-                },
-                "final_business_summary": {
-                    "summary_text": (
-                        "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
-                        "分析脉络：我检查了目标窗口和基线窗口的聚合证据。\n"
-                        "关键发现：现有证据支持继续做渠道和阶段组合复核。\n"
-                        "最终结论：目前有一个通过校验的业务结论。\n"
-                        "需要注意：不能把候选解释写成已证明原因。"
-                    )
                 },
             }
         )

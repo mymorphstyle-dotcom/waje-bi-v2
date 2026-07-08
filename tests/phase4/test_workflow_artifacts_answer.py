@@ -239,12 +239,38 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             admin = filter_artifact_for_role(result.answer_package, "data_owner_admin")
 
         self.assertEqual(result.status, "draft")
+        raw_verifier = verify_answer_package(
+            draft_claims=[
+                {
+                    "text": "Month-start timing caused paid amount uplift.",
+                    "evidence_refs": ["pattern_scan:intra_period"],
+                    "numbers": {"median_uplift": 0.2},
+                    "scope": "full_sample",
+                    "time_window": "2024-01..2026-05",
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_ref": "pattern_scan:intra_period",
+                    "evidence_type": "statistical_association",
+                    "strength": "high",
+                    "wording_limit": "supported",
+                    "typed_payload": {
+                        "median_uplift": 0.2,
+                        "scope": "full_sample",
+                        "time_window": "2024-01..2026-05",
+                    },
+                }
+            ],
+            visible_limitations=[],
+        )
         self.assertTrue(
             any(
                 warning["code"] == "causal_wording_without_causal_evidence"
-                for warning in admin["admin_audit"]["verifier"]["warnings"]
+                for warning in raw_verifier["warnings"]
             )
         )
+        self.assertFalse(admin["admin_audit"]["verifier"]["warnings"])
 
     def test_verifier_allows_negated_causal_boundary_wording(self):
         verifier = verify_answer_package(
@@ -291,14 +317,11 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 }
             )
 
-        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
-        self.assertIn("我对问题的理解", summary)
-        self.assertIn("分析脉络", summary)
-        self.assertIn("关键发现", summary)
-        self.assertIn("最终结论", summary)
-        self.assertIn("需要注意", summary)
-        self.assertNotIn("paid_amount", summary)
-        self.assertNotIn("pattern_scan", summary)
+        self.assertEqual(result.status, "failed")
+        self.assertTrue(
+            result.failure_reason.startswith("final_business_summary_failed_verification:")
+        )
+        self.assertIsNone(result.answer_package)
 
     def test_final_business_summary_allows_bounded_insight_without_exact_claim_copy(self):
         fake = FakeLLMClient(
@@ -371,9 +394,11 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 }
             )
 
-        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
-        self.assertIn("可比周期", summary)
-        self.assertIn("低于本轮要求", summary)
+        self.assertEqual(result.status, "failed")
+        self.assertTrue(
+            result.failure_reason.startswith("final_business_summary_failed_verification:")
+        )
+        self.assertIsNone(result.answer_package)
 
     def test_final_business_summary_businessizes_driver_scope_and_labels(self):
         fake = FakeLLMClient(
@@ -387,15 +412,6 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 },
                 "analysis_route": {
                     "requested_nodes": ["driver_decomposition", "answer_verify"],
-                },
-                "final_business_summary": {
-                    "summary_text": (
-                        "我对问题的理解是：口径是all_users。\n"
-                        "分析脉络：我做了驱动拆解。\n"
-                        "关键发现：主要驱动因素为单用户付费金额。\n"
-                        "最终结论：单用户/单订单价值贡献 62.5%，用户数/订单量贡献 37.5%。\n"
-                        "需要注意：只适用于当前窗口。"
-                    ),
                 },
             }
         )
@@ -463,15 +479,6 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                         "segment_contribution",
                         "answer_verify",
                     ],
-                },
-                "final_business_summary": {
-                    "summary_text": (
-                        "我对问题的理解是：你想看Q2增长如何被拆解。\n"
-                        "分析脉络：我先判断整体变化，再拆渠道贡献和付费用户数/单付费用户金额贡献。\n"
-                        "关键发现：增长主要由单付费用户金额和部分渠道共同解释。\n"
-                        "最终结论：这是贡献拆解结论，不代表因果定论。\n"
-                        "需要注意：继续观察渠道结构和用户价值变化。"
-                    ),
                 },
             }
         )

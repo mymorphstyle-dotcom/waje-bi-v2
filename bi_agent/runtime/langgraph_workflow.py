@@ -369,6 +369,10 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         output = _invoke_llm(state, "business_intent", intent_payload)
     except Exception as exc:
         output = _local_business_intent_fallback(state, intent_payload, exc)
+    pattern_family = _normalize_pattern_family(
+        request.get("pattern_family") or output.get("pattern_family") or "intra_period",
+        request,
+    )
     state["intent"] = _normalize_question_families({
         "question_family": output.get("question_family") or "pattern_explanation",
         "target_metric": _normalize_target_metric(
@@ -376,11 +380,8 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
             or output.get("target_metric")
             or "paid_amount"
         ),
-        "pattern_family": _normalize_pattern_family(
-            request.get("pattern_family") or output.get("pattern_family") or "intra_period",
-            request,
-        ),
-        "pattern_params": dict(request.get("pattern_params", {})),
+        "pattern_family": pattern_family,
+        "pattern_params": _normalize_pattern_params(request, output, pattern_family),
         "scope": _normalize_scope(
             request.get("scope") or output.get("scope") or "full_sample"
         ),
@@ -594,6 +595,29 @@ def _normalize_pattern_family(pattern_family: Any, request: Mapping[str, Any]) -
     ):
         return "custom_baseline"
     return value
+
+
+def _normalize_pattern_params(
+    request: Mapping[str, Any],
+    output: Mapping[str, Any],
+    pattern_family: str,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    output_params = output.get("pattern_params")
+    if isinstance(output_params, Mapping):
+        params.update(dict(output_params))
+    request_params = request.get("pattern_params")
+    if isinstance(request_params, Mapping):
+        params.update(dict(request_params))
+
+    question = str(request.get("question") or "")
+    if pattern_family == "weekly" and "周末" in question:
+        params.setdefault("weekday_key", "weekday")
+        params.setdefault("target_weekdays", [6, 7])
+        params.setdefault("baseline_weekdays", [1, 2, 3, 4, 5])
+    if pattern_family == "intra_period" and "月初" in question:
+        params.setdefault("target_phase", "start")
+    return params
 
 
 def _empty_business_context_value(value: Any) -> bool:
@@ -897,48 +921,16 @@ def _rebind_after_clarification(state: WorkflowState) -> WorkflowState:
 
 def _confirm_business_understanding(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "confirm_business_understanding")
-    understanding_payload = {
-        "intent": state["intent"],
-        "boundary_decision": state["boundary_decision"],
-        "clarification_outcome": state.get("clarification_outcome", {}),
-    }
-    if str(state.get("request", {}).get("question") or "").strip():
-        output = _local_confirm_understanding(state)
-        state["llm_calls"].append(
-            _local_llm_decision_audit(
-                task="confirm_understanding",
-                payload=understanding_payload,
-                output=output,
-                reason="local_intent_confirmation",
-            )
-        )
-        state["confirmed_understanding"] = output
-    else:
-        state["confirmed_understanding"] = _invoke_llm(
-            state,
-            "confirm_understanding",
-            understanding_payload,
-        )
-    return state
-
-
-def _local_confirm_understanding(state: WorkflowState) -> dict[str, Any]:
-    intent = state.get("intent", {})
-    assumptions = []
-    recommended = state.get("clarification_outcome", {}).get("recommended_assumption")
-    if recommended:
-        assumptions.append(str(recommended))
-    return {
-        "confirmed_intent": {
-            "question_family": intent.get("question_family"),
-            "target_metric": intent.get("target_metric"),
-            "pattern_family": intent.get("pattern_family"),
-            "scope": intent.get("scope"),
-            "time_window": intent.get("time_window"),
+    state["confirmed_understanding"] = _invoke_llm(
+        state,
+        "confirm_understanding",
+        {
+            "intent": state["intent"],
+            "boundary_decision": state["boundary_decision"],
+            "clarification_outcome": state.get("clarification_outcome", {}),
         },
-        "accepted_assumptions": assumptions,
-        "status_message": "已确认本次业务问题、口径和证据边界。",
-    }
+    )
+    return state
 
 
 def _design_analysis_route(state: WorkflowState) -> WorkflowState:
@@ -951,21 +943,7 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         "known_capabilities": _route_capability_cards(),
         "budget_state": budget.to_llm_summary(),
     }
-    if str(state.get("request", {}).get("question") or "").strip():
-        output = _local_analysis_route_output(state)
-        state["llm_calls"].append(
-            _local_llm_decision_audit(
-                task="analysis_route",
-                payload=route_payload,
-                output=output,
-                reason="local_capability_route",
-            )
-        )
-    else:
-        try:
-            output = _invoke_llm(state, "analysis_route", route_payload)
-        except Exception as exc:
-            output = _local_analysis_route_fallback(state, route_payload, exc)
+    output = _invoke_llm(state, "analysis_route", route_payload)
     requested = _requested_node_ids(
         output.get("requested_nodes"),
         excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
@@ -978,63 +956,6 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
     state["analysis_route"] = {**output, "requested_nodes": requested}
     state["intent"]["requested_nodes"] = requested
     return state
-
-
-def _local_analysis_route_output(state: WorkflowState) -> dict[str, Any]:
-    intent = state["intent"]
-    business_text = _intent_business_text(intent)
-    families = _intent_question_family_set(intent)
-    requested: list[str] = []
-    if "paid_amount_change_explanation" in families or _business_text_requests_change_explanation(
-        business_text
-    ):
-        requested.append("driver_decomposition")
-    if "segment_or_factor_attribution" in families or _business_text_requests_segment_contribution(
-        business_text
-    ):
-        requested.append(
-            "joint_attribution"
-            if _business_text_requests_joint_attribution(business_text)
-            else "segment_contribution"
-        )
-    if "anomaly_or_black_swan_review" in families or _business_text_requests_outlier_recalc(
-        business_text
-    ):
-        requested.extend(("outlier_scan", "outlier_contribution"))
-    if _business_text_requests_period_recompare(business_text):
-        requested.extend(("compare_periods", "answer_verify"))
-    if _business_text_requests_actionability_verification(business_text):
-        requested.append("answer_verify")
-    requested_nodes = _normalize_route_requested_nodes(
-        tuple(requested or ("pattern_scan",)),
-        intent,
-    )
-    return _align_route_output_to_requested(
-        {
-            "requested_nodes": list(requested_nodes),
-            "route_summary": "已按业务意图和能力合同选择可执行路线。",
-            "expected_evidence": list(requested_nodes),
-            "decision_summary": "保留合同、权限、证据和 verifier 边界，使用本地能力路由继续执行。",
-        },
-        requested_nodes,
-    )
-
-
-def _local_analysis_route_fallback(
-    state: WorkflowState,
-    payload: dict[str, Any],
-    exc: Exception,
-) -> dict[str, Any]:
-    output = _local_analysis_route_output(state)
-    state["llm_calls"].append(
-        _local_llm_fallback_audit(
-            task="analysis_route",
-            payload=payload,
-            output=output,
-            exc=exc,
-        )
-    )
-    return output
 
 
 def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
@@ -1140,27 +1061,33 @@ def _interpret_data_coverage(state: WorkflowState) -> WorkflowState:
         "validator_results": state["validator_results"],
         "sql_hash": state["sql_hash"],
     }
-    coverage = _local_data_coverage_interpretation(state)
-    state["llm_calls"].append(
-        _local_llm_decision_audit(
-            task="data_coverage_interpretation",
-            payload=coverage_payload,
-            output=coverage,
-            reason="local_coverage_contract",
-        )
-    )
-    if coverage.get("coverage_status") == "blocked":
-        block_reason = _local_coverage_block_reason(state)
-        if block_reason:
-            coverage = {**coverage, "local_block_reason": block_reason}
+    coverage = _invoke_llm(state, "data_coverage_interpretation", coverage_payload)
+    block_reason = _local_coverage_block_reason(state)
+    answerable_reason = _local_coverage_answerable_reason(state)
+    if block_reason:
+        coverage = {
+            **coverage,
+            "coverage_status": "blocked",
+            "business_impact": _business_limitation_reasons((block_reason,))[0],
+            "decision_summary": "本地覆盖检查发现硬边界，不能发布主业务结论。",
+            "local_block_reason": block_reason,
+        }
+    elif coverage.get("coverage_status") == "blocked":
+        if answerable_reason:
+            coverage = {
+                **coverage,
+                "coverage_status": "coverage_gap_but_answerable",
+                "business_impact": answerable_reason,
+                "decision_summary": "本地聚合结果已经满足当前问题的执行口径，继续进入证据计算，并在答案里保留可见边界。",
+                "local_override": "blocked_without_local_evidence",
+            }
         else:
             coverage = {
                 **coverage,
                 "coverage_status": "sufficient",
                 "local_override": "blocked_without_local_evidence",
             }
-    if coverage.get("coverage_status") in {"needs_question", "coverage_gap_but_answerable"}:
-        answerable_reason = _local_coverage_answerable_reason(state)
+    elif coverage.get("coverage_status") in {"needs_question", "coverage_gap_but_answerable"}:
         if answerable_reason and (
             coverage.get("coverage_status") == "needs_question"
             or _coverage_text_requests_confirmation(coverage)
@@ -1174,30 +1101,6 @@ def _interpret_data_coverage(state: WorkflowState) -> WorkflowState:
             }
     state["coverage_interpretation"] = coverage
     return state
-
-
-def _local_data_coverage_interpretation(state: WorkflowState) -> dict[str, Any]:
-    block_reason = _local_coverage_block_reason(state)
-    if block_reason:
-        return {
-            "coverage_status": "blocked",
-            "business_impact": _business_limitation_reasons((block_reason,))[0],
-            "decision_summary": "本地覆盖检查发现硬边界，不能发布主业务结论。",
-            "local_block_reason": block_reason,
-        }
-    answerable_reason = _local_coverage_answerable_reason(state)
-    if answerable_reason:
-        return {
-            "coverage_status": "coverage_gap_but_answerable",
-            "business_impact": answerable_reason,
-            "decision_summary": "本地聚合结果满足当前问题的执行口径，继续计算，并在答案里保留边界。",
-            "local_override": "needs_question_without_local_gap",
-        }
-    return {
-        "coverage_status": "sufficient",
-        "business_impact": "当前聚合结果、字段和校验状态可支持本轮证据计算。",
-        "decision_summary": "本地覆盖检查通过，继续进入证据计算。",
-    }
 
 
 def _data_result_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1522,39 +1425,17 @@ def _event_evidence_params(state: WorkflowState) -> dict[str, Any]:
 
 def _decide_next_action(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "decide_next_action")
-    action_payload = {
-        "intent": state["intent"],
-        "accepted_graph": to_jsonable(state["compiled_graph"].mutations.accepted_graph),
-        "evidence_brief": state["evidence_brief"],
-        "allow_question_interrupt": state["request"].get("allow_question_interrupt", True),
-    }
-    if str(state.get("request", {}).get("question") or "").strip():
-        output = _local_next_action(state)
-        state["llm_calls"].append(
-            _local_llm_decision_audit(
-                task="next_action",
-                payload=action_payload,
-                output=output,
-                reason="local_evidence_action_policy",
-            )
-        )
-        state["next_action"] = output
-    else:
-        state["next_action"] = _invoke_llm(state, "next_action", action_payload)
+    state["next_action"] = _invoke_llm(
+        state,
+        "next_action",
+        {
+            "intent": state["intent"],
+            "accepted_graph": to_jsonable(state["compiled_graph"].mutations.accepted_graph),
+            "evidence_brief": state["evidence_brief"],
+            "allow_question_interrupt": state["request"].get("allow_question_interrupt", True),
+        },
+    )
     return state
-
-
-def _local_next_action(state: WorkflowState) -> dict[str, Any]:
-    coverage_status = state.get("coverage_interpretation", {}).get("coverage_status")
-    if coverage_status == "blocked":
-        return {
-            "next_action": "degrade",
-            "decision_summary": "覆盖检查存在硬边界，进入降级说明。",
-        }
-    return {
-        "next_action": "synthesize_answer",
-        "decision_summary": "证据已经计算完成，进入答案合成并交给 verifier 校验。",
-    }
 
 
 def _promotion_direction(state: WorkflowState) -> WorkflowState:
@@ -1941,51 +1822,12 @@ def _interpret_evidence(state: WorkflowState) -> WorkflowState:
         "evidence_brief": state["evidence_brief"],
         "evidence": state["evidence"],
     }
-    if str(state.get("request", {}).get("question") or "").strip():
-        output = _local_evidence_interpretation(state)
-        state["llm_calls"].append(
-            _local_llm_decision_audit(
-                task="evidence_interpretation",
-                payload=evidence_payload,
-                output=output,
-                reason="local_evidence_boundary",
-            )
-        )
-    else:
-        output = _invoke_llm(state, "evidence_interpretation", evidence_payload)
+    output = _invoke_llm(state, "evidence_interpretation", evidence_payload)
     state["evidence_interpretation"] = _normalize_evidence_interpretation_output(
         output,
         state,
     )
     return state
-
-
-def _local_evidence_interpretation(state: WorkflowState) -> dict[str, Any]:
-    brief = state.get("evidence_brief", {})
-    accepted = tuple(
-        state.get("compiled_graph").mutations.accepted_graph
-        if state.get("compiled_graph")
-        else ()
-    )
-    metric = _business_metric_label(state)
-    capability_text = _capability_path_labels(accepted)
-    limitations = list(brief.get("limitations") or ())
-    if brief.get("pattern_established"):
-        interpretation = (
-            f"已基于{capability_text or '已执行能力'}验证{metric}的变化方向和可见贡献项。"
-        )
-        decision = "当前证据可支持有边界的业务结论。"
-    else:
-        interpretation = f"当前证据不足以支持{metric}的强结论。"
-        decision = "进入有边界答案或降级说明，避免发布过强结论。"
-    boundary = "当前结论只覆盖已执行口径；不能写成因果证明。"
-    if limitations:
-        boundary = f"{boundary} 需要保留限制项：{','.join(str(item) for item in limitations[:5])}。"
-    return {
-        "interpretation": interpretation,
-        "decision_summary": decision,
-        "evidence_boundary": boundary,
-    }
 
 
 def _audit_causal_implications(state: WorkflowState) -> WorkflowState:
@@ -2121,33 +1963,15 @@ def _synthesize_answer(state: WorkflowState) -> WorkflowState:
         "evidence_refs": [item.get("evidence_ref") for item in state["evidence"]],
         "answer_context": _answer_synthesis_context(state),
     }
-    if str(state.get("request", {}).get("question") or "").strip():
-        output = _local_answer_synthesis(state)
-        state["llm_calls"].append(
-            _local_llm_decision_audit(
-                task="answer_synthesis",
-                payload=answer_payload,
-                output=output,
-                reason="local_evidence_bound_answer",
-            )
-        )
-    else:
-        output = _invoke_llm(state, "answer_synthesis", answer_payload)
+    output = _invoke_llm(state, "answer_synthesis", answer_payload)
     state["answer_text"] = _weaken_unsupported_causal_wording(output.get("answer_text", ""))
-    state["draft_claims"] = state["request"].get("draft_claims") or _claims_from_llm_or_default(
-        output.get("claims"),
+    requested_claims = state["request"].get("draft_claims")
+    state["draft_claims"] = _claims_from_llm_or_default(
+        requested_claims if requested_claims is not None else output.get("claims"),
         state,
     )
     _ensure_business_narrative_answer(state)
     return state
-
-
-def _local_answer_synthesis(state: WorkflowState) -> dict[str, Any]:
-    claim = _default_claim_from_evidence(state)
-    return {
-        "answer_text": _business_narrative_answer(state, claim),
-        "claims": [claim],
-    }
 
 
 def _semantic_audit(state: WorkflowState) -> WorkflowState:
@@ -2161,44 +1985,8 @@ def _semantic_audit(state: WorkflowState) -> WorkflowState:
         "answer_context": _answer_synthesis_context(state),
         "wording_boundary": "causal and main-driver wording require explicit supporting evidence",
     }
-    if str(state.get("request", {}).get("question") or "").strip():
-        output = _local_semantic_audit(state)
-        state["llm_calls"].append(
-            _local_llm_decision_audit(
-                task="semantic_audit",
-                payload=audit_payload,
-                output=output,
-                reason="local_claim_evidence_audit",
-            )
-        )
-        state["semantic_audit"] = output
-    else:
-        state["semantic_audit"] = _invoke_llm(state, "semantic_audit", audit_payload)
+    state["semantic_audit"] = _invoke_llm(state, "semantic_audit", audit_payload)
     return state
-
-
-def _local_semantic_audit(state: WorkflowState) -> dict[str, Any]:
-    issues = []
-    evidence_refs = {
-        item.get("evidence_ref")
-        for item in state.get("evidence", [])
-        if item.get("evidence_ref")
-    }
-    for claim in state.get("draft_claims", []):
-        refs = set(claim.get("evidence_refs") or [])
-        if not refs.intersection(evidence_refs):
-            issues.append(
-                {
-                    "description": "答案声明缺少可追溯证据引用。",
-                    "severity": "high",
-                    "claim_text": claim.get("text", ""),
-                }
-            )
-    return {
-        "audit_status": "passed" if not issues else "needs_repair",
-        "extracted_claims": list(state.get("draft_claims", [])),
-        "issues": issues,
-    }
 
 
 def _sanitize_answer(state: WorkflowState) -> WorkflowState:
@@ -2251,19 +2039,9 @@ def _generate_degraded_explanation(state: WorkflowState) -> WorkflowState:
         "evidence_brief": state.get("evidence_brief", {}),
         "verifier": state.get("verifier", {}),
     }
-    if str(state.get("request", {}).get("question") or "").strip():
-        output = _terminal_explanation_fallback(state, "degraded")
-        state["llm_calls"].append(
-            _local_llm_decision_audit(
-                task="degraded_explanation",
-                payload=explanation_payload,
-                output=output,
-                reason="local_terminal_boundary",
-            )
-        )
-    else:
-        output = _invoke_llm(state, "degraded_explanation", explanation_payload)
+    output = _invoke_llm(state, "degraded_explanation", explanation_payload)
     state["final_explanation"] = _sanitize_terminal_explanation(output, state, "degraded")
+    state["verifier"] = {"status": "terminal_explanation", "errors": [], "warnings": []}
     if "evidence" not in state:
         state["evidence"] = []
     if "draft_claims" not in state:
@@ -2310,14 +2088,17 @@ def _degraded_boundary_claim(state: WorkflowState, evidence_ref: str) -> dict[st
     reason = "、".join(_business_limitation_reasons(tuple(_degraded_limitations(state))))
     if not reason:
         reason = "当前证据强度不足"
-    return {
-        "text": f"当前证据不足以支撑主业务结论；主要限制是{reason}。",
-        "evidence_refs": [evidence_ref],
-        "numbers": {},
-        "scope": state["intent"]["scope"],
-        "time_window": state["intent"]["time_window"],
-        "claim_strength": "insufficient",
-    }
+    return _with_claim_audit(
+        state,
+        {
+            "text": f"当前证据不足以支撑主业务结论；主要限制是{reason}。",
+            "evidence_refs": [evidence_ref],
+            "numbers": {},
+            "scope": state["intent"]["scope"],
+            "time_window": state["intent"]["time_window"],
+            "claim_strength": "insufficient",
+        },
+    )
 
 
 def _degraded_limitations(state: WorkflowState) -> list[str]:
@@ -2340,19 +2121,9 @@ def _generate_blocked_explanation(state: WorkflowState) -> WorkflowState:
             "boundary_decision": state.get("boundary_decision", {}),
             "validator_results": state.get("validator_results", []),
         }
-        if str(state.get("request", {}).get("question") or "").strip():
-            output = _terminal_explanation_fallback(state, "blocked")
-            state["llm_calls"].append(
-                _local_llm_decision_audit(
-                    task="blocked_explanation",
-                    payload=explanation_payload,
-                    output=output,
-                    reason="local_terminal_boundary",
-                )
-            )
-        else:
-            output = _invoke_llm(state, "blocked_explanation", explanation_payload)
+        output = _invoke_llm(state, "blocked_explanation", explanation_payload)
         state["final_explanation"] = _sanitize_terminal_explanation(output, state, "blocked")
+        state["verifier"] = {"status": "terminal_explanation", "errors": [], "warnings": []}
     if "evidence" not in state:
         state["evidence"] = []
     if "draft_claims" not in state:
@@ -2405,14 +2176,17 @@ def _blocked_coverage_evidence(state: WorkflowState) -> dict[str, Any]:
 
 def _blocked_coverage_claim(state: WorkflowState, evidence_ref: str) -> dict[str, Any]:
     reason_text = _coverage_block_reason_text(state.get("coverage_interpretation") or {})
-    return {
-        "text": f"当前数据覆盖不足，无法支撑本轮业务结论；主要原因是{reason_text}。",
-        "evidence_refs": [evidence_ref],
-        "numbers": {},
-        "scope": state["intent"]["scope"],
-        "time_window": state["intent"]["time_window"],
-        "claim_strength": "insufficient",
-    }
+    return _with_claim_audit(
+        state,
+        {
+            "text": f"当前数据覆盖不足，无法支撑本轮业务结论；主要原因是{reason_text}。",
+            "evidence_refs": [evidence_ref],
+            "numbers": {},
+            "scope": state["intent"]["scope"],
+            "time_window": state["intent"]["time_window"],
+            "claim_strength": "insufficient",
+        },
+    )
 
 
 def _coverage_block_reason_text(coverage: Mapping[str, Any]) -> str:
@@ -2446,18 +2220,7 @@ def _final_business_summary(state: WorkflowState) -> WorkflowState:
         "checkpoint_summary": _checkpoint_summary(state),
         "business_threads": _business_threads(state),
     }
-    if str(state.get("request", {}).get("question") or "").strip():
-        output = {"summary_text": _final_business_summary_fallback(state)}
-        state["llm_calls"].append(
-            _local_llm_decision_audit(
-                task="final_business_summary",
-                payload=summary_payload,
-                output=output,
-                reason="local_verified_answer_summary",
-            )
-        )
-    else:
-        output = _invoke_llm(state, "final_business_summary", summary_payload)
+    output = _invoke_llm(state, "final_business_summary", summary_payload)
     state["final_business_summary"] = _weaken_unsupported_causal_wording(
         output.get("summary_text", "")
     )
@@ -2465,8 +2228,16 @@ def _final_business_summary(state: WorkflowState) -> WorkflowState:
         state["final_business_summary"],
         state,
     )
-    if _final_summary_needs_display_repair(state["final_business_summary"], state):
-        state["final_business_summary"] = _final_business_summary_fallback(state)
+    repair_reasons = _final_summary_display_repair_reasons(
+        state["final_business_summary"],
+        state,
+    )
+    if repair_reasons:
+        raise WorkflowFailure(
+            "final_business_summary_failed_verification:"
+            + ",".join(repair_reasons),
+            failure_type="llm",
+        )
     return state
 
 
@@ -2479,16 +2250,24 @@ def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
         final_answer=state.get("final_business_summary") or state.get("answer_text", ""),
         follow_up_questions=state["follow_up_questions"],
     )
+    if state.get("final_explanation") and not state.get("draft_claims"):
+        state["quality_gate"] = {
+            **quality_gate,
+            "has_verified_claims": False,
+            "verified_claim_preserved": True,
+            "business_insight_present": True,
+            "issues": [
+                issue
+                for issue in quality_gate.get("issues", [])
+                if issue not in {"missing_verified_claim", "missing_business_insight"}
+            ],
+        }
+        return state
     if not quality_gate["verified_claim_preserved"] or not quality_gate["business_insight_present"]:
-        state["final_business_summary"] = repair_final_answer_with_verified_claim(
-            state,
-            quality_gate,
-        )
-        quality_gate = evaluate_answer_quality(
-            user_question=str(state.get("request", {}).get("question") or ""),
-            verified_claims=_verified_claims(state),
-            final_answer=state.get("final_business_summary") or state.get("answer_text", ""),
-            follow_up_questions=state["follow_up_questions"],
+        raise WorkflowFailure(
+            "answer_quality_gate_failed_verification:"
+            + ",".join(quality_gate.get("issues") or ["unknown_quality_issue"]),
+            failure_type="llm",
         )
     state["quality_gate"] = quality_gate
     return state
@@ -2941,12 +2720,15 @@ def _follow_up_questions(state: WorkflowState) -> list[str]:
 
 def _invoke_llm(state: WorkflowState, task: str, payload: dict[str, Any]) -> dict[str, Any]:
     spec = build_prompt(task, payload)
-    result = state["llm_client"].invoke_json(
-        task=spec.task,
-        prompt_version=spec.prompt_version,
-        messages=spec.messages,
-        required_keys=spec.required_keys,
-    )
+    try:
+        result = state["llm_client"].invoke_json(
+            task=spec.task,
+            prompt_version=spec.prompt_version,
+            messages=spec.messages,
+            required_keys=spec.required_keys,
+        )
+    except Exception as exc:
+        raise WorkflowFailure(str(exc), failure_type="llm") from exc
     state["llm_calls"].append(result.audit)
     return result.output
 
@@ -3178,20 +2960,33 @@ def _claims_from_llm_or_default(claims: Any, state: WorkflowState) -> list[dict[
             continue
         seen.add(dedupe_key)
         normalized.append(
-            {
-                "text": str(text),
-                "evidence_refs": refs,
-                "numbers": _normalize_claim_numbers(
-                    claim.get("numbers") or claim.get("numeric_facts") or {},
-                    refs,
-                    evidence_by_ref,
-                ),
-                "scope": claim.get("scope", state["intent"]["scope"]),
-                "time_window": claim.get("time_window", state["intent"]["time_window"]),
-                "claim_strength": claim.get("claim_strength"),
-            }
+            _with_claim_audit(
+                state,
+                {
+                    "text": str(text),
+                    "evidence_refs": refs,
+                    "numbers": _normalize_claim_numbers(
+                        claim.get("numbers") or claim.get("numeric_facts") or {},
+                        refs,
+                        evidence_by_ref,
+                    ),
+                    "scope": claim.get("scope", state["intent"]["scope"]),
+                    "time_window": claim.get("time_window", state["intent"]["time_window"]),
+                    "claim_strength": claim.get("claim_strength"),
+                },
+            )
         )
     return normalized or [_default_claim_from_evidence(state)]
+
+
+def _with_claim_audit(state: WorkflowState, claim: dict[str, Any]) -> dict[str, Any]:
+    request = state.get("request", {})
+    manifest = request.get("context_manifest") or {}
+    return {
+        **claim,
+        "context_manifest_ref": str(manifest.get("manifest_id") or ""),
+        "reuse_decisions": list(request.get("reuse_decisions") or []),
+    }
 
 
 def _prioritize_claim_refs(
@@ -3336,22 +3131,30 @@ def _business_narrative_answer(state: WorkflowState, claim: dict[str, Any]) -> s
 
 
 def _final_summary_needs_display_repair(text: Any, state: WorkflowState) -> bool:
+    return bool(_final_summary_display_repair_reasons(text, state))
+
+
+def _final_summary_display_repair_reasons(text: Any, state: WorkflowState) -> list[str]:
     value = str(text or "")
     markers = ("我对问题的理解", "分析脉络", "关键发现", "最终结论", "需要注意")
-    if any(marker not in value for marker in markers) or _has_internal_visible_token(value):
-        return True
+    reasons = []
+    if any(marker not in value for marker in markers):
+        reasons.append("missing_required_summary_markers")
+    if _has_internal_visible_token(value):
+        reasons.append("internal_visible_token")
     if _final_summary_has_unsupported_wording(value, state):
-        return True
+        reasons.append("unsupported_wording")
     claims = state.get("draft_claims") or []
     if not claims and _pattern_evidence(state):
-        return not _final_summary_covers_pattern_evidence(value, state)
+        if not _final_summary_covers_pattern_evidence(value, state):
+            reasons.append("missing_pattern_evidence")
+        return reasons
     for claim in claims:
         if _is_driver_claim(claim) and not _final_summary_covers_claim(value, claim, state):
-            return True
-    return bool(
-        claims
-        and not _final_summary_covers_claim(value, claims[0], state)
-    )
+            reasons.append("missing_driver_claim")
+    if claims and not _final_summary_covers_claim(value, claims[0], state):
+        reasons.append("missing_primary_claim")
+    return list(dict.fromkeys(reasons))
 
 
 def _final_summary_covers_claim(
@@ -3497,6 +3300,8 @@ def _has_positive_causal_wording(text: str) -> bool:
             marker in sentence
             for marker in ("不能", "无法", "不可", "不支持", "缺乏", "没有", "暂不")
         ):
+            continue
+        if any(marker in sentence for marker in ("是否", "是不是", "有没有", "能否", "能不能")):
             continue
         return True
     return False
@@ -3880,21 +3685,19 @@ def _sanitize_terminal_explanation(
 ) -> dict[str, Any]:
     value = dict(explanation or {})
     value["status"] = status
-    if state.get("clarification_outcome", {}).get("boundary_status") == "needs_question":
-        return _terminal_explanation_fallback(state, status)
     visible_text = " ".join(
         str(value.get(key, "")) for key in ("explanation", "owner", "repair_path")
     )
     if status == "blocked" and _blocked_terminal_text_contradicts_status(visible_text):
-        return _terminal_explanation_fallback(state, status)
+        raise WorkflowFailure(f"{status}_explanation_rejected:contradicts_status", failure_type="llm")
     if _has_internal_visible_token(visible_text):
-        return _terminal_explanation_fallback(state, status)
+        raise WorkflowFailure(f"{status}_explanation_rejected:internal_tokens", failure_type="llm")
     if _has_materiality_data_volume_drift(visible_text, state):
-        return _terminal_explanation_fallback(state, status)
+        raise WorkflowFailure(f"{status}_explanation_rejected:materiality_drift", failure_type="llm")
     if _has_unsupported_comparable_period_drift(visible_text, state):
-        return _terminal_explanation_fallback(state, status)
+        raise WorkflowFailure(f"{status}_explanation_rejected:unsupported_period_drift", failure_type="llm")
     if _has_degraded_data_collection_or_contract_drift(visible_text, state):
-        return _terminal_explanation_fallback(state, status)
+        raise WorkflowFailure(f"{status}_explanation_rejected:data_or_contract_drift", failure_type="llm")
     owner = str(value.get("owner") or "")
     if (
         not owner
@@ -4177,23 +3980,26 @@ def _default_claim_from_evidence(state: WorkflowState) -> dict[str, Any]:
             f"达到重要性阈值的比例 {_format_percent(materiality_hit_ratio)}，"
             f"{comparable_periods} 个可比周期。{limitation_text}"
         )
-    return {
-        "text": text,
-        "evidence_refs": [
-            pattern.get("evidence_ref", f"pattern_scan:{pattern_family}")
-        ],
-        "numbers": {
-            "median_uplift": median_uplift,
-            "comparable_periods": comparable_periods,
-            "direction_ratio": direction_ratio,
-            "direction_consistency_ratio": payload.get(
-                "direction_consistency_ratio", direction_ratio
-            ),
-            "materiality_hit_ratio": payload.get("materiality_hit_ratio", direction_ratio),
+    return _with_claim_audit(
+        state,
+        {
+            "text": text,
+            "evidence_refs": [
+                pattern.get("evidence_ref", f"pattern_scan:{pattern_family}")
+            ],
+            "numbers": {
+                "median_uplift": median_uplift,
+                "comparable_periods": comparable_periods,
+                "direction_ratio": direction_ratio,
+                "direction_consistency_ratio": payload.get(
+                    "direction_consistency_ratio", direction_ratio
+                ),
+                "materiality_hit_ratio": payload.get("materiality_hit_ratio", direction_ratio),
+            },
+            "scope": state["intent"]["scope"],
+            "time_window": state["intent"]["time_window"],
         },
-        "scope": state["intent"]["scope"],
-        "time_window": state["intent"]["time_window"],
-    }
+    )
 
 
 def _default_claim_from_primary_evidence(state: WorkflowState) -> dict[str, Any]:
@@ -4279,13 +4085,16 @@ def _default_claim_from_primary_evidence(state: WorkflowState) -> dict[str, Any]
     else:
         text = "当前证据支持一个有边界的业务判断，但需要在答案中保留限制项。"
         numbers = {}
-    return {
-        "text": text,
-        "evidence_refs": [evidence.get("evidence_ref")],
-        "numbers": numbers,
-        "scope": state["intent"]["scope"],
-        "time_window": state["intent"]["time_window"],
-    }
+    return _with_claim_audit(
+        state,
+        {
+            "text": text,
+            "evidence_refs": [evidence.get("evidence_ref")],
+            "numbers": numbers,
+            "scope": state["intent"]["scope"],
+            "time_window": state["intent"]["time_window"],
+        },
+    )
 
 
 def _capability_business_findings(state: WorkflowState) -> list[dict[str, Any]]:
@@ -4431,6 +4240,8 @@ def _weaken_unsupported_causal_wording(text: Any) -> str:
     value = value.replace("因果证据", "机制证据")
     value = value.replace("因果结论", "原因定论")
     value = value.replace("因果", "原因")
+    value = re.sub(r"\b(caused|causes|causing|cause)\b", "is associated with", value, flags=re.I)
+    value = re.sub(r"\bdue to\b", "with", value, flags=re.I)
     value = value.replace(
         "No event-based causes were identified to explain the pattern.",
         "没有匹配到可支持机制结论的事件证据。",

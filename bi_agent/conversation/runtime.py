@@ -99,6 +99,13 @@ class ConversationRuntime:
         allow_clarification_answer = matches_open_clarification or matches_legacy_pending
         local_intent = _classify_intent(user_message, allow_clarification_answer)
         local_topic_relation = _topic_relation(local_intent, user_message, active_run_status)
+        if (
+            not thread.current_topic_id
+            and local_topic_relation == "inherit_current"
+            and _should_run(local_intent, local_topic_relation)
+        ):
+            local_intent = "new_topic"
+            local_topic_relation = "new_topic"
         orchestration = self._orchestrate_turn(
             thread_id,
             thread,
@@ -697,6 +704,9 @@ def _classify_intent(message: str, allow_clarification_answer: bool) -> str:
             "就是主要原因",
             "直接说",
             "活动有效",
+            "异常波动",
+            "证据够不够",
+            "数据证据够不够",
         )
     ):
         return "challenge"
@@ -978,27 +988,97 @@ def _requested_nodes(message: str, intent: str) -> tuple[str, ...]:
     outlier_recalc = _is_outlier_removal_question(message) or (
         intent == "clarification_answer" and any(token in message for token in ("移除", "剔除", "排除", "去掉", "排掉", "复算"))
     )
-    if any(token in message for token in ("渠道", "支付方式", "新用户", "老用户", "WajeSpecial", "细分")):
+    if any(
+        token in message
+        for token in (
+            "渠道",
+            "一级渠道",
+            "支付方式",
+            "支付通道",
+            "渠道归因",
+            "地区",
+            "设备",
+            "玩法",
+            "用户类型",
+            "新用户",
+            "老用户",
+            "WajeSpecial",
+            "细分",
+        )
+    ):
         nodes.append("segment_contribution")
-    if any(token in message for token in ("渠道", "贡献", "WajeSpecial", "主要原因")):
+    if any(
+        token in message
+        for token in (
+            "渠道",
+            "贡献",
+            "WajeSpecial",
+            "主要原因",
+            "影响最大",
+            "带动",
+            "拉动",
+            "造成",
+            "归因",
+            "因子",
+        )
+    ):
         nodes.append("joint_attribution")
-    if any(token in message for token in ("异常", "去掉", "拖高")) or outlier_recalc:
+    if any(token in message for token in ("异常", "异常波动", "波动", "偏离", "去掉", "拖高")) or outlier_recalc:
         nodes.append("outlier_scan")
-    if outlier_recalc:
+    if outlier_recalc or "异常波动" in message:
         nodes.append("outlier_contribution")
     if any(
         token in message
-        for token in ("为什么", "原因", "贡献", "深挖", "付费用户数", "用户数", "人均付费", "客单价")
+        for token in (
+            "为什么",
+            "原因",
+            "贡献",
+            "深挖",
+            "上涨/下跌",
+            "变化导致",
+            "首充人数",
+            "付费频次",
+            "单笔付费金额",
+            "支付成功率",
+            "付费用户数",
+            "用户数",
+            "用户增长",
+            "正常用户增长",
+            "人均付费",
+            "客单价",
+            "拉动",
+        )
     ):
         nodes.append("driver_decomposition")
-    if any(token in message for token in ("新老用户", "新用户", "老用户", "用户质量")):
+    if any(token in message for token in ("新老用户", "新用户", "老用户", "用户质量", "用户类型", "用户增长", "正常用户增长")):
         nodes.append("user_mix_contribution")
-    if any(token in message for token in ("大客户", "高价值用户", "用户质量")):
+    if any(token in message for token in ("大客户", "大额用户", "少数大额", "高价值用户", "用户质量")):
         nodes.append("high_value_user_contribution")
-    if any(token in message for token in ("活动", "前后 14 天")):
+    if any(token in message for token in ("活动", "短期活动", "投放预算", "素材更换", "版本更新", "节日", "外部事件", "前后 14 天")):
         nodes.append("event_evidence")
+    if any(token in message for token in ("固定规律", "规律", "周末", "月初", "晚上")):
+        nodes.append("pattern_scan")
+    if any(
+        token in message
+        for token in (
+            "收入健康",
+            "风险点",
+            "证据够不够",
+            "数据证据",
+            "数据延迟",
+            "支付状态",
+            "重复订单",
+            "归因异常",
+            "缺失",
+        )
+    ):
+        nodes.append("data_quality_profile")
     if intent in {"new_topic", "mixed_question", "correction", "clarification_answer", "artifact_continue"}:
         nodes.append("compare_periods")
+    if any(token in message for token in ("前一天", "上周同日", "近 7 日", "近7日", "7 日均值", "7日均值")):
+        nodes.append("compare_periods")
+    if any(token in message for token in ("近 7 日", "近7日", "7 日均值", "7日均值")):
+        nodes.append("rolling_window_compare")
     nodes.append("answer_verify")
     return tuple(dict.fromkeys(nodes))
 

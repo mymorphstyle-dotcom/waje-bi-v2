@@ -89,6 +89,64 @@ class NoAuditLLMClient:
             output["coverage_status"] = "sufficient"
         elif task == "next_action":
             output["next_action"] = "synthesize_answer"
+        elif task == "confirm_understanding":
+            output.update(
+                {
+                    "confirmed_intent": {"question_family": "pattern_explanation"},
+                    "accepted_assumptions": [],
+                    "status_message": "ok",
+                }
+            )
+        elif task == "evidence_interpretation":
+            output.update(
+                {
+                    "interpretation": "证据支持有边界结论。",
+                    "decision_summary": "继续合成答案。",
+                    "evidence_boundary": "不能写成原因定论。",
+                }
+            )
+        elif task == "causal_audit":
+            output.update(
+                {
+                    "causal_assessment": "candidate_hypothesis",
+                    "publishable_wording": "只能作为候选解释。",
+                    "supporting_reasons": [],
+                    "main_risks": [],
+                    "alternative_explanations": [],
+                    "missing_checks": [],
+                    "recommended_next_analysis": [],
+                    "answer_guidance": "保留证据边界。",
+                }
+            )
+        elif task == "answer_synthesis":
+            output.update(
+                {
+                    "answer_text": "付费金额在当前窗口有可观察变化。",
+                    "claims": [
+                        {
+                            "text": "周期内付费金额模式在 2024-01..2026-05 观察到：月初比其他阶段高 20.0%，方向一致比例 100.0%，可比周期 29 个。",
+                            "evidence_refs": ["pattern_scan:intra_period"],
+                            "numbers": {
+                                "median_uplift": 0.2,
+                                "direction_ratio": 1.0,
+                                "comparable_periods": 29,
+                            },
+                            "scope": "full_sample",
+                            "time_window": "2024-01..2026-05",
+                        }
+                    ],
+                }
+            )
+        elif task == "semantic_audit":
+            output.update({"audit_status": "passed", "extracted_claims": [], "issues": []})
+        elif task == "final_business_summary":
+            output["summary_text"] = (
+                "我对问题的理解是：用户要判断全样本付费金额的周期内模式。\n"
+                "分析脉络：我检查了数据覆盖、模式证据和答案校验。\n"
+                "关键发现：当前证据能把排查方向收敛到月初支付节奏，20.0%、100.0%、29。\n"
+                "最终结论：已验证结论是：周期内付费金额模式在 2024-01..2026-05 观察到：月初比其他阶段高 20.0%，方向一致比例 100.0%，可比周期 29 个。 当前证据能把排查方向收敛到这个方向。\n"
+                "需要注意：还不能直接说这是唯一原因或已被原因证明。"
+            )
         return SimpleNamespace(output=output, audit={})
 
 

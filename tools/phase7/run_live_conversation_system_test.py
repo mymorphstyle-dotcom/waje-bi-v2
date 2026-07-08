@@ -227,9 +227,17 @@ def _claim_evidence_review(
 ) -> dict[str, Any]:
     claims = _claims(answer_package)
     traceable_refs = _traceable_refs(answer_package, context_manifest)
+    manifest_id = str(context_manifest.get("manifest_id") or "")
     missing_claim_refs: list[int] = []
+    missing_context_manifest_ref: list[int] = []
+    missing_reuse_decision_indexes: list[int] = []
     unsupported_refs: list[str] = []
     for index, claim in enumerate(claims):
+        if str(claim.get("context_manifest_ref") or "") != manifest_id:
+            missing_context_manifest_ref.append(index)
+        reuse = claim.get("reuse_decisions")
+        if not isinstance(reuse, list) or not reuse:
+            missing_reuse_decision_indexes.append(index)
         refs = [str(ref) for ref in claim.get("evidence_refs", []) if ref]
         if not refs:
             missing_claim_refs.append(index)
@@ -240,10 +248,14 @@ def _claim_evidence_review(
         "claim_count": len(claims),
         "traceable_refs": sorted(traceable_refs),
         "missing_claim_ref_indexes": missing_claim_refs,
+        "missing_context_manifest_ref": missing_context_manifest_ref,
+        "missing_reuse_decision_indexes": missing_reuse_decision_indexes,
         "unsupported_evidence_refs": sorted(set(unsupported_refs)),
         "passed": (
             (not requires_claims or bool(claims))
             and not missing_claim_refs
+            and not missing_context_manifest_ref
+            and not missing_reuse_decision_indexes
             and not unsupported_refs
         ),
     }
@@ -346,6 +358,7 @@ def run_case(
             "topic_id": result.get("topic_id"),
             "intent": result.get("intent"),
             "topic_relation": result.get("topic_relation"),
+            "failure_reason": result.get("failure_reason"),
             "answer_package": result.get("answer_package"),
             "context_manifest": result.get("context_manifest"),
             "accepted_graph": result.get("accepted_graph"),

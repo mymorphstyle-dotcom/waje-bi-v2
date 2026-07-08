@@ -1,3 +1,6 @@
+import json
+
+
 class FakeLLMClient:
     def __init__(self, overrides=None):
         self.overrides = overrides or {}
@@ -5,7 +8,11 @@ class FakeLLMClient:
 
     def invoke_json(self, *, task, prompt_version, messages, required_keys):
         self.calls.append(task)
-        output = dict(DEFAULT_OUTPUTS.get(task, {}))
+        output = (
+            _default_final_business_summary(messages)
+            if task == "final_business_summary" and task not in self.overrides
+            else dict(DEFAULT_OUTPUTS.get(task, {}))
+        )
         output.update(self.overrides.get(task, {}))
         for key in required_keys:
             output.setdefault(key, None)
@@ -117,24 +124,89 @@ DEFAULT_OUTPUTS = {
         "claims": None,
     },
     "final_business_summary": {
-        "summary_text": (
-            "我对问题的理解是：用户要确认当前付费金额模式是否成立。\n"
-            "分析脉络：系统完成了业务意图绑定、分析路径验收、数据覆盖检查、证据执行和答案校验。\n"
-            "关键发现：证据支持有边界的业务结论。\n"
-            "最终结论：保留通过 verifier 的结论。\n"
-            "需要注意：后续仍要观察限制项和新周期表现。"
-        ),
+        "summary_text": "最终结论：当前证据能把排查方向收敛到已验证业务结论。",
     },
     "degraded_explanation": {
         "status": "degraded",
         "explanation": "当前证据有限。",
-        "owner": "data_engineering_owner",
-        "repair_path": "补充更强证据。",
+        "owner": "业务分析负责人",
+        "repair_path": "补充业务证据后重跑。",
     },
     "blocked_explanation": {
         "status": "blocked",
         "explanation": "当前存在硬边界，无法继续执行。",
-        "owner": "data_engineering_owner",
-        "repair_path": "修复阻断边界。",
+        "owner": "业务分析负责人",
+        "repair_path": "先解除阻断边界后重跑。",
     },
 }
+
+
+def _default_final_business_summary(messages):
+    payload = _input_payload(messages)
+    intent = payload.get("intent") if isinstance(payload, dict) else {}
+    metric = _business_label(str((intent or {}).get("target_metric") or "付费金额"))
+    scope = _business_label(str((intent or {}).get("scope") or "full_sample"))
+    claims = payload.get("claims") if isinstance(payload, dict) else []
+    claim_text = ""
+    if isinstance(claims, list) and claims and isinstance(claims[0], dict):
+        claim_text = str(claims[0].get("text") or "").strip()
+        number_text = _claim_number_text(claims[0].get("numbers"))
+    else:
+        number_text = ""
+    if not claim_text:
+        final = payload.get("final_explanation") if isinstance(payload, dict) else {}
+        claim_text = str((final or {}).get("explanation") or "当前证据不足以发布主业务结论。")
+    limitations = []
+    if isinstance(payload, dict):
+        limitations = list((payload.get("evidence_brief") or {}).get("limitations") or [])
+    attention = "还不能直接说这是唯一原因或已被因果证明。"
+    if "insufficient_comparable_periods" in limitations or "no_comparable_periods" in limitations:
+        attention = "可比周期不足，结论只能按当前证据边界使用。"
+    elif "weak_direction" in limitations:
+        attention = "方向一致性不足，结论只能作为排查线索。"
+    elif "below_materiality_floor" in limitations:
+        attention = "变化幅度低于当前重要性阈值，不能写成强结论。"
+    return {
+        "summary_text": (
+            f"我对问题的理解是：用户要在{scope}口径下确认当前{metric}相关业务问题。\n"
+            "分析脉络：我检查了已接受分析路径、证据引用和答案校验结果。\n"
+            f"关键发现：当前证据能把排查方向收敛到已验证结论，{claim_text} {number_text}\n"
+            f"最终结论：已验证结论是：{claim_text} {number_text}当前证据能把排查方向收敛到这个方向。\n"
+            f"需要注意：{attention}"
+        )
+    }
+
+
+def _input_payload(messages):
+    for message in messages:
+        content = message.get("content", "") if isinstance(message, dict) else ""
+        if "<input_json>" not in content:
+            continue
+        start = content.index("<input_json>") + len("<input_json>")
+        end = content.index("</input_json>")
+        return json.loads(content[start:end].strip())
+    return {}
+
+
+def _business_label(value):
+    return {
+        "paid_amount": "付费金额",
+        "daily_paid_amount": "日均付费金额",
+        "full_sample": "全样本",
+        "all_users": "全体用户",
+    }.get(value, value)
+
+
+def _claim_number_text(numbers):
+    if not isinstance(numbers, dict):
+        return ""
+    parts = []
+    for value in numbers.values():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            if abs(value) <= 1:
+                parts.append(f"{abs(value) * 100:.1f}%")
+            else:
+                parts.append(str(value))
+    return " ".join(parts)

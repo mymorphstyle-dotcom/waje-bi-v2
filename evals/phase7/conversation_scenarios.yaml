@@ -690,6 +690,98 @@ conversation_cases:
           topic_relation: "inherit"
           required_capabilities: ["answer_verify"]
           final_answer_contains: ["投放"]
+  - id: paid_amount_revenue_diagnostics_8_question_set
+    group: production_revenue_diagnostics
+    turns:
+      - user: "昨天付费金额为什么上涨/下跌？主要是首充人数、付费频次、单笔付费金额，还是支付成功率等因素变化导致的"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["current_question", "time_window_defaults"]
+          result_reuse: "rerun"
+          major_nodes: ["driver_decomposition", "compare_periods", "answer_verify"]
+          final_answer_contains: ["付费金额", "首充人数"]
+          answer_boundary: "只能把指标拆解写成贡献和证据强度，不能把未验证因素写成原因定论。"
+      - user: "最近付费金额是否存在固定规律，比如周末更高、月初更高、晚上更高？这个规律主要由哪个渠道、地区、用户类型或玩法带动？"
+        expect:
+          intent: "follow_up"
+          topic_relation: "inherit"
+          context_use: ["parent_topic", "context_manifest", "accepted_graph"]
+          result_reuse: "reuse_parent_result_then_extend"
+          major_nodes: ["pattern_scan", "segment_contribution", "joint_attribution", "answer_verify"]
+          final_answer_contains: ["固定规律", "渠道"]
+          answer_boundary: "规律类结论必须保留可比周期、重要性阈值和候选带动维度边界。"
+      - user: "昨天的活动、投放预算、素材更换、版本更新、支付通道、节日或外部事件，是否影响了付费金额？"
+        expect:
+          intent: "follow_up"
+          topic_relation: "inherit"
+          context_use: ["parent_topic", "event_context", "context_manifest"]
+          result_reuse: "reuse_parent_result_then_extend"
+          major_nodes: ["event_evidence", "answer_verify"]
+          final_answer_contains: ["活动", "付费金额"]
+          answer_boundary: "事件只能写成时间重合或候选机制，不能越过事件证据写成因果证明。"
+      - user: "当前收入健康吗？是靠正常用户增长带动，还是靠少数大额用户、短期活动或异常渠道拉动？收入结构里最大的风险点是什么？"
+        expect:
+          intent: "follow_up"
+          topic_relation: "inherit"
+          context_use: ["parent_topic", "evidence_strength", "context_manifest"]
+          result_reuse: "reuse_parent_result_then_extend"
+          major_nodes:
+            [
+              "driver_decomposition",
+              "user_mix_contribution",
+              "high_value_user_contribution",
+              "outlier_scan",
+              "data_quality_profile",
+              "event_evidence",
+              "answer_verify",
+            ]
+          final_answer_contains: ["收入健康", "风险点"]
+          answer_boundary: "收入健康必须拆成正常增长、集中度、短期事件、异常和数据质量风险。"
+      - user: "昨天收入变化最大的是哪个一级渠道、地区、设备、包、支付方式或玩法？对收入影响最大的 3 个因子分别是什么？"
+        expect:
+          intent: "follow_up"
+          topic_relation: "inherit"
+          context_use: ["parent_topic", "dimension_candidates", "context_manifest"]
+          result_reuse: "reuse_parent_result_then_extend"
+          major_nodes: ["segment_contribution", "joint_attribution", "answer_verify"]
+          final_answer_contains: ["一级渠道", "3 个因子"]
+          answer_boundary: "最大影响因子必须来自可支持粒度， unsupported 维度只能作为缺口或候选。"
+      - user: "昨天有没有异常波动？如果有，是哪个渠道、支付通道、地区、设备、玩法或大额用户造成的？"
+        expect:
+          intent: "challenge"
+          topic_relation: "inherit"
+          context_use: ["parent_topic", "outlier_scan", "context_manifest"]
+          result_reuse: "reuse_parent_result_then_extend"
+          major_nodes:
+            [
+              "outlier_scan",
+              "outlier_contribution",
+              "segment_contribution",
+              "joint_attribution",
+              "high_value_user_contribution",
+              "answer_verify",
+            ]
+          final_answer_contains: ["异常波动", "渠道"]
+          answer_boundary: "异常只能按已支持的聚合粒度定位，不能暴露明细用户或跳过高价值阈值。"
+      - user: "相比前一天、近 7 日均值、上周同日，昨天付费金额为什么变化？哪些指标偏离了正常水平？"
+        expect:
+          intent: "follow_up"
+          topic_relation: "inherit"
+          context_use: ["parent_topic", "baseline_windows", "context_manifest"]
+          result_reuse: "reuse_parent_result_then_extend"
+          major_nodes: ["compare_periods", "rolling_window_compare", "driver_decomposition", "answer_verify"]
+          final_answer_contains: ["近 7 日均值", "上周同日"]
+          answer_boundary: "多基线比较必须分开说明前一天、近 7 日均值和上周同日的偏离。"
+      - user: "这个结论的数据证据够不够？是否存在数据延迟、渠道归因异常、支付状态缺失、重复订单或异常用户影响判断？"
+        expect:
+          intent: "challenge"
+          topic_relation: "inherit"
+          context_use: ["parent_topic", "data_quality_profile", "context_manifest"]
+          result_reuse: "reuse_parent_result_then_extend"
+          major_nodes: ["data_quality_profile", "segment_contribution", "joint_attribution", "outlier_scan", "answer_verify"]
+          final_answer_contains: ["数据证据", "支付状态"]
+          answer_boundary: "证据充足性必须覆盖数据延迟、归因、支付状态、重复订单和异常影响。"
   - id: q2_q1_driver_channel_followup
     group: production_multiturn_runtime
     turns:
