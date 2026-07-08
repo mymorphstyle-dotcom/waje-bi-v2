@@ -157,6 +157,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 "semantic_audit",
                 "hard_verify_answer",
                 "final_business_summary",
+                "answer_quality_gate",
                 "persist_artifact",
             ],
         )

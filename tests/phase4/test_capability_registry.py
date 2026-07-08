@@ -111,6 +111,8 @@ class CapabilityRegistryTest(unittest.TestCase):
             "component_contribution",
             "driver_decomposition",
             "segment_contribution",
+            "user_mix_contribution",
+            "high_value_user_contribution",
             "segment_breakdown",
             "segment_shift_compare",
             "candidate_dimension_screen",

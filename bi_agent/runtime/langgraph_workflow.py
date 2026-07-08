@@ -2076,8 +2076,7 @@ def evaluate_answer_quality(
     has_verified_claims = bool(verified_claims)
     verified_claim_preserved = has_verified_claims
     for claim in verified_claims:
-        text = str(claim.get("text") or "").strip()
-        if text and text not in answer:
+        if not _verified_claim_preserved_in_answer(claim, answer):
             verified_claim_preserved = False
             break
     if not has_verified_claims:
@@ -2086,7 +2085,8 @@ def evaluate_answer_quality(
         issues.append("missing_verified_claim")
 
     business_insight_present = any(
-        marker in answer for marker in ("当前证据能把排查方向收敛到", "排查方向", "下一步最值得")
+        marker in answer
+        for marker in ("当前证据能把排查方向收敛到", "排查方向", "下一步最值得", "洞察")
     )
     if not business_insight_present:
         issues.append("missing_business_insight")
@@ -2106,6 +2106,28 @@ def evaluate_answer_quality(
         "followups_one_intent": followups_one_intent,
         "issues": issues,
     }
+
+
+def _verified_claim_preserved_in_answer(claim: Mapping[str, Any], answer: str) -> bool:
+    text = str(claim.get("text") or "").strip()
+    if text and text in answer:
+        return True
+    numbers = claim.get("numbers")
+    if not isinstance(numbers, Mapping) or not numbers:
+        return False
+    return all(_number_value_present(value, answer) for value in numbers.values())
+
+
+def _number_value_present(value: Any, answer: str) -> bool:
+    candidates = {
+        str(value),
+        _format_number(value),
+        _format_percent(value),
+    }
+    numeric = _as_float(value)
+    if numeric is not None and abs(numeric) >= 1:
+        candidates.add(f"{numeric:.0f}")
+    return any(candidate and candidate != "unknown" and candidate in answer for candidate in candidates)
 
 
 def repair_final_answer_with_verified_claim(
