@@ -197,3 +197,91 @@ missing_inputs=WAJE_RUNTIME_DATABASE_URL, DATABASE_URL, WAJE_LLM_MODEL, WAJE_LLM
 Concerns:
 
 - Live real-LLM/ClickHouse validation remains blocked by missing local runtime, LLM, and ClickHouse environment variables.
+
+## Second Review Fix
+
+Findings fixed:
+
+- Runtime clarification matching no longer accepts broad outlier fragments like `订单级明细` / `指定日期` / `日期范围`.
+- Runtime topic-choice clarification matching no longer accepts partial words like `当前` / `第二个` / `继续`; exact option id/label/description and `按推荐继续` still work.
+- Gateway clarification tests now include a Python executable behavior contract with stubbed `requireRun`, `addUserMessage`, `recordClarificationOutcome`, and `runAgentCore`, asserting forwarded payload and returned JSON mapping.
+
+Focused red before fix:
+
+```text
+python3 -m unittest tests.phase7.test_conversation_runtime -k broad_unscoped_answers
+FAILED (failures=3)
+failures: answers `订单级明细`, `指定日期`, `日期范围` were bound as clarification_answer
+```
+
+```text
+python3 -m unittest tests.phase7.test_conversation_runtime -k partial_option_words
+FAILED (failures=3)
+failures: answers `当前`, `第二个`, `继续` were bound as clarification_answer
+```
+
+Focused checks after fix:
+
+```text
+python3 -m unittest tests.phase7.test_conversation_runtime -k broad_unscoped_answers
+.
+Ran 1 test in 0.001s
+OK
+```
+
+```text
+python3 -m unittest tests.phase7.test_conversation_runtime -k partial_option_words
+.
+Ran 1 test in 0.001s
+OK
+```
+
+Required validation:
+
+```text
+python3 -m unittest tests.phase7.test_conversation_runtime -k clarification_answer
+..
+Ran 2 tests in 0.001s
+OK
+```
+
+```text
+python3 -m unittest tests.phase7.test_gateway_clarifications
+...
+Ran 3 tests in 0.001s
+OK
+```
+
+```text
+python3 -m unittest tests.phase7.test_conversation_runtime tests.phase7.test_gateway_clarifications
+....................
+Ran 20 tests in 0.087s
+OK
+```
+
+Gateway TS handler import status:
+
+```text
+No local TS test runtime is available in package.json: no vitest, jest, tsx, or ts-node dependency/script.
+Used Python executable stub contract over the route behavior and source contract.
+```
+
+Live eval:
+
+```text
+python3 tools/phase7/run_live_conversation_system_test.py --case q2_q1_wajespecial_long_followup --real-llm --real-clickhouse --artifact-dir artifacts/phase7/live-conversation
+RuntimeError: WAJE_RUNTIME_DATABASE_URL or DATABASE_URL is required
+```
+
+Artifact:
+
+```text
+artifacts/phase7/live-conversation/q2_q1_wajespecial_long_followup.json
+status=blocked
+owner=local runtime/deployment owner
+missing_inputs=WAJE_RUNTIME_DATABASE_URL, DATABASE_URL, WAJE_LLM_MODEL, WAJE_LLM_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, WAJE_CLICKHOUSE_HOST, WAJE_CLICKHOUSE_PORT, WAJE_CLICKHOUSE_USER, WAJE_CLICKHOUSE_PASSWORD, WAJE_CLICKHOUSE_DATABASE, WAJE_CLICKHOUSE_SECURE
+```
+
+Concerns:
+
+- Live real-LLM/ClickHouse validation remains blocked by missing local runtime, LLM, and ClickHouse environment variables.

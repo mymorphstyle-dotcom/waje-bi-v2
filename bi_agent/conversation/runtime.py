@@ -826,8 +826,6 @@ def _looks_like_clarification_answer(
         return normalized in {"日均", "按日均", "付费总金额", "总金额"} or any(
             token in text for token in ("日均", "总金额", "付费总金额")
         )
-    if "继续哪一个业务问题" in scope:
-        return any(token in text for token in ("当前", "第二个", "继续"))
     return False
 
 
@@ -839,10 +837,10 @@ def _looks_like_legacy_clarification_answer(text: str) -> bool:
 
 
 def _looks_like_outlier_clarification_answer(text: str) -> bool:
-    if any(token in text for token in ("订单级明细", "指定日期", "日期范围")):
-        return True
-    return any(token in text for token in ("移除", "剔除", "排除", "去掉", "排掉")) and any(
-        token in text for token in ("按日", "日期", "天", "日", "复算", "异常")
+    return (
+        any(token in text for token in ("移除", "剔除", "排除", "去掉", "排掉"))
+        and any(token in text for token in ("按日", "按天", "日期", "天", "日"))
+        and any(token in text for token in ("复算", "贡献最大", "最大正向"))
     )
 
 

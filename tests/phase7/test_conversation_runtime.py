@@ -260,6 +260,61 @@ class ConversationRuntimeTest(unittest.TestCase):
             "waiting",
         )
 
+    def test_open_outlier_clarification_rejects_broad_unscoped_answers(self):
+        for answer in ("订单级明细", "指定日期", "日期范围"):
+            with self.subTest(answer=answer):
+                runtime = build_test_runtime()
+                first = runtime.handle_message("thread-live-case-2", "如果去掉异常天还成立吗？")
+
+                result = runtime.handle_message("thread-live-case-2", answer)
+
+                self.assertNotEqual(result.turn_intent.intent, "clarification_answer")
+                self.assertFalse(
+                    any(item.source_type == "clarification" for item in result.context_manifest.items)
+                )
+                self.assertEqual(
+                    runtime.store.get_open_clarification("thread-live-case-2").status,
+                    "waiting",
+                )
+                self.assertEqual(
+                    runtime.store.clarification_states[first.clarification.clarification_id].status,
+                    "waiting",
+                )
+
+    def test_open_topic_choice_clarification_rejects_partial_option_words(self):
+        for answer in ("当前", "第二个", "继续"):
+            with self.subTest(answer=answer):
+                store = InMemoryConversationStore()
+                runtime = ConversationRuntime(store)
+                store.create_thread("thread-topic-choice-reject", owner_id="analyst-1")
+                q2_topic = store.create_topic(
+                    "thread-topic-choice-reject",
+                    title="Q2 vs Q1",
+                    summary="Q2/Q1",
+                )
+                store.create_topic(
+                    "thread-topic-choice-reject",
+                    title="1 月月初",
+                    summary="1 月月初",
+                )
+                store.set_current_topic("thread-topic-choice-reject", q2_topic.topic_id)
+                first = runtime.handle_message("thread-topic-choice-reject", "刚才那个继续看渠道。")
+
+                result = runtime.handle_message("thread-topic-choice-reject", answer)
+
+                self.assertNotEqual(result.turn_intent.intent, "clarification_answer")
+                self.assertFalse(
+                    any(item.source_type == "clarification" for item in result.context_manifest.items)
+                )
+                self.assertEqual(
+                    runtime.store.get_open_clarification("thread-topic-choice-reject").status,
+                    "waiting",
+                )
+                self.assertEqual(
+                    runtime.store.clarification_states[first.clarification.clarification_id].status,
+                    "waiting",
+                )
+
     def test_outlier_variant_question_triggers_outlier_strategy_clarification(self):
         store = InMemoryConversationStore()
         runtime = ConversationRuntime(store)
