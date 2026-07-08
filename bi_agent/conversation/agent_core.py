@@ -4,10 +4,12 @@ import argparse
 import json
 import sys
 from typing import Any, Callable, Optional
+from uuid import uuid4
 
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.runtime import ConversationRuntime
-from bi_agent.runtime.langgraph_workflow import run_pattern_workflow
+from bi_agent.conversation.store import InMemoryConversationStore
+from bi_agent.runtime.langgraph_workflow import WorkflowRunResult, run_pattern_workflow
 
 
 WorkflowRunner = Callable[[dict[str, Any]], Any]
@@ -29,17 +31,22 @@ class ConversationAgentCore:
         self,
         *,
         thread_id: str,
-        run_id: str,
+        run_id: str | None = None,
         user_message: str,
+        user_id: str | None = None,
+        permission_context: dict | None = None,
         role: str = "analyst",
         artifact_root: str = "artifacts/phase-7",
     ) -> dict[str, Any]:
+        role = str((permission_context or {}).get("role") or role or "analyst")
+        run_id = run_id or f"run-{uuid4().hex[:12]}"
         self.store.upsert_run(run_id, thread_id=thread_id, status="running")
         turn = ConversationRuntime(
             self.store,
             llm_client=self.conversation_llm_client,
         ).handle_message(thread_id, user_message, role=role)
-        self.store.record_context_manifest(turn.context_manifest.to_dict())
+        context_manifest = turn.context_manifest.to_dict()
+        self.store.record_context_manifest(context_manifest)
 
         if not turn.run_request:
             if turn.needs_clarification:
@@ -47,6 +54,8 @@ class ConversationAgentCore:
                     "reason": "needs_clarification",
                     "intent": turn.turn_intent.intent,
                     "clarification": turn.clarification.to_dict() if turn.clarification else None,
+                    "user_id": user_id,
+                    "permission_context": permission_context or {},
                 }
                 self.store.upsert_run(
                     run_id,
@@ -68,8 +77,10 @@ class ConversationAgentCore:
                     "status": "waiting_for_clarification",
                     "run_id": run_id,
                     "turn_id": turn.turn_id,
+                    "topic_id": turn.topic_id,
                     "intent": turn.turn_intent.intent,
                     "clarification": request["clarification"],
+                    "context_manifest": context_manifest,
                 }
             self.store.upsert_run(
                 run_id,
@@ -83,7 +94,9 @@ class ConversationAgentCore:
                 "status": "completed_without_workflow",
                 "run_id": run_id,
                 "turn_id": turn.turn_id,
+                "topic_id": turn.topic_id,
                 "intent": turn.turn_intent.intent,
+                "context_manifest": context_manifest,
             }
 
         request = turn.run_request.to_dict()
@@ -92,6 +105,8 @@ class ConversationAgentCore:
                 "run_id": run_id,
                 "question": user_message,
                 "role": role,
+                "user_id": user_id,
+                "permission_context": permission_context or {},
                 "artifact_root": artifact_root,
             }
         )
@@ -144,8 +159,28 @@ class ConversationAgentCore:
             "status": "completed",
             "run_id": run_id,
             "turn_id": turn.turn_id,
+            "topic_id": turn.topic_id,
             "artifact_path": result.artifact_path,
+            "answer_package": package,
+            "context_manifest": context_manifest,
+            "accepted_graph": request.get("requested_nodes", []),
+            "llm_calls": package.get("llm_calls", []),
+            "quality_review": package.get("admin_audit"),
         }
+
+    @classmethod
+    def from_environment(
+        cls,
+        *,
+        real_llm: bool = False,
+        real_clickhouse: bool = False,
+    ) -> "ConversationAgentCore":
+        if real_llm or real_clickhouse:
+            return cls(
+                PostgresConversationStore.from_env(),
+                conversation_llm_client=_conversation_llm_from_env() if real_llm else None,
+            )
+        return cls(InMemoryConversationStore(), workflow_runner=_dry_run_workflow)
 
 
 def _conversation_llm_from_env() -> Any:
@@ -155,6 +190,34 @@ def _conversation_llm_from_env() -> Any:
         return OpenAICompatibleLLMClient.from_env()
     except Exception:
         return None
+
+
+def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
+    run_id = str(request.get("run_id") or f"run-{uuid4().hex[:12]}")
+    question = str(request.get("question") or request.get("user_message") or "")
+    requested_nodes = list(request.get("requested_nodes") or [])
+    return WorkflowRunResult(
+        status="draft",
+        run_id=run_id,
+        answer_package={
+            "run_id": run_id,
+            "status": "draft",
+            "snapshot_id": "dry-run",
+            "permission_scope": str(request.get("role") or "analyst"),
+            "follow_up_context": "dry-run harness artifact",
+            "sections": [
+                {
+                    "id": "summary",
+                    "visibility": "business_summary",
+                    "payload": {"answer_text": f"dry-run: {question}"},
+                }
+            ],
+            "llm_calls": [],
+            "admin_audit": {"verifier": {"status": "skipped_dry_run"}, "accepted_graph": requested_nodes},
+        },
+        artifact_path=f"{request.get('artifact_root', 'artifacts/phase-7')}/{run_id}.json",
+        checkpoint_events=({"node": "dry_run_workflow", "status": "completed"},),
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> int:

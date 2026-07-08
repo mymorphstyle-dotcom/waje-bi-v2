@@ -85,6 +85,15 @@ class AgentCoreBridgeTest(unittest.TestCase):
             )
         )
 
+    def test_live_conversation_case_schema_supports_clarification_resume(self):
+        from tools.phase7.run_live_conversation_system_test import load_cases
+
+        cases = load_cases("evals/phase7/conversation_scenarios.yaml")
+        case = next(item for item in cases if item["id"] == "q2_q1_wajespecial_long_followup")
+        self.assertGreaterEqual(len(case["turns"]), 4)
+        self.assertIs(case["turns"][3]["expect"]["allow_clarification"], True)
+        self.assertIn("clarification_response", case["turns"][3])
+
 
 def fake_workflow(request):
     return WorkflowRunResult(
