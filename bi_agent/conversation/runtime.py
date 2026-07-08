@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -542,7 +543,7 @@ def _confidence(value: Any) -> float:
 
 def _classify_intent(message: str, has_pending_clarification: bool) -> str:
     text = message.strip()
-    if has_pending_clarification and text in {"日均。", "日均", "按推荐继续。", "按推荐继续"}:
+    if has_pending_clarification and _looks_like_clarification_answer(text):
         return "clarification_answer"
     if any(token in text for token in ("原始用户 ID", "直接写 SQL", "所有订单", "发优惠券", "预测下个月")):
         return "unsupported_request"
@@ -612,10 +613,13 @@ def _is_mixed(text: str) -> bool:
 def _looks_new_topic(text: str) -> bool:
     if "刚才" in text:
         return False
+    if re.search(r"Q\d+\s*(相比|比)\s*Q\d+", text):
+        return True
     return any(
         token in text
         for token in (
             "Q2 比 Q1",
+            "Q2 相比 Q1",
             "Q2 变化",
             "这个月是不是变好了",
             "我又发一个新问题",
@@ -646,7 +650,14 @@ def _must_rerun(message: str, intent: str, relation: str) -> bool:
 
 
 def _needs_clarification(message: str) -> bool:
-    return any(token in message for token in ("这个月是不是变好了", "这个月有没有变好"))
+    return any(
+        token in message
+        for token in (
+            "这个月是不是变好了",
+            "这个月有没有变好",
+            "去掉异常天还成立吗",
+        )
+    )
 
 
 def _build_clarification(
@@ -683,6 +694,35 @@ def _build_clarification(
             questions=(question,),
         )
 
+    if "去掉异常天还成立吗" in message:
+        question = ClarificationQuestion(
+            question_id="outlier_removal_strategy",
+            question="你想按什么规则移除异常影响？",
+            options=(
+                ClarificationOption(
+                    option_id="daily_remove_top_positive_day",
+                    label="按日移除最大正向日",
+                    description="先按天聚合，再移除贡献最大的正向日期后复算。",
+                    recommended=True,
+                ),
+                ClarificationOption(
+                    option_id="exclude_specific_dates",
+                    label="指定日期再复算",
+                    description="你自己指定要排除的异常日期范围。",
+                ),
+                ClarificationOption(
+                    option_id="tell_agent_differently",
+                    label="告诉 Agent 换一种做法",
+                    description="自己指定异常识别口径和剔除范围。",
+                ),
+            ),
+        )
+        return ClarificationRequest(
+            clarification_id=f"clarification-{turn_id}",
+            reason="outlier_removal_strategy_changes_business_answer",
+            questions=(question,),
+        )
+
     question = ClarificationQuestion(
         question_id="metric_and_baseline",
         question="你想用哪个口径判断“变好了”？",
@@ -709,6 +749,13 @@ def _build_clarification(
         clarification_id=f"clarification-{turn_id}",
         reason="metric_or_baseline_changes_business_answer",
         questions=(question,),
+    )
+
+
+def _looks_like_clarification_answer(text: str) -> bool:
+    return text in {"日均。", "日均", "按推荐继续。", "按推荐继续"} or (
+        any(token in text for token in ("按日", "复算", "移除", "异常"))
+        and any(token in text for token in ("粒度", "日期", "订单级", "明细"))
     )
 
 

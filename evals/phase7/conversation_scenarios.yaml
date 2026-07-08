@@ -207,35 +207,6 @@ cases:
     expected_forbidden_context: ["invented_source"]
     expected_langgraph: {nodes: ["decide_next_action"], ask_question: false, degraded: false}
     expected_answer_boundary: "建议下一步可观察项。"
-  - id: q2_q1_wajespecial_long_followup
-    group: continuous_followup
-    turns:
-      - user: "Q2 相比 Q1 付费金额为什么变了？"
-        expect:
-          intent: "new_topic"
-          topic_relation: "create"
-          required_capabilities: ["driver_decomposition"]
-          final_answer_contains: ["Q2", "Q1", "付费金额"]
-      - user: "那具体哪些渠道贡献最大？"
-        expect:
-          intent: "follow_up"
-          topic_relation: "inherit"
-          required_capabilities: ["segment_contribution", "joint_attribution"]
-          final_answer_contains: ["渠道", "贡献"]
-      - user: "这些渠道里 WajeSpecial 是主要原因吗？"
-        expect:
-          intent: "follow_up"
-          topic_relation: "inherit"
-          required_capabilities: ["joint_attribution", "answer_verify"]
-          final_answer_contains: ["WajeSpecial", "不能直接说", "原因"]
-      - user: "如果去掉异常天还成立吗？"
-        clarification_response: "按日粒度，移除贡献最大的正向日期后复算，不做订单级明细剔除。"
-        expect:
-          intent: "challenge"
-          topic_relation: "inherit"
-          required_capabilities: ["outlier_scan", "outlier_contribution"]
-          allow_clarification: true
-          final_answer_contains: ["移除", "方向"]
   - case_id: mix_001
     group: mixed_question
     user_message: "Q2 比 Q1 是否上涨，哪些渠道解释变化，6 月有没有异常天？"
@@ -636,3 +607,33 @@ cases:
     expected_forbidden_context: ["metric_guess_as_fact"]
     expected_langgraph: {nodes: ["business_intent"], ask_question: true, degraded: false}
     expected_answer_boundary: "指标或基线影响结论时澄清。"
+conversation_cases:
+  - id: q2_q1_wajespecial_long_followup
+    group: continuous_followup
+    turns:
+      - user: "Q2 相比 Q1 付费金额为什么变了？"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          required_capabilities: ["driver_decomposition"]
+          final_answer_contains: ["Q2", "Q1", "付费金额"]
+      - user: "那具体哪些渠道贡献最大？"
+        expect:
+          intent: "follow_up"
+          topic_relation: "inherit"
+          required_capabilities: ["segment_contribution", "joint_attribution"]
+          final_answer_contains: ["渠道", "贡献"]
+      - user: "这些渠道里 WajeSpecial 是主要原因吗？"
+        expect:
+          intent: "follow_up"
+          topic_relation: "inherit"
+          required_capabilities: ["joint_attribution", "answer_verify"]
+          final_answer_contains: ["WajeSpecial", "不能直接说", "原因"]
+      - user: "如果去掉异常天还成立吗？"
+        clarification_response: "按日粒度，移除贡献最大的正向日期后复算，不做订单级明细剔除。"
+        expect:
+          intent: "challenge"
+          topic_relation: "inherit"
+          required_capabilities: ["outlier_scan", "outlier_contribution"]
+          allow_clarification: true
+          final_answer_contains: ["移除", "方向"]

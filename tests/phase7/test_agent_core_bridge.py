@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.store import InMemoryConversationStore
@@ -93,6 +94,32 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertGreaterEqual(len(case["turns"]), 4)
         self.assertIs(case["turns"][3]["expect"]["allow_clarification"], True)
         self.assertIn("clarification_response", case["turns"][3])
+        self.assertFalse(any("case_id" in item for item in cases))
+
+    def test_live_conversation_harness_runs_clarification_and_resumes_same_topic(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import load_cases, run_case
+
+        case = next(
+            item
+            for item in load_cases("evals/phase7/conversation_scenarios.yaml")
+            if item["id"] == "q2_q1_wajespecial_long_followup"
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            result = run_case(
+                ConversationAgentCore.from_environment(),
+                case,
+                Path(tmpdir),
+            )
+
+        clarification_turn = result["turns"][3]
+        self.assertEqual(clarification_turn["status"], "waiting_for_clarification")
+        self.assertEqual(clarification_turn["resumed_status"], "completed")
+        self.assertEqual(clarification_turn["topic_id"], clarification_turn["resumed_topic_id"])
+        self.assertEqual(result["turns"][0]["topic_id"], result["turns"][1]["topic_id"])
+        self.assertEqual(result["turns"][1]["topic_id"], result["turns"][2]["topic_id"])
 
 
 def fake_workflow(request):

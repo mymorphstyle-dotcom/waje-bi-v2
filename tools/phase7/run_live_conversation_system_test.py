@@ -17,10 +17,9 @@ from bi_agent.conversation.agent_core import ConversationAgentCore
 
 def load_cases(path: str) -> list[dict[str, Any]]:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    if isinstance(raw, dict):
-        cases = raw.get("cases", [])
-    else:
-        cases = raw or []
+    if not isinstance(raw, dict):
+        return []
+    cases = raw.get("conversation_cases", [])
     return [case for case in cases if isinstance(case, dict) and case.get("id")]
 
 

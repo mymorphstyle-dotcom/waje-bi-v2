@@ -166,6 +166,33 @@ class ConversationRuntimeTest(unittest.TestCase):
             any(item.source_type == "clarification" for item in result.context_manifest.items)
         )
 
+    def test_q_comparison_starts_new_topic_and_outlier_strategy_clarification_resumes_same_topic(self):
+        store = InMemoryConversationStore()
+        runtime = ConversationRuntime(store)
+        store.create_thread("thread-live-case", owner_id="analyst-1")
+
+        first = runtime.handle_message("thread-live-case", "Q2 相比 Q1 付费金额为什么变了？")
+        self.assertEqual(first.turn_intent.intent, "new_topic")
+        self.assertEqual(first.topic_relation, "new_topic")
+        self.assertIsNotNone(first.topic_id)
+
+        follow_up = runtime.handle_message("thread-live-case", "如果去掉异常天还成立吗？")
+        self.assertEqual(follow_up.turn_intent.intent, "challenge")
+        self.assertTrue(follow_up.needs_clarification)
+        self.assertEqual(follow_up.topic_id, first.topic_id)
+        self.assertEqual(
+            follow_up.clarification.reason,
+            "outlier_removal_strategy_changes_business_answer",
+        )
+
+        resumed = runtime.handle_message(
+            "thread-live-case",
+            "按日粒度，移除贡献最大的正向日期后复算，不做订单级明细剔除。",
+        )
+        self.assertEqual(resumed.turn_intent.intent, "clarification_answer")
+        self.assertEqual(resumed.topic_id, first.topic_id)
+        self.assertIsNotNone(resumed.run_request)
+
     def test_ambiguous_question_creates_structured_clarification_without_starting_run(self):
         store = InMemoryConversationStore()
         runtime = ConversationRuntime(store)
