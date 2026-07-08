@@ -212,6 +212,50 @@ class AgentCoreBridgeTest(unittest.TestCase):
             ["artifact:missing"],
         )
 
+    def test_live_harness_rejects_context_only_manifest_refs_for_claims(self):
+        from tools.phase7.run_live_conversation_system_test import _expectation_review
+
+        review = _expectation_review(
+            {"expect": {"final_answer_contains": ["结论"]}},
+            {"intent": "follow_up", "topic_relation": "inherit_current"},
+            {
+                "intent": "follow_up",
+                "topic_relation": "inherit_current",
+                "answer_package": {
+                    "sections": [
+                        {
+                            "payload": {
+                                "answer_text": "结论",
+                                "claims": [
+                                    {
+                                        "text": "结论",
+                                        "evidence_refs": ["topic-1"],
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                "context_manifest": {
+                    "can_support_claims": False,
+                    "items": [
+                        {
+                            "source_ref": "topic-1",
+                            "can_support_claims": False,
+                            "claim_use": "context_only",
+                        }
+                    ],
+                },
+            },
+            [],
+        )
+
+        self.assertFalse(review["claim_support_policy_passed"])
+        self.assertEqual(
+            review["claim_evidence_review"]["unsupported_evidence_refs"],
+            ["topic-1"],
+        )
+
     def test_live_harness_loads_local_env_without_overriding_shell(self):
         import os
         from tempfile import TemporaryDirectory
