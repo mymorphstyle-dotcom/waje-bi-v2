@@ -114,12 +114,25 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 Path(tmpdir),
             )
 
+        self.assertEqual(result["status"], "passed")
+        self.assertIn("run_id", result)
+        self.assertIn("topic_id", result)
+        self.assertIn("answer_package", result)
+        self.assertIn("context_manifest", result)
+        self.assertIn("accepted_graph", result)
+        self.assertIn("llm_calls", result)
+        self.assertIn("quality_review", result)
         clarification_turn = result["turns"][3]
+        second_turn = result["turns"][1]
+        third_turn = result["turns"][2]
         self.assertEqual(clarification_turn["status"], "waiting_for_clarification")
         self.assertEqual(clarification_turn["resumed_status"], "completed")
         self.assertEqual(clarification_turn["topic_id"], clarification_turn["resumed_topic_id"])
         self.assertEqual(result["turns"][0]["topic_id"], result["turns"][1]["topic_id"])
         self.assertEqual(result["turns"][1]["topic_id"], result["turns"][2]["topic_id"])
+        self.assertEqual(second_turn["expectation_review"]["missing_required_capabilities"], [])
+        self.assertEqual(third_turn["expectation_review"]["missing_required_capabilities"], [])
+        self.assertIn("outlier_contribution", clarification_turn["resumed_accepted_graph"])
 
 
 def fake_workflow(request):

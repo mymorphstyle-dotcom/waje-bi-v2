@@ -778,10 +778,17 @@ def _should_run(intent: str, relation: str) -> bool:
 
 def _requested_nodes(message: str, intent: str) -> tuple[str, ...]:
     nodes: list[str] = ["business_intent"]
+    outlier_recalc = _is_outlier_removal_question(message) or (
+        intent == "clarification_answer" and any(token in message for token in ("移除", "剔除", "排除", "去掉", "排掉", "复算"))
+    )
     if any(token in message for token in ("渠道", "支付方式", "新用户", "老用户", "WajeSpecial", "细分")):
         nodes.append("segment_contribution")
-    if any(token in message for token in ("异常", "去掉", "拖高")):
+    if any(token in message for token in ("渠道", "贡献", "WajeSpecial", "主要原因")):
+        nodes.append("joint_attribution")
+    if any(token in message for token in ("异常", "去掉", "拖高")) or outlier_recalc:
         nodes.append("outlier_scan")
+    if outlier_recalc:
+        nodes.append("outlier_contribution")
     if any(token in message for token in ("为什么", "原因", "贡献", "深挖")):
         nodes.append("driver_decomposition")
     if any(token in message for token in ("活动", "前后 14 天")):

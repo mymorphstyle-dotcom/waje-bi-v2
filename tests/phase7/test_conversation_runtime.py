@@ -176,6 +176,13 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(first.topic_relation, "new_topic")
         self.assertIsNotNone(first.topic_id)
 
+        second = runtime.handle_message("thread-live-case", "那具体哪些渠道贡献最大？")
+        self.assertIn("segment_contribution", second.run_request.requested_nodes)
+        self.assertIn("joint_attribution", second.run_request.requested_nodes)
+
+        third = runtime.handle_message("thread-live-case", "这些渠道里 WajeSpecial 是主要原因吗？")
+        self.assertIn("joint_attribution", third.run_request.requested_nodes)
+
         follow_up = runtime.handle_message("thread-live-case", "如果去掉异常天还成立吗？")
         self.assertEqual(follow_up.turn_intent.intent, "challenge")
         self.assertTrue(follow_up.needs_clarification)
@@ -192,6 +199,7 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(resumed.turn_intent.intent, "clarification_answer")
         self.assertEqual(resumed.topic_id, first.topic_id)
         self.assertIsNotNone(resumed.run_request)
+        self.assertIn("outlier_contribution", resumed.run_request.requested_nodes)
 
     def test_outlier_variant_question_triggers_outlier_strategy_clarification(self):
         store = InMemoryConversationStore()
