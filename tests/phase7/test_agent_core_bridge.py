@@ -347,6 +347,37 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 else:
                     os.environ["WAJE_LLM_MODEL"] = old_model
 
+    def test_live_harness_reads_quality_gate_for_strict_mode(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _strict_quality_failed,
+            _quality_review,
+        )
+
+        review = _quality_review(
+            {
+                "quality_gate": {
+                    "direct_answer": True,
+                    "has_verified_claims": True,
+                    "verified_claim_preserved": False,
+                    "business_insight_present": True,
+                    "followups_one_intent": False,
+                    "issues": ["missing_verified_claim"],
+                }
+            }
+        )
+
+        self.assertEqual(
+            review,
+            {
+                "direct_answer": True,
+                "has_verified_claims": True,
+                "verified_claim_preserved": False,
+                "business_insight_present": True,
+                "followups_one_intent": False,
+            },
+        )
+        self.assertTrue(_strict_quality_failed({"quality_review": review}))
+
 
 def fake_workflow(request):
     return WorkflowRunResult(

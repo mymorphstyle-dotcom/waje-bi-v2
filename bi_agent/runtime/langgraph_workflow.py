@@ -107,6 +107,8 @@ class WorkflowState(TypedDict, total=False):
     verifier: dict[str, Any]
     final_explanation: dict[str, Any]
     final_business_summary: str
+    quality_gate: dict[str, Any]
+    follow_up_questions: list[str]
     answer_package: dict[str, Any]
     artifact_path: str
 
@@ -213,6 +215,7 @@ def build_pattern_graph():
         ("generate_degraded_explanation", _generate_degraded_explanation),
         ("generate_blocked_explanation", _generate_blocked_explanation),
         ("final_business_summary", _final_business_summary),
+        ("answer_quality_gate", _answer_quality_gate),
         ("persist_artifact", _persist_artifact),
     ):
         graph.add_node(node, _retrying_node(node, func))
@@ -314,7 +317,8 @@ def build_pattern_graph():
     graph.add_edge("repair_answer", "semantic_audit")
     graph.add_edge("generate_degraded_explanation", "final_business_summary")
     graph.add_edge("generate_blocked_explanation", "final_business_summary")
-    graph.add_edge("final_business_summary", "persist_artifact")
+    graph.add_edge("final_business_summary", "answer_quality_gate")
+    graph.add_edge("answer_quality_gate", "persist_artifact")
     graph.add_edge("persist_artifact", END)
     return graph.compile()
 
@@ -1739,6 +1743,30 @@ def _final_business_summary(state: WorkflowState) -> WorkflowState:
     return state
 
 
+def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
+    _maybe_force_node_failure(state, "answer_quality_gate")
+    state["follow_up_questions"] = _follow_up_questions(state)
+    quality_gate = evaluate_answer_quality(
+        user_question=str(state.get("request", {}).get("question") or ""),
+        verified_claims=_verified_claims(state),
+        final_answer=state.get("final_business_summary") or state.get("answer_text", ""),
+        follow_up_questions=state["follow_up_questions"],
+    )
+    if not quality_gate["verified_claim_preserved"] or not quality_gate["business_insight_present"]:
+        state["final_business_summary"] = repair_final_answer_with_verified_claim(
+            state,
+            quality_gate,
+        )
+        quality_gate = evaluate_answer_quality(
+            user_question=str(state.get("request", {}).get("question") or ""),
+            verified_claims=_verified_claims(state),
+            final_answer=state.get("final_business_summary") or state.get("answer_text", ""),
+            follow_up_questions=state["follow_up_questions"],
+        )
+    state["quality_gate"] = quality_gate
+    return state
+
+
 def _persist_artifact(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "persist_artifact")
     package = _build_answer_package_from_state(state)
@@ -2025,7 +2053,134 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         causal_evidence_dossier=state.get("causal_evidence_dossier", {}),
         context_manifest_ref=str(context_manifest.get("manifest_id") or ""),
         reuse_decisions=request.get("reuse_decisions", ()),
+        quality_gate=state.get("quality_gate", {}),
+        follow_up_questions=state.get("follow_up_questions", ()),
     )
+
+
+def evaluate_answer_quality(
+    *,
+    user_question: str,
+    verified_claims: Sequence[Mapping[str, Any]],
+    final_answer: str,
+    follow_up_questions: Sequence[str],
+) -> dict[str, Any]:
+    answer = str(final_answer or "")
+    issues: list[str] = []
+    direct_answer = bool(answer.strip()) and any(
+        marker in answer for marker in ("最终结论", "结论", "当前证据")
+    )
+    if not direct_answer:
+        issues.append("missing_direct_answer")
+
+    has_verified_claims = bool(verified_claims)
+    verified_claim_preserved = has_verified_claims
+    for claim in verified_claims:
+        text = str(claim.get("text") or "").strip()
+        if text and text not in answer:
+            verified_claim_preserved = False
+            break
+    if not has_verified_claims:
+        issues.append("missing_verified_claim")
+    elif not verified_claim_preserved:
+        issues.append("missing_verified_claim")
+
+    business_insight_present = any(
+        marker in answer for marker in ("当前证据能把排查方向收敛到", "排查方向", "下一步最值得")
+    )
+    if not business_insight_present:
+        issues.append("missing_business_insight")
+
+    followups_one_intent = (
+        len(follow_up_questions) == 3
+        and all("以及" not in question and str(question).count("，") <= 2 for question in follow_up_questions)
+    )
+    if not followups_one_intent:
+        issues.append("followups_not_single_intent")
+
+    return {
+        "direct_answer": direct_answer,
+        "has_verified_claims": has_verified_claims,
+        "verified_claim_preserved": verified_claim_preserved,
+        "business_insight_present": business_insight_present,
+        "followups_one_intent": followups_one_intent,
+        "issues": issues,
+    }
+
+
+def repair_final_answer_with_verified_claim(
+    state: WorkflowState,
+    quality_gate: Mapping[str, Any],
+) -> str:
+    answer = str(state.get("final_business_summary") or state.get("answer_text") or "").strip()
+    claims = _verified_claims(state)
+    claim_text = str(claims[0].get("text") or "").strip() if claims else ""
+    if claim_text:
+        conclusion = (
+            f"最终结论：已验证结论是：{claim_text} "
+            f"当前证据能把排查方向收敛到{_quality_gate_focus(state)}；"
+            "还不能直接说这是唯一原因或已被因果证明。"
+        )
+    else:
+        conclusion = (
+            f"最终结论：当前证据能把排查方向收敛到{_quality_gate_focus(state)}；"
+            "还不能直接说这是唯一原因或已被因果证明。"
+        )
+    if "最终结论：" in answer:
+        return re.sub(r"最终结论：.*?(?=\n需要注意：|$)", conclusion, answer, count=1, flags=re.S)
+    if answer:
+        return f"{answer}\n{conclusion}"
+    return "\n".join(
+        (
+            _question_understanding_sentence(state),
+            _analysis_path_sentence(state).replace("分析思路：", "分析脉络：", 1),
+            _key_findings_sentence(state),
+            conclusion,
+            _attention_sentence(state),
+        )
+    )
+
+
+def _verified_claims(state: WorkflowState) -> list[dict[str, Any]]:
+    if state.get("verifier", {}).get("errors"):
+        return []
+    return [dict(claim) for claim in state.get("draft_claims", []) if isinstance(claim, Mapping)]
+
+
+def _quality_gate_focus(state: WorkflowState) -> str:
+    labels = _capability_path_labels(
+        tuple(
+            state.get("compiled_graph").mutations.accepted_graph
+            if state.get("compiled_graph")
+            else ()
+        )
+    )
+    return labels or "已验证的变化方向、贡献项和仍需验证的候选解释"
+
+
+def _follow_up_questions(state: WorkflowState) -> list[str]:
+    accepted = tuple(
+        state.get("compiled_graph").mutations.accepted_graph
+        if state.get("compiled_graph")
+        else ()
+    )
+    if "outlier_contribution" in accepted:
+        return [
+            "要复核移除异常日期后的贡献变化吗？",
+            "要看异常日期集中在哪些业务窗口吗？",
+            "要继续检查渠道贡献是否稳定吗？",
+        ]
+    if "segment_contribution" in accepted or "joint_attribution" in accepted:
+        return [
+            "要先看哪个渠道的贡献最稳定吗？",
+            "要复核异常日期剔除后的方向吗？",
+            "要把新老用户贡献单独拆开看吗？",
+        ]
+    return [
+        "要继续看贡献最大的业务因素吗？",
+        "要复核异常日期对结果的影响吗？",
+        "要换成日均口径再算一次吗？",
+    ]
 
 
 def _invoke_llm(state: WorkflowState, task: str, payload: dict[str, Any]) -> dict[str, Any]:

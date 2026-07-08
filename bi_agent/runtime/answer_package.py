@@ -29,6 +29,8 @@ def build_answer_package(
     causal_evidence_dossier: Optional[Mapping[str, Any]] = None,
     context_manifest_ref: str = "",
     reuse_decisions: Sequence[Mapping[str, Any]] = (),
+    quality_gate: Optional[Mapping[str, Any]] = None,
+    follow_up_questions: Sequence[str] = (),
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
     semantic_audit = {} if semantic_audit is None else semantic_audit
@@ -43,6 +45,7 @@ def build_answer_package(
     causal_evidence_dossier = (
         {} if causal_evidence_dossier is None else causal_evidence_dossier
     )
+    quality_gate = {} if quality_gate is None else quality_gate
     visible_limitations = collect_visible_limitations(evidence)
     verifier = verify_answer_package(
         draft_claims=draft_claims,
@@ -76,6 +79,9 @@ def build_answer_package(
         "package_type": "draft_answer_package",
         "context_manifest_ref": context_manifest_ref,
         "reuse_decisions": to_jsonable(reuse_decisions),
+        "final_answer": final_business_summary or answer_text,
+        "follow_up_questions": list(follow_up_questions),
+        "quality_gate": to_jsonable(quality_gate),
         "proposed_graph": list(proposed_graph),
         "accepted_graph": list(accepted_graph),
         "rejected_or_degraded_mutations": to_jsonable(rejected_or_degraded_mutations),

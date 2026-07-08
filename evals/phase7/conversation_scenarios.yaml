@@ -637,3 +637,198 @@ conversation_cases:
           required_capabilities: ["outlier_scan", "outlier_contribution"]
           allow_clarification: true
           final_answer_contains: ["移除", "方向"]
+  - id: q2_q1_driver_channel_followup
+    group: production_multiturn_runtime
+    turns:
+      - user: "Q2 相比 Q1 付费金额增长，到底是付费用户数还是人均付费拉动？"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["current_question"]
+          result_reuse: "rerun"
+          major_nodes: ["driver_decomposition", "answer_verify"]
+          answer_boundary: "只能把用户数和人均付费写成贡献拆解，不能写成因果证明。"
+      - user: "那这些变化在哪些渠道最明显？"
+        expect:
+          intent: "follow_up"
+          topic_relation: "inherit"
+          context_use: ["accepted_graph", "result_refs", "context_manifest"]
+          result_reuse: "reuse_parent_result_then_extend"
+          major_nodes: ["segment_contribution", "joint_attribution"]
+          answer_boundary: "渠道结论必须保留父 topic 的时间窗口和口径。"
+  - id: q2_q1_wajespecial_reason_challenge
+    group: production_multiturn_runtime
+    turns:
+      - user: "Q2 比 Q1 的付费金额变化，先按渠道拆一下。"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["current_question"]
+          result_reuse: "rerun"
+          major_nodes: ["segment_contribution"]
+          answer_boundary: "只发布渠道贡献事实和证据强度。"
+      - user: "所以 WajeSpecial 就是主要原因吗？"
+        expect:
+          intent: "challenge"
+          topic_relation: "inherit"
+          context_use: ["prior_claims", "causal_audit", "context_manifest"]
+          result_reuse: "reuse_prior_channel_result"
+          major_nodes: ["joint_attribution", "answer_verify"]
+          answer_boundary: "可以说候选解释，不能把贡献项写成已证明原因。"
+  - id: q2_q1_outlier_resume_after_clarification
+    group: production_multiturn_runtime
+    turns:
+      - user: "Q2 相比 Q1 的付费金额差异先给我一个结论。"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["current_question"]
+          result_reuse: "rerun"
+          major_nodes: ["compare_periods", "answer_verify"]
+          answer_boundary: "结论必须说明当前证据窗口。"
+      - user: "去掉异常天后还成立吗？"
+        clarification_response: "按自然日聚合，移除正向贡献最大的 1 天后复算，继续用 Q2 对 Q1。"
+        expect:
+          intent: "challenge"
+          topic_relation: "inherit"
+          allow_clarification: true
+          context_use: ["parent_topic", "artifact_result_refs"]
+          result_reuse: "reuse_parent_result_then_extend"
+          major_nodes: ["outlier_scan", "outlier_contribution"]
+          answer_boundary: "waiting_for_clarification 后必须回到原 topic。"
+  - id: month_start_mid_end_full_sample_boundary
+    group: production_multiturn_runtime
+    turns:
+      - user: "全样本看月初付费金额是不是比月中月末更高？"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["factor_contract", "time_window_defaults"]
+          result_reuse: "rerun"
+          major_nodes: ["compare_periods", "answer_verify"]
+          answer_boundary: "必须保留全样本、月初、月中、月末的时间语义。"
+      - user: "如果只看 WajeSpecial 渠道呢？"
+        expect:
+          intent: "follow_up"
+          topic_relation: "inherit"
+          context_use: ["prior_time_semantics", "context_manifest"]
+          result_reuse: "rerun_with_narrower_scope"
+          major_nodes: ["segment_contribution", "answer_verify"]
+          answer_boundary: "缩小范围后不能沿用全样本结论强度。"
+  - id: historical_failure_month_start_amount
+    group: production_multiturn_runtime
+    turns:
+      - user: "全量样本里，月初的付费金额是不是稳定高于月中和月末？"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["historical_failure_suite", "factor_contract"]
+          result_reuse: "rerun"
+          major_nodes: ["compare_periods", "answer_verify"]
+          answer_boundary: "稳定高于需要多个可比周期和重要性边界，不能用单点结果冒充。"
+  - id: user_mix_high_value_quality_followup
+    group: production_multiturn_runtime
+    turns:
+      - user: "Q2 比 Q1 付费金额增长，用户质量有没有变化？"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["current_question"]
+          result_reuse: "rerun"
+          major_nodes: ["user_mix_contribution", "high_value_user_contribution"]
+          answer_boundary: "用户质量必须落到新老用户或高价值阈值等可执行口径。"
+      - user: "高价值用户这里按什么阈值算的？"
+        expect:
+          intent: "follow_up"
+          topic_relation: "inherit"
+          context_use: ["threshold_policy", "context_manifest"]
+          result_reuse: "reuse_parent_result"
+          major_nodes: ["high_value_user_contribution"]
+          answer_boundary: "阈值必须来自 evidence/result/artifact/memory ref。"
+  - id: correction_metric_switch_new_topic
+    group: production_multiturn_runtime
+    turns:
+      - user: "Q2 相比 Q1 付费金额为什么变了？"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["current_question"]
+          result_reuse: "rerun"
+          major_nodes: ["driver_decomposition"]
+          answer_boundary: "建立父 topic 和可复用结果。"
+      - user: "我刚才说错了，改看退款金额。"
+        expect:
+          intent: "correction"
+          topic_relation: "new_topic"
+          context_use: ["recent_turns"]
+          result_reuse: "rerun"
+          major_nodes: ["compare_periods", "answer_verify"]
+          answer_boundary: "指标切换会改变业务结论时要新建 topic 或澄清。"
+  - id: permission_blocked_detail_followup
+    group: production_multiturn_runtime
+    turns:
+      - user: "Q2 比 Q1 付费金额变化里，帮我按用户手机号明细解释。"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["permission_scope", "data_contract"]
+          result_reuse: "blocked"
+          major_nodes: ["compare_periods", "answer_verify"]
+          answer_boundary: "明细权限不足时只能给聚合替代路径。"
+      - user: "那不看手机号，按渠道聚合可以吗？"
+        expect:
+          intent: "follow_up"
+          topic_relation: "inherit"
+          context_use: ["blocked_boundary", "recommended_repair_path"]
+          result_reuse: "rerun_with_aggregate_scope"
+          major_nodes: ["segment_contribution", "answer_verify"]
+          answer_boundary: "恢复到聚合口径后必须说明权限边界已改变。"
+  - id: topic_switch_retention_after_revenue
+    group: production_multiturn_runtime
+    turns:
+      - user: "Q2 相比 Q1 付费金额为什么变了？"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["current_question"]
+          result_reuse: "rerun"
+          major_nodes: ["driver_decomposition"]
+          answer_boundary: "付费金额 topic 先闭环。"
+      - user: "另外看一下 Q2 留存有没有变差。"
+        expect:
+          intent: "new_topic"
+          topic_relation: "new_topic"
+          context_use: ["recent_turns"]
+          result_reuse: "rerun"
+          major_nodes: ["compare_periods", "answer_verify"]
+          answer_boundary: "新指标不能沿用付费金额证据支撑留存结论。"
+  - id: causal_language_challenge
+    group: production_multiturn_runtime
+    turns:
+      - user: "Q2 相比 Q1 付费金额增长是不是活动带来的？"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["event_evidence", "causal_audit"]
+          result_reuse: "rerun"
+          major_nodes: ["event_evidence", "answer_verify"]
+          answer_boundary: "活动只能写成事件重合或候选机制，因果必须有额外证据。"
+      - user: "能不能直接说活动有效？"
+        expect:
+          intent: "challenge"
+          topic_relation: "inherit"
+          context_use: ["causal_audit", "verified_claims"]
+          result_reuse: "reuse_parent_result"
+          major_nodes: ["answer_verify"]
+          answer_boundary: "不能把方向性关联升级为活动有效。"
+  - id: followup_question_quality_gate
+    group: production_multiturn_runtime
+    turns:
+      - user: "Q2 相比 Q1 付费金额变化，给我结论和下一步能追问什么。"
+        expect:
+          intent: "new_topic"
+          topic_relation: "create"
+          context_use: ["current_question"]
+          result_reuse: "rerun"
+          major_nodes: ["compare_periods", "answer_verify"]
+          answer_boundary: "最终答案要直接回答，并给三个单意图追问。"

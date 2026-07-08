@@ -79,6 +79,43 @@ class ArtifactContinueRuntimeTest(unittest.TestCase):
         self.assertFalse(result.context_manifest.can_support_claims)
         self.assertEqual(result.reuse_decisions[0].decision, "blocked")
 
+    def test_artifact_follow_up_does_not_support_claims_when_rerun_required(self):
+        store = InMemoryConversationStore()
+        runtime = ConversationRuntime(store)
+        store.create_thread("thread-artifact", owner_id="analyst-1")
+        topic = store.create_topic("thread-artifact", title="Q2 vs Q1", summary="Q2/Q1 已验证结果")
+        store.set_current_topic("thread-artifact", topic.topic_id)
+        store.add_result_ref(
+            topic.topic_id,
+            result_ref="result:q2-q1",
+            snapshot_id="2026H1",
+            contract_version="contracts-v1",
+            permission_scope="business_reader",
+            semantic_scope="q2_vs_q1",
+        )
+        store.add_artifact(
+            artifact_id="artifact:q2-q1",
+            topic_id=topic.topic_id,
+            follow_up_context="Q2/Q1 的 Answer Package，可继续看渠道。",
+            snapshot_id="2026H1",
+            permission_scope="business_reader",
+        )
+
+        result = runtime.handle_message(
+            "thread-artifact",
+            "基于这个结果，换成日均再看一遍。",
+            role="business_reader",
+            current_snapshot="2026H1",
+        )
+
+        self.assertEqual(result.reuse_decisions[0].decision, "rerun")
+        artifact_items = [
+            item for item in result.context_manifest.items if item.source_type == "artifact"
+        ]
+        self.assertEqual(len(artifact_items), 1)
+        self.assertTrue(artifact_items[0].can_support_claims)
+        self.assertFalse(result.context_manifest.can_support_claims)
+
     def test_postgres_store_persists_and_reads_latest_artifact_for_topic(self):
         connection = FakeArtifactConnection()
         store = PostgresConversationStore(connection)

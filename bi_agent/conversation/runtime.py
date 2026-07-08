@@ -426,7 +426,7 @@ class ConversationRuntime:
                     reason=decision.reason,
                     permission_scope=role,
                     source_version=f"{contract_version}:{current_snapshot}",
-                    expired=decision.decision in {"context_only", "blocked"},
+                    expired=decision.decision in {"rerun", "context_only", "blocked"},
                     claim_use=decision.decision,
                 )
             )
@@ -478,7 +478,10 @@ class ConversationRuntime:
                     claim_use="context_only",
                 )
             )
-        claim_safe = all(decision.decision not in {"blocked", "context_only"} for decision in reuse_decisions)
+        claim_safe = all(
+            decision.decision not in {"rerun", "blocked", "context_only"}
+            for decision in reuse_decisions
+        )
         has_claim_support = any(item.can_support_claims for item in items)
         artifact_context_blocked = any(
             item.source_type == "artifact" and not item.can_support_claims
@@ -549,7 +552,7 @@ def evaluate_reuse_candidate(
         )
     if not semantic_scope_match:
         return ReuseDecision(
-            "context_only",
+            "rerun",
             source_ref,
             "semantic_scope_mismatch",
             can_support_claim=False,
@@ -648,12 +651,21 @@ def _classify_intent(message: str, allow_clarification_answer: bool) -> str:
         return "memory_update"
     if any(token in text for token in ("基于这个结果", "打开之前保存")):
         return "artifact_continue"
-    if any(token in text for token in ("口径改成", "换成日均", "不要按")):
+    if any(token in text for token in ("口径改成", "换成日均", "不要按", "说错了", "改看")):
         return "correction"
     if _is_mixed(text):
         return "mixed_question"
     if _is_outlier_removal_question(text) or any(
-        token in text for token in ("是不是被", "去掉", "有多稳", "指导投放")
+        token in text
+        for token in (
+            "是不是被",
+            "去掉",
+            "有多稳",
+            "指导投放",
+            "就是主要原因",
+            "直接说",
+            "活动有效",
+        )
     ):
         return "challenge"
     if _looks_new_topic(text):
@@ -681,6 +693,8 @@ def _topic_relation(intent: str, message: str, active_run_status: str) -> str:
             return "new_topic"
         return "split_subintents"
     if intent == "new_topic":
+        return "new_topic"
+    if intent == "correction" and any(token in message for token in ("改看", "退款", "留存")):
         return "new_topic"
     if intent == "memory_update":
         return "inherit_current"
@@ -716,6 +730,10 @@ def _looks_new_topic(text: str) -> bool:
             "Q2 比 Q1",
             "Q2 相比 Q1",
             "Q2 变化",
+            "全样本看月初",
+            "全量样本里，月初",
+            "留存有没有变差",
+            "另外看一下",
             "这个月是不是变好了",
             "我又发一个新问题",
         )
@@ -936,7 +954,10 @@ def _requested_nodes(message: str, intent: str) -> tuple[str, ...]:
         nodes.append("outlier_scan")
     if outlier_recalc:
         nodes.append("outlier_contribution")
-    if any(token in message for token in ("为什么", "原因", "贡献", "深挖")):
+    if any(
+        token in message
+        for token in ("为什么", "原因", "贡献", "深挖", "付费用户数", "用户数", "人均付费", "客单价")
+    ):
         nodes.append("driver_decomposition")
     if any(token in message for token in ("新老用户", "新用户", "老用户", "用户质量")):
         nodes.append("user_mix_contribution")

@@ -20,6 +20,8 @@ from bi_agent.runtime.langgraph_workflow import (
     _normalize_route_requested_nodes,
     _repair_path_invents_fixed_future_window,
     _reduce_evidence,
+    evaluate_answer_quality,
+    repair_final_answer_with_verified_claim,
     _route_after_next_action,
     _sanitize_terminal_explanation,
     run_pattern_workflow,
@@ -2699,6 +2701,156 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertNotIn("causes", summary["claims"][0]["text"])
         self.assertNotIn("due to", summary["claims"][0]["text"])
         self.assertFalse(result.answer_package["admin_audit"]["verifier"]["warnings"])
+
+    def _run_q2_q1_joint_attribution_workflow(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "segment_or_factor_attribution",
+                    "pattern_family": "custom_baseline",
+                    "target_metric": "paid_amount",
+                    "scope": "full_sample",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "target_claim": "判断渠道和月内阶段组合是否解释主要变化",
+                },
+                "analysis_route": {
+                    "requested_nodes": ["joint_attribution", "answer_verify"],
+                },
+                "answer_synthesis": {
+                    "answer_text": "草稿结论：WajeSpecial 月初组合贡献最大。",
+                    "claims": [
+                        {
+                            "text": "WajeSpecial 月初组合是当前 Q2 相比 Q1 付费金额变化里贡献最大的候选组合。",
+                            "evidence_refs": ["joint_attribution:inline"],
+                            "numbers": {"top_combination_share": 0.8974},
+                            "scope": "full_sample",
+                            "time_window": "2026-01-01..2026-06-30",
+                        }
+                    ],
+                },
+                "final_business_summary": {
+                    "summary_text": (
+                        "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
+                        "分析脉络：我检查了目标窗口和基线窗口的聚合证据。\n"
+                        "关键发现：现有证据支持继续做渠道和阶段组合复核。\n"
+                        "最终结论：目前有一个通过校验的业务结论。\n"
+                        "需要注意：不能把候选解释写成已证明原因。"
+                    )
+                },
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            return run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "q2-q1-joint-quality",
+                    "llm_client": fake,
+                    "question": "Q2 相比 Q1 付费金额为什么变了？哪些渠道和月内阶段组合贡献最大？",
+                    "pattern_family": "custom_baseline",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "baseline": {"label": "Q1"},
+                    "target": {"label": "Q2"},
+                    "rows": [
+                        {
+                            "period": "q1",
+                            "group": "baseline",
+                            "channel": "WajeSpecial",
+                            "phase": "start",
+                            "amount": 100,
+                        },
+                        {
+                            "period": "q2",
+                            "group": "target",
+                            "channel": "WajeSpecial",
+                            "phase": "start",
+                            "amount": 170,
+                        },
+                        {
+                            "period": "q1",
+                            "group": "baseline",
+                            "channel": "Organic",
+                            "phase": "mid",
+                            "amount": 80,
+                        },
+                        {
+                            "period": "q2",
+                            "group": "target",
+                            "channel": "Organic",
+                            "phase": "mid",
+                            "amount": 88,
+                        },
+                    ],
+                    "required_fields": ["period", "group", "channel", "phase", "amount"],
+                    "pattern_params": {
+                        "period_key": "period",
+                        "group_key": "group",
+                        "target_group": "target",
+                        "baseline_group": "baseline",
+                        "joint_dimension_keys": ("channel", "phase"),
+                    },
+                }
+            )
+
+    def test_final_answer_contains_business_insight_and_verified_claim(self):
+        result = self._run_q2_q1_joint_attribution_workflow()
+        answer = result.answer_package["final_answer"]
+        self.assertIn("当前证据能把排查方向收敛到", answer)
+        self.assertIn("还不能直接说", answer)
+        self.assertTrue(result.answer_package["quality_gate"]["business_insight_present"])
+
+    def test_followup_questions_are_single_intent(self):
+        result = self._run_q2_q1_joint_attribution_workflow()
+        questions = result.answer_package["follow_up_questions"]
+        self.assertEqual(len(questions), 3)
+        for question in questions:
+            self.assertLessEqual(question.count("，"), 2)
+            self.assertNotIn("以及", question)
+
+    def test_quality_gate_repair_preserves_verified_claim_text(self):
+        claim_text = "Q2 相比 Q1 的付费金额提升 20.0%，当前只支持窗口对比结论。"
+        repaired = repair_final_answer_with_verified_claim(
+            {
+                "request": {"question": "Q2 相比 Q1 付费金额为什么变了？"},
+                "intent": {
+                    "target_metric": "paid_amount",
+                    "scope": "full_sample",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "pattern_family": "custom_baseline",
+                    "target": {"label": "Q2"},
+                    "baseline": {"label": "Q1"},
+                },
+                "final_business_summary": (
+                    "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
+                    "分析脉络：我检查了目标窗口和基线窗口的聚合证据。\n"
+                    "关键发现：当前有可发布证据。\n"
+                    "最终结论：通过了校验。\n"
+                    "需要注意：不能写成因果证明。"
+                ),
+                "draft_claims": [{"text": claim_text}],
+                "verifier": {"errors": []},
+            },
+            {},
+        )
+
+        self.assertIn(claim_text, repaired)
+        self.assertIn("当前证据能把排查方向收敛到", repaired)
+        self.assertIn("还不能直接说", repaired)
+
+    def test_quality_gate_rejects_answers_without_verified_claims(self):
+        quality = evaluate_answer_quality(
+            user_question="Q2 相比 Q1 付费金额为什么变了？",
+            verified_claims=[],
+            final_answer="最终结论：当前证据能把排查方向收敛到渠道贡献。",
+            follow_up_questions=[
+                "要看渠道贡献吗？",
+                "要复核异常日期吗？",
+                "要换成日均口径吗？",
+            ],
+        )
+
+        self.assertFalse(quality["has_verified_claims"])
+        self.assertFalse(quality["verified_claim_preserved"])
+        self.assertIn("missing_verified_claim", quality["issues"])
 
 
 if __name__ == "__main__":

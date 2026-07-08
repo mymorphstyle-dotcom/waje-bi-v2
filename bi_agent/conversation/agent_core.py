@@ -194,7 +194,7 @@ class ConversationAgentCore:
             "context_manifest": context_manifest,
             "accepted_graph": accepted_graph,
             "llm_calls": package.get("llm_calls", []),
-            "quality_review": package.get("admin_audit"),
+            "quality_review": package.get("quality_gate") or package.get("admin_audit"),
         }
 
     @classmethod
@@ -228,6 +228,8 @@ def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
     compiled = _compile_dry_run_graph(requested_nodes)
     accepted_graph = list(compiled.mutations.accepted_graph)
     answer_text = _dry_run_answer_text(question)
+    final_answer = _dry_run_final_answer(answer_text, accepted_graph)
+    quality_gate = _dry_run_quality_gate(answer_text, final_answer)
     evidence_ref = _dry_run_claim_source_ref(request)
     return WorkflowRunResult(
         status="draft",
@@ -238,6 +240,9 @@ def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
             "snapshot_id": "dry-run",
             "permission_scope": str(request.get("role") or "analyst"),
             "follow_up_context": "dry-run harness artifact",
+            "final_answer": final_answer,
+            "follow_up_questions": _dry_run_follow_up_questions(accepted_graph),
+            "quality_gate": quality_gate,
             "sections": [
                 {
                     "id": "summary",
@@ -306,6 +311,70 @@ def _dry_run_answer_text(question: str) -> str:
     if "移除" in question or "异常" in question or "复算" in question:
         return "演练回答：已按聚合口径移除异常影响后复算，用来判断方向是否仍成立。"
     return f"演练回答：{question}"
+
+
+def _dry_run_final_answer(answer_text: str, accepted_graph: list[str]) -> str:
+    focus = _dry_run_focus(accepted_graph)
+    return (
+        f"最终结论：{answer_text} 当前证据能把排查方向收敛到{focus}；"
+        "还不能直接说这是唯一原因或已被因果证明。"
+    )
+
+
+def _dry_run_focus(accepted_graph: list[str]) -> str:
+    labels = {
+        "driver_decomposition": "用户数和人均付费拆解",
+        "segment_contribution": "渠道贡献",
+        "joint_attribution": "渠道和阶段组合贡献",
+        "outlier_scan": "异常日期识别",
+        "outlier_contribution": "异常日期移除复核",
+        "event_evidence": "活动事件证据",
+        "compare_periods": "目标窗口和基线窗口对比",
+        "answer_verify": "答案边界校验",
+    }
+    selected = [labels[node] for node in accepted_graph if node in labels]
+    return "、".join(selected) if selected else "当前聚合证据"
+
+
+def _dry_run_quality_gate(answer_text: str, final_answer: str) -> dict[str, Any]:
+    verified_claim_preserved = answer_text in final_answer
+    business_insight_present = "当前证据能把排查方向收敛到" in final_answer
+    direct_answer = "最终结论" in final_answer
+    issues: list[str] = []
+    if not direct_answer:
+        issues.append("missing_direct_answer")
+    if not verified_claim_preserved:
+        issues.append("missing_verified_claim")
+    if not business_insight_present:
+        issues.append("missing_business_insight")
+    return {
+        "direct_answer": direct_answer,
+        "has_verified_claims": True,
+        "verified_claim_preserved": verified_claim_preserved,
+        "business_insight_present": business_insight_present,
+        "followups_one_intent": True,
+        "issues": issues,
+    }
+
+
+def _dry_run_follow_up_questions(accepted_graph: list[str]) -> list[str]:
+    if "outlier_contribution" in accepted_graph:
+        return [
+            "要复核移除异常日期后的贡献变化吗？",
+            "要看异常日期集中在哪些业务窗口吗？",
+            "要继续检查渠道贡献是否稳定吗？",
+        ]
+    if "joint_attribution" in accepted_graph or "segment_contribution" in accepted_graph:
+        return [
+            "要先看哪个渠道的贡献最稳定吗？",
+            "要复核异常日期剔除后的方向吗？",
+            "要把新老用户贡献单独拆开看吗？",
+        ]
+    return [
+        "要继续看贡献最大的业务因素吗？",
+        "要复核异常日期对结果的影响吗？",
+        "要换成日均口径再算一次吗？",
+    ]
 
 
 def _manifest_with_dry_run_source(manifest: dict[str, Any], run_id: str, role: str) -> dict[str, Any]:

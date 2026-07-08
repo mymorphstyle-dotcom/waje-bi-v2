@@ -100,7 +100,12 @@ def _expectation_review(
     effective_graph: list[str] | tuple[str, ...],
 ) -> dict[str, Any]:
     expect = turn.get("expect") or {}
-    required = list(expect.get("required_capabilities", []))
+    required = list(
+        dict.fromkeys(
+            list(expect.get("required_capabilities", []))
+            + list(expect.get("major_nodes", []))
+        )
+    )
     actual = list(effective_graph or [])
     missing = [capability for capability in required if capability not in actual]
     actual_intent = str(turn_record.get("intent") or effective_result.get("intent") or "")
@@ -147,6 +152,10 @@ def _expectation_review(
         "claim_evidence_review": claim_review,
         "required_capabilities": required,
         "missing_required_capabilities": missing,
+        "expected_result_reuse": expect.get("result_reuse"),
+        "expected_context_use": list(expect.get("context_use", [])),
+        "expected_answer_boundary": expect.get("answer_boundary"),
+        "major_nodes": list(expect.get("major_nodes", [])),
         "passed": (
             intent_ok
             and relation_ok
@@ -171,6 +180,9 @@ def _topic_relation_matches(expected: str | None, actual: str) -> bool:
 
 def _answer_text(answer_package: dict[str, Any]) -> str:
     parts: list[str] = []
+    final_answer = answer_package.get("final_answer")
+    if isinstance(final_answer, str):
+        parts.append(final_answer)
     for section in answer_package.get("sections", []):
         payload = section.get("payload", {}) if isinstance(section, dict) else {}
         for key in ("answer_text", "final_business_summary"):
@@ -178,6 +190,32 @@ def _answer_text(answer_package: dict[str, Any]) -> str:
             if isinstance(value, str):
                 parts.append(value)
     return "\n".join(parts)
+
+
+def _quality_review(answer_package: dict[str, Any]) -> dict[str, bool]:
+    quality_gate = answer_package.get("quality_gate") if isinstance(answer_package, dict) else {}
+    if not isinstance(quality_gate, dict):
+        quality_gate = {}
+    return {
+        "direct_answer": bool(quality_gate.get("direct_answer")),
+        "has_verified_claims": bool(quality_gate.get("has_verified_claims")),
+        "verified_claim_preserved": bool(quality_gate.get("verified_claim_preserved")),
+        "business_insight_present": bool(quality_gate.get("business_insight_present")),
+        "followups_one_intent": bool(quality_gate.get("followups_one_intent")),
+    }
+
+
+def _strict_quality_failed(turn_record: dict[str, Any]) -> bool:
+    review = turn_record.get("quality_review")
+    if not isinstance(review, dict) or not review:
+        return True
+    return not (
+        review.get("direct_answer") is True
+        and review.get("has_verified_claims") is True
+        and review.get("verified_claim_preserved") is True
+        and review.get("business_insight_present") is True
+        and review.get("followups_one_intent") is True
+    )
 
 
 def _claim_evidence_review(
@@ -263,11 +301,18 @@ def _missing_inputs_from_error(exc: Exception, *, real_llm: bool = False, real_c
     return list(dict.fromkeys(missing))
 
 
-def run_case(core: ConversationAgentCore, case: dict[str, Any], artifact_dir: Path) -> dict[str, Any]:
+def run_case(
+    core: ConversationAgentCore,
+    case: dict[str, Any],
+    artifact_dir: Path,
+    *,
+    strict_quality: bool = False,
+) -> dict[str, Any]:
     thread_id = f"live-{case['id']}"
     turns: list[dict[str, Any]] = []
     for index, turn in enumerate(case["turns"], start=1):
         result = core.run_message(thread_id=thread_id, user_message=turn["user"])
+        answer_package = result.get("answer_package") or {}
         turn_record = {
             "index": index,
             "user": turn["user"],
@@ -280,13 +325,14 @@ def run_case(core: ConversationAgentCore, case: dict[str, Any], artifact_dir: Pa
             "context_manifest": result.get("context_manifest"),
             "accepted_graph": result.get("accepted_graph"),
             "llm_calls": result.get("llm_calls", []),
-            "quality_review": result.get("quality_review"),
+            "quality_review": _quality_review(answer_package),
         }
         if result["status"] == "waiting_for_clarification" and turn.get("clarification_response"):
             resumed = core.run_message(
                 thread_id=thread_id,
                 user_message=turn["clarification_response"],
             )
+            resumed_answer_package = resumed.get("answer_package") or {}
             turn_record["clarification_response"] = turn["clarification_response"]
             turn_record["resumed_status"] = resumed["status"]
             turn_record["resumed_run_id"] = resumed["run_id"]
@@ -297,13 +343,21 @@ def run_case(core: ConversationAgentCore, case: dict[str, Any], artifact_dir: Pa
             turn_record["resumed_context_manifest"] = resumed.get("context_manifest")
             turn_record["resumed_accepted_graph"] = resumed.get("accepted_graph")
             turn_record["resumed_llm_calls"] = resumed.get("llm_calls", [])
-            turn_record["resumed_quality_review"] = resumed.get("quality_review")
+            turn_record["resumed_quality_review"] = _quality_review(resumed_answer_package)
         turn_record["expectation_review"] = _review_expectations(turn, turn_record)
+        effective = _effective_result(turn_record)
+        turn_record["strict_quality_failed"] = bool(
+            strict_quality and _strict_quality_failed(effective)
+        )
         turns.append(turn_record)
     final_result = _effective_result(turns[-1]) if turns else {}
+    expectation_failed = any(not turn["expectation_review"]["passed"] for turn in turns)
+    strict_quality_failed = any(turn.get("strict_quality_failed") for turn in turns)
     output = {
         "case_id": case["id"],
-        "status": "failed" if any(not turn["expectation_review"]["passed"] for turn in turns) else "passed",
+        "status": "failed" if expectation_failed or strict_quality_failed else "passed",
+        "strict_quality": strict_quality,
+        "strict_quality_failed": strict_quality_failed,
         "final_turn_status": final_result.get("status"),
         "run_id": final_result.get("run_id"),
         "topic_id": final_result.get("topic_id"),
@@ -329,6 +383,7 @@ def main() -> None:
     parser.add_argument("--artifact-dir", default="artifacts/phase7/live-conversation")
     parser.add_argument("--real-llm", action="store_true")
     parser.add_argument("--real-clickhouse", action="store_true")
+    parser.add_argument("--strict-quality", action="store_true")
     args = parser.parse_args()
 
     load_env_file()
@@ -338,7 +393,15 @@ def main() -> None:
             real_llm=args.real_llm,
             real_clickhouse=args.real_clickhouse,
         )
-        results = [run_case(core, case, Path(args.artifact_dir)) for case in selected]
+        results = [
+            run_case(
+                core,
+                case,
+                Path(args.artifact_dir),
+                strict_quality=args.strict_quality,
+            )
+            for case in selected
+        ]
     except RuntimeError as exc:
         artifact_dir = Path(args.artifact_dir)
         artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -355,6 +418,8 @@ def main() -> None:
             "accepted_graph": [],
             "llm_calls": [],
             "quality_review": None,
+            "strict_quality": args.strict_quality,
+            "strict_quality_failed": None,
             "turns": [],
             "missing_inputs": _missing_inputs_from_error(
                 exc,
@@ -375,6 +440,8 @@ def main() -> None:
             ensure_ascii=False,
         )
     )
+    if any(result.get("status") != "passed" for result in results):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
