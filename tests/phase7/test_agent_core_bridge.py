@@ -139,6 +139,11 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 self.assertTrue(turn["expectation_review"]["topic_relation_passed"])
                 self.assertTrue(turn["expectation_review"]["context_manifest_present"])
                 self.assertTrue(turn["expectation_review"]["claim_support_policy_passed"])
+                self.assertGreater(turn["expectation_review"]["claim_evidence_review"]["claim_count"], 0)
+                self.assertEqual(
+                    turn["expectation_review"]["claim_evidence_review"]["unsupported_evidence_refs"],
+                    [],
+                )
                 self.assertEqual(turn["expectation_review"]["missing_final_answer_text"], [])
         self.assertIn("outlier_contribution", clarification_turn["resumed_accepted_graph"])
 

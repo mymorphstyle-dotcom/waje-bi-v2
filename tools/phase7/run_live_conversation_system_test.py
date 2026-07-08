@@ -114,9 +114,11 @@ def _expectation_review(
     ]
     manifest = effective_result.get("context_manifest")
     manifest_present = isinstance(manifest, dict) and bool(manifest)
-    claim_support_ok = manifest_present and (
-        bool(manifest.get("can_support_claims")) or not _has_verifiable_claims(effective_result.get("answer_package") or {})
+    claim_review = _claim_evidence_review(
+        effective_result.get("answer_package") or {},
+        requires_claims=bool(expect.get("final_answer_contains")),
     )
+    claim_support_ok = manifest_present and claim_review["passed"]
     clarification_ok = True
     if expect.get("allow_clarification"):
         clarification_ok = (
@@ -139,6 +141,7 @@ def _expectation_review(
         "missing_final_answer_text": missing_answer_text,
         "context_manifest_present": manifest_present,
         "claim_support_policy_passed": claim_support_ok,
+        "claim_evidence_review": claim_review,
         "required_capabilities": required,
         "missing_required_capabilities": missing,
         "passed": (
@@ -174,13 +177,58 @@ def _answer_text(answer_package: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _has_verifiable_claims(answer_package: dict[str, Any]) -> bool:
+def _claim_evidence_review(answer_package: dict[str, Any], *, requires_claims: bool) -> dict[str, Any]:
+    claims = _claims(answer_package)
+    evidence_refs = _evidence_refs(answer_package)
+    missing_claim_refs: list[int] = []
+    unsupported_refs: list[str] = []
+    for index, claim in enumerate(claims):
+        refs = [str(ref) for ref in claim.get("evidence_refs", []) if ref]
+        if not refs:
+            missing_claim_refs.append(index)
+        for ref in refs:
+            if ref not in evidence_refs and not _is_allowed_external_ref(ref):
+                unsupported_refs.append(ref)
+    return {
+        "claim_count": len(claims),
+        "evidence_refs": sorted(evidence_refs),
+        "missing_claim_ref_indexes": missing_claim_refs,
+        "unsupported_evidence_refs": sorted(set(unsupported_refs)),
+        "passed": (
+            (not requires_claims or bool(claims))
+            and not missing_claim_refs
+            and not unsupported_refs
+        ),
+    }
+
+
+def _claims(answer_package: dict[str, Any]) -> list[dict[str, Any]]:
+    claims: list[dict[str, Any]] = []
     for section in answer_package.get("sections", []):
         payload = section.get("payload", {}) if isinstance(section, dict) else {}
-        claims = payload.get("claims")
-        if isinstance(claims, list) and claims:
-            return True
-    return False
+        section_claims = payload.get("claims")
+        if isinstance(section_claims, list):
+            claims.extend(claim for claim in section_claims if isinstance(claim, dict))
+    return claims
+
+
+def _evidence_refs(answer_package: dict[str, Any]) -> set[str]:
+    refs: set[str] = set()
+    artifact_path = answer_package.get("artifact_path")
+    if isinstance(artifact_path, str) and artifact_path:
+        refs.add(f"artifact:{artifact_path}")
+    for section in answer_package.get("sections", []):
+        payload = section.get("payload", {}) if isinstance(section, dict) else {}
+        evidence = payload.get("evidence")
+        if isinstance(evidence, list):
+            for item in evidence:
+                if isinstance(item, dict) and item.get("evidence_ref"):
+                    refs.add(str(item["evidence_ref"]))
+    return refs
+
+
+def _is_allowed_external_ref(ref: str) -> bool:
+    return ref.startswith(("evidence:", "result:", "artifact:", "memory:"))
 
 
 def _missing_inputs_from_error(exc: Exception, *, real_llm: bool = False, real_clickhouse: bool = False) -> list[str]:

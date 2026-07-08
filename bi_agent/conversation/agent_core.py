@@ -209,6 +209,7 @@ def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
     question = str(request.get("question") or request.get("user_message") or "")
     requested_nodes = list(request.get("requested_nodes") or [])
     answer_text = _dry_run_answer_text(question)
+    evidence_ref = f"artifact:{run_id}:dry_run"
     return WorkflowRunResult(
         status="draft",
         run_id=run_id,
@@ -222,7 +223,30 @@ def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
                 {
                     "id": "summary",
                     "visibility": "business_summary",
-                    "payload": {"answer_text": answer_text},
+                    "payload": {
+                        "answer_text": answer_text,
+                        "claims": [
+                            {
+                                "text": answer_text,
+                                "claim_strength": "dry_run_context",
+                                "evidence_refs": [evidence_ref],
+                            }
+                        ],
+                    },
+                },
+                {
+                    "id": "evidence",
+                    "visibility": "aggregate_evidence",
+                    "payload": {
+                        "evidence": [
+                            {
+                                "evidence_ref": evidence_ref,
+                                "evidence_type": "artifact",
+                                "strength": "dry_run",
+                                "artifact_ref": f"artifacts/phase-7/{run_id}.json",
+                            }
+                        ]
+                    },
                 }
             ],
             "accepted_graph": requested_nodes,
