@@ -823,9 +823,7 @@ def _looks_like_clarification_answer(
     if "异常" in scope or "移除" in scope or "剔除" in scope:
         return _looks_like_outlier_clarification_answer(text)
     if "日均" in scope or "总金额" in scope or "口径" in scope:
-        return normalized in {"日均", "按日均", "付费总金额", "总金额"} or any(
-            token in text for token in ("日均", "总金额", "付费总金额")
-        )
+        return _looks_like_metric_clarification_answer(normalized)
     return False
 
 
@@ -842,6 +840,19 @@ def _looks_like_outlier_clarification_answer(text: str) -> bool:
         and any(token in text for token in ("按日", "按天", "日期", "天", "日"))
         and any(token in text for token in ("复算", "贡献最大", "最大正向"))
     )
+
+
+def _looks_like_metric_clarification_answer(text: str) -> bool:
+    if any(token in text for token in ("为什么", "怎么", "多少", "变化", "掉了", "?", "？")):
+        return False
+    return text in {
+        "日均",
+        "按日均",
+        "按日均付费金额",
+        "付费总金额",
+        "总金额",
+        "按付费总金额",
+    }
 
 
 def _is_outlier_removal_question(text: str) -> bool:

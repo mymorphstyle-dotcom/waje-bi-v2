@@ -315,6 +315,39 @@ class ConversationRuntimeTest(unittest.TestCase):
                     "waiting",
                 )
 
+    def test_open_metric_clarification_rejects_question_like_metric_reply(self):
+        runtime = build_metric_clarification_runtime()
+        first = runtime.handle_message("thread-metric-clarify", "这个月是不是变好了？")
+        self.assertEqual(first.status, "waiting_for_clarification")
+
+        result = runtime.handle_message("thread-metric-clarify", "总金额为什么又掉了？")
+
+        self.assertNotEqual(result.turn_intent.intent, "clarification_answer")
+        self.assertFalse(
+            any(item.source_type == "clarification" for item in result.context_manifest.items)
+        )
+        self.assertEqual(
+            runtime.store.get_open_clarification("thread-metric-clarify").status,
+            "waiting",
+        )
+        self.assertEqual(
+            runtime.store.clarification_states[first.clarification.clarification_id].status,
+            "waiting",
+        )
+
+    def test_open_metric_clarification_accepts_clear_metric_answer(self):
+        runtime = build_metric_clarification_runtime()
+        first = runtime.handle_message("thread-metric-clarify", "这个月是不是变好了？")
+        self.assertEqual(first.status, "waiting_for_clarification")
+
+        result = runtime.handle_message("thread-metric-clarify", "按付费总金额")
+
+        self.assertEqual(result.turn_intent.intent, "clarification_answer")
+        self.assertTrue(
+            any(item.source_type == "clarification" for item in result.context_manifest.items)
+        )
+        self.assertIsNone(runtime.store.get_open_clarification("thread-metric-clarify"))
+
     def test_outlier_variant_question_triggers_outlier_strategy_clarification(self):
         store = InMemoryConversationStore()
         runtime = ConversationRuntime(store)
@@ -513,6 +546,13 @@ def build_test_runtime() -> ConversationRuntime:
         summary="当前 topic 关注 2026 Q2 相比 Q1 的付费金额变化。",
     )
     store.set_current_topic("thread-live-case-2", topic.topic_id)
+    return runtime
+
+
+def build_metric_clarification_runtime() -> ConversationRuntime:
+    store = InMemoryConversationStore()
+    runtime = ConversationRuntime(store)
+    store.create_thread("thread-metric-clarify", owner_id="analyst-1")
     return runtime
 
 

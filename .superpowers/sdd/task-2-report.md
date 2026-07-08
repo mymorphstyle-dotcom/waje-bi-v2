@@ -285,3 +285,71 @@ missing_inputs=WAJE_RUNTIME_DATABASE_URL, DATABASE_URL, WAJE_LLM_MODEL, WAJE_LLM
 Concerns:
 
 - Live real-LLM/ClickHouse validation remains blocked by missing local runtime, LLM, and ClickHouse environment variables.
+
+## Third Review Fix
+
+Finding fixed:
+
+- Metric/baseline clarification no longer accepts question-like replies containing `日均` / `总金额`; it only accepts exact clear metric answers and `按推荐继续` when a recommended option exists.
+
+Focused red before fix:
+
+```text
+python3 -m unittest tests.phase7.test_conversation_runtime -k question_like_metric_reply
+F
+AssertionError: 'clarification_answer' == 'clarification_answer'
+Ran 1 test in 0.001s
+FAILED (failures=1)
+```
+
+Focused checks after fix:
+
+```text
+python3 -m unittest tests.phase7.test_conversation_runtime -k question_like_metric_reply
+.
+Ran 1 test in 0.001s
+OK
+```
+
+```text
+python3 -m unittest tests.phase7.test_conversation_runtime -k clear_metric_answer
+.
+Ran 1 test in 0.001s
+OK
+```
+
+Required validation:
+
+```text
+python3 -m unittest tests.phase7.test_conversation_runtime -k clarification_answer
+..
+Ran 2 tests in 0.001s
+OK
+```
+
+```text
+python3 -m unittest tests.phase7.test_conversation_runtime tests.phase7.test_gateway_clarifications
+......................
+Ran 22 tests in 0.092s
+OK
+```
+
+Live eval:
+
+```text
+python3 tools/phase7/run_live_conversation_system_test.py --case q2_q1_wajespecial_long_followup --real-llm --real-clickhouse --artifact-dir artifacts/phase7/live-conversation
+RuntimeError: WAJE_RUNTIME_DATABASE_URL or DATABASE_URL is required
+```
+
+Artifact:
+
+```text
+artifacts/phase7/live-conversation/q2_q1_wajespecial_long_followup.json
+status=blocked
+owner=local runtime/deployment owner
+missing_inputs=WAJE_RUNTIME_DATABASE_URL, DATABASE_URL, WAJE_LLM_MODEL, WAJE_LLM_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, WAJE_CLICKHOUSE_HOST, WAJE_CLICKHOUSE_PORT, WAJE_CLICKHOUSE_USER, WAJE_CLICKHOUSE_PASSWORD, WAJE_CLICKHOUSE_DATABASE, WAJE_CLICKHOUSE_SECURE
+```
+
+Concerns:
+
+- Live real-LLM/ClickHouse validation remains blocked by missing local runtime, LLM, and ClickHouse environment variables.
