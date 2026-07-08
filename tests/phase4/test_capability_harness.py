@@ -412,6 +412,34 @@ class CapabilityHarnessTest(unittest.TestCase):
         self.assertIn("missing_high_value_indicator", result.limitations)
         self.assertEqual(result.typed_payload["high_value_amount"], 0.0)
 
+    def test_high_value_user_contribution_requires_positive_threshold_evidence(self):
+        result = run_capability(
+            "high_value_user_contribution",
+            {
+                "rows": [
+                    {
+                        "period": "Q1",
+                        "group": "baseline",
+                        "bucket": "regular",
+                        "amount": 100,
+                        "paid_users": 10,
+                    },
+                    {
+                        "period": "Q1",
+                        "group": "target",
+                        "bucket": "other",
+                        "amount": 180,
+                        "paid_users": 12,
+                    },
+                ],
+                "threshold_policy": {"type": "top_percentile", "value": 0.95},
+            },
+        )
+
+        self.assertEqual(result.wording_limit, "insufficient")
+        self.assertIn("missing_high_value_indicator", result.limitations)
+        self.assertEqual(result.typed_payload["high_value_amount"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

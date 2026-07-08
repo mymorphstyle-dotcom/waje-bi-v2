@@ -16,10 +16,12 @@ def high_value_user_contribution(
     result_refs: tuple[str, ...] = (),
 ):
     policy = dict(threshold_policy or {"type": "top_percentile", "value": 0.95})
+    threshold = _top_percentile_threshold(policy)
     aggregate_rows = []
     supported_indicator_rows = 0
     unsupported_indicator_rows = 0
     partial_explicit_fields = False
+    positive_threshold_rows = 0
     for row in rows:
         if row.get(group_key) in (None, ""):
             continue
@@ -46,6 +48,8 @@ def high_value_user_contribution(
         if indicator_source:
             aggregate_row["indicator_source"] = indicator_source
             supported_indicator_rows += 1
+            if threshold is not None and (high_value_amount > 0 or high_value_paid_users > 0):
+                positive_threshold_rows += 1
         else:
             unsupported_indicator_rows += 1
         aggregate_rows.append(aggregate_row)
@@ -112,6 +116,27 @@ def high_value_user_contribution(
                 "high_value_amount_share": 0.0,
                 "business_readout": "当前聚合结果缺少可用的高价值指示字段，不能验证阈值口径下的高价值用户贡献。",
                 "claim_boundary": "缺少高价值聚合标记时，只能保留总量观察，不能写成高价值用户贡献结论。",
+            },
+            limitations=("missing_high_value_indicator",),
+            result_refs=result_refs,
+        )
+    if threshold is not None and positive_threshold_rows == 0:
+        return make_evidence_envelope(
+            "high_value_user_contribution",
+            evidence_type="insufficient_evidence",
+            strength="low",
+            wording_limit="insufficient",
+            typed_payload={
+                "privacy_policy": "aggregate_only",
+                "threshold_policy": policy,
+                "rows": aggregate_rows,
+                "total_amount": total_amount,
+                "total_paid_users": total_users,
+                "high_value_amount": 0.0,
+                "high_value_paid_users": 0.0,
+                "high_value_amount_share": 0.0,
+                "business_readout": "当前只有普通或其他聚合分层，缺少可证明 top percentile 高价值侧的阈值证据，不能验证高价值用户贡献。",
+                "claim_boundary": "没有高价值侧阈值证据时，普通分层本身不能写成高价值用户贡献结论。",
             },
             limitations=("missing_high_value_indicator",),
             result_refs=result_refs,
