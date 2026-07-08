@@ -7,6 +7,24 @@ from bi_agent.runtime.capability_harness import execute_capability
 from bi_agent.runtime.capability_models import BudgetState, CapabilityRequest
 
 
+def run_capability(capability_id, params):
+    value = dict(params)
+    rows = value.pop("rows")
+    if capability_id == "outlier_contribution":
+        return outlier_contribution(rows, **value)
+    if capability_id == "high_value_user_contribution":
+        from bi_agent.capabilities.high_value_user_contribution import (
+            high_value_user_contribution,
+        )
+
+        return high_value_user_contribution(rows, **value)
+    if capability_id == "user_mix_contribution":
+        from bi_agent.capabilities.user_mix_contribution import user_mix_contribution
+
+        return user_mix_contribution(rows, **value)
+    raise KeyError(capability_id)
+
+
 class CapabilityHarnessTest(unittest.TestCase):
     def test_pattern_scan_returns_normalized_envelope(self):
         request = CapabilityRequest(
@@ -161,28 +179,72 @@ class CapabilityHarnessTest(unittest.TestCase):
         self.assertGreater(result.typed_payload["top_positive_share"], 0.9)
 
     def test_outlier_contribution_reports_direction_after_removal(self):
-        result = outlier_contribution(
-            [
+        result = run_capability(
+            "outlier_contribution",
+            {
+                "rows": [
                 {"period": "1", "group": "baseline", "amount": 100},
                 {"period": "1", "group": "target", "amount": 180},
                 {"period": "2", "group": "baseline", "amount": 100},
                 {"period": "2", "group": "target", "amount": 120},
                 {"period": "3", "group": "baseline", "amount": 100},
                 {"period": "3", "group": "target", "amount": 90},
-            ],
-            period_grain="day",
-            removal_policy="top_positive_contribution_periods",
-            max_removed_periods=1,
+                ],
+                "period_grain": "day",
+                "removal_policy": "top_positive_contribution_periods",
+                "max_removed_periods": 1,
+            },
         )
 
         self.assertIn("direction_preserved_after_top_positive", result.typed_payload)
         self.assertIn("remaining_delta_after_top_positive", result.typed_payload)
 
-    def test_user_mix_contribution_is_aggregate_only(self):
-        from bi_agent.capabilities.user_mix_contribution import user_mix_contribution
+    def test_outlier_contribution_blocks_unsupported_removal_policy(self):
+        result = run_capability(
+            "outlier_contribution",
+            {
+                "rows": [
+                    {"period": "1", "group": "baseline", "amount": 100},
+                    {"period": "1", "group": "target", "amount": 180},
+                ],
+                "removal_policy": "custom_rule",
+            },
+        )
 
-        result = user_mix_contribution(
-            [
+        self.assertEqual(result.wording_limit, "insufficient")
+        self.assertIn("unsupported_removal_policy", result.limitations)
+        self.assertEqual(result.typed_payload["removal_policy"], "custom_rule")
+
+    def test_outlier_contribution_can_skip_direction_after_removal_claims(self):
+        result = run_capability(
+            "outlier_contribution",
+            {
+                "rows": [
+                    {"period": "1", "group": "baseline", "amount": 100},
+                    {"period": "1", "group": "target", "amount": 180},
+                    {"period": "2", "group": "baseline", "amount": 100},
+                    {"period": "2", "group": "target", "amount": 120},
+                ],
+                "removal_policy": "top_positive_contribution_periods",
+                "direction_after_removal": False,
+            },
+        )
+
+        self.assertNotIn(
+            "direction_preserved_after_top_positive",
+            result.typed_payload,
+        )
+        self.assertNotIn("direction_after_removal", result.typed_payload)
+        self.assertEqual(
+            result.typed_payload["direction_after_removal_evaluated"],
+            False,
+        )
+
+    def test_user_mix_contribution_is_aggregate_only(self):
+        result = run_capability(
+            "user_mix_contribution",
+            {
+                "rows": [
                 {
                     "period": "Q1",
                     "group": "baseline",
@@ -199,29 +261,71 @@ class CapabilityHarnessTest(unittest.TestCase):
                     "amount": 120,
                     "paid_users": 12,
                 },
-            ],
-            segment_key="channel",
-            user_grain_policy="new_vs_returning",
+                ],
+                "segment_key": "channel",
+                "user_grain_policy": "new_vs_returning",
+            },
         )
 
         self.assertEqual(result.typed_payload["privacy_policy"], "aggregate_only")
         self.assertNotIn("raw_user_ids", result.typed_payload)
 
-    def test_high_value_user_contribution_is_aggregate_only(self):
-        from bi_agent.capabilities.high_value_user_contribution import (
-            high_value_user_contribution,
-        )
-
-        result = high_value_user_contribution(
-            [
-                {"period": "Q1", "group": "baseline", "amount": 100, "paid_users": 10},
-                {"period": "Q1", "group": "target", "amount": 180, "paid_users": 12},
-            ],
-            threshold_policy={"type": "top_percentile", "value": 0.95},
+    def test_high_value_user_contribution_applies_threshold_indicators(self):
+        result = run_capability(
+            "high_value_user_contribution",
+            {
+                "rows": [
+                    {
+                        "period": "Q1",
+                        "group": "baseline",
+                        "bucket": "p95_plus",
+                        "amount": 100,
+                        "paid_users": 10,
+                        "value_percentile": 0.97,
+                    },
+                    {
+                        "period": "Q1",
+                        "group": "baseline",
+                        "bucket": "regular",
+                        "amount": 60,
+                        "paid_users": 30,
+                        "value_percentile": 0.40,
+                    },
+                    {
+                        "period": "Q1",
+                        "group": "target",
+                        "bucket": "p95_plus",
+                        "amount": 180,
+                        "paid_users": 12,
+                        "value_percentile": 0.98,
+                    },
+                ],
+                "threshold_policy": {"type": "top_percentile", "value": 0.95},
+            },
         )
 
         self.assertEqual(result.typed_payload["privacy_policy"], "aggregate_only")
         self.assertNotIn("raw_user_ids", result.typed_payload)
+        self.assertEqual(result.wording_limit, "contextual")
+        self.assertEqual(result.typed_payload["high_value_amount"], 280.0)
+        self.assertEqual(result.typed_payload["high_value_paid_users"], 22.0)
+        self.assertGreater(result.typed_payload["high_value_amount_share"], 0.8)
+
+    def test_high_value_user_contribution_degrades_without_indicator_fields(self):
+        result = run_capability(
+            "high_value_user_contribution",
+            {
+                "rows": [
+                    {"period": "Q1", "group": "baseline", "amount": 100, "paid_users": 10},
+                    {"period": "Q1", "group": "target", "amount": 180, "paid_users": 12},
+                ],
+                "threshold_policy": {"type": "top_percentile", "value": 0.95},
+            },
+        )
+
+        self.assertEqual(result.wording_limit, "insufficient")
+        self.assertIn("missing_high_value_indicator", result.limitations)
+        self.assertIn("不能验证", result.typed_payload["business_readout"])
 
 
 if __name__ == "__main__":

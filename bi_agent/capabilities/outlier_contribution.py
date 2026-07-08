@@ -21,6 +21,23 @@ def outlier_contribution(
     direction_after_removal: bool = True,
     result_refs: tuple[str, ...] = (),
 ):
+    normalized_removal_policy = removal_policy or "top_positive_contribution_periods"
+    if normalized_removal_policy != "top_positive_contribution_periods":
+        return make_evidence_envelope(
+            "outlier_contribution",
+            evidence_type="insufficient_evidence",
+            strength="low",
+            wording_limit="insufficient",
+            typed_payload={
+                "period_grain": period_grain,
+                "removal_policy": normalized_removal_policy,
+                "direction_after_removal_evaluated": False,
+                "business_readout": "当前只支持按最大正向贡献周期复算，暂时不能执行其他异常移除策略。",
+                "claim_boundary": "未支持的异常移除策略不能进入业务结论。",
+            },
+            limitations=("unsupported_removal_policy",),
+            result_refs=result_refs,
+        )
     pairs = {}
     for row in rows:
         period = row.get(period_key)
@@ -74,30 +91,39 @@ def outlier_contribution(
     )[:removed_limit]
     remaining_delta = total_delta - sum(item["delta"] for item in removed_positive)
     direction_preserved = _same_direction(total_delta, remaining_delta)
+    typed_payload = {
+        "paired_periods": len(deltas),
+        "total_delta": total_delta,
+        "median_delta": center,
+        "mad_delta": mad,
+        "outliers": tuple(outliers),
+        "top_positive_periods": tuple(top_positive),
+        "top_positive_share": top_positive_share,
+        "concentrated_in_top_periods": top_positive_share >= 0.5,
+        "period_grain": period_grain,
+        "removal_policy": normalized_removal_policy,
+        "max_removed_periods": removed_limit,
+        "remaining_delta_after_top_positive": remaining_delta,
+        "removed_positive_periods": tuple(removed_positive),
+        "direction_after_removal_evaluated": direction_after_removal,
+        "business_readout": _business_readout(
+            remaining_delta,
+            direction_preserved,
+            evaluate_direction=direction_after_removal,
+        ),
+        "claim_boundary": "这是异常敏感性复算，只能说明移除高贡献周期后的方向变化，不能证明异常是原因。",
+    }
+    if direction_after_removal:
+        typed_payload["direction_preserved_after_top_positive"] = direction_preserved
+        typed_payload["direction_after_removal"] = (
+            "preserved" if direction_preserved else "changed"
+        )
     return make_evidence_envelope(
         "outlier_contribution",
         evidence_type="statistical_association",
         strength="medium",
         wording_limit="contextual",
-        typed_payload={
-            "paired_periods": len(deltas),
-            "total_delta": total_delta,
-            "median_delta": center,
-            "mad_delta": mad,
-            "outliers": tuple(outliers),
-            "top_positive_periods": tuple(top_positive),
-            "top_positive_share": top_positive_share,
-            "concentrated_in_top_periods": top_positive_share >= 0.5,
-            "period_grain": period_grain,
-            "removal_policy": removal_policy or "top_positive_contribution_periods",
-            "max_removed_periods": removed_limit,
-            "remaining_delta_after_top_positive": remaining_delta,
-            "direction_preserved_after_top_positive": direction_preserved,
-            "removed_positive_periods": tuple(removed_positive),
-            "direction_after_removal": "preserved" if direction_preserved else "changed",
-            "business_readout": _business_readout(remaining_delta, direction_preserved),
-            "claim_boundary": "这是异常敏感性复算，只能说明移除高贡献周期后的方向变化，不能证明异常是原因。",
-        },
+        typed_payload=typed_payload,
         limitations=(),
         result_refs=result_refs,
     )
@@ -124,8 +150,10 @@ def _same_direction(before, after):
     return (before > 0 and after > 0) or (before < 0 and after < 0)
 
 
-def _business_readout(remaining_delta, direction_preserved):
+def _business_readout(remaining_delta, direction_preserved, *, evaluate_direction):
     direction = "仍为上升" if remaining_delta > 0 else "转为下降" if remaining_delta < 0 else "接近持平"
+    if not evaluate_direction:
+        return f"移除最大正向贡献周期后，剩余变化值为 {remaining_delta:.1f}，本轮未评估方向是否保持。"
     if direction_preserved:
         return f"移除最大正向贡献周期后，剩余变化方向{direction}。"
     return f"移除最大正向贡献周期后，剩余变化方向发生变化，当前{direction}。"

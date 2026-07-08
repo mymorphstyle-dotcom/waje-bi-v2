@@ -3253,13 +3253,17 @@ def _default_claim_from_primary_evidence(state: WorkflowState) -> dict[str, Any]
             "segment_count": payload.get("segment_count"),
         }
     elif capability == "high_value_user_contribution":
-        text = (
-            f"当前高价值用户贡献按聚合阈值策略 {payload.get('threshold_policy')} 复核，"
-            f"覆盖总金额 {_format_number(payload.get('total_amount'))}。"
+        text = str(
+            payload.get("business_readout")
+            or (
+                f"当前高价值用户贡献按聚合阈值策略 {payload.get('threshold_policy')} 复核，"
+                f"覆盖总金额 {_format_number(payload.get('total_amount'))}。"
+            )
         )
         numbers = {
             "total_amount": payload.get("total_amount"),
             "total_paid_users": payload.get("total_paid_users"),
+            "high_value_amount": payload.get("high_value_amount"),
         }
     elif capability == "outlier_contribution":
         text = (
@@ -3304,13 +3308,14 @@ def _capability_business_findings(state: WorkflowState) -> list[dict[str, Any]]:
         if not capability:
             continue
         payload = item.get("typed_payload", {})
+        result_refs = [str(ref) for ref in (item.get("result_refs") or []) if ref]
         evidence_ref = item.get("evidence_ref")
         findings.append(
             {
                 "capability": capability,
                 "business_readout": payload.get("business_readout"),
                 "claim_boundary": payload.get("claim_boundary"),
-                "evidence_refs": [evidence_ref] if evidence_ref else [],
+                "evidence_refs": result_refs or ([evidence_ref] if evidence_ref else []),
             }
         )
     return findings

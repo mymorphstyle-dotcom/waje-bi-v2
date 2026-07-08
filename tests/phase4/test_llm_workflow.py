@@ -1676,7 +1676,7 @@ class LLMWorkflowTest(unittest.TestCase):
                     "capability": "outlier_contribution",
                     "business_readout": "移除最大正向日期后，方向仍为上升。",
                     "claim_boundary": "只能说明异常敏感性，不能当作因果证明。",
-                    "evidence_refs": ["outlier_contribution:inline"],
+                    "evidence_refs": ["sqlhash-1"],
                 }
             ],
         )
