@@ -21,15 +21,28 @@ export async function POST(request: NextRequest, context: RouteContext) {
   try {
     const run = await requireRun(runId);
     const message = await addUserMessage(run.threadId, answer);
-    const clarification = await recordClarificationOutcome(runId, answer);
+    const clarificationPayload = {
+      runId,
+      answer,
+      selectedOptionId: body.selectedOptionId ?? null,
+      source: "user",
+    };
+    const clarification = await recordClarificationOutcome(clarificationPayload);
     const agentCore = await runAgentCore(
       run.threadId,
       runId,
       answer,
       process.env.WAJE_GATEWAY_ROLE || "analyst",
     );
+    const resumed = agentCore.result && typeof agentCore.result === "object"
+      ? agentCore.result as Record<string, unknown>
+      : {};
     return NextResponse.json({
       runId,
+      resumedRunId: runId,
+      topicId: resumed.topic_id ?? null,
+      status: resumed.status ?? agentCore.status,
+      answerPackagePreview: resumed.answer_package ?? null,
       message,
       clarification,
       agentCore,

@@ -818,17 +818,33 @@ export async function readArtifactForRole(
   };
 }
 
-export async function recordClarificationOutcome(runId: string, answer: string) {
-  const run = await requireRun(runId);
+export async function recordClarificationOutcome(
+  runIdOrPayload: string | {
+    runId: string;
+    answer: string;
+    selectedOptionId?: string | null;
+    source?: string;
+  },
+  answerValue?: string,
+) {
+  const payload = typeof runIdOrPayload === "string"
+    ? { runId: runIdOrPayload, answer: answerValue ?? "", selectedOptionId: null, source: "user" }
+    : {
+        runId: runIdOrPayload.runId,
+        answer: runIdOrPayload.answer,
+        selectedOptionId: runIdOrPayload.selectedOptionId ?? null,
+        source: runIdOrPayload.source ?? "user",
+      };
+  const run = await requireRun(payload.runId);
   if (conversationStoreMode() === "postgres") {
     await audit("clarification_answer_recorded", {
       threadId: run.threadId,
-      runId,
-      ref: runId,
-      payload: { answer },
+      runId: payload.runId,
+      ref: payload.runId,
+      payload,
     });
   }
-  return { runId, threadId: run.threadId, answer, status: "accepted" };
+  return { ...payload, threadId: run.threadId, status: "accepted" };
 }
 
 export async function createMemoryProposal(threadId: string, text: string): Promise<MemoryProposalRecord> {

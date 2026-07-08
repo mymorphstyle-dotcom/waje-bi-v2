@@ -12,6 +12,13 @@ class TurnIntent:
     decision_source: str
     business_summary: str
 
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            return self.intent == other
+        if isinstance(other, TurnIntent):
+            return self.to_dict() == other.to_dict()
+        return NotImplemented
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -41,6 +48,18 @@ class ContextManifest:
     items: tuple[ContextItem, ...]
     can_support_claims: bool
 
+    def __getitem__(self, key: str) -> Any:
+        if key == "sources":
+            return [
+                {
+                    "type": item.source_type,
+                    "ref": item.source_ref,
+                    **item.to_dict(),
+                }
+                for item in self.items
+            ]
+        return self.to_dict()[key]
+
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["items"] = [item.to_dict() for item in self.items]
@@ -57,15 +76,41 @@ class ReuseDecision:
         return asdict(self)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ClarificationOption:
     option_id: str
     label: str
     description: str
     recommended: bool = False
 
+    def __init__(
+        self,
+        option_id: str | None = None,
+        label: str = "",
+        description: str | None = None,
+        recommended: bool = False,
+        *,
+        id: str | None = None,
+        business_meaning: str | None = None,
+    ) -> None:
+        object.__setattr__(self, "option_id", option_id or id or "")
+        object.__setattr__(self, "label", label)
+        object.__setattr__(self, "description", description or business_meaning or "")
+        object.__setattr__(self, "recommended", recommended)
+
+    @property
+    def id(self) -> str:
+        return self.option_id
+
+    @property
+    def business_meaning(self) -> str:
+        return self.description
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["id"] = self.option_id
+        data["business_meaning"] = self.description
+        return data
 
 
 @dataclass(frozen=True)
@@ -91,6 +136,21 @@ class ClarificationRequest:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["questions"] = [question.to_dict() for question in self.questions]
+        return data
+
+
+@dataclass(frozen=True)
+class ClarificationState:
+    run_id: str
+    topic_id: str
+    question: str
+    options: list[ClarificationOption]
+    status: str = "waiting"
+    answer: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["options"] = [option.to_dict() for option in self.options]
         return data
 
 
@@ -169,6 +229,14 @@ class ConversationTurnResult:
     needs_clarification: bool = False
     clarification: Optional[ClarificationRequest] = None
     response_boundary: str = ""
+
+    @property
+    def status(self) -> str:
+        if self.needs_clarification:
+            return "waiting_for_clarification"
+        if self.run_request:
+            return "running"
+        return "completed"
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

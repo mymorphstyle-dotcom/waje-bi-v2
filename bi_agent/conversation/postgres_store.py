@@ -8,6 +8,8 @@ from uuid import uuid4
 
 from bi_agent.conversation.models import (
     ArtifactRef,
+    ClarificationOption,
+    ClarificationState,
     MemoryItem,
     MemoryProposal,
     ResultRefRecord,
@@ -174,6 +176,68 @@ class PostgresConversationStore:
             {"thread_id": thread_id},
         )
         self._audit("clarification_cleared", thread_id=thread_id)
+
+    def save_clarification_state(self, state: ClarificationState) -> None:
+        row = self._fetchone(
+            """
+            SELECT COALESCE(r.thread_id, t.thread_id) AS thread_id
+            FROM (SELECT %(run_id)s::text AS run_id, %(topic_id)s::text AS topic_id) state
+            LEFT JOIN waje_runtime.analysis_runs r ON r.run_id = state.run_id
+            LEFT JOIN waje_runtime.conversation_topics t ON t.topic_id = state.topic_id
+            LIMIT 1
+            """,
+            {"run_id": state.run_id, "topic_id": state.topic_id},
+        )
+        thread_id = _field(row, "thread_id", 0) if row else None
+        if state.status == "waiting" and thread_id:
+            self._execute(
+                """
+                UPDATE waje_runtime.investigation_threads
+                SET pending_clarification_topic_id = %(topic_id)s,
+                    pending_clarification_id = COALESCE(NULLIF(pending_clarification_id, ''), %(run_id)s),
+                    updated_at = now()
+                WHERE thread_id = %(thread_id)s
+                """,
+                {"thread_id": thread_id, "topic_id": state.topic_id, "run_id": state.run_id},
+            )
+        self._audit(
+            "clarification_state_saved",
+            thread_id=thread_id,
+            topic_id=state.topic_id,
+            run_id=state.run_id,
+            ref=state.run_id,
+            payload=state.to_dict(),
+        )
+
+    def get_open_clarification(self, thread_id: str) -> Optional[ClarificationState]:
+        rows = self._fetchall(
+            """
+            SELECT payload
+            FROM waje_runtime.audit_events
+            WHERE thread_id = %(thread_id)s
+              AND event_type = 'clarification_state_saved'
+            ORDER BY created_at DESC, audit_id DESC
+            LIMIT 50
+            """,
+            {"thread_id": thread_id},
+        )
+        seen: set[str] = set()
+        for row in rows:
+            state = _clarification_state_from_payload(_field(row, "payload", 0))
+            if not state or state.run_id in seen:
+                continue
+            seen.add(state.run_id)
+            if state.status == "waiting":
+                return state
+        thread = self.get_thread(thread_id)
+        if thread.pending_clarification_id and thread.pending_clarification_topic_id:
+            return ClarificationState(
+                run_id=thread.pending_clarification_id,
+                topic_id=thread.pending_clarification_topic_id,
+                question="待确认的业务澄清问题",
+                options=[],
+            )
+        return None
 
     def add_turn(self, thread_id: str, turn: dict[str, Any]) -> None:
         turn_id = str(turn.get("turn_id") or turn.get("turnId") or f"turn-{uuid4().hex[:12]}")
@@ -624,6 +688,35 @@ def _field(row: Any, key: str, index: int) -> Any:
         return row[index]
     except (IndexError, TypeError):
         return None
+
+
+def _clarification_state_from_payload(payload: Any) -> Optional[ClarificationState]:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    options = []
+    for item in payload.get("options") or []:
+        if isinstance(item, dict):
+            options.append(
+                ClarificationOption(
+                    option_id=item.get("option_id") or item.get("id"),
+                    label=str(item.get("label") or ""),
+                    description=item.get("description") or item.get("business_meaning") or "",
+                    recommended=bool(item.get("recommended")),
+                )
+            )
+    return ClarificationState(
+        run_id=str(payload.get("run_id") or ""),
+        topic_id=str(payload.get("topic_id") or ""),
+        question=str(payload.get("question") or ""),
+        options=options,
+        status=str(payload.get("status") or "waiting"),
+        answer=payload.get("answer"),
+    )
 
 
 def _follow_up_context(package: dict[str, Any]) -> str:

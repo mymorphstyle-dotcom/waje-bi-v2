@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from bi_agent.conversation.models import (
     ArtifactRef,
+    ClarificationState,
     MemoryItem,
     MemoryProposal,
     ResultRefRecord,
@@ -26,6 +27,7 @@ class InMemoryConversationStore:
         self.runs: dict[str, dict] = {}
         self.context_manifests: dict[str, dict] = {}
         self.answer_packages: dict[str, dict] = {}
+        self.clarification_states: dict[str, ClarificationState] = {}
         self.audit_events: list[dict] = []
 
     def create_thread(self, thread_id: Optional[str] = None, *, owner_id: str = "user") -> ThreadState:
@@ -82,6 +84,16 @@ class InMemoryConversationStore:
         thread = self.get_thread(thread_id)
         thread.pending_clarification_topic_id = None
         thread.pending_clarification_id = ""
+
+    def save_clarification_state(self, state: ClarificationState) -> None:
+        self.clarification_states[state.run_id] = state
+
+    def get_open_clarification(self, thread_id: str) -> Optional[ClarificationState]:
+        topic_ids = set(self.thread_topics.get(thread_id, []))
+        for state in reversed(tuple(self.clarification_states.values())):
+            if state.status == "waiting" and state.topic_id in topic_ids:
+                return state
+        return None
 
     def add_turn(self, thread_id: str, turn: dict) -> None:
         self.get_thread(thread_id).turns.append(turn)

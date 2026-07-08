@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import re
 from typing import Any, Optional
 from uuid import uuid4
@@ -8,6 +9,7 @@ from bi_agent.conversation.models import (
     ClarificationOption,
     ClarificationQuestion,
     ClarificationRequest,
+    ClarificationState,
     ContextItem,
     ContextManifest,
     ConversationRunRequest,
@@ -71,10 +73,22 @@ class ConversationRuntime:
         current_snapshot: str = "2026H1",
         contract_version: str = "contracts-v1",
         owner_scope: str = "org-default",
+        run_id: str | None = None,
     ) -> ConversationTurnResult:
         thread = self.store.get_thread(thread_id)
+        open_clarification = self.store.get_open_clarification(thread_id)
+        if open_clarification and _looks_like_clarification_answer(user_message.strip()):
+            self.store.set_pending_clarification(
+                thread_id,
+                open_clarification.topic_id,
+                thread.pending_clarification_id or open_clarification.run_id,
+            )
+            thread = self.store.get_thread(thread_id)
         turn_id = f"turn-{uuid4().hex[:12]}"
-        local_intent = _classify_intent(user_message, bool(thread.pending_clarification_id))
+        local_intent = _classify_intent(
+            user_message,
+            bool(thread.pending_clarification_id) or bool(open_clarification),
+        )
         local_topic_relation = _topic_relation(local_intent, user_message, active_run_status)
         orchestration = self._orchestrate_turn(
             thread_id,
@@ -136,10 +150,19 @@ class ConversationRuntime:
         )
         clarification_topic = topic or self.store.current_topic(thread_id)
         if clarification and clarification_topic:
+            state_run_id = run_id or clarification.clarification_id
             self.store.set_pending_clarification(
                 thread_id,
                 clarification_topic.topic_id,
                 clarification.clarification_id,
+            )
+            self.store.save_clarification_state(
+                ClarificationState(
+                    run_id=state_run_id,
+                    topic_id=clarification_topic.topic_id,
+                    question=clarification.questions[0].question,
+                    options=list(clarification.questions[0].options),
+                )
             )
         run_request = None
         if not needs_clarification and _should_run(intent_name, topic_relation):
@@ -212,6 +235,10 @@ class ConversationRuntime:
         )
         self.store.add_turn(thread_id, result.to_dict())
         if intent_name == "clarification_answer":
+            if open_clarification:
+                self.store.save_clarification_state(
+                    replace(open_clarification, status="answered", answer=user_message)
+                )
             self.store.clear_pending_clarification(thread_id)
         return result
 

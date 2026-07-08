@@ -201,6 +201,42 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertIsNotNone(resumed.run_request)
         self.assertIn("outlier_contribution", resumed.run_request.requested_nodes)
 
+    def test_clarification_answer_resumes_open_topic_without_creating_new_topic(self):
+        runtime = build_test_runtime()
+
+        first = runtime.handle_message("thread-live-case-2", "如果去掉异常天还成立吗？")
+
+        self.assertEqual(first.status, "waiting_for_clarification")
+        self.assertEqual(first.turn_intent.intent, "challenge")
+        self.assertTrue(first.needs_clarification)
+        self.assertEqual(first.topic_relation, "inherit_current")
+        self.assertIsNotNone(first.topic_id)
+        self.assertTrue(hasattr(runtime.store, "get_open_clarification"))
+        open_clarification = runtime.store.get_open_clarification("thread-live-case-2")
+        self.assertIsNotNone(open_clarification)
+        self.assertEqual(open_clarification.topic_id, first.topic_id)
+        self.assertEqual(open_clarification.status, "waiting")
+
+        resumed = runtime.handle_message(
+            "thread-live-case-2",
+            "按日粒度，移除贡献最大的正向日期后复算。",
+        )
+
+        self.assertIn(resumed.status, {"completed", "running"})
+        self.assertEqual(resumed.turn_intent, "clarification_answer")
+        self.assertEqual(resumed.turn_intent.intent, "clarification_answer")
+        self.assertEqual(resumed.topic_id, first.topic_id)
+        self.assertEqual(resumed.context_manifest["sources"][0]["type"], "clarification")
+        self.assertTrue(
+            any(item.source_type == "clarification" for item in resumed.context_manifest.items)
+        )
+        self.assertEqual(len(runtime.store.topics_for_thread("thread-live-case-2")), 1)
+        self.assertIsNotNone(resumed.run_request)
+        self.assertIsNone(runtime.store.get_open_clarification("thread-live-case-2"))
+        answered = runtime.store.clarification_states[first.clarification.clarification_id]
+        self.assertEqual(answered.status, "answered")
+        self.assertEqual(answered.answer, "按日粒度，移除贡献最大的正向日期后复算。")
+
     def test_outlier_variant_question_triggers_outlier_strategy_clarification(self):
         store = InMemoryConversationStore()
         runtime = ConversationRuntime(store)
@@ -386,6 +422,19 @@ def _seed_runtime() -> ConversationRuntime:
         status="accepted",
     )
     store.set_pending_clarification("thread-phase7", q2_topic.topic_id, "metric_choice")
+    return runtime
+
+
+def build_test_runtime() -> ConversationRuntime:
+    store = InMemoryConversationStore()
+    runtime = ConversationRuntime(store)
+    store.create_thread("thread-live-case-2", owner_id="analyst-1")
+    topic = store.create_topic(
+        "thread-live-case-2",
+        title="Q2 vs Q1 付费金额变化",
+        summary="当前 topic 关注 2026 Q2 相比 Q1 的付费金额变化。",
+    )
+    store.set_current_topic("thread-live-case-2", topic.topic_id)
     return runtime
 
 

@@ -45,7 +45,7 @@ class ConversationAgentCore:
         turn = ConversationRuntime(
             self.store,
             llm_client=self.conversation_llm_client,
-        ).handle_message(thread_id, user_message, role=role)
+        ).handle_message(thread_id, user_message, role=role, run_id=run_id)
         context_manifest = turn.context_manifest.to_dict()
         if turn.run_request and self.workflow_runner is _dry_run_workflow:
             context_manifest = _manifest_with_dry_run_source(context_manifest, run_id, role)
