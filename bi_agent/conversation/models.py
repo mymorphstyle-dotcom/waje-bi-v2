@@ -91,10 +91,15 @@ class ContextManifest:
         object.__setattr__(self, "topic_id", topic_id)
         object.__setattr__(self, "items", normalized_items)
         object.__setattr__(self, "sources", normalized_sources)
-        object.__setattr__(self, "claim_use_policy", dict(claim_use_policy or {
+        default_claim_use_policy = {
             "requires_evidence_ref": True,
             "can_support_bi_claim": bool(can_support_claims),
-        }))
+        }
+        object.__setattr__(
+            self,
+            "claim_use_policy",
+            {**default_claim_use_policy, **dict(claim_use_policy or {})},
+        )
         object.__setattr__(self, "snapshot_version", snapshot_version)
         object.__setattr__(self, "permission_context", dict(permission_context or {}))
         object.__setattr__(

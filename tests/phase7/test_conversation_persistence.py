@@ -31,6 +31,18 @@ class ConversationPersistenceTest(unittest.TestCase):
         self.assertIs(loaded.sources[0]["can_support_claim"], True)
         self.assertIs(loaded.claim_use_policy["requires_evidence_ref"], True)
 
+    def test_context_manifest_partial_claim_policy_keeps_defaults(self):
+        manifest = ContextManifest(
+            manifest_id="manifest-partial-policy",
+            thread_id="t1",
+            turn_id="turn-1",
+            sources=[{"type": "answer_package", "ref": "artifact-1", "can_support_claim": True}],
+            claim_use_policy={"requires_evidence_ref": False},
+        )
+
+        self.assertIs(manifest.claim_use_policy["requires_evidence_ref"], False)
+        self.assertIs(manifest.claim_use_policy["can_support_bi_claim"], True)
+
     def test_reuse_decision_blocks_stale_snapshot_claim_support(self):
         decision = evaluate_reuse_candidate(
             source_snapshot="2026-H1",
@@ -41,6 +53,37 @@ class ConversationPersistenceTest(unittest.TestCase):
 
         self.assertEqual(decision.decision, "context_only")
         self.assertIs(decision.can_support_claim, False)
+
+    def test_reuse_decision_uses_stable_reason_codes(self):
+        stale = evaluate_reuse_candidate(
+            source_snapshot="2026-H1",
+            current_snapshot="2026-H2",
+            permission_match=True,
+            semantic_scope_match=True,
+        )
+        blocked = evaluate_reuse_candidate(
+            source_snapshot="2026-H1",
+            current_snapshot="2026-H1",
+            permission_match=False,
+            semantic_scope_match=True,
+        )
+        scoped = evaluate_reuse_candidate(
+            source_snapshot="2026-H1",
+            current_snapshot="2026-H1",
+            permission_match=True,
+            semantic_scope_match=False,
+        )
+        reusable = evaluate_reuse_candidate(
+            source_snapshot="2026-H1",
+            current_snapshot="2026-H1",
+            permission_match=True,
+            semantic_scope_match=True,
+        )
+
+        self.assertEqual(stale.reason, "snapshot_mismatch")
+        self.assertEqual(blocked.reason, "permission_scope_mismatch")
+        self.assertEqual(scoped.reason, "semantic_scope_mismatch")
+        self.assertEqual(reusable.reason, "validated_same_thread_scope")
 
     def test_schema_declares_required_runtime_tables(self):
         required_tables = {

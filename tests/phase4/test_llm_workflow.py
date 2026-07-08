@@ -225,6 +225,31 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("key_findings", payload["answer_context"])
         self.assertIn("evidence_refs", payload)
 
+    def test_answer_package_carries_context_audit_from_request(self):
+        fake = FakeLLMClient()
+        reuse_decisions = [
+            {
+                "source_ref": "result:q2-q1",
+                "decision": "reuse",
+                "reason": "validated_same_thread_scope",
+                "can_support_claim": True,
+                "requires_rerun": False,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "context-audit-package",
+                    "llm_client": fake,
+                    "context_manifest": {"manifest_id": "context-manifest-1"},
+                    "reuse_decisions": reuse_decisions,
+                }
+            )
+
+        self.assertEqual(result.answer_package["context_manifest_ref"], "context-manifest-1")
+        self.assertEqual(result.answer_package["reuse_decisions"], reuse_decisions)
+
     def test_answer_prompts_remove_unlisted_claims_and_action_advice(self):
         for task in ("answer_synthesis", "answer_repair"):
             messages = build_prompt(task, {"answer_context": {}}).messages

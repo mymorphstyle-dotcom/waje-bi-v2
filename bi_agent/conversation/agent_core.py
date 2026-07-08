@@ -116,6 +116,7 @@ class ConversationAgentCore:
 
         request = turn.run_request.to_dict()
         request["context_manifest"] = context_manifest
+        request["reuse_decisions"] = [decision.to_dict() for decision in turn.reuse_decisions]
         request.update(
             {
                 "run_id": run_id,

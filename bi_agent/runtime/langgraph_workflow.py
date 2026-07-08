@@ -1996,6 +1996,8 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
     proposed_graph = compiled.mutations.proposed_graph if compiled else ()
     accepted_graph = compiled.mutations.accepted_graph if compiled else ()
     records = compiled.mutations.records if compiled else ()
+    request = state.get("request", {})
+    context_manifest = request.get("context_manifest") or {}
     return build_answer_package(
         run_id=state["run_id"],
         draft_claims=state.get("draft_claims", []),
@@ -2021,6 +2023,8 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         clarification_outcome=state.get("clarification_outcome", {}),
         causal_audit=state.get("causal_audit", {}),
         causal_evidence_dossier=state.get("causal_evidence_dossier", {}),
+        context_manifest_ref=str(context_manifest.get("manifest_id") or ""),
+        reuse_decisions=request.get("reuse_decisions", ()),
     )
 
 

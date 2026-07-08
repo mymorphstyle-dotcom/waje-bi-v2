@@ -535,7 +535,7 @@ def evaluate_reuse_candidate(
         return ReuseDecision(
             "blocked",
             source_ref,
-            "permission changed",
+            "permission_scope_mismatch",
             can_support_claim=False,
             requires_rerun=True,
         )
@@ -543,7 +543,7 @@ def evaluate_reuse_candidate(
         return ReuseDecision(
             "context_only",
             source_ref,
-            "snapshot changed",
+            "snapshot_mismatch",
             can_support_claim=False,
             requires_rerun=True,
         )
@@ -551,14 +551,14 @@ def evaluate_reuse_candidate(
         return ReuseDecision(
             "context_only",
             source_ref,
-            "semantic scope mismatch",
+            "semantic_scope_mismatch",
             can_support_claim=False,
             requires_rerun=True,
         )
     return ReuseDecision(
         "reuse",
         source_ref,
-        "snapshot, permission, and scope match",
+        "validated_same_thread_scope",
         can_support_claim=True,
         requires_rerun=False,
     )
