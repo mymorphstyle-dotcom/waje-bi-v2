@@ -79,6 +79,7 @@ class ConversationAgentCore:
                     "turn_id": turn.turn_id,
                     "topic_id": turn.topic_id,
                     "intent": turn.turn_intent.intent,
+                    "topic_relation": turn.topic_relation,
                     "clarification": request["clarification"],
                     "context_manifest": context_manifest,
                 }
@@ -96,6 +97,7 @@ class ConversationAgentCore:
                 "turn_id": turn.turn_id,
                 "topic_id": turn.topic_id,
                 "intent": turn.turn_intent.intent,
+                "topic_relation": turn.topic_relation,
                 "context_manifest": context_manifest,
             }
 
@@ -139,12 +141,20 @@ class ConversationAgentCore:
                 "status": "failed",
                 "run_id": run_id,
                 "turn_id": turn.turn_id,
+                "topic_id": turn.topic_id,
+                "intent": turn.turn_intent.intent,
+                "topic_relation": turn.topic_relation,
                 "failure_reason": result.failure_reason,
             }
 
         package = dict(result.answer_package)
         package["run_id"] = run_id
         package["artifact_path"] = result.artifact_path
+        accepted_graph = (
+            package.get("accepted_graph")
+            or package.get("admin_audit", {}).get("accepted_graph")
+            or request.get("requested_nodes", [])
+        )
         self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
         self.store.record_answer_package(run_id, package)
         self.store.upsert_run(
@@ -160,10 +170,12 @@ class ConversationAgentCore:
             "run_id": run_id,
             "turn_id": turn.turn_id,
             "topic_id": turn.topic_id,
+            "intent": turn.turn_intent.intent,
+            "topic_relation": turn.topic_relation,
             "artifact_path": result.artifact_path,
             "answer_package": package,
             "context_manifest": context_manifest,
-            "accepted_graph": request.get("requested_nodes", []),
+            "accepted_graph": accepted_graph,
             "llm_calls": package.get("llm_calls", []),
             "quality_review": package.get("admin_audit"),
         }
@@ -196,6 +208,7 @@ def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
     run_id = str(request.get("run_id") or f"run-{uuid4().hex[:12]}")
     question = str(request.get("question") or request.get("user_message") or "")
     requested_nodes = list(request.get("requested_nodes") or [])
+    answer_text = _dry_run_answer_text(question)
     return WorkflowRunResult(
         status="draft",
         run_id=run_id,
@@ -209,15 +222,24 @@ def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
                 {
                     "id": "summary",
                     "visibility": "business_summary",
-                    "payload": {"answer_text": f"dry-run: {question}"},
+                    "payload": {"answer_text": answer_text},
                 }
             ],
+            "accepted_graph": requested_nodes,
             "llm_calls": [],
             "admin_audit": {"verifier": {"status": "skipped_dry_run"}, "accepted_graph": requested_nodes},
         },
         artifact_path=f"{request.get('artifact_root', 'artifacts/phase-7')}/{run_id}.json",
         checkpoint_events=({"node": "dry_run_workflow", "status": "completed"},),
     )
+
+
+def _dry_run_answer_text(question: str) -> str:
+    if "WajeSpecial" in question:
+        return "演练回答：WajeSpecial 只能作为候选解释，还不能直接说成主要原因。"
+    if "移除" in question or "异常" in question or "复算" in question:
+        return "演练回答：已按聚合口径移除异常影响后复算，用来判断方向是否仍成立。"
+    return f"演练回答：{question}"
 
 
 def main(argv: Optional[list[str]] = None) -> int:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,8 @@ def _effective_result(turn_record: dict[str, Any]) -> dict[str, Any]:
             "status": turn_record.get("resumed_status"),
             "run_id": turn_record.get("resumed_run_id"),
             "topic_id": turn_record.get("resumed_topic_id"),
+            "intent": turn_record.get("resumed_intent"),
+            "topic_relation": turn_record.get("resumed_topic_relation"),
             "answer_package": turn_record.get("resumed_answer_package"),
             "context_manifest": turn_record.get("resumed_context_manifest"),
             "accepted_graph": turn_record.get("resumed_accepted_graph") or [],
@@ -45,6 +48,8 @@ def _effective_result(turn_record: dict[str, Any]) -> dict[str, Any]:
         "status": turn_record.get("status"),
         "run_id": turn_record.get("run_id"),
         "topic_id": turn_record.get("topic_id"),
+        "intent": turn_record.get("intent"),
+        "topic_relation": turn_record.get("topic_relation"),
         "answer_package": turn_record.get("answer_package"),
         "context_manifest": turn_record.get("context_manifest"),
         "accepted_graph": turn_record.get("accepted_graph") or [],
@@ -53,22 +58,109 @@ def _effective_result(turn_record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _review_expectations(turn: dict[str, Any], effective_graph: list[str] | tuple[str, ...]) -> dict[str, Any]:
-    required = list((turn.get("expect") or {}).get("required_capabilities", []))
+def _review_expectations(turn: dict[str, Any], turn_record: dict[str, Any]) -> dict[str, Any]:
+    effective = _effective_result(turn_record)
+    return _expectation_review(turn, turn_record, effective, effective.get("accepted_graph") or [])
+
+
+def _expectation_review(
+    turn: dict[str, Any],
+    turn_record: dict[str, Any],
+    effective_result: dict[str, Any],
+    effective_graph: list[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    expect = turn.get("expect") or {}
+    required = list(expect.get("required_capabilities", []))
     actual = list(effective_graph or [])
     missing = [capability for capability in required if capability not in actual]
+    actual_intent = str(turn_record.get("intent") or effective_result.get("intent") or "")
+    actual_relation = str(
+        turn_record.get("topic_relation") or effective_result.get("topic_relation") or ""
+    )
+    missing_answer_text = [
+        text
+        for text in expect.get("final_answer_contains", [])
+        if text not in _answer_text(effective_result.get("answer_package") or {})
+    ]
+    clarification_ok = True
+    if expect.get("allow_clarification"):
+        clarification_ok = (
+            turn_record.get("status") == "waiting_for_clarification"
+            and bool(turn_record.get("clarification_response"))
+            and bool(turn_record.get("resumed_status"))
+        )
+    intent_ok = not expect.get("intent") or actual_intent == expect.get("intent")
+    relation_ok = _topic_relation_matches(expect.get("topic_relation"), actual_relation)
     return {
+        "expected_intent": expect.get("intent"),
+        "actual_intent": actual_intent,
+        "intent_passed": intent_ok,
+        "expected_topic_relation": expect.get("topic_relation"),
+        "actual_topic_relation": actual_relation,
+        "topic_relation_passed": relation_ok,
+        "allow_clarification": bool(expect.get("allow_clarification")),
+        "clarification_passed": clarification_ok,
+        "final_answer_contains": list(expect.get("final_answer_contains", [])),
+        "missing_final_answer_text": missing_answer_text,
         "required_capabilities": required,
         "missing_required_capabilities": missing,
-        "passed": not missing,
+        "passed": (
+            intent_ok
+            and relation_ok
+            and clarification_ok
+            and not missing
+            and not missing_answer_text
+        ),
     }
 
 
-def _missing_inputs_from_error(exc: Exception) -> list[str]:
+def _topic_relation_matches(expected: str | None, actual: str) -> bool:
+    if not expected:
+        return True
+    aliases = {
+        "create": {"new_topic"},
+        "inherit": {"inherit_current"},
+    }
+    return actual == expected or actual in aliases.get(expected, set())
+
+
+def _answer_text(answer_package: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for section in answer_package.get("sections", []):
+        payload = section.get("payload", {}) if isinstance(section, dict) else {}
+        for key in ("answer_text", "final_business_summary"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    return "\n".join(parts)
+
+
+def _missing_inputs_from_error(exc: Exception, *, real_llm: bool = False, real_clickhouse: bool = False) -> list[str]:
     text = str(exc)
+    missing: list[str] = []
     if "WAJE_RUNTIME_DATABASE_URL or DATABASE_URL" in text:
-        return ["WAJE_RUNTIME_DATABASE_URL", "DATABASE_URL"]
-    return []
+        missing.extend(["WAJE_RUNTIME_DATABASE_URL", "DATABASE_URL"])
+    if real_llm:
+        if not os.environ.get("WAJE_LLM_MODEL"):
+            missing.append("WAJE_LLM_MODEL")
+        if not (
+            os.environ.get("WAJE_LLM_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("DEEPSEEK_API_KEY")
+        ):
+            missing.extend(["WAJE_LLM_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"])
+    if real_clickhouse:
+        for key in (
+            "WAJE_CLICKHOUSE_HOST",
+            "WAJE_CLICKHOUSE_PORT",
+            "WAJE_CLICKHOUSE_USER",
+            "WAJE_CLICKHOUSE_PASSWORD",
+            "WAJE_CLICKHOUSE_DATABASE",
+            "WAJE_CLICKHOUSE_SECURE",
+        ):
+            if not os.environ.get(key):
+                missing.append(key)
+    return list(dict.fromkeys(missing))
 
 
 def run_case(core: ConversationAgentCore, case: dict[str, Any], artifact_dir: Path) -> dict[str, Any]:
@@ -82,6 +174,8 @@ def run_case(core: ConversationAgentCore, case: dict[str, Any], artifact_dir: Pa
             "status": result["status"],
             "run_id": result["run_id"],
             "topic_id": result.get("topic_id"),
+            "intent": result.get("intent"),
+            "topic_relation": result.get("topic_relation"),
             "answer_package": result.get("answer_package"),
             "context_manifest": result.get("context_manifest"),
             "accepted_graph": result.get("accepted_graph"),
@@ -97,16 +191,14 @@ def run_case(core: ConversationAgentCore, case: dict[str, Any], artifact_dir: Pa
             turn_record["resumed_status"] = resumed["status"]
             turn_record["resumed_run_id"] = resumed["run_id"]
             turn_record["resumed_topic_id"] = resumed.get("topic_id")
+            turn_record["resumed_intent"] = resumed.get("intent")
+            turn_record["resumed_topic_relation"] = resumed.get("topic_relation")
             turn_record["resumed_answer_package"] = resumed.get("answer_package")
             turn_record["resumed_context_manifest"] = resumed.get("context_manifest")
             turn_record["resumed_accepted_graph"] = resumed.get("accepted_graph")
             turn_record["resumed_llm_calls"] = resumed.get("llm_calls", [])
             turn_record["resumed_quality_review"] = resumed.get("quality_review")
-        effective = _effective_result(turn_record)
-        turn_record["expectation_review"] = _review_expectations(
-            turn,
-            effective.get("accepted_graph") or [],
-        )
+        turn_record["expectation_review"] = _review_expectations(turn, turn_record)
         turns.append(turn_record)
     final_result = _effective_result(turns[-1]) if turns else {}
     output = {
@@ -150,9 +242,24 @@ def main() -> None:
         artifact_dir = Path(args.artifact_dir)
         artifact_dir.mkdir(parents=True, exist_ok=True)
         artifact_name = f"{args.case}.json" if args.case else "environment_blocked.json"
+        case_id = args.case or "environment_blocked"
         blocked = {
+            "case_id": case_id,
             "status": "blocked",
-            "missing_inputs": _missing_inputs_from_error(exc),
+            "final_turn_status": "blocked",
+            "run_id": None,
+            "topic_id": None,
+            "answer_package": None,
+            "context_manifest": None,
+            "accepted_graph": [],
+            "llm_calls": [],
+            "quality_review": None,
+            "turns": [],
+            "missing_inputs": _missing_inputs_from_error(
+                exc,
+                real_llm=args.real_llm,
+                real_clickhouse=args.real_clickhouse,
+            ),
             "owner": "local runtime/deployment owner",
             "error": str(exc),
         }

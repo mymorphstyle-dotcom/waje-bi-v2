@@ -132,6 +132,11 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["turns"][1]["topic_id"], result["turns"][2]["topic_id"])
         self.assertEqual(second_turn["expectation_review"]["missing_required_capabilities"], [])
         self.assertEqual(third_turn["expectation_review"]["missing_required_capabilities"], [])
+        for turn in result["turns"]:
+            with self.subTest(turn=turn["index"]):
+                self.assertTrue(turn["expectation_review"]["intent_passed"])
+                self.assertTrue(turn["expectation_review"]["topic_relation_passed"])
+                self.assertEqual(turn["expectation_review"]["missing_final_answer_text"], [])
         self.assertIn("outlier_contribution", clarification_turn["resumed_accepted_graph"])
 
 
