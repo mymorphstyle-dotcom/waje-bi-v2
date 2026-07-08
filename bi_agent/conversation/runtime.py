@@ -884,6 +884,10 @@ def _requested_nodes(message: str, intent: str) -> tuple[str, ...]:
         nodes.append("outlier_contribution")
     if any(token in message for token in ("为什么", "原因", "贡献", "深挖")):
         nodes.append("driver_decomposition")
+    if any(token in message for token in ("新老用户", "新用户", "老用户", "用户质量")):
+        nodes.append("user_mix_contribution")
+    if any(token in message for token in ("大客户", "高价值用户", "用户质量")):
+        nodes.append("high_value_user_contribution")
     if any(token in message for token in ("活动", "前后 14 天")):
         nodes.append("event_evidence")
     if intent in {"new_topic", "mixed_question", "correction", "clarification_answer", "artifact_continue"}:

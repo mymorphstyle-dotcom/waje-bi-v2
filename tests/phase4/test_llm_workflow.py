@@ -5,6 +5,7 @@ import unittest
 from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.exploration_budget import default_budget
 from bi_agent.runtime.langgraph_workflow import (
+    _answer_synthesis_context,
     _capability_path_labels,
     _clarification_policy_gate,
     _claims_from_llm_or_default,
@@ -1630,6 +1631,54 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn(
             segment["wording_limit"],
             {"contextual", "supported", "tendency", "insufficient"},
+        )
+
+    def test_answer_synthesis_context_includes_capability_business_findings(self):
+        state = {
+            "intent": {
+                "question_family": "custom_baseline_comparison",
+                "pattern_family": "custom_baseline",
+                "target_metric": "paid_amount",
+                "scope": "full_sample",
+                "time_window": "2026-01-01..2026-06-30",
+                "target_claim": "去掉异常后方向是否还成立",
+                "baseline": {"label": "Q1"},
+                "target": {"label": "Q2"},
+            },
+            "request": {"question": "去掉异常后还成立吗？"},
+            "evidence_brief": {"limitations": []},
+            "causal_evidence_dossier": {},
+            "causal_audit": {},
+            "evidence": [
+                {
+                    "evidence_ref": "outlier_contribution:inline",
+                    "capability_id": "outlier_contribution",
+                    "strength": "medium",
+                    "wording_limit": "contextual",
+                    "typed_payload": {
+                        "business_readout": "移除最大正向日期后，方向仍为上升。",
+                        "claim_boundary": "只能说明异常敏感性，不能当作因果证明。",
+                        "top_positive_share": 0.6,
+                        "remaining_delta_after_top_positive": 20.0,
+                    },
+                    "limitations": [],
+                    "result_refs": ["sqlhash-1"],
+                }
+            ],
+        }
+
+        context = _answer_synthesis_context(state)
+
+        self.assertEqual(
+            context["capability_business_findings"],
+            [
+                {
+                    "capability": "outlier_contribution",
+                    "business_readout": "移除最大正向日期后，方向仍为上升。",
+                    "claim_boundary": "只能说明异常敏感性，不能当作因果证明。",
+                    "evidence_refs": ["outlier_contribution:inline"],
+                }
+            ],
         )
 
     def test_route_normalization_adds_driver_decomposition_for_explicit_volume_vs_unit_value_question(self):

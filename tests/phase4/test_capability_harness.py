@@ -160,6 +160,69 @@ class CapabilityHarnessTest(unittest.TestCase):
         self.assertEqual(result.wording_limit, "contextual")
         self.assertGreater(result.typed_payload["top_positive_share"], 0.9)
 
+    def test_outlier_contribution_reports_direction_after_removal(self):
+        result = outlier_contribution(
+            [
+                {"period": "1", "group": "baseline", "amount": 100},
+                {"period": "1", "group": "target", "amount": 180},
+                {"period": "2", "group": "baseline", "amount": 100},
+                {"period": "2", "group": "target", "amount": 120},
+                {"period": "3", "group": "baseline", "amount": 100},
+                {"period": "3", "group": "target", "amount": 90},
+            ],
+            period_grain="day",
+            removal_policy="top_positive_contribution_periods",
+            max_removed_periods=1,
+        )
+
+        self.assertIn("direction_preserved_after_top_positive", result.typed_payload)
+        self.assertIn("remaining_delta_after_top_positive", result.typed_payload)
+
+    def test_user_mix_contribution_is_aggregate_only(self):
+        from bi_agent.capabilities.user_mix_contribution import user_mix_contribution
+
+        result = user_mix_contribution(
+            [
+                {
+                    "period": "Q1",
+                    "group": "baseline",
+                    "channel": "Organic",
+                    "user_mix_bucket": "new",
+                    "amount": 100,
+                    "paid_users": 10,
+                },
+                {
+                    "period": "Q1",
+                    "group": "target",
+                    "channel": "Organic",
+                    "user_mix_bucket": "new",
+                    "amount": 120,
+                    "paid_users": 12,
+                },
+            ],
+            segment_key="channel",
+            user_grain_policy="new_vs_returning",
+        )
+
+        self.assertEqual(result.typed_payload["privacy_policy"], "aggregate_only")
+        self.assertNotIn("raw_user_ids", result.typed_payload)
+
+    def test_high_value_user_contribution_is_aggregate_only(self):
+        from bi_agent.capabilities.high_value_user_contribution import (
+            high_value_user_contribution,
+        )
+
+        result = high_value_user_contribution(
+            [
+                {"period": "Q1", "group": "baseline", "amount": 100, "paid_users": 10},
+                {"period": "Q1", "group": "target", "amount": 180, "paid_users": 12},
+            ],
+            threshold_policy={"type": "top_percentile", "value": 0.95},
+        )
+
+        self.assertEqual(result.typed_payload["privacy_policy"], "aggregate_only")
+        self.assertNotIn("raw_user_ids", result.typed_payload)
+
 
 if __name__ == "__main__":
     unittest.main()

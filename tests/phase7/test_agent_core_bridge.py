@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from bi_agent.conversation.agent_core import ConversationAgentCore
+from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult
 
@@ -163,6 +164,20 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 )
                 self.assertEqual(turn["expectation_review"]["missing_final_answer_text"], [])
         self.assertIn("outlier_contribution", clarification_turn["resumed_accepted_graph"])
+
+    def test_follow_up_hints_route_user_mix_and_high_value_capabilities(self):
+        store = InMemoryConversationStore()
+        runtime = ConversationRuntime(store)
+        store.create_thread("thread-follow-up-hints", owner_id="analyst-1")
+        runtime.handle_message("thread-follow-up-hints", "Q2 相比 Q1 付费金额为什么变了？")
+
+        result = runtime.handle_message(
+            "thread-follow-up-hints",
+            "新老用户和高价值用户的用户质量分别怎么看？",
+        )
+
+        self.assertIn("user_mix_contribution", result.run_request.requested_nodes)
+        self.assertIn("high_value_user_contribution", result.run_request.requested_nodes)
 
     def test_live_harness_rejects_claim_refs_without_traceable_source(self):
         from tools.phase7.run_live_conversation_system_test import _expectation_review

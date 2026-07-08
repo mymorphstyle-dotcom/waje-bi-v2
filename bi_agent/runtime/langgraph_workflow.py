@@ -22,12 +22,14 @@ from bi_agent.capabilities.data_quality_check import data_quality_check
 from bi_agent.capabilities.driver_decomposition import driver_decomposition
 from bi_agent.capabilities.event_evidence import event_evidence
 from bi_agent.capabilities.formula_decompose import formula_decompose
+from bi_agent.capabilities.high_value_user_contribution import high_value_user_contribution
 from bi_agent.capabilities.joint_attribution import joint_attribution
 from bi_agent.capabilities.outlier_scan import outlier_scan
 from bi_agent.capabilities.outlier_contribution import outlier_contribution
 from bi_agent.capabilities.pattern_scan import scan_pattern
 from bi_agent.capabilities.segment_contribution import segment_contribution
 from bi_agent.capabilities.segment_bridge import segment_bridge
+from bi_agent.capabilities.user_mix_contribution import user_mix_contribution
 from bi_agent.runtime.answer_package import build_answer_package
 from bi_agent.runtime.artifacts import persist_artifact, to_jsonable
 from bi_agent.runtime.capability_harness import (
@@ -973,8 +975,30 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
                 **_outlier_contribution_params(state),
             )
         )
+    if "user_mix_contribution" in capabilities:
+        evidence.append(
+            user_mix_contribution(
+                rows,
+                result_refs=query_ref,
+                **_user_mix_contribution_params(state),
+            )
+        )
+    if "high_value_user_contribution" in capabilities:
+        evidence.append(
+            high_value_user_contribution(
+                rows,
+                result_refs=query_ref,
+                **_high_value_user_contribution_params(state),
+            )
+        )
     if "event_evidence" in capabilities:
-        evidence.append(event_evidence(state["request"].get("events", ()), result_refs=query_ref))
+        evidence.append(
+            event_evidence(
+                state["request"].get("events", ()),
+                result_refs=query_ref,
+                **_event_evidence_params(state),
+            )
+        )
     if "segment_bridge" in capabilities:
         segment = segment_bridge(
             state["request"].get(
@@ -1059,9 +1083,49 @@ def _outlier_contribution_params(state: WorkflowState) -> dict[str, Any]:
     params = dict(state.get("intent", {}).get("pattern_params", {}))
     return {
         "period_key": params.get("period_key", "period"),
+        "period_grain": params.get("period_grain", state["intent"].get("grain", "period")),
         "group_key": params.get("group_key", "group"),
         "target_group": params.get("target_group", "target"),
         "baseline_group": params.get("baseline_group", "baseline"),
+        "removal_policy": params.get(
+            "removal_policy", "top_positive_contribution_periods"
+        ),
+        "max_removed_periods": params.get("max_removed_periods", 5),
+        "direction_after_removal": params.get("direction_after_removal", True),
+    }
+
+
+def _user_mix_contribution_params(state: WorkflowState) -> dict[str, Any]:
+    params = dict(state.get("intent", {}).get("pattern_params", {}))
+    return {
+        "segment_key": params.get("segment_key", "channel"),
+        "user_grain_policy": params.get("user_grain_policy", "new_vs_returning"),
+        "mix_key": params.get("mix_key", "user_mix_bucket"),
+        "group_key": params.get("group_key", "group"),
+        "amount_key": params.get("amount_key", "amount"),
+        "users_key": params.get("users_key", "paid_users"),
+    }
+
+
+def _high_value_user_contribution_params(state: WorkflowState) -> dict[str, Any]:
+    params = dict(state.get("intent", {}).get("pattern_params", {}))
+    return {
+        "threshold_policy": params.get("threshold_policy"),
+        "group_key": params.get("group_key", "group"),
+        "amount_key": params.get("amount_key", "amount"),
+        "users_key": params.get("users_key", "paid_users"),
+    }
+
+
+def _event_evidence_params(state: WorkflowState) -> dict[str, Any]:
+    params = dict(state.get("intent", {}).get("pattern_params", {}))
+    return {
+        "event_window_policy": params.get("event_window_policy")
+        or state["request"].get("event_window_policy"),
+        "low_risk_default": params.get(
+            "low_risk_default",
+            state["request"].get("low_risk_default", True),
+        ),
     }
 
 
@@ -1169,6 +1233,10 @@ def _normalize_route_requested_nodes(
         normalized = [node for node in normalized if node != "segment_contribution"]
     if _contains_any(business_text, ("少数", "几天", "异常日", "撑起来")) and "outlier_contribution" not in normalized:
         normalized.append("outlier_contribution")
+    if _contains_any(business_text, ("新老用户", "新用户", "老用户", "用户质量")) and "user_mix_contribution" not in normalized:
+        normalized.append("user_mix_contribution")
+    if _contains_any(business_text, ("大客户", "高价值用户", "高净值用户")) and "high_value_user_contribution" not in normalized:
+        normalized.append("high_value_user_contribution")
     return tuple(dict.fromkeys(normalized))
 
 
@@ -1207,6 +1275,10 @@ def _infer_question_families_from_requested_nodes(
 ) -> None:
     additions = []
     if "segment_contribution" in requested_nodes:
+        additions.append("segment_or_factor_attribution")
+    if "user_mix_contribution" in requested_nodes:
+        additions.append("segment_or_factor_attribution")
+    if "high_value_user_contribution" in requested_nodes:
         additions.append("segment_or_factor_attribution")
     if "outlier_contribution" in requested_nodes:
         additions.append("anomaly_or_black_swan_review")
@@ -2267,6 +2339,7 @@ def _answer_synthesis_context(state: WorkflowState) -> dict[str, Any]:
             "typed_payload": payload,
         },
         "evidence_boundary": _attention_sentence(state),
+        "capability_business_findings": _capability_business_findings(state),
         "causal_evidence_dossier": state.get("causal_evidence_dossier", {}),
         "causal_audit": state.get("causal_audit", {}),
         "required_answer_shape": [
@@ -2554,6 +2627,12 @@ def _key_findings_sentence(state: WorkflowState) -> str:
         if capability == "segment_contribution":
             top_drag = (primary.get("typed_payload", {}).get("top_drags") or [{}])[0]
             return f"关键发现：渠道或分群贡献里，拖累最大的分组是{top_drag.get('segment', '未识别分组')}。"
+        if capability == "user_mix_contribution":
+            bucket_count = primary.get("typed_payload", {}).get("mix_bucket_count")
+            return f"关键发现：用户结构贡献已按聚合口径拆到 {bucket_count} 个用户分层。"
+        if capability == "high_value_user_contribution":
+            policy = primary.get("typed_payload", {}).get("threshold_policy") or {}
+            return f"关键发现：高价值用户贡献已按阈值策略 {policy} 做聚合复核。"
         if capability == "outlier_contribution":
             share = primary.get("typed_payload", {}).get("top_positive_share")
             return f"关键发现：异常贡献检查显示，前几个高贡献周期占正向变化的{_format_percent(share)}。"
@@ -2750,6 +2829,8 @@ def _capability_labels(accepted_graph: tuple[str, ...]) -> list[str]:
         "event_evidence": "事件或机制证据检查",
         "segment_bridge": "分群结构检查",
         "segment_contribution": "渠道或分群贡献",
+        "user_mix_contribution": "新老用户结构贡献",
+        "high_value_user_contribution": "高价值用户贡献",
         "outlier_scan": "异常波动检查",
         "outlier_contribution": "异常贡献检查",
         "joint_attribution": "组合归因",
@@ -2775,6 +2856,8 @@ def _primary_business_evidence(state: WorkflowState) -> dict[str, Any]:
     priority = (
         "driver_decomposition",
         "segment_contribution",
+        "user_mix_contribution",
+        "high_value_user_contribution",
         "outlier_contribution",
         "joint_attribution",
         "formula_decompose",
@@ -3157,6 +3240,27 @@ def _default_claim_from_primary_evidence(state: WorkflowState) -> dict[str, Any]
             "total_delta": payload.get("total_delta"),
             "segment_count": payload.get("segment_count"),
         }
+    elif capability == "user_mix_contribution":
+        text = (
+            f"当前新老用户结构贡献只基于聚合分群口径观察，"
+            f"覆盖 {payload.get('mix_bucket_count')} 个用户分层、"
+            f"{payload.get('segment_count')} 个分群。"
+        )
+        numbers = {
+            "total_amount": payload.get("total_amount"),
+            "total_paid_users": payload.get("total_paid_users"),
+            "mix_bucket_count": payload.get("mix_bucket_count"),
+            "segment_count": payload.get("segment_count"),
+        }
+    elif capability == "high_value_user_contribution":
+        text = (
+            f"当前高价值用户贡献按聚合阈值策略 {payload.get('threshold_policy')} 复核，"
+            f"覆盖总金额 {_format_number(payload.get('total_amount'))}。"
+        )
+        numbers = {
+            "total_amount": payload.get("total_amount"),
+            "total_paid_users": payload.get("total_paid_users"),
+        }
     elif capability == "outlier_contribution":
         text = (
             f"当前异常贡献检查显示，前几个高贡献周期贡献占正向变化的"
@@ -3191,6 +3295,25 @@ def _default_claim_from_primary_evidence(state: WorkflowState) -> dict[str, Any]
         "scope": state["intent"]["scope"],
         "time_window": state["intent"]["time_window"],
     }
+
+
+def _capability_business_findings(state: WorkflowState) -> list[dict[str, Any]]:
+    findings = []
+    for item in state.get("evidence", []):
+        capability = item.get("capability_id") or item.get("capability")
+        if not capability:
+            continue
+        payload = item.get("typed_payload", {})
+        evidence_ref = item.get("evidence_ref")
+        findings.append(
+            {
+                "capability": capability,
+                "business_readout": payload.get("business_readout"),
+                "claim_boundary": payload.get("claim_boundary"),
+                "evidence_refs": [evidence_ref] if evidence_ref else [],
+            }
+        )
+    return findings
 
 
 def _format_number(value: Any) -> str:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from statistics import median
 from typing import Any, Iterable
 
@@ -8,11 +10,15 @@ def outlier_contribution(
     rows: Iterable[dict[str, Any]],
     *,
     period_key: str = "period",
+    period_grain: str = "period",
     group_key: str = "group",
     target_group: str = "target",
     baseline_group: str = "baseline",
     amount_key: str = "amount",
     top_n: int = 5,
+    removal_policy: str = "",
+    max_removed_periods: int | None = None,
+    direction_after_removal: bool = True,
     result_refs: tuple[str, ...] = (),
 ):
     pairs = {}
@@ -60,6 +66,14 @@ def outlier_contribution(
     top_positive_delta = sum(max(0.0, item["delta"]) for item in top_positive)
     positive_delta = sum(max(0.0, item["delta"]) for item in deltas)
     top_positive_share = top_positive_delta / positive_delta if positive_delta else 0.0
+    removed_limit = _positive_int(max_removed_periods, top_n)
+    removed_positive = sorted(
+        (item for item in deltas if item["delta"] > 0),
+        key=lambda item: item["delta"],
+        reverse=True,
+    )[:removed_limit]
+    remaining_delta = total_delta - sum(item["delta"] for item in removed_positive)
+    direction_preserved = _same_direction(total_delta, remaining_delta)
     return make_evidence_envelope(
         "outlier_contribution",
         evidence_type="statistical_association",
@@ -74,6 +88,15 @@ def outlier_contribution(
             "top_positive_periods": tuple(top_positive),
             "top_positive_share": top_positive_share,
             "concentrated_in_top_periods": top_positive_share >= 0.5,
+            "period_grain": period_grain,
+            "removal_policy": removal_policy or "top_positive_contribution_periods",
+            "max_removed_periods": removed_limit,
+            "remaining_delta_after_top_positive": remaining_delta,
+            "direction_preserved_after_top_positive": direction_preserved,
+            "removed_positive_periods": tuple(removed_positive),
+            "direction_after_removal": "preserved" if direction_preserved else "changed",
+            "business_readout": _business_readout(remaining_delta, direction_preserved),
+            "claim_boundary": "这是异常敏感性复算，只能说明移除高贡献周期后的方向变化，不能证明异常是原因。",
         },
         limitations=(),
         result_refs=result_refs,
@@ -85,3 +108,24 @@ def _number(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _positive_int(value, default):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _same_direction(before, after):
+    if before == 0:
+        return after == 0
+    return (before > 0 and after > 0) or (before < 0 and after < 0)
+
+
+def _business_readout(remaining_delta, direction_preserved):
+    direction = "仍为上升" if remaining_delta > 0 else "转为下降" if remaining_delta < 0 else "接近持平"
+    if direction_preserved:
+        return f"移除最大正向贡献周期后，剩余变化方向{direction}。"
+    return f"移除最大正向贡献周期后，剩余变化方向发生变化，当前{direction}。"
