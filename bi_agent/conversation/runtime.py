@@ -140,6 +140,8 @@ class ConversationRuntime:
             owner_scope,
             pending_clarification_id if intent_name == "clarification_answer" else "",
         )
+        self.store.save_context_manifest(manifest)
+        self.store.save_reuse_decisions(thread_id, turn_id, reuse_decisions)
         memory_proposals = self._memory_proposals(
             thread_id,
             turn_id,
@@ -359,15 +361,18 @@ class ConversationRuntime:
         if not result:
             return (ReuseDecision("rerun", "", "no_prior_result_ref"),)
         first = result[0]
-        if not _can_read_scope(role, first.permission_scope):
-            return (ReuseDecision("blocked", first.result_ref, "permission_scope_mismatch"),)
-        if current_snapshot != first.snapshot_id or "数据更新" in message or "最新数据" in message:
-            return (ReuseDecision("context_only", first.result_ref, "snapshot_mismatch"),)
+        decision = evaluate_reuse_candidate(
+            source_snapshot=first.snapshot_id,
+            current_snapshot=current_snapshot,
+            permission_match=_can_read_scope(role, first.permission_scope),
+            semantic_scope_match=not _must_rerun(message, intent, relation),
+            source_ref=first.result_ref,
+        )
+        if decision.decision != "reuse":
+            return (decision,)
         if contract_version != first.contract_version:
             return (ReuseDecision("context_only", first.result_ref, "contract_version_mismatch"),)
-        if _must_rerun(message, intent, relation):
-            return (ReuseDecision("rerun", first.result_ref, "semantic_scope_changed"),)
-        return (ReuseDecision("reuse", first.result_ref, "validated_same_thread_scope"),)
+        return (decision,)
 
     def _context_manifest(
         self,
@@ -483,7 +488,14 @@ class ConversationRuntime:
             manifest_id=f"context-{uuid4().hex[:12]}",
             thread_id=thread_id,
             turn_id=turn_id,
+            topic_id=topic.topic_id if topic else None,
             items=tuple(items),
+            claim_use_policy={
+                "requires_evidence_ref": True,
+                "can_support_bi_claim": has_claim_support and claim_safe and not artifact_context_blocked,
+            },
+            snapshot_version=current_snapshot,
+            permission_context={"role": role},
             can_support_claims=has_claim_support and claim_safe and not artifact_context_blocked,
         )
 
@@ -509,6 +521,47 @@ class ConversationRuntime:
                 visibility=role,
             ),
         )
+
+
+def evaluate_reuse_candidate(
+    *,
+    source_snapshot: str | None,
+    current_snapshot: str | None,
+    permission_match: bool,
+    semantic_scope_match: bool,
+    source_ref: str = "candidate",
+) -> ReuseDecision:
+    if not permission_match:
+        return ReuseDecision(
+            "blocked",
+            source_ref,
+            "permission changed",
+            can_support_claim=False,
+            requires_rerun=True,
+        )
+    if source_snapshot != current_snapshot:
+        return ReuseDecision(
+            "context_only",
+            source_ref,
+            "snapshot changed",
+            can_support_claim=False,
+            requires_rerun=True,
+        )
+    if not semantic_scope_match:
+        return ReuseDecision(
+            "context_only",
+            source_ref,
+            "semantic scope mismatch",
+            can_support_claim=False,
+            requires_rerun=True,
+        )
+    return ReuseDecision(
+        "reuse",
+        source_ref,
+        "snapshot, permission, and scope match",
+        can_support_claim=True,
+        requires_rerun=False,
+    )
 
 
 def _local_orchestration(intent: str, topic_relation: str, message: str) -> dict[str, Any]:
@@ -686,6 +739,7 @@ def _must_rerun(message: str, intent: str, relation: str) -> bool:
             "每天变化",
             "活动前后",
             "日均",
+            "数据更新",
             "最新数据",
         )
     )

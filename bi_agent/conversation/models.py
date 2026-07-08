@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
 
@@ -40,37 +41,114 @@ class ContextItem:
         return asdict(self)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ContextManifest:
     manifest_id: str
     thread_id: str
     turn_id: str
+    topic_id: str | None
     items: tuple[ContextItem, ...]
+    sources: list[dict[str, Any]]
+    claim_use_policy: dict[str, Any]
+    snapshot_version: str | None
+    permission_context: dict[str, Any]
+    created_at: str
     can_support_claims: bool
 
+    def __init__(
+        self,
+        manifest_id: str,
+        thread_id: str,
+        turn_id: str,
+        items: tuple[ContextItem, ...] | list[ContextItem] | None = None,
+        can_support_claims: bool | None = None,
+        *,
+        topic_id: str | None = None,
+        sources: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        claim_use_policy: Mapping[str, Any] | None = None,
+        snapshot_version: str | None = None,
+        permission_context: Mapping[str, Any] | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        normalized_items = tuple(items or ())
+        normalized_sources = list(sources) if sources is not None else [
+            {
+                "type": item.source_type,
+                "ref": item.source_ref,
+                "can_support_claim": item.can_support_claims,
+                **item.to_dict(),
+            }
+            for item in normalized_items
+        ]
+        if can_support_claims is None:
+            can_support_claims = any(
+                bool(source.get("can_support_claim") or source.get("can_support_claims"))
+                for source in normalized_sources
+            )
+        object.__setattr__(self, "manifest_id", manifest_id)
+        object.__setattr__(self, "thread_id", thread_id)
+        object.__setattr__(self, "turn_id", turn_id)
+        object.__setattr__(self, "topic_id", topic_id)
+        object.__setattr__(self, "items", normalized_items)
+        object.__setattr__(self, "sources", normalized_sources)
+        object.__setattr__(self, "claim_use_policy", dict(claim_use_policy or {
+            "requires_evidence_ref": True,
+            "can_support_bi_claim": bool(can_support_claims),
+        }))
+        object.__setattr__(self, "snapshot_version", snapshot_version)
+        object.__setattr__(self, "permission_context", dict(permission_context or {}))
+        object.__setattr__(
+            self,
+            "created_at",
+            created_at or datetime.now(timezone.utc).isoformat(),
+        )
+        object.__setattr__(self, "can_support_claims", bool(can_support_claims))
+
     def __getitem__(self, key: str) -> Any:
-        if key == "sources":
-            return [
-                {
-                    "type": item.source_type,
-                    "ref": item.source_ref,
-                    **item.to_dict(),
-                }
-                for item in self.items
-            ]
         return self.to_dict()[key]
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["items"] = [item.to_dict() for item in self.items]
+        data["sources"] = list(self.sources)
         return data
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ReuseDecision:
+    source_ref: str
     decision: str
     result_ref: str
     reason: str
+    can_support_claim: bool
+    requires_rerun: bool
+
+    def __init__(
+        self,
+        decision: str,
+        result_ref: str = "",
+        reason: str = "",
+        can_support_claim: bool | None = None,
+        requires_rerun: bool | None = None,
+        *,
+        source_ref: str | None = None,
+    ) -> None:
+        known_decisions = {"reuse", "rerun", "context_only", "blocked", "none"}
+        if decision not in known_decisions and result_ref in known_decisions:
+            source_ref = decision
+            decision = result_ref
+            result_ref = source_ref
+        ref = source_ref if source_ref is not None else result_ref
+        if can_support_claim is None:
+            can_support_claim = decision == "reuse"
+        if requires_rerun is None:
+            requires_rerun = decision in {"blocked", "context_only", "rerun"}
+        object.__setattr__(self, "source_ref", ref)
+        object.__setattr__(self, "decision", decision)
+        object.__setattr__(self, "result_ref", result_ref or ref)
+        object.__setattr__(self, "reason", reason)
+        object.__setattr__(self, "can_support_claim", bool(can_support_claim))
+        object.__setattr__(self, "requires_rerun", bool(requires_rerun))
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -1,14 +1,47 @@
 from pathlib import Path
 import unittest
 
-from bi_agent.conversation.models import MemoryProposal
+from bi_agent.conversation.models import ContextManifest, MemoryProposal
 from bi_agent.conversation.postgres_store import CONVERSATION_SCHEMA_SQL, PostgresConversationStore
+from bi_agent.conversation.runtime import evaluate_reuse_candidate
+from bi_agent.conversation.store import InMemoryConversationStore
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 class ConversationPersistenceTest(unittest.TestCase):
+    def test_context_manifest_records_claim_usable_sources(self):
+        store = InMemoryConversationStore()
+        manifest = ContextManifest(
+            manifest_id="manifest-1",
+            thread_id="t1",
+            turn_id="turn-1",
+            topic_id="topic-1",
+            sources=[{"type": "answer_package", "ref": "artifact-1", "can_support_claim": True}],
+            claim_use_policy={"requires_evidence_ref": True},
+            snapshot_version="2026-H1",
+            permission_context={"role": "analyst"},
+            created_at="2026-07-08T00:00:00Z",
+        )
+
+        store.save_context_manifest(manifest)
+
+        loaded = store.list_context_manifests("t1")[0]
+        self.assertIs(loaded.sources[0]["can_support_claim"], True)
+        self.assertIs(loaded.claim_use_policy["requires_evidence_ref"], True)
+
+    def test_reuse_decision_blocks_stale_snapshot_claim_support(self):
+        decision = evaluate_reuse_candidate(
+            source_snapshot="2026-H1",
+            current_snapshot="2026-H2",
+            permission_match=True,
+            semantic_scope_match=True,
+        )
+
+        self.assertEqual(decision.decision, "context_only")
+        self.assertIs(decision.can_support_claim, False)
+
     def test_schema_declares_required_runtime_tables(self):
         required_tables = {
             "investigation_threads",

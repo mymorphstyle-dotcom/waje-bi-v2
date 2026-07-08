@@ -27,6 +27,8 @@ def build_answer_package(
     clarification_outcome: Optional[Mapping[str, Any]] = None,
     causal_audit: Optional[Mapping[str, Any]] = None,
     causal_evidence_dossier: Optional[Mapping[str, Any]] = None,
+    context_manifest_ref: str = "",
+    reuse_decisions: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
     semantic_audit = {} if semantic_audit is None else semantic_audit
@@ -72,6 +74,8 @@ def build_answer_package(
         "run_id": run_id,
         "status": "draft",
         "package_type": "draft_answer_package",
+        "context_manifest_ref": context_manifest_ref,
+        "reuse_decisions": to_jsonable(reuse_decisions),
         "proposed_graph": list(proposed_graph),
         "accepted_graph": list(accepted_graph),
         "rejected_or_degraded_mutations": to_jsonable(rejected_or_degraded_mutations),

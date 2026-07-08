@@ -7,8 +7,11 @@ from uuid import uuid4
 from bi_agent.conversation.models import (
     ArtifactRef,
     ClarificationState,
+    ContextItem,
+    ContextManifest,
     MemoryItem,
     MemoryProposal,
+    ReuseDecision,
     ResultRefRecord,
     ThreadState,
     TopicState,
@@ -26,6 +29,7 @@ class InMemoryConversationStore:
         self.memory_proposals: dict[str, MemoryProposal] = {}
         self.runs: dict[str, dict] = {}
         self.context_manifests: dict[str, dict] = {}
+        self.reuse_decisions: dict[tuple[str, str], list[dict]] = defaultdict(list)
         self.answer_packages: dict[str, dict] = {}
         self.clarification_states: dict[str, ClarificationState] = {}
         self.audit_events: list[dict] = []
@@ -120,11 +124,39 @@ class InMemoryConversationStore:
         self.add_audit_event("run_status_changed", thread_id=thread_id, topic_id=topic_id, run_id=run_id)
 
     def record_context_manifest(self, manifest: dict) -> None:
-        self.context_manifests[manifest["manifest_id"]] = manifest
+        self.save_context_manifest(manifest)
+
+    def save_context_manifest(self, manifest: ContextManifest | dict) -> None:
+        payload = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest)
+        self.context_manifests[payload["manifest_id"]] = payload
         self.add_audit_event(
             "context_manifest_recorded",
-            thread_id=manifest.get("thread_id", ""),
-            ref=manifest["manifest_id"],
+            thread_id=payload.get("thread_id", ""),
+            ref=payload["manifest_id"],
+        )
+
+    def save_reuse_decisions(
+        self,
+        thread_id: str,
+        turn_id: str,
+        decisions: tuple[ReuseDecision, ...] | list[ReuseDecision],
+    ) -> None:
+        self.reuse_decisions[(thread_id, turn_id)] = [
+            decision.to_dict() if hasattr(decision, "to_dict") else dict(decision)
+            for decision in decisions
+        ]
+        self.add_audit_event(
+            "reuse_decisions_recorded",
+            thread_id=thread_id,
+            ref=turn_id,
+            payload={"decisions": self.reuse_decisions[(thread_id, turn_id)]},
+        )
+
+    def list_context_manifests(self, thread_id: str) -> tuple[ContextManifest, ...]:
+        return tuple(
+            _context_manifest_from_payload(payload)
+            for payload in self.context_manifests.values()
+            if payload.get("thread_id") == thread_id
         )
 
     def record_answer_package(self, run_id: str, package: dict) -> None:
@@ -268,3 +300,34 @@ def _package_follow_up_context(package: dict) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return "已验证 Answer Package，可作为继续调查上下文。"
+
+
+def _context_manifest_from_payload(payload: dict) -> ContextManifest:
+    return ContextManifest(
+        manifest_id=payload["manifest_id"],
+        thread_id=payload["thread_id"],
+        turn_id=payload.get("turn_id", ""),
+        topic_id=payload.get("topic_id"),
+        items=tuple(
+            ContextItem(
+                source_type=item.get("source_type") or item.get("type", ""),
+                source_ref=item.get("source_ref") or item.get("ref", ""),
+                summary=item.get("summary", ""),
+                can_support_claims=bool(item.get("can_support_claims")),
+                visibility=item.get("visibility", "analyst"),
+                reason=item.get("reason", ""),
+                permission_scope=item.get("permission_scope", ""),
+                source_version=item.get("source_version", ""),
+                expired=bool(item.get("expired")),
+                claim_use=item.get("claim_use", "context_only"),
+            )
+            for item in payload.get("items", ())
+            if isinstance(item, dict)
+        ),
+        sources=list(payload.get("sources") or []),
+        claim_use_policy=dict(payload.get("claim_use_policy") or {}),
+        snapshot_version=payload.get("snapshot_version"),
+        permission_context=dict(payload.get("permission_context") or {}),
+        created_at=payload.get("created_at"),
+        can_support_claims=bool(payload.get("can_support_claims")),
+    )

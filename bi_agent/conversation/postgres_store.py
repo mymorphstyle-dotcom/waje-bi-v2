@@ -10,8 +10,11 @@ from bi_agent.conversation.models import (
     ArtifactRef,
     ClarificationOption,
     ClarificationState,
+    ContextItem,
+    ContextManifest,
     MemoryItem,
     MemoryProposal,
+    ReuseDecision,
     ResultRefRecord,
     ThreadState,
     TopicState,
@@ -296,6 +299,10 @@ class PostgresConversationStore:
         self._audit("run_status_changed", thread_id=thread_id, topic_id=topic_id, run_id=run_id, ref=run_id)
 
     def record_context_manifest(self, manifest: dict[str, Any]) -> None:
+        self.save_context_manifest(manifest)
+
+    def save_context_manifest(self, manifest: ContextManifest | dict[str, Any]) -> None:
+        payload = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest)
         self._execute(
             """
             INSERT INTO waje_runtime.context_manifests(
@@ -310,18 +317,47 @@ class PostgresConversationStore:
                 items = EXCLUDED.items
             """,
             {
-                "manifest_id": manifest["manifest_id"],
-                "thread_id": manifest["thread_id"],
-                "turn_id": manifest.get("turn_id"),
-                "can_support_claims": bool(manifest.get("can_support_claims")),
-                "items": _json(manifest.get("items", [])),
+                "manifest_id": payload["manifest_id"],
+                "thread_id": payload["thread_id"],
+                "turn_id": payload.get("turn_id"),
+                "can_support_claims": bool(payload.get("can_support_claims")),
+                "items": _json(payload),
             },
         )
         self._audit(
             "context_manifest_recorded",
-            thread_id=manifest.get("thread_id"),
-            ref=manifest["manifest_id"],
+            thread_id=payload.get("thread_id"),
+            ref=payload["manifest_id"],
         )
+
+    def save_reuse_decisions(
+        self,
+        thread_id: str,
+        turn_id: str,
+        decisions: tuple[ReuseDecision, ...] | list[ReuseDecision],
+    ) -> None:
+        payload = [
+            decision.to_dict() if hasattr(decision, "to_dict") else dict(decision)
+            for decision in decisions
+        ]
+        self._audit(
+            "reuse_decisions_recorded",
+            thread_id=thread_id,
+            ref=turn_id,
+            payload={"turn_id": turn_id, "decisions": payload},
+        )
+
+    def list_context_manifests(self, thread_id: str) -> tuple[ContextManifest, ...]:
+        rows = self._fetchall(
+            """
+            SELECT manifest_id, thread_id, turn_id, can_support_claims, items
+            FROM waje_runtime.context_manifests
+            WHERE thread_id = %(thread_id)s
+            ORDER BY created_at
+            """,
+            {"thread_id": thread_id},
+        )
+        return tuple(_context_manifest_from_row(row) for row in rows)
 
     def record_answer_package(self, run_id: str, package: dict[str, Any]) -> None:
         artifact_id = package.get("artifact_id") or package.get("artifact_path") or f"answer-package:{run_id}"
@@ -688,6 +724,49 @@ def _field(row: Any, key: str, index: int) -> Any:
         return row[index]
     except (IndexError, TypeError):
         return None
+
+
+def _context_manifest_from_row(row: Any) -> ContextManifest:
+    payload = _field(row, "items", 4)
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    if isinstance(payload, list):
+        payload = {"items": payload}
+    if not isinstance(payload, dict):
+        payload = {}
+    manifest_id = payload.get("manifest_id") or _field(row, "manifest_id", 0)
+    thread_id = payload.get("thread_id") or _field(row, "thread_id", 1)
+    return ContextManifest(
+        manifest_id=manifest_id,
+        thread_id=thread_id,
+        turn_id=payload.get("turn_id") or _field(row, "turn_id", 2) or "",
+        topic_id=payload.get("topic_id"),
+        items=tuple(
+            ContextItem(
+                source_type=item.get("source_type") or item.get("type", ""),
+                source_ref=item.get("source_ref") or item.get("ref", ""),
+                summary=item.get("summary", ""),
+                can_support_claims=bool(item.get("can_support_claims")),
+                visibility=item.get("visibility", "analyst"),
+                reason=item.get("reason", ""),
+                permission_scope=item.get("permission_scope", ""),
+                source_version=item.get("source_version", ""),
+                expired=bool(item.get("expired")),
+                claim_use=item.get("claim_use", "context_only"),
+            )
+            for item in payload.get("items", ())
+            if isinstance(item, dict)
+        ),
+        sources=list(payload.get("sources") or []),
+        claim_use_policy=dict(payload.get("claim_use_policy") or {}),
+        snapshot_version=payload.get("snapshot_version"),
+        permission_context=dict(payload.get("permission_context") or {}),
+        created_at=payload.get("created_at"),
+        can_support_claims=bool(payload.get("can_support_claims", _field(row, "can_support_claims", 3))),
+    )
 
 
 def _clarification_state_from_payload(payload: Any) -> Optional[ClarificationState]:
