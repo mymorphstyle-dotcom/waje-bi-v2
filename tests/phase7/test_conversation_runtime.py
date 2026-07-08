@@ -237,6 +237,29 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(answered.status, "answered")
         self.assertEqual(answered.answer, "按日粒度，移除贡献最大的正向日期后复算。")
 
+    def test_open_clarification_does_not_coerce_unrelated_business_question(self):
+        runtime = build_test_runtime()
+
+        first = runtime.handle_message("thread-live-case-2", "如果去掉异常天还成立吗？")
+        self.assertEqual(first.status, "waiting_for_clarification")
+        self.assertIsNotNone(runtime.store.get_open_clarification("thread-live-case-2"))
+
+        result = runtime.handle_message(
+            "thread-live-case-2",
+            "Q3 相比 Q2 按日粒度复算异常日期后，付费金额为什么变了？",
+        )
+
+        self.assertEqual(result.turn_intent.intent, "new_topic")
+        self.assertEqual(result.topic_relation, "new_topic")
+        self.assertNotEqual(result.topic_id, first.topic_id)
+        self.assertFalse(
+            any(item.source_type == "clarification" for item in result.context_manifest.items)
+        )
+        self.assertEqual(
+            runtime.store.get_open_clarification("thread-live-case-2").status,
+            "waiting",
+        )
+
     def test_outlier_variant_question_triggers_outlier_strategy_clarification(self):
         store = InMemoryConversationStore()
         runtime = ConversationRuntime(store)

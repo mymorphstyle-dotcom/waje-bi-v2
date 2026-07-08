@@ -38,10 +38,19 @@ class ConversationAgentCore:
         permission_context: dict | None = None,
         role: str = "analyst",
         artifact_root: str = "artifacts/phase-7",
+        clarification: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         role = str((permission_context or {}).get("role") or role or "analyst")
         run_id = run_id or f"run-{uuid4().hex[:12]}"
         self.store.upsert_run(run_id, thread_id=thread_id, status="running")
+        if clarification:
+            self.store.add_audit_event(
+                "clarification_answer_submitted",
+                thread_id=thread_id,
+                run_id=run_id,
+                ref=run_id,
+                payload=clarification,
+            )
         turn = ConversationRuntime(
             self.store,
             llm_client=self.conversation_llm_client,
@@ -57,6 +66,7 @@ class ConversationAgentCore:
                     "reason": "needs_clarification",
                     "intent": turn.turn_intent.intent,
                     "clarification": turn.clarification.to_dict() if turn.clarification else None,
+                    "clarification_answer": clarification,
                     "user_id": user_id,
                     "permission_context": permission_context or {},
                 }
@@ -114,6 +124,7 @@ class ConversationAgentCore:
                 "user_id": user_id,
                 "permission_context": permission_context or {},
                 "artifact_root": artifact_root,
+                "clarification_answer": clarification,
             }
         )
         self.store.upsert_run(
@@ -341,7 +352,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--message", required=True)
     parser.add_argument("--role", default="analyst")
     parser.add_argument("--artifact-root", default="artifacts/phase-7")
+    parser.add_argument("--clarification")
     args = parser.parse_args(argv)
+    clarification = json.loads(args.clarification) if args.clarification else None
 
     store = PostgresConversationStore.from_env()
     core = ConversationAgentCore(store, conversation_llm_client=_conversation_llm_from_env())
@@ -351,6 +364,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         user_message=args.message,
         role=args.role,
         artifact_root=args.artifact_root,
+        clarification=clarification,
     )
     json.dump(result, sys.stdout, ensure_ascii=False, sort_keys=True)
     sys.stdout.write("\n")

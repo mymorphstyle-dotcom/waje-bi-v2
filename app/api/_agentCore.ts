@@ -8,11 +8,22 @@ type AgentCoreResult = {
   error?: string;
 };
 
+type AgentCoreOptions = {
+  clarification?: {
+    runId: string;
+    answer: string;
+    selectedOptionId?: string | null;
+    source?: "user";
+  };
+  forceInline?: boolean;
+};
+
 export async function runAgentCore(
   threadId: string,
   runId: string,
   message: string,
   role = "analyst",
+  options: AgentCoreOptions = {},
 ): Promise<AgentCoreResult> {
   if (process.env.WAJE_AGENT_CORE_COMMAND && process.env.WAJE_AGENT_CORE_COMMAND !== "python3") {
     throw new Error("WAJE_AGENT_CORE_COMMAND currently supports python3");
@@ -29,8 +40,11 @@ export async function runAgentCore(
     "--role",
     role,
   ];
+  if (options.clarification) {
+    args.push("--clarification", JSON.stringify(options.clarification));
+  }
 
-  if (process.env.WAJE_AGENT_CORE_INLINE === "1") {
+  if (options.forceInline || process.env.WAJE_AGENT_CORE_INLINE === "1") {
     return await runAgentCoreInline(args);
   }
 

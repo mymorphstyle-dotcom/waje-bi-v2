@@ -77,7 +77,18 @@ class ConversationRuntime:
     ) -> ConversationTurnResult:
         thread = self.store.get_thread(thread_id)
         open_clarification = self.store.get_open_clarification(thread_id)
-        if open_clarification and _looks_like_clarification_answer(user_message.strip()):
+        text = user_message.strip()
+        matches_open_clarification = (
+            _looks_like_clarification_answer(text, open_clarification)
+            if open_clarification
+            else False
+        )
+        matches_legacy_pending = (
+            not open_clarification
+            and bool(thread.pending_clarification_id)
+            and _looks_like_legacy_clarification_answer(text)
+        )
+        if open_clarification and matches_open_clarification:
             self.store.set_pending_clarification(
                 thread_id,
                 open_clarification.topic_id,
@@ -85,10 +96,8 @@ class ConversationRuntime:
             )
             thread = self.store.get_thread(thread_id)
         turn_id = f"turn-{uuid4().hex[:12]}"
-        local_intent = _classify_intent(
-            user_message,
-            bool(thread.pending_clarification_id) or bool(open_clarification),
-        )
+        allow_clarification_answer = matches_open_clarification or matches_legacy_pending
+        local_intent = _classify_intent(user_message, allow_clarification_answer)
         local_topic_relation = _topic_relation(local_intent, user_message, active_run_status)
         orchestration = self._orchestrate_turn(
             thread_id,
@@ -97,6 +106,7 @@ class ConversationRuntime:
             active_run_status,
             local_intent,
             local_topic_relation,
+            allow_clarification_answer,
         )
         intent_name = orchestration["intent"]
         topic_relation = orchestration["topic_relation"]
@@ -250,6 +260,7 @@ class ConversationRuntime:
         active_run_status: str,
         local_intent: str,
         local_topic_relation: str,
+        allow_clarification_answer: bool,
     ) -> dict[str, Any]:
         local = _local_orchestration(local_intent, local_topic_relation, message)
         if not self.llm_client:
@@ -295,7 +306,7 @@ class ConversationRuntime:
         validated = _validated_orchestration(
             result.output,
             local,
-            has_pending_clarification=bool(thread.pending_clarification_id),
+            allow_clarification_answer=allow_clarification_answer,
             active_run_status=active_run_status,
             topic_count=len(self.store.topics_for_thread(thread_id)),
         )
@@ -514,7 +525,7 @@ def _validated_orchestration(
     output: Any,
     local: dict[str, Any],
     *,
-    has_pending_clarification: bool,
+    allow_clarification_answer: bool,
     active_run_status: str,
     topic_count: int,
 ) -> dict[str, Any]:
@@ -529,7 +540,7 @@ def _validated_orchestration(
     if local["intent"] in LOCAL_GUARDED_INTENTS and intent != local["intent"]:
         return _local_fallback(local, "local_conversation_orchestrator_guard")
 
-    if intent == "clarification_answer" and not has_pending_clarification:
+    if intent == "clarification_answer" and not allow_clarification_answer:
         return _local_fallback(local, "local_conversation_orchestrator_fallback")
 
     if intent in {"off_topic", "unsupported_request"}:
@@ -570,9 +581,9 @@ def _confidence(value: Any) -> float:
     return max(0.0, min(1.0, confidence))
 
 
-def _classify_intent(message: str, has_pending_clarification: bool) -> str:
+def _classify_intent(message: str, allow_clarification_answer: bool) -> str:
     text = message.strip()
-    if has_pending_clarification and _looks_like_clarification_answer(text):
+    if allow_clarification_answer:
         return "clarification_answer"
     if any(token in text for token in ("原始用户 ID", "直接写 SQL", "所有订单", "发优惠券", "预测下个月")):
         return "unsupported_request"
@@ -782,10 +793,56 @@ def _build_clarification(
     )
 
 
-def _looks_like_clarification_answer(text: str) -> bool:
+def _looks_like_clarification_answer(
+    text: str,
+    clarification: ClarificationState | None = None,
+) -> bool:
+    if clarification is None:
+        return _looks_like_legacy_clarification_answer(text)
+    if _looks_new_topic(text) or _is_mixed(text):
+        return False
+    normalized = text.strip().rstrip("。")
+    option_texts = {
+        part.strip().rstrip("。")
+        for option in clarification.options
+        for part in (option.option_id, option.label, option.description)
+        if part and part.strip()
+    }
+    if normalized in option_texts:
+        return True
+    if normalized in {"按推荐继续", "推荐"}:
+        return any(option.recommended for option in clarification.options)
+
+    scope = " ".join(
+        [clarification.question]
+        + [
+            f"{option.option_id} {option.label} {option.description}"
+            for option in clarification.options
+        ]
+    )
+    if "异常" in scope or "移除" in scope or "剔除" in scope:
+        return _looks_like_outlier_clarification_answer(text)
+    if "日均" in scope or "总金额" in scope or "口径" in scope:
+        return normalized in {"日均", "按日均", "付费总金额", "总金额"} or any(
+            token in text for token in ("日均", "总金额", "付费总金额")
+        )
+    if "继续哪一个业务问题" in scope:
+        return any(token in text for token in ("当前", "第二个", "继续"))
+    return False
+
+
+def _looks_like_legacy_clarification_answer(text: str) -> bool:
     return text in {"日均。", "日均", "按推荐继续。", "按推荐继续"} or (
         any(token in text for token in ("按日", "复算", "移除", "异常"))
         and any(token in text for token in ("粒度", "日期", "订单级", "明细"))
+    )
+
+
+def _looks_like_outlier_clarification_answer(text: str) -> bool:
+    if any(token in text for token in ("订单级明细", "指定日期", "日期范围")):
+        return True
+    return any(token in text for token in ("移除", "剔除", "排除", "去掉", "排掉")) and any(
+        token in text for token in ("按日", "日期", "天", "日", "复算", "异常")
     )
 
 

@@ -25,7 +25,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
       runId,
       answer,
       selectedOptionId: body.selectedOptionId ?? null,
-      source: "user",
+      source: "user" as const,
     };
     const clarification = await recordClarificationOutcome(clarificationPayload);
     const agentCore = await runAgentCore(
@@ -33,13 +33,17 @@ export async function POST(request: NextRequest, context: RouteContext) {
       runId,
       answer,
       process.env.WAJE_GATEWAY_ROLE || "analyst",
+      {
+        clarification: clarificationPayload,
+        forceInline: true,
+      },
     );
     const resumed = agentCore.result && typeof agentCore.result === "object"
       ? agentCore.result as Record<string, unknown>
       : {};
     return NextResponse.json({
       runId,
-      resumedRunId: runId,
+      resumedRunId: resumed.run_id ?? runId,
       topicId: resumed.topic_id ?? null,
       status: resumed.status ?? agentCore.status,
       answerPackagePreview: resumed.answer_package ?? null,
