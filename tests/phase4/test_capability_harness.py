@@ -384,6 +384,34 @@ class CapabilityHarnessTest(unittest.TestCase):
         self.assertNotIn("high_value_amount_share", result.typed_payload)
         self.assertIn("字段不完整", result.typed_payload["business_readout"])
 
+    def test_high_value_user_contribution_rejects_generic_bucket_for_top_percentile(self):
+        result = run_capability(
+            "high_value_user_contribution",
+            {
+                "rows": [
+                    {
+                        "period": "Q1",
+                        "group": "baseline",
+                        "bucket": "vip",
+                        "amount": 100,
+                        "paid_users": 10,
+                    },
+                    {
+                        "period": "Q1",
+                        "group": "target",
+                        "bucket": "whale",
+                        "amount": 180,
+                        "paid_users": 12,
+                    },
+                ],
+                "threshold_policy": {"type": "top_percentile", "value": 0.95},
+            },
+        )
+
+        self.assertEqual(result.wording_limit, "insufficient")
+        self.assertIn("missing_high_value_indicator", result.limitations)
+        self.assertEqual(result.typed_payload["high_value_amount"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

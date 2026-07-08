@@ -162,6 +162,7 @@ def _high_value_totals(
     paid_users: float,
     policy: Mapping[str, Any],
 ) -> tuple[float, float, str, str | None]:
+    threshold = _top_percentile_threshold(policy)
     explicit_amount = _number(row.get("high_value_amount"))
     explicit_users = _number(row.get("high_value_paid_users"))
     if explicit_amount is not None or explicit_users is not None:
@@ -170,12 +171,11 @@ def _high_value_totals(
         return explicit_amount, explicit_users, "embedded_totals", None
 
     high_value_flag = _boolish(row.get("is_high_value"))
-    if high_value_flag is not None:
+    if high_value_flag is not None and threshold is None:
         flagged_amount, flagged_users = _flagged_totals(high_value_flag, amount, paid_users)
         return flagged_amount, flagged_users, "is_high_value", None
 
     percentile = _ratio(row.get("value_percentile"))
-    threshold = _top_percentile_threshold(policy)
     if percentile is not None and threshold is not None:
         flagged_amount, flagged_users = _flagged_totals(percentile >= threshold, amount, paid_users)
         return flagged_amount, flagged_users, "value_percentile", None
@@ -231,9 +231,9 @@ def _bucket_is_high_value(value: Any, policy: Mapping[str, Any]) -> bool | None:
     collapsed = text.replace("-", "_").replace(" ", "_")
     if collapsed in {"regular", "standard", "other", "low_value", "non_high_value"}:
         return False
-    if any(token in collapsed for token in ("high_value", "vip", "whale")):
-        return True
     threshold = _top_percentile_threshold(policy)
+    if threshold is None and any(token in collapsed for token in ("high_value", "vip", "whale")):
+        return True
     if threshold is None:
         return None
     parsed = _bucket_percentile_match(collapsed)
