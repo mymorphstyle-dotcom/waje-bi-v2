@@ -222,19 +222,9 @@ def _claims(answer_package: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _traceable_refs(answer_package: dict[str, Any], context_manifest: dict[str, Any]) -> set[str]:
     refs: set[str] = set()
-    artifact_path = answer_package.get("artifact_path")
-    if isinstance(artifact_path, str) and artifact_path:
-        refs.add(f"artifact:{artifact_path}")
     for item in context_manifest.get("items", []):
         if isinstance(item, dict) and item.get("source_ref"):
             refs.add(str(item["source_ref"]))
-    for section in answer_package.get("sections", []):
-        payload = section.get("payload", {}) if isinstance(section, dict) else {}
-        evidence = payload.get("evidence")
-        if isinstance(evidence, list):
-            for item in evidence:
-                if isinstance(item, dict) and item.get("evidence_ref"):
-                    refs.add(str(item["evidence_ref"]))
     return refs
 
 

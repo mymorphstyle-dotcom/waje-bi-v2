@@ -47,6 +47,8 @@ class ConversationAgentCore:
             llm_client=self.conversation_llm_client,
         ).handle_message(thread_id, user_message, role=role)
         context_manifest = turn.context_manifest.to_dict()
+        if turn.run_request and self.workflow_runner is _dry_run_workflow:
+            context_manifest = _manifest_with_dry_run_source(context_manifest, run_id, role)
         self.store.record_context_manifest(context_manifest)
 
         if not turn.run_request:
@@ -103,6 +105,7 @@ class ConversationAgentCore:
             }
 
         request = turn.run_request.to_dict()
+        request["context_manifest"] = context_manifest
         request.update(
             {
                 "run_id": run_id,
@@ -152,8 +155,6 @@ class ConversationAgentCore:
         package = dict(result.answer_package)
         package["run_id"] = run_id
         package["artifact_path"] = result.artifact_path
-        context_manifest = _manifest_with_answer_sources(context_manifest, package)
-        self.store.record_context_manifest(context_manifest)
         accepted_graph = (
             package.get("accepted_graph")
             or package.get("admin_audit", {}).get("accepted_graph")
@@ -215,7 +216,7 @@ def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
     compiled = _compile_dry_run_graph(requested_nodes)
     accepted_graph = list(compiled.mutations.accepted_graph)
     answer_text = _dry_run_answer_text(question)
-    evidence_ref = f"artifact:{run_id}:dry_run"
+    evidence_ref = _dry_run_claim_source_ref(request)
     return WorkflowRunResult(
         status="draft",
         run_id=run_id,
@@ -295,26 +296,22 @@ def _dry_run_answer_text(question: str) -> str:
     return f"演练回答：{question}"
 
 
-def _manifest_with_answer_sources(manifest: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
-    refs = _package_evidence_refs(package)
-    if not refs:
-        return manifest
+def _manifest_with_dry_run_source(manifest: dict[str, Any], run_id: str, role: str) -> dict[str, Any]:
+    ref = f"artifact:context:{manifest.get('manifest_id', run_id)}"
     updated = dict(manifest)
     items = list(updated.get("items") or [])
     existing = {str(item.get("source_ref")) for item in items if isinstance(item, dict)}
-    for ref in refs:
-        if ref in existing:
-            continue
+    if ref not in existing:
         items.append(
             {
-                "source_type": ref.split(":", 1)[0],
+                "source_type": "artifact",
                 "source_ref": ref,
-                "summary": "Answer Package 生成的可审计证据引用。",
+                "summary": "dry-run harness 预置的本轮上下文 artifact 引用。",
                 "can_support_claims": True,
                 "visibility": "analyst",
-                "reason": "answer_package_claim_source",
-                "permission_scope": package.get("permission_scope") or "analyst",
-                "source_version": package.get("snapshot_id") or "dry-run",
+                "reason": "dry_run_claim_source",
+                "permission_scope": role,
+                "source_version": "dry-run",
                 "expired": False,
                 "claim_use": "evidence",
             }
@@ -324,20 +321,17 @@ def _manifest_with_answer_sources(manifest: dict[str, Any], package: dict[str, A
     return updated
 
 
-def _package_evidence_refs(package: dict[str, Any]) -> list[str]:
-    refs: list[str] = []
-    artifact_path = package.get("artifact_path")
-    if isinstance(artifact_path, str) and artifact_path:
-        refs.append(f"artifact:{artifact_path}")
-    for section in package.get("sections", []):
-        payload = section.get("payload", {}) if isinstance(section, dict) else {}
-        evidence = payload.get("evidence")
-        if not isinstance(evidence, list):
-            continue
-        for item in evidence:
-            if isinstance(item, dict) and item.get("evidence_ref"):
-                refs.append(str(item["evidence_ref"]))
-    return list(dict.fromkeys(refs))
+def _dry_run_claim_source_ref(request: dict[str, Any]) -> str:
+    manifest = request.get("context_manifest") or {}
+    for item in manifest.get("items", []):
+        if (
+            isinstance(item, dict)
+            and item.get("can_support_claims")
+            and item.get("claim_use") == "evidence"
+            and str(item.get("source_ref", "")).startswith("artifact:")
+        ):
+            return str(item["source_ref"])
+    return f"artifact:context:{request.get('run_id', 'dry_run')}"
 
 
 def main(argv: Optional[list[str]] = None) -> int:

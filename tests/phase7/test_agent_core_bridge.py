@@ -185,6 +185,16 @@ class AgentCoreBridgeTest(unittest.TestCase):
                                     }
                                 ],
                             }
+                        },
+                        {
+                            "payload": {
+                                "evidence": [
+                                    {
+                                        "evidence_ref": "artifact:missing",
+                                        "evidence_type": "artifact",
+                                    }
+                                ]
+                            }
                         }
                     ]
                 },
