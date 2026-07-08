@@ -1128,6 +1128,10 @@ def _normalize_route_requested_nodes(
         if node == "joint_attribution":
             if _contains_any(business_text, ("用户数", "客单价", "arppu", "aov", "单价")):
                 value = "driver_decomposition"
+            elif _contains_any(business_text, ("组合", "交互", "共同解释")) or intent.get(
+                "pattern_params", {}
+            ).get("joint_dimension_keys"):
+                value = "joint_attribution"
             elif _contains_any(business_text, ("渠道", "分群", "拖累", "贡献")):
                 value = "segment_contribution"
         normalized.append(value)
@@ -1157,6 +1161,7 @@ def _normalize_route_requested_nodes(
             or _business_text_requests_segment_contribution(business_text)
         )
         and _contains_segment_dimension(business_text)
+        and "joint_attribution" not in normalized
         and "segment_contribution" not in normalized
     ):
         normalized.append("segment_contribution")
@@ -1816,6 +1821,17 @@ def _route_after_next_action(state: WorkflowState) -> str:
         return "promote"
     if action == "degrade":
         if _evidence_supports_bounded_answer(state):
+            state["next_action"] = {
+                **state.get("next_action", {}),
+                "next_action": "synthesize_answer",
+                "decision_summary": (
+                    "已有可发布的有边界业务证据，不能把可回答结果降级为无法回答；"
+                    "进入答案合成，并在答案中保留证据限制。"
+                ),
+                "display_summary": (
+                    "已有可回答的业务证据，本轮继续生成带边界说明的答案。"
+                ),
+            }
             _current_event(state)["route"] = "degrade_overridden_to_bounded_answer"
             return "synthesize"
         if _pattern_has_negative_answer_evidence(state):
@@ -1830,6 +1846,20 @@ def _route_after_next_action(state: WorkflowState) -> str:
             _current_event(state)["route"] = "degrade_overridden_to_negative_answer"
             return "synthesize"
         return "degrade"
+    if (
+        action == "synthesize_answer"
+        and _evidence_supports_bounded_answer(state)
+        and _next_action_text_conflicts_with_established_evidence(state)
+    ):
+        state["next_action"] = {
+            **state.get("next_action", {}),
+            "decision_summary": (
+                "已有可发布的有边界业务证据，继续生成答案；"
+                "答案会同时说明归因结果和证据限制。"
+            ),
+            "display_summary": "已有可回答的业务证据，本轮继续生成带边界说明的答案。",
+        }
+        _current_event(state)["route"] = "synthesize_action_text_repaired"
     return (
         "synthesize"
         if _evidence_supports_bounded_answer(state)
@@ -1843,6 +1873,27 @@ def _route_after_promotion_policy(state: WorkflowState) -> str:
     if route == "accepted":
         return "accepted"
     return "synthesize" if _evidence_supports_bounded_answer(state) else "degrade"
+
+
+def _next_action_text_conflicts_with_established_evidence(state: WorkflowState) -> bool:
+    text = " ".join(
+        str(state.get("next_action", {}).get(key) or "")
+        for key in ("decision_summary", "display_summary")
+    )
+    if not text:
+        return False
+    conflict_tokens = (
+        "无法执行",
+        "无法完成",
+        "无法分析",
+        "无法回答",
+        "证据不足",
+        "数据不足",
+        "缺少渠道字段",
+        "渠道数据缺失",
+        "数据缺失",
+    )
+    return any(token in text for token in conflict_tokens)
 
 
 def _route_after_hard_verify(state: WorkflowState) -> str:
@@ -2073,6 +2124,7 @@ def _claims_from_llm_or_default(claims: Any, state: WorkflowState) -> list[dict[
         refs = [
             ref for ref in claim.get("evidence_refs", ()) if ref in evidence_refs
         ]
+        refs = _prioritize_claim_refs(refs, evidence_by_ref)
         text = _weaken_unsupported_causal_wording(
             claim.get("text") or claim.get("claim_text") or claim.get("claim")
         )
@@ -2097,6 +2149,17 @@ def _claims_from_llm_or_default(claims: Any, state: WorkflowState) -> list[dict[
             }
         )
     return normalized or [_default_claim_from_evidence(state)]
+
+
+def _prioritize_claim_refs(
+    refs: Sequence[str],
+    evidence_by_ref: Mapping[str, Mapping[str, Any]],
+) -> list[str]:
+    established = [
+        ref for ref in refs if _evidence_established(dict(evidence_by_ref.get(ref, {})))
+    ]
+    remaining = [ref for ref in refs if ref not in established]
+    return [*established, *remaining]
 
 
 def _normalize_claim_numbers(
@@ -2254,6 +2317,14 @@ def _final_summary_covers_claim(
 ) -> bool:
     numbers = claim.get("numbers", {})
     required = []
+    if _is_joint_claim(claim):
+        joint = _joint_attribution_evidence(state)
+        first = ((joint.get("typed_payload", {}).get("top_combinations") or [{}])[0])
+        values = first.get("dimension_values") or ()
+        required.extend(_businessize_dimension_value(value) for value in values[:2])
+        if "top_3_absolute_delta_share" in numbers:
+            required.append(_format_percent(numbers.get("top_3_absolute_delta_share")))
+        return _text_covers_required_values(text, required)
     if "median_uplift" in numbers:
         required.append(_format_percent(abs(numbers.get("median_uplift") or 0)))
     if "unit_value_share" in numbers:
@@ -2300,9 +2371,17 @@ def _is_driver_claim(claim: Mapping[str, Any]) -> bool:
     return "driver_decomposition" in refs or {"unit_value_share", "volume_share"} <= numbers
 
 
+def _is_joint_claim(claim: Mapping[str, Any]) -> bool:
+    refs = " ".join(str(ref) for ref in claim.get("evidence_refs", ()))
+    return "joint_attribution" in refs
+
+
 def _preferred_final_claim(claims: Sequence[dict[str, Any]]) -> dict[str, Any]:
     for claim in claims:
         if _is_driver_claim(claim):
+            return claim
+    for claim in claims:
+        if _is_joint_claim(claim):
             return claim
     return claims[0]
 
@@ -2478,6 +2557,8 @@ def _key_findings_sentence(state: WorkflowState) -> str:
         if capability == "outlier_contribution":
             share = primary.get("typed_payload", {}).get("top_positive_share")
             return f"关键发现：异常贡献检查显示，前几个高贡献周期占正向变化的{_format_percent(share)}。"
+        if capability == "joint_attribution":
+            return f"关键发现：{_joint_attribution_finding(primary)}"
         return "关键发现：当前证据可以支持一个有边界的业务判断。"
     payload = pattern.get("typed_payload", {})
     median_uplift = payload.get("median_uplift")
@@ -2565,6 +2646,12 @@ def _attention_sentence(state: WorkflowState) -> str:
         notes.append("暂时没有事件或机制证据，不能解释变化由什么原因造成")
     if "no_comparable_periods" in limitations:
         notes.append("当前没有可比周期，无法形成观察性对比结论")
+    if "skipped_incomplete_joint_combinations" in limitations:
+        notes.append("部分渠道和阶段组合缺少完整的目标期或基准期配对，已从组合贡献计算中跳过")
+    if "sparse_cell" in limitations:
+        notes.append("样本过少的组合已跳过，避免让小样本放大结论")
+    if any(str(item).startswith("missing_required_field:channel") for item in limitations):
+        notes.append("少量聚合行缺少渠道字段，组合归因只使用字段完整的组合")
     if not notes:
         notes.append("后续可以继续跟踪新周期、异常日、渠道或用户结构，确认这个变化是否延续")
     return "需要注意：" + "；".join(dict.fromkeys(notes)) + "。"
@@ -2700,10 +2787,28 @@ def _primary_business_evidence(state: WorkflowState) -> dict[str, Any]:
         item.get("capability_id") or item.get("capability"): item
         for item in state.get("evidence", [])
     }
+    answer_capabilities = {
+        capability
+        for capability in priority
+        if capability not in {"data_quality_profile", "data_quality_check"}
+    }
+    for capability in priority:
+        if capability not in answer_capabilities:
+            continue
+        item = by_capability.get(capability)
+        if item and _evidence_established(item):
+            return item
     for capability in priority:
         if capability in by_capability:
             return by_capability[capability]
     return (state.get("evidence") or [{}])[0]
+
+
+def _joint_attribution_evidence(state: WorkflowState) -> dict[str, Any]:
+    for item in state.get("evidence", []):
+        if (item.get("capability_id") or item.get("capability")) == "joint_attribution":
+            return item
+    return {}
 
 
 def _evidence_established(evidence: dict[str, Any]) -> bool:
@@ -3062,6 +3167,20 @@ def _default_claim_from_primary_evidence(state: WorkflowState) -> dict[str, Any]
             "total_delta": payload.get("total_delta"),
             "paired_periods": payload.get("paired_periods"),
         }
+    elif capability == "joint_attribution":
+        text = (
+            f"当前组合贡献拆解显示，渠道和月内阶段组合可以作为候选解释："
+            f"{_joint_attribution_finding(evidence)}"
+            "这仍是观察性归因，不能直接写成原因定论。"
+        )
+        numbers = {
+            "total_delta": payload.get("total_delta"),
+            "absolute_total_delta": payload.get("absolute_total_delta"),
+            "combination_count": payload.get("combination_count"),
+            "skipped_sparse_rows": payload.get("skipped_sparse_rows"),
+            "leading_absolute_delta_share": payload.get("leading_absolute_delta_share"),
+            "top_3_absolute_delta_share": payload.get("top_3_absolute_delta_share"),
+        }
     else:
         text = "当前证据支持一个有边界的业务判断，但需要在答案中保留限制项。"
         numbers = {}
@@ -3127,6 +3246,44 @@ def _business_metric_label(state: Mapping[str, Any]) -> str:
     return metric
 
 
+def _joint_attribution_finding(evidence: Mapping[str, Any]) -> str:
+    payload = evidence.get("typed_payload", {})
+    top = list(payload.get("top_combinations") or ())
+    if not top:
+        return "组合归因没有形成可比较的渠道和阶段组合。"
+    first = top[0]
+    first_label = _joint_combination_label(first)
+    first_share = _format_percent(first.get("absolute_delta_share"))
+    first_delta = _format_number(first.get("delta"))
+    top_three = [_joint_combination_label(item) for item in top[:3]]
+    top_three_share = _format_percent(payload.get("top_3_absolute_delta_share"))
+    if len(top_three) >= 3:
+        return (
+            f"贡献最大的组合是{first_label}，增量 {first_delta}，占绝对变化 {first_share}；"
+            f"前三个组合是{'、'.join(top_three)}，合计占绝对变化 {top_three_share}。"
+        )
+    return (
+        f"贡献最大的组合是{first_label}，增量 {first_delta}，占绝对变化 {first_share}。"
+    )
+
+
+def _joint_combination_label(item: Mapping[str, Any]) -> str:
+    values = item.get("dimension_values") or ()
+    labels = [_businessize_dimension_value(value) for value in values]
+    return " × ".join(labels) if labels else "未识别组合"
+
+
+def _businessize_dimension_value(value: Any) -> str:
+    text = str(value)
+    return {
+        "start": "月初",
+        "mid": "月中",
+        "end": "月末",
+        "baseline": "基准期",
+        "target": "目标期",
+    }.get(text, text)
+
+
 def _scope_label(scope: Any) -> str:
     return {
         "full_sample": "全样本",
@@ -3154,6 +3311,11 @@ def _weaken_unsupported_causal_wording(text: Any) -> str:
     value = value.replace("主要驱动力是", "主要贡献项是")
     value = value.replace("驱动因素", "贡献项")
     value = value.replace("驱动力", "贡献项")
+    value = value.replace("不能直接写成因果结论", "不能直接写成原因定论")
+    value = value.replace("不能直接定因果", "不能直接定为原因")
+    value = value.replace("因果证据", "机制证据")
+    value = value.replace("因果结论", "原因定论")
+    value = value.replace("因果", "原因")
     value = value.replace(
         "No event-based causes were identified to explain the pattern.",
         "没有匹配到可支持机制结论的事件证据。",

@@ -7,6 +7,7 @@ from bi_agent.runtime.exploration_budget import default_budget
 from bi_agent.runtime.langgraph_workflow import (
     _capability_path_labels,
     _clarification_policy_gate,
+    _claims_from_llm_or_default,
     _default_claim_from_evidence,
     _execute_capabilities,
     _execute_joint_attribution,
@@ -620,6 +621,141 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertNotIn("可比周期", claim["text"])
         self.assertEqual(claim["numbers"]["direction_ratio"], 1.0)
         self.assertEqual(claim["numbers"]["comparable_periods"], 1)
+
+    def test_default_claim_explains_joint_attribution_business_result(self):
+        state = {
+            "intent": {
+                "question_family": "segment_or_factor_attribution",
+                "pattern_family": "custom_baseline",
+                "target_metric": "paid_amount",
+                "scope": "all_users",
+                "time_window": "2026-01-01..2026-06-30",
+                "target_claim": "渠道和月内阶段组合是否解释Q2相比Q1的主要变化",
+                "baseline": {"label": "Q1"},
+                "target": {"label": "Q2"},
+            },
+            "request": {"question": "渠道和月内阶段组合是否解释Q2相比Q1的主要变化？"},
+            "evidence_brief": {
+                "limitations": [
+                    "skipped_incomplete_joint_combinations",
+                    "sparse_cell",
+                ]
+            },
+            "evidence": [
+                {
+                    "evidence_ref": "segment_contribution:inline",
+                    "capability_id": "segment_contribution",
+                    "strength": "low",
+                    "wording_limit": "insufficient",
+                    "limitations": ["no_comparable_segments"],
+                    "typed_payload": {},
+                },
+                {
+                    "evidence_ref": "joint_attribution:inline",
+                    "capability_id": "joint_attribution",
+                    "strength": "medium",
+                    "wording_limit": "candidate",
+                    "limitations": [
+                        "skipped_incomplete_joint_combinations",
+                        "sparse_cell",
+                    ],
+                    "typed_payload": {
+                        "top_3_absolute_delta_share": 0.425,
+                        "leading_absolute_delta_share": 0.168,
+                        "total_delta": 3984843236.0,
+                        "absolute_total_delta": 3984843236.0,
+                        "combination_count": 10,
+                        "skipped_sparse_rows": 10,
+                        "top_combinations": [
+                            {
+                                "dimension_values": ["WajeSpecial", "start"],
+                                "delta": 668574193.0,
+                                "absolute_delta_share": 0.168,
+                            },
+                            {
+                                "dimension_values": ["WajeSpecial", "end"],
+                                "delta": 603941864.0,
+                                "absolute_delta_share": 0.152,
+                            },
+                            {
+                                "dimension_values": ["WajeSpecial", "mid"],
+                                "delta": 422894415.0,
+                                "absolute_delta_share": 0.105,
+                            },
+                        ],
+                    },
+                }
+            ],
+        }
+
+        claim = _default_claim_from_evidence(state)
+        state["draft_claims"] = [claim]
+
+        self.assertIn("WajeSpecial × 月初", claim["text"])
+        self.assertIn("合计占绝对变化 42.5%", claim["text"])
+        self.assertIn("观察性归因", claim["text"])
+        self.assertNotIn("有边界的业务判断", claim["text"])
+        self.assertEqual(claim["evidence_refs"], ["joint_attribution:inline"])
+        self.assertEqual(claim["numbers"]["top_3_absolute_delta_share"], 0.425)
+        self.assertTrue(
+            _final_summary_needs_display_repair(
+                "我对问题的理解是：已理解。\n"
+                "分析脉络：已分析。\n"
+                "关键发现：当前证据可以支持一个有边界的业务判断。\n"
+                "最终结论：当前证据支持一个有边界的业务判断。\n"
+                "需要注意：保留边界。",
+                state,
+            )
+        )
+
+    def test_llm_claim_prefers_established_joint_ref_and_weakens_causal_wording(self):
+        state = {
+            "intent": {
+                "pattern_family": "custom_baseline",
+                "target_metric": "paid_amount",
+                "scope": "all_users",
+                "time_window": "2026-01-01..2026-06-30",
+            },
+            "evidence": [
+                {
+                    "evidence_ref": "data_quality_profile:run-1",
+                    "capability_id": "data_quality_profile",
+                    "strength": "low",
+                    "wording_limit": "degraded",
+                    "typed_payload": {"scope": "all_users", "time_window": "2026-01-01..2026-06-30"},
+                },
+                {
+                    "evidence_ref": "joint_attribution:inline",
+                    "capability_id": "joint_attribution",
+                    "strength": "medium",
+                    "wording_limit": "candidate",
+                    "typed_payload": {
+                        "scope": "all_users",
+                        "time_window": "2026-01-01..2026-06-30",
+                        "top_3_absolute_delta_share": 0.425,
+                    },
+                },
+            ],
+        }
+
+        claims = _claims_from_llm_or_default(
+            [
+                {
+                    "text": "组合贡献可以作为候选解释，但不能直接写成因果结论，也不能直接定因果。",
+                    "evidence_refs": [
+                        "data_quality_profile:run-1",
+                        "joint_attribution:inline",
+                    ],
+                    "numbers": {"top_3_absolute_delta_share": 0.425},
+                }
+            ],
+            state,
+        )
+
+        self.assertEqual(claims[0]["evidence_refs"][0], "joint_attribution:inline")
+        self.assertNotIn("因果结论", claims[0]["text"])
+        self.assertNotIn("定因果", claims[0]["text"])
+        self.assertIn("原因定论", claims[0]["text"])
 
     def test_final_summary_display_repair_rejects_audit_jargon_and_overstrong_wording(self):
         claim = {
@@ -1330,6 +1466,19 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertNotIn("requested_nodes_hint", payload)
         self.assertNotIn("joint_attribution", result.answer_package["accepted_graph"])
 
+    def test_route_normalization_preserves_joint_attribution_for_combination_asks(self):
+        normalized = _normalize_route_requested_nodes(
+            ("joint_attribution", "answer_verify"),
+            {
+                "question_family": "segment_or_factor_attribution",
+                "target_claim": "判断渠道和月内阶段组合是否解释主要变化",
+                "pattern_params": {"joint_dimension_keys": ("channel", "phase")},
+            },
+        )
+
+        self.assertIn("joint_attribution", normalized)
+        self.assertNotIn("segment_contribution", normalized)
+
     def test_factor_attribution_route_runs_driver_decomposition(self):
         fake = FakeLLMClient(
             {
@@ -1683,6 +1832,73 @@ class LLMWorkflowTest(unittest.TestCase):
             if event.get("node") == "decide_next_action"
         ]
         self.assertIn("degrade_overridden_to_bounded_answer", routes)
+
+    def test_degrade_override_rewrites_next_action_for_audit(self):
+        state = {
+            "checkpoint_events": [{"node": "decide_next_action"}],
+            "next_action": {
+                "next_action": "degrade",
+                "decision_summary": "数据缺失，无法回答。",
+            },
+            "intent": {
+                "pattern_family": "custom_baseline",
+                "scope": "all_users",
+                "time_window": "2026-01-01..2026-06-30",
+            },
+            "evidence": [
+                {
+                    "evidence_ref": "joint_attribution:inline",
+                    "capability_id": "joint_attribution",
+                    "strength": "medium",
+                    "wording_limit": "candidate",
+                    "typed_payload": {},
+                }
+            ],
+        }
+
+        route = _route_after_next_action(state)
+
+        self.assertEqual(route, "synthesize")
+        self.assertEqual(state["next_action"]["next_action"], "synthesize_answer")
+        self.assertIn("不能把可回答结果降级", state["next_action"]["decision_summary"])
+        self.assertEqual(
+            state["checkpoint_events"][-1]["route"],
+            "degrade_overridden_to_bounded_answer",
+        )
+
+    def test_synthesize_next_action_conflict_text_is_repaired_for_audit(self):
+        state = {
+            "checkpoint_events": [{"node": "decide_next_action"}],
+            "next_action": {
+                "next_action": "synthesize_answer",
+                "decision_summary": "由于缺少渠道字段，联合归因无法执行。",
+                "display_summary": "证据不足以完成归因。",
+            },
+            "intent": {
+                "pattern_family": "custom_baseline",
+                "scope": "all_users",
+                "time_window": "2026-01-01..2026-06-30",
+            },
+            "evidence": [
+                {
+                    "evidence_ref": "joint_attribution:inline",
+                    "capability_id": "joint_attribution",
+                    "strength": "medium",
+                    "wording_limit": "candidate",
+                    "typed_payload": {},
+                }
+            ],
+        }
+
+        route = _route_after_next_action(state)
+
+        self.assertEqual(route, "synthesize")
+        self.assertIn("继续生成答案", state["next_action"]["decision_summary"])
+        self.assertNotIn("无法执行", state["next_action"]["decision_summary"])
+        self.assertEqual(
+            state["checkpoint_events"][-1]["route"],
+            "synthesize_action_text_repaired",
+        )
 
     def test_unsupported_pattern_synthesizes_negative_answer(self):
         rows = []

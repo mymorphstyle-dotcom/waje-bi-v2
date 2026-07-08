@@ -177,7 +177,7 @@ def build_visualization_plan(claim_groups: Sequence[Mapping[str, Any]]) -> dict[
 
 def _visual_block_type(evidence_refs: Sequence[str]) -> str:
     joined = " ".join(str(ref) for ref in evidence_refs)
-    if "segment" in joined or "driver" in joined:
+    if "segment" in joined or "driver" in joined or "joint_attribution" in joined:
         return "contribution_breakdown"
     if "pattern" in joined or "phase" in joined:
         return "phase_profile"

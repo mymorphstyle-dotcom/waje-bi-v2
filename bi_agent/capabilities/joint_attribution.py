@@ -26,14 +26,15 @@ def joint_attribution(
         )
         residual = payload.get("residual", residual)
         fit = payload.get("fit", fit)
-    needs_escalation = abs(residual) > 0.10 or fit < 0.80
-    if segment_evidence is None:
+    needs_escalation = segment_evidence is None or abs(residual) > 0.10 or fit < 0.80
+    dimension_keys = dimension_keys or _infer_dimension_keys(rows, group_key, amount_key)
+    if segment_evidence is None and (not rows or len(dimension_keys) < 2):
         return make_evidence_envelope(
             "joint_attribution",
             evidence_type="insufficient_evidence",
             strength="low",
             wording_limit="blocked",
-            typed_payload={"residual": residual, "fit": fit},
+            typed_payload={"dimension_keys": dimension_keys, "residual": residual, "fit": fit},
             limitations=("segment_bridge_required",),
             result_refs=result_refs,
         )
@@ -53,7 +54,6 @@ def joint_attribution(
             result_refs=result_refs,
         )
 
-    dimension_keys = dimension_keys or _infer_dimension_keys(rows, group_key, amount_key)
     if len(dimension_keys) < 2:
         return make_evidence_envelope(
             "joint_attribution",
@@ -68,13 +68,16 @@ def joint_attribution(
     has_sensitive = any(_has_sensitive_keys(row) for row in rows)
     sample_sizes = tuple(_sample_size(row) for row in rows)
     has_unverified_sample = any(size is None for size in sample_sizes)
-    has_sparse = any(size is not None and size < SPARSE_THRESHOLD for size in sample_sizes)
-    if has_sensitive or has_sparse or has_unverified_sample:
+    safe_rows = tuple(
+        row for row, size in zip(rows, sample_sizes) if size is None or size >= SPARSE_THRESHOLD
+    )
+    skipped_sparse = len(rows) - len(safe_rows)
+    if has_sensitive or has_unverified_sample:
         limitations = tuple(
             reason
             for reason, present in (
                 ("raw_identifier_present", has_sensitive),
-                ("sparse_cell", has_sparse),
+                ("sparse_cell", bool(skipped_sparse)),
                 ("sample_size_unverified", has_unverified_sample),
             )
             if present
@@ -89,13 +92,30 @@ def joint_attribution(
                 "residual": residual,
                 "fit": fit,
                 "row_count": len(rows),
+                "skipped_sparse_rows": skipped_sparse,
             },
             limitations=limitations,
             result_refs=result_refs,
         )
+    if skipped_sparse and not safe_rows:
+        return make_evidence_envelope(
+            "joint_attribution",
+            evidence_type="permission_limited",
+            strength="insufficient",
+            wording_limit="blocked",
+            typed_payload={
+                "dimension_keys": dimension_keys,
+                "residual": residual,
+                "fit": fit,
+                "row_count": len(rows),
+                "skipped_sparse_rows": skipped_sparse,
+            },
+            limitations=("sparse_cell",),
+            result_refs=result_refs,
+        )
 
     combinations, skipped = _combination_deltas(
-        rows,
+        safe_rows,
         dimension_keys=dimension_keys,
         group_key=group_key,
         target_group=target_group,
@@ -129,6 +149,10 @@ def joint_attribution(
     combinations.sort(key=lambda item: abs(item["delta"]), reverse=True)
     marginals = _marginal_contributions(combinations, dimension_keys, absolute_total_delta)
     decision = _dimension_decision(combinations, marginals)
+    leading = combinations[0]
+    top_3_absolute_delta_share = sum(
+        item["absolute_delta_share"] for item in combinations[:3]
+    )
     return make_evidence_envelope(
         "joint_attribution",
         evidence_type="statistical_association",
@@ -141,6 +165,9 @@ def joint_attribution(
             "total_delta": total_delta,
             "absolute_total_delta": absolute_total_delta,
             "combination_count": len(combinations),
+            "skipped_sparse_rows": skipped_sparse,
+            "leading_absolute_delta_share": leading["absolute_delta_share"],
+            "top_3_absolute_delta_share": top_3_absolute_delta_share,
             "top_combinations": tuple(combinations[:5]),
             "top_lifts": tuple(item for item in combinations if item["delta"] > 0)[:5],
             "top_drags": tuple(item for item in combinations if item["delta"] < 0)[:5],
@@ -148,7 +175,15 @@ def joint_attribution(
             "dimension_decision": decision,
             "skipped_rows_or_combinations": skipped,
         },
-        limitations=tuple(["skipped_incomplete_joint_combinations"] if skipped else []),
+        limitations=tuple(
+            reason
+            for reason, present in (
+                ("skipped_incomplete_joint_combinations", bool(skipped)),
+                ("sparse_cell", bool(skipped_sparse)),
+                ("segment_bridge_not_supplied", segment_evidence is None),
+            )
+            if present
+        ),
         result_refs=result_refs,
     )
 

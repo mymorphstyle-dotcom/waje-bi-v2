@@ -27,7 +27,7 @@ def wording_warnings(
     for index, claim in enumerate(claims):
         text = str(claim.get("text", ""))
         refs = claim.get("evidence_refs", ())
-        if CAUSAL_WORDING.search(text):
+        if _has_positive_causal_wording(text):
             has_causal_evidence = any(
                 evidence_by_ref.get(ref, {}).get("evidence_type") == "causal_evidence"
                 for ref in refs
@@ -63,6 +63,33 @@ def wording_warnings(
                 }
             )
     return warnings
+
+
+def _has_positive_causal_wording(text: str) -> bool:
+    for sentence in re.split(r"[。；;.!?？\n]+", text):
+        if not CAUSAL_WORDING.search(sentence):
+            continue
+        lowered = sentence.lower()
+        if any(
+            marker in lowered
+            for marker in (
+                "不能",
+                "无法",
+                "不可",
+                "不支持",
+                "缺乏",
+                "没有",
+                "暂不",
+                "not ",
+                "cannot",
+                "can't",
+                "without",
+                "no ",
+            )
+        ):
+            continue
+        return True
+    return False
 
 
 def _comparable_periods(evidence: Mapping[str, Any]) -> int:

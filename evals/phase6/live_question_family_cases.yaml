@@ -134,9 +134,9 @@ cases:
     primary_question_family: segment_or_factor_attribution
     secondary_question_families: []
     question: "渠道和月内阶段组合是否解释了2026年Q2相比Q1的主要变化？"
-    review_focus: "组合归因只能在一维贡献不足时作为候选补充。"
-    required_capabilities: [segment_contribution, joint_attribution, answer_verify]
-    required_accepted_capabilities: [segment_contribution]
+    review_focus: "组合归因要保留渠道和月内阶段两个维度，不能降成单一 segment 贡献。"
+    required_capabilities: [joint_attribution, answer_verify]
+    required_accepted_capabilities: [joint_attribution]
     allowed_final_statuses: [passed, degraded]
     pattern_family: custom_baseline
     time_window: "2026-01-01..2026-06-30"
@@ -148,21 +148,24 @@ cases:
     baseline: {label: "2026年Q1", start: "2026-01-01", end: "2026-04-01"}
     target: {label: "2026年Q2", start: "2026-04-01", end: "2026-07-01"}
     pattern_params:
-      period_key: segment
+      joint_dimension_keys: [channel, phase]
       group_key: group
       target_group: target
       baseline_group: baseline
-    required_fields: [segment, group, amount]
+      amount_key: amount
+    required_fields: [channel, phase, group, amount, n]
     real_sql: |
       SELECT
-        concat(channel, '_', multiIf(toDayOfMonth(business_date_lagos) <= 10, 'start', toDayOfMonth(business_date_lagos) <= 20, 'mid', 'end')) AS segment,
+        channel,
+        multiIf(toDayOfMonth(business_date_lagos) <= 10, 'start', toDayOfMonth(business_date_lagos) <= 20, 'mid', 'end') AS phase,
         if(business_date_lagos < toDate('2026-04-01'), 'baseline', 'target') AS `group`,
-        sum(paid_amount_ngn) AS amount
+        sum(paid_amount_ngn) AS amount,
+        count() AS n
       FROM paid_order_success_clean_20240101_20260704
       WHERE business_date_lagos >= toDate('2026-01-01')
         AND business_date_lagos < toDate('2026-07-01')
-      GROUP BY segment, `group`
-      ORDER BY segment, `group`
+      GROUP BY channel, phase, `group`
+      ORDER BY channel, phase, `group`
 
   - case_id: phase6_revenue_health_h1
     primary_question_family: revenue_health_review

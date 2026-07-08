@@ -199,6 +199,20 @@ class PatternScanTest(unittest.TestCase):
         self.assertEqual(result.typed_payload["top_combinations"][0]["dimension_values"], ("WajeSpecial", "start"))
         self.assertAlmostEqual(result.typed_payload["total_delta"], 20.0)
 
+    def test_joint_attribution_can_run_directly_from_rows_and_dimensions(self):
+        result = joint_attribution(
+            [
+                {"channel": "WajeSpecial", "phase": "start", "group": "baseline", "amount": 100, "n": 40},
+                {"channel": "WajeSpecial", "phase": "start", "group": "target", "amount": 180, "n": 45},
+                {"channel": "Other", "phase": "start", "group": "baseline", "amount": 100, "n": 40},
+                {"channel": "Other", "phase": "start", "group": "target", "amount": 110, "n": 45},
+            ],
+            dimension_keys=("channel", "phase"),
+        )
+
+        self.assertEqual(result.evidence_type, "statistical_association")
+        self.assertEqual(result.typed_payload["top_combinations"][0]["dimension_values"], ("WajeSpecial", "start"))
+
     def test_joint_attribution_blocks_sparse_or_sensitive_combination_cells(self):
         segment = segment_bridge(
             [{"segment": "channel", "amount": 100, "n": 100}],
@@ -224,6 +238,21 @@ class PatternScanTest(unittest.TestCase):
         self.assertEqual(result.wording_limit, "blocked")
         self.assertIn("sparse_cell", result.limitations)
         self.assertIn("raw_identifier_present", result.limitations)
+
+    def test_joint_attribution_skips_sparse_cells_when_safe_cells_remain(self):
+        result = joint_attribution(
+            [
+                {"channel": "Sparse", "phase": "start", "group": "baseline", "amount": 10, "n": 3},
+                {"channel": "Sparse", "phase": "start", "group": "target", "amount": 20, "n": 3},
+                {"channel": "WajeSpecial", "phase": "start", "group": "baseline", "amount": 100, "n": 40},
+                {"channel": "WajeSpecial", "phase": "start", "group": "target", "amount": 180, "n": 45},
+            ],
+            dimension_keys=("channel", "phase"),
+        )
+
+        self.assertEqual(result.evidence_type, "statistical_association")
+        self.assertIn("sparse_cell", result.limitations)
+        self.assertEqual(result.typed_payload["top_combinations"][0]["dimension_values"], ("WajeSpecial", "start"))
 
     def test_joint_attribution_recommends_downgrade_when_single_dimension_explains_change(self):
         segment = segment_bridge(

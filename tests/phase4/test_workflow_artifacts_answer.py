@@ -50,6 +50,46 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             "候选机制",
         )
 
+    def test_joint_attribution_visual_plan_uses_contribution_breakdown(self):
+        package = build_answer_package(
+            run_id="joint-visual-package",
+            draft_claims=[
+                {
+                    "text": "组合贡献拆解显示 WajeSpecial × 月初贡献最大。",
+                    "evidence_refs": ["joint_attribution:inline"],
+                    "scope": "all_users",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "numbers": {},
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_ref": "joint_attribution:inline",
+                    "capability_id": "joint_attribution",
+                    "evidence_type": "statistical_association",
+                    "strength": "medium",
+                    "wording_limit": "candidate",
+                    "limitations": [],
+                    "typed_payload": {
+                        "scope": "all_users",
+                        "time_window": "2026-01-01..2026-06-30",
+                    },
+                }
+            ],
+            checkpoint_events=[],
+            proposed_graph=[],
+            accepted_graph=["joint_attribution"],
+            rejected_or_degraded_mutations=[],
+            validator_results=[],
+            sql_text="SELECT 1",
+            sql_hash="hash",
+            artifact_audit={},
+        )
+
+        block = package["sections"][0]["payload"]["visualization_plan"]["blocks"][0]
+        self.assertEqual(block["block_type"], "contribution_breakdown")
+        self.assertEqual(block["title"], "贡献拆解")
+
     def test_langgraph_failure_does_not_publish_business_conclusion(self):
         result = run_pattern_workflow(
             {"force_langgraph_failure": True, "llm_client": FakeLLMClient()}
@@ -204,6 +244,34 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 for warning in admin["admin_audit"]["verifier"]["warnings"]
             )
         )
+
+    def test_verifier_allows_negated_causal_boundary_wording(self):
+        verifier = verify_answer_package(
+            draft_claims=[
+                {
+                    "text": "这仍是观察性归因，不能直接定因果。",
+                    "evidence_refs": ["joint_attribution:inline"],
+                    "numbers": {},
+                    "scope": "all_users",
+                    "time_window": "2026-01-01..2026-06-30",
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_ref": "joint_attribution:inline",
+                    "evidence_type": "statistical_association",
+                    "strength": "medium",
+                    "wording_limit": "candidate",
+                    "typed_payload": {
+                        "scope": "all_users",
+                        "time_window": "2026-01-01..2026-06-30",
+                    },
+                }
+            ],
+            visible_limitations=[],
+        )
+
+        self.assertEqual(verifier["warnings"], [])
 
     def test_final_business_summary_enforces_user_facing_shape(self):
         fake = FakeLLMClient(
