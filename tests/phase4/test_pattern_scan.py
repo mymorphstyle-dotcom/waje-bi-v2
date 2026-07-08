@@ -2,6 +2,7 @@ import unittest
 
 from bi_agent.capabilities.data_quality_check import data_quality_check
 from bi_agent.capabilities.formula_decompose import formula_decompose
+from bi_agent.capabilities.joint_attribution import joint_attribution
 from bi_agent.capabilities.pattern_scan import scan_pattern
 from bi_agent.capabilities.segment_bridge import segment_bridge
 
@@ -169,6 +170,87 @@ class PatternScanTest(unittest.TestCase):
             result.typed_payload["segments"],
             ({"segment": "A", "amount": 100, "n": 20},),
         )
+
+    def test_joint_attribution_computes_combinations_when_one_dimension_is_insufficient(self):
+        segment = segment_bridge(
+            [{"segment": "channel", "amount": 100, "n": 100}],
+            residual=0.25,
+            fit=0.60,
+        )
+        result = joint_attribution(
+            [
+                {"channel": "WajeSpecial", "phase": "start", "group": "baseline", "amount": 100, "n": 40},
+                {"channel": "WajeSpecial", "phase": "start", "group": "target", "amount": 180, "n": 45},
+                {"channel": "WajeSpecial", "phase": "mid", "group": "baseline", "amount": 100, "n": 40},
+                {"channel": "WajeSpecial", "phase": "mid", "group": "target", "amount": 30, "n": 45},
+                {"channel": "Other", "phase": "start", "group": "baseline", "amount": 100, "n": 80},
+                {"channel": "Other", "phase": "start", "group": "target", "amount": 30, "n": 85},
+                {"channel": "Other", "phase": "mid", "group": "baseline", "amount": 100, "n": 80},
+                {"channel": "Other", "phase": "mid", "group": "target", "amount": 180, "n": 85},
+            ],
+            segment_evidence=segment,
+            dimension_keys=("channel", "phase"),
+        )
+
+        self.assertEqual(result.evidence_type, "statistical_association")
+        self.assertEqual(result.wording_limit, "candidate")
+        self.assertEqual(result.typed_payload["dimension_decision"]["action"], "keep_joint")
+        self.assertEqual(result.typed_payload["dimension_keys"], ("channel", "phase"))
+        self.assertEqual(result.typed_payload["top_combinations"][0]["dimension_values"], ("WajeSpecial", "start"))
+        self.assertAlmostEqual(result.typed_payload["total_delta"], 20.0)
+
+    def test_joint_attribution_blocks_sparse_or_sensitive_combination_cells(self):
+        segment = segment_bridge(
+            [{"segment": "channel", "amount": 100, "n": 100}],
+            residual=0.25,
+            fit=0.60,
+        )
+        result = joint_attribution(
+            [
+                {
+                    "channel": "WajeSpecial",
+                    "phase": "start",
+                    "group": "baseline",
+                    "amount": 100,
+                    "raw_user_id": "u1",
+                    "n": 3,
+                }
+            ],
+            segment_evidence=segment,
+            dimension_keys=("channel", "phase"),
+        )
+
+        self.assertEqual(result.evidence_type, "permission_limited")
+        self.assertEqual(result.wording_limit, "blocked")
+        self.assertIn("sparse_cell", result.limitations)
+        self.assertIn("raw_identifier_present", result.limitations)
+
+    def test_joint_attribution_recommends_downgrade_when_single_dimension_explains_change(self):
+        segment = segment_bridge(
+            [{"segment": "channel", "amount": 100, "n": 100}],
+            residual=0.25,
+            fit=0.60,
+        )
+        result = joint_attribution(
+            [
+                {"channel": "WajeSpecial", "phase": "start", "group": "baseline", "amount": 100, "n": 40},
+                {"channel": "WajeSpecial", "phase": "start", "group": "target", "amount": 180, "n": 45},
+                {"channel": "WajeSpecial", "phase": "mid", "group": "baseline", "amount": 100, "n": 40},
+                {"channel": "WajeSpecial", "phase": "mid", "group": "target", "amount": 120, "n": 45},
+                {"channel": "Other", "phase": "start", "group": "baseline", "amount": 100, "n": 80},
+                {"channel": "Other", "phase": "start", "group": "target", "amount": 105, "n": 85},
+                {"channel": "Other", "phase": "mid", "group": "baseline", "amount": 100, "n": 80},
+                {"channel": "Other", "phase": "mid", "group": "target", "amount": 105, "n": 85},
+            ],
+            segment_evidence=segment,
+            dimension_keys=("channel", "phase"),
+        )
+
+        self.assertEqual(
+            result.typed_payload["dimension_decision"]["action"],
+            "downgrade_to_single_dimension",
+        )
+        self.assertEqual(result.typed_payload["dimension_decision"]["dimension"], "channel")
 
 
 if __name__ == "__main__":

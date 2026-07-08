@@ -9,6 +9,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _clarification_policy_gate,
     _default_claim_from_evidence,
     _execute_capabilities,
+    _execute_joint_attribution,
     _final_business_summary_fallback,
     _final_summary_needs_display_repair,
     _infer_question_families_from_requested_nodes,
@@ -1388,6 +1389,45 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn(
             "unit_value_share",
             result.answer_package["sections"][0]["payload"]["claims"][0]["numbers"],
+        )
+
+    def test_joint_attribution_promotion_node_uses_rows_and_joint_dimensions(self):
+        state = {
+            "request": {},
+            "sql_hash": "sql:test",
+            "checkpoint_events": [{}],
+            "intent": {
+                "scope": "all_users",
+                "time_window": "2026-01-01..2026-06-30",
+                "pattern_params": {
+                    "joint_dimension_keys": ("channel", "phase"),
+                    "group_key": "group",
+                    "target_group": "target",
+                    "baseline_group": "baseline",
+                },
+            },
+            "rows": [
+                {"channel": "WajeSpecial", "phase": "start", "group": "baseline", "amount": 100, "n": 40},
+                {"channel": "WajeSpecial", "phase": "start", "group": "target", "amount": 180, "n": 45},
+                {"channel": "WajeSpecial", "phase": "mid", "group": "baseline", "amount": 100, "n": 40},
+                {"channel": "WajeSpecial", "phase": "mid", "group": "target", "amount": 30, "n": 45},
+            ],
+            "evidence": [
+                {
+                    "capability": "segment_bridge",
+                    "typed_payload": {"residual": 0.25, "fit": 0.60},
+                }
+            ],
+        }
+
+        _execute_joint_attribution(state)
+
+        joint = state["evidence"][-1]
+        self.assertEqual(joint["capability"], "joint_attribution")
+        self.assertEqual(joint["typed_payload"]["dimension_keys"], ["channel", "phase"])
+        self.assertEqual(
+            joint["typed_payload"]["top_combinations"][0]["dimension_values"],
+            ["WajeSpecial", "start"],
         )
 
     def test_segment_contribution_evidence_has_claim_ready_fields(self):

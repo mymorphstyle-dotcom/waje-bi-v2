@@ -1041,6 +1041,20 @@ def _segment_contribution_params(state: WorkflowState) -> dict[str, Any]:
     }
 
 
+def _joint_attribution_params(state: WorkflowState) -> dict[str, Any]:
+    params = dict(state.get("intent", {}).get("pattern_params", {}))
+    dimensions = params.get("joint_dimension_keys") or params.get("dimension_keys") or ()
+    if isinstance(dimensions, str):
+        dimensions = tuple(part.strip() for part in dimensions.split(",") if part.strip())
+    return {
+        "dimension_keys": tuple(dimensions),
+        "group_key": params.get("group_key", "group"),
+        "target_group": params.get("target_group", "target"),
+        "baseline_group": params.get("baseline_group", "baseline"),
+        "amount_key": params.get("amount_key", "amount"),
+    }
+
+
 def _outlier_contribution_params(state: WorkflowState) -> dict[str, Any]:
     params = dict(state.get("intent", {}).get("pattern_params", {}))
     return {
@@ -1336,7 +1350,12 @@ def _execute_joint_attribution(state: WorkflowState) -> WorkflowState:
     segment = next((item for item in evidence if item.get("capability") == "segment_bridge"), None)
     evidence.append(
         _evidence_dict(
-            joint_attribution(segment_evidence=segment, result_refs=(state["sql_hash"],)),
+            joint_attribution(
+                state.get("rows", ()),
+                segment_evidence=segment,
+                result_refs=(state["sql_hash"],),
+                **_joint_attribution_params(state),
+            ),
             state,
         )
     )
