@@ -160,6 +160,42 @@ class CapabilityHarnessTest(unittest.TestCase):
             result.typed_payload["decompositions"][0]["volume_share"],
         )
 
+    def test_driver_decomposition_reports_revenue_component_changes(self):
+        result = driver_decomposition(
+            [
+                {
+                    "period": "2026-07-07",
+                    "group": "baseline",
+                    "amount": 100,
+                    "paid_users": 10,
+                    "orders": 20,
+                    "first_paid_users": 4,
+                    "payment_success_rate": 0.80,
+                },
+                {
+                    "period": "2026-07-07",
+                    "group": "target",
+                    "amount": 150,
+                    "paid_users": 12,
+                    "orders": 30,
+                    "first_paid_users": 6,
+                    "payment_success_rate": 0.90,
+                },
+            ]
+        )
+
+        components = {
+            item["component_id"]: item
+            for item in result.typed_payload["decompositions"][0]["component_changes"]
+        }
+        self.assertAlmostEqual(components["paid_users"]["delta_ratio"], 0.2)
+        self.assertAlmostEqual(components["paid_frequency"]["baseline_value"], 2.0)
+        self.assertAlmostEqual(components["paid_frequency"]["target_value"], 2.5)
+        self.assertAlmostEqual(components["avg_order_amount"]["baseline_value"], 5.0)
+        self.assertAlmostEqual(components["avg_order_amount"]["target_value"], 5.0)
+        self.assertAlmostEqual(components["first_paid_users"]["delta_ratio"], 0.5)
+        self.assertAlmostEqual(components["payment_success_rate"]["delta"], 0.10)
+
     def test_driver_decomposition_skips_null_period_without_crashing(self):
         result = driver_decomposition(
             [

@@ -90,7 +90,98 @@ def _decompose_pair(period, baseline, target, *, amount_key, user_key, order_key
         "volume_share": volume_share,
         "unit_value_share": unit_share,
         "primary_driver": primary_driver,
+        "component_changes": _component_changes(baseline, target),
     }
+
+
+def _component_changes(baseline, target):
+    components = (
+        ("paid_users", "付费人数", _row_value(baseline, "paid_users"), _row_value(target, "paid_users")),
+        ("orders", "付费订单数", _row_value(baseline, "orders"), _row_value(target, "orders")),
+        (
+            "paid_frequency",
+            "付费频次",
+            _paid_frequency(baseline),
+            _paid_frequency(target),
+        ),
+        (
+            "avg_order_amount",
+            "单笔付费金额",
+            _avg_order_amount(baseline),
+            _avg_order_amount(target),
+        ),
+        (
+            "first_paid_users",
+            "首充人数",
+            _row_value(baseline, "first_paid_users"),
+            _row_value(target, "first_paid_users"),
+        ),
+        (
+            "first_pay_user_share",
+            "首充用户占比",
+            _first_pay_user_share(baseline),
+            _first_pay_user_share(target),
+        ),
+        (
+            "payment_success_rate",
+            "支付成功率",
+            _row_value(baseline, "payment_success_rate"),
+            _row_value(target, "payment_success_rate"),
+        ),
+    )
+    changes = []
+    for component_id, business_name, baseline_value, target_value in components:
+        if baseline_value is None or target_value is None:
+            continue
+        delta = target_value - baseline_value
+        changes.append(
+            {
+                "component_id": component_id,
+                "business_name": business_name,
+                "baseline_value": baseline_value,
+                "target_value": target_value,
+                "delta": delta,
+                "delta_ratio": _ratio(delta, baseline_value),
+            }
+        )
+    return tuple(changes)
+
+
+def _row_value(row, key):
+    return _number(row.get(key))
+
+
+def _paid_frequency(row):
+    explicit = _row_value(row, "paid_frequency")
+    if explicit is not None:
+        return explicit
+    orders = _row_value(row, "orders")
+    paid_users = _row_value(row, "paid_users")
+    if orders is None or not paid_users:
+        return None
+    return orders / paid_users
+
+
+def _avg_order_amount(row):
+    explicit = _row_value(row, "avg_order_amount")
+    if explicit is not None:
+        return explicit
+    amount = _row_value(row, "amount")
+    orders = _row_value(row, "orders")
+    if amount is None or not orders:
+        return None
+    return amount / orders
+
+
+def _first_pay_user_share(row):
+    explicit = _row_value(row, "first_pay_user_share")
+    if explicit is not None:
+        return explicit
+    first_paid_users = _row_value(row, "first_paid_users")
+    paid_users = _row_value(row, "paid_users")
+    if first_paid_users is None or not paid_users:
+        return None
+    return first_paid_users / paid_users
 
 
 def _groups(rows, period_key, group_key):

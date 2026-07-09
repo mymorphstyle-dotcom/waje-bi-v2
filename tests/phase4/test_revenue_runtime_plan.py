@@ -154,6 +154,49 @@ class RevenueRuntimePlanTest(unittest.TestCase):
         self.assertIn("high_value_amount", row_shape["optional_fields"])
         self.assertIn("high_value_paid_users", row_shape["optional_fields"])
 
+    def test_driver_component_question_compiles_metric_component_contracts(self):
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=(
+                "compare_periods",
+                "driver_decomposition",
+                "data_quality_profile",
+                "answer_verify",
+            ),
+            diagnostic_axes=("driver_components", "evidence_quality"),
+            question_text="主要是首充人数、付费频次、单笔付费金额，还是支付成功率导致的？",
+            bound_context={
+                "schema_fields": (
+                    "business_date_lagos",
+                    "paid_amount_ngn",
+                    "user_id",
+                    "order_id",
+                    "is_first_payment",
+                    "payment_status",
+                )
+            },
+            prior_assets=(),
+        )
+
+        self.assertIn("component_driver_scan", plan["query_intents"])
+        row_shape = plan["row_shapes"][0]
+        self.assertIn("paid_frequency", row_shape["derived_fields"])
+        self.assertIn("avg_order_amount", row_shape["derived_fields"])
+        self.assertIn("first_pay_user_share", row_shape["derived_fields"])
+        self.assertIn("payment_success_rate", row_shape["derived_fields"])
+        contracts = {
+            item["component_id"]: item
+            for item in plan["metric_component_contracts"]
+        }
+        self.assertEqual(contracts["paid_frequency"]["status"], "supported")
+        self.assertEqual(contracts["avg_order_amount"]["status"], "supported")
+        self.assertEqual(contracts["payment_success_rate"]["source_fields"], ("payment_status",))
+        self.assertEqual(contracts["payment_success_rate"]["status"], "supported")
+        driver_input = plan["capability_inputs"]["driver_decomposition"]
+        self.assertEqual(driver_input["preferred_query_intents"][0], "component_driver_scan")
+        self.assertIn("paid_frequency", driver_input["required_fields"])
+        self.assertEqual(driver_input["gap_policy"], "degrade_to_available_components")
+
     def test_candidate_only_dimensions_require_contract_gap_descriptors(self):
         plan = build_revenue_runtime_plan(
             target_metric="paid_amount",

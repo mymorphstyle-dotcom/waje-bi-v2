@@ -15,6 +15,7 @@ EXECUTABLE_INTENTS = frozenset(
         "dimension_scan",
         "joint_candidate_scan",
         "high_value_scan",
+        "component_driver_scan",
         "data_quality_probe",
     )
 )
@@ -29,6 +30,9 @@ MEASURE_SQL = {
     "first_paid_users": "countIf(is_first_payment = '1') AS first_paid_users",
     "high_value_amount": "sum(high_value_amount) AS high_value_amount",
     "high_value_paid_users": "sum(high_value_paid_users) AS high_value_paid_users",
+    "paid_frequency": "count() / nullIf(uniqExact(user_id), 0) AS paid_frequency",
+    "avg_order_amount": "sum(paid_amount_ngn) / nullIf(count(), 0) AS avg_order_amount",
+    "first_pay_user_share": "countIf(is_first_payment = '1') / nullIf(uniqExact(user_id), 0) AS first_pay_user_share",
 }
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DATE_RANGE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$")
@@ -138,6 +142,21 @@ def build_clickhouse_query_specs(
                 where_clause=where_clause,
                 claim_use="high_value_user_contribution",
             )
+        elif intent == "component_driver_scan":
+            spec = _grouped_metric_query(
+                table=table,
+                run_id=run_id,
+                intent=intent,
+                required_fields=_with_derived_required_fields(
+                    required_fields,
+                    _string_tuple(row_shape.get("derived_fields")),
+                ),
+                dimension_keys=(),
+                group_expression=group_expression,
+                where_clause=where_clause,
+                claim_use="driver_component_diagnostics",
+                optional_fields=_string_tuple(row_shape.get("optional_fields")),
+            )
         else:
             spec = _data_quality_probe(
                 table=table,
@@ -161,10 +180,11 @@ def _grouped_metric_query(
     group_expression: str,
     where_clause: str,
     claim_use: str,
+    optional_fields: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     raw_dimensions = tuple(str(key) for key in dimension_keys if key)
     safe_dimensions = tuple(key for key in raw_dimensions if _safe_identifier(key))
-    if intent not in {"daily_metric_baselines", "high_value_scan"}:
+    if intent not in {"daily_metric_baselines", "high_value_scan", "component_driver_scan"}:
         if not raw_dimensions:
             return _blocked_spec(
                 run_id=run_id,
@@ -187,7 +207,7 @@ def _grouped_metric_query(
         group_expression,
     ]
     select_parts.extend(safe_dimensions)
-    select_parts.extend(_measure_sql(required_fields))
+    select_parts.extend(_measure_sql(required_fields, optional_fields=optional_fields))
     group_by_parts = ["period", "group", *safe_dimensions]
     return {
         "query_id": f"{run_id}:{intent}",
@@ -279,15 +299,32 @@ def _optional_quality_probe_sql(optional_fields: Sequence[str]) -> tuple[tuple[s
     return tuple(sql), tuple(outputs)
 
 
-def _measure_sql(required_fields: Sequence[str]) -> tuple[str, ...]:
+def _measure_sql(
+    required_fields: Sequence[str],
+    *,
+    optional_fields: Sequence[str] = (),
+) -> tuple[str, ...]:
     fields = []
     for field in required_fields:
-        expression = MEASURE_SQL.get(str(field))
+        expression = _measure_expression(str(field), optional_fields)
         if expression and expression not in fields:
             fields.append(expression)
     if fields:
         return tuple(fields)
     return (MEASURE_SQL["amount"],)
+
+
+def _measure_expression(field: str, optional_fields: Sequence[str]) -> str:
+    if field == "payment_success_rate":
+        status_field = _status_field(optional_fields)
+        if not status_field:
+            return ""
+        return (
+            "countIf("
+            f"{status_field} IN ('success', 'SUCCESS', 'paid', 'PAID', '1')"
+            ") / nullIf(count(), 0) AS payment_success_rate"
+        )
+    return MEASURE_SQL.get(field, "")
 
 
 def _with_optional_required_fields(
@@ -301,6 +338,18 @@ def _with_optional_required_fields(
         if field in optional and field not in fields:
             fields.append(field)
     return tuple(fields)
+
+
+def _with_derived_required_fields(
+    required_fields: tuple[str, ...],
+    derived_fields: tuple[str, ...],
+) -> tuple[str, ...]:
+    return tuple(dict.fromkeys((*required_fields, *derived_fields)))
+
+
+def _status_field(optional_fields: Sequence[str]) -> str:
+    fields = {str(field) for field in optional_fields if _safe_identifier(str(field))}
+    return next((field for field in ("payment_status", "pay_status", "status") if field in fields), "")
 
 
 def _blocked_spec(

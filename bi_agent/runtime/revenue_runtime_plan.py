@@ -13,6 +13,14 @@ from bi_agent.runtime.analysis_assets import (
 
 BASE_MEASURES = ("amount", "paid_users", "orders", "first_paid_users")
 REQUIRED_FIELDS = ("period", "group", *BASE_MEASURES)
+PAYMENT_STATUS_FIELDS = ("payment_status", "pay_status", "status")
+ORDER_ID_FIELDS = ("order_id", "payment_order_id")
+REVENUE_COMPONENT_FIELDS = (
+    "paid_frequency",
+    "avg_order_amount",
+    "first_pay_user_share",
+    "payment_success_rate",
+)
 SEGMENT_DIMENSION_KEYS = ("channel",)
 JOINT_DIMENSION_KEYS = ("channel", "payment_method", "region", "device_brand")
 DIMENSION_CANDIDATES = (
@@ -86,6 +94,7 @@ def build_revenue_runtime_plan(
         required_fields=tuple(row_shape["required_fields"]),
     )
     reusable_assets = tuple(item["query_ref"] for item in reusable_asset_rows)
+    query_intents = _query_intents(graph, axes, reusable_assets, row_shape)
     reuse_contract = build_dimension_scan_reuse_contract(
         target_metric=target_metric,
         scope=scope,
@@ -112,8 +121,10 @@ def build_revenue_runtime_plan(
         "schema_fingerprint": schema_fingerprint,
         "dimension_candidates": dimensions,
         "measures": BASE_MEASURES,
+        "metric_component_contracts": _metric_component_contracts(row_shape),
         "capability_params": _capability_params(graph, baselines, dimensions, normalized_context),
-        "query_intents": _query_intents(graph, axes, reusable_assets, row_shape),
+        "capability_inputs": _capability_inputs(graph, row_shape, query_intents),
+        "query_intents": query_intents,
         "row_shapes": (row_shape,),
         "contract_gaps": row_shape["contract_gaps"],
         "asset_inputs_used": reusable_assets,
@@ -193,6 +204,7 @@ def _row_shape(
     graph_set = set(graph)
     schema = set(schema_fields)
     optional_fields: list[str] = []
+    derived_fields: list[str] = []
     contract_gaps: list[dict[str, Any]] = []
     if "joint_attribution" in graph_set:
         dimension_keys = list(JOINT_DIMENSION_KEYS)
@@ -216,9 +228,18 @@ def _row_shape(
                 optional_fields.append(field)
         _append_contract_gap(contract_gaps, "high_value_user_contract_missing")
     if "evidence_quality" in axes:
-        for field in ("payment_status", "pay_status", "status", "order_id", "payment_order_id"):
+        for field in (*PAYMENT_STATUS_FIELDS, *ORDER_ID_FIELDS):
             if field in schema:
                 optional_fields.append(field)
+    if "driver_decomposition" in graph_set:
+        derived_fields.extend(("paid_frequency", "avg_order_amount", "first_pay_user_share"))
+        if _supported_field(schema, PAYMENT_STATUS_FIELDS):
+            derived_fields.append("payment_success_rate")
+            status_field = _supported_field(schema, PAYMENT_STATUS_FIELDS)
+            if status_field and status_field not in optional_fields:
+                optional_fields.append(status_field)
+        elif "driver_components" in axes or "evidence_quality" in axes:
+            _append_contract_gap(contract_gaps, "payment_status_contract_missing")
     for field in (item["field"] for item in dimensions):
         gap_id = DIMENSION_CONTRACT_GAPS.get(field)
         if gap_id:
@@ -235,6 +256,7 @@ def _row_shape(
         "grain": "business_date_lagos_by_group",
         "required_fields": REQUIRED_FIELDS,
         "optional_fields": tuple(dict.fromkeys(optional_fields)),
+        "derived_fields": tuple(dict.fromkeys(derived_fields)),
         "dimension_keys": tuple(dimension_keys),
         "contract_gaps": tuple(contract_gaps),
         **({"schema_fields": schema_fields} if schema_fields else {}),
@@ -330,6 +352,8 @@ def _query_intents(
         intents.append("dimension_scan")
     if "joint_attribution" in graph:
         intents.append("joint_candidate_scan")
+    if "driver_decomposition" in graph and row_shape.get("derived_fields"):
+        intents.append("component_driver_scan")
     if "high_value_user_contribution" in graph and _has_all_optional_fields(
         row_shape, ("high_value_amount", "high_value_paid_users")
     ):
@@ -341,9 +365,142 @@ def _query_intents(
     return tuple(dict.fromkeys(intents))
 
 
+def _capability_inputs(
+    graph: tuple[str, ...],
+    row_shape: Mapping[str, Any],
+    query_intents: tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
+    inputs: dict[str, dict[str, Any]] = {}
+    required_fields = tuple(row_shape.get("required_fields") or ())
+    derived_fields = tuple(row_shape.get("derived_fields") or ())
+    dimension_keys = tuple(row_shape.get("dimension_keys") or ())
+    for capability in graph:
+        if capability == "driver_decomposition":
+            inputs[capability] = {
+                "preferred_query_intents": _available_intents(
+                    query_intents,
+                    ("component_driver_scan", "daily_metric_baselines"),
+                ),
+                "required_fields": tuple(dict.fromkeys((*required_fields, *derived_fields))),
+                "dimension_keys": (),
+                "gap_policy": "degrade_to_available_components",
+            }
+        elif capability in {"segment_contribution", "segment_bridge", "user_mix_contribution"}:
+            inputs[capability] = {
+                "preferred_query_intents": _available_intents(
+                    query_intents,
+                    ("dimension_scan_reuse", "dimension_scan", "joint_candidate_scan", "daily_metric_baselines"),
+                ),
+                "required_fields": required_fields,
+                "dimension_keys": dimension_keys[:1],
+                "gap_policy": "degrade_to_available_dimensions",
+            }
+        elif capability == "joint_attribution":
+            inputs[capability] = {
+                "preferred_query_intents": _available_intents(
+                    query_intents,
+                    ("joint_candidate_scan", "dimension_scan", "daily_metric_baselines"),
+                ),
+                "required_fields": required_fields,
+                "dimension_keys": dimension_keys,
+                "gap_policy": "degrade_to_available_dimensions",
+            }
+        elif capability == "high_value_user_contribution":
+            inputs[capability] = {
+                "preferred_query_intents": _available_intents(
+                    query_intents,
+                    ("high_value_scan", "dimension_scan", "daily_metric_baselines"),
+                ),
+                "required_fields": tuple(
+                    dict.fromkeys((*required_fields, "high_value_amount", "high_value_paid_users"))
+                ),
+                "dimension_keys": (),
+                "gap_policy": "degrade_to_total_revenue_only",
+            }
+        elif capability in {"data_quality_profile", "data_quality_check"}:
+            inputs[capability] = {
+                "preferred_query_intents": _available_intents(
+                    query_intents,
+                    ("data_quality_probe", "daily_metric_baselines"),
+                ),
+                "required_fields": required_fields,
+                "dimension_keys": (),
+                "gap_policy": "report_data_quality_limitations",
+            }
+    return inputs
+
+
+def _available_intents(
+    query_intents: tuple[str, ...],
+    preferred: tuple[str, ...],
+) -> tuple[str, ...]:
+    available = set(query_intents)
+    selected = tuple(intent for intent in preferred if intent in available)
+    return selected or preferred
+
+
 def _has_all_optional_fields(row_shape: Mapping[str, Any], fields: tuple[str, ...]) -> bool:
     optional = set(row_shape.get("optional_fields") or ())
     return all(field in optional for field in fields)
+
+
+def _supported_field(schema: set[str], candidates: tuple[str, ...]) -> str:
+    if not schema:
+        return ""
+    return next((field for field in candidates if field in schema), "")
+
+
+def _metric_component_contracts(row_shape: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    derived = set(row_shape.get("derived_fields") or ())
+    optional = set(row_shape.get("optional_fields") or ())
+    contracts = [
+        {
+            "component_id": "paid_users",
+            "business_name": "付费人数",
+            "source_fields": ("user_id",),
+            "status": "supported",
+        },
+        {
+            "component_id": "orders",
+            "business_name": "付费频次分母订单数",
+            "source_fields": (),
+            "status": "supported",
+        },
+        {
+            "component_id": "first_paid_users",
+            "business_name": "首充人数",
+            "source_fields": ("is_first_payment",),
+            "status": "supported",
+        },
+        {
+            "component_id": "paid_frequency",
+            "business_name": "付费频次",
+            "source_fields": ("paid_users", "orders"),
+            "status": "supported" if "paid_frequency" in derived else "missing_contract",
+        },
+        {
+            "component_id": "avg_order_amount",
+            "business_name": "单笔付费金额",
+            "source_fields": ("paid_amount_ngn",),
+            "status": "supported" if "avg_order_amount" in derived else "missing_contract",
+        },
+        {
+            "component_id": "first_pay_user_share",
+            "business_name": "首充用户占比",
+            "source_fields": ("first_paid_users", "paid_users"),
+            "status": "supported" if "first_pay_user_share" in derived else "missing_contract",
+        },
+    ]
+    status_field = next((field for field in PAYMENT_STATUS_FIELDS if field in optional), "")
+    contracts.append(
+        {
+            "component_id": "payment_success_rate",
+            "business_name": "支付成功率",
+            "source_fields": (status_field,) if status_field else PAYMENT_STATUS_FIELDS,
+            "status": "supported" if "payment_success_rate" in derived else "missing_contract",
+        }
+    )
+    return tuple(contracts)
 
 
 DIMENSION_CONTRACT_GAPS = {

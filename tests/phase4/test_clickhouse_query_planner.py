@@ -63,6 +63,45 @@ class ClickHouseQueryPlannerTest(unittest.TestCase):
         self.assertIn("amount", specs[0]["required_fields"])
         self.assertIn("first_paid_users", specs[0]["required_fields"])
 
+    def test_component_driver_scan_includes_derived_revenue_components(self):
+        specs = build_clickhouse_query_specs(
+            {
+                "windows": {"target": "yesterday", "history_days": 36},
+                "baselines": ("previous_day",),
+                "query_intents": ("component_driver_scan",),
+                "row_shapes": (
+                    {
+                        "required_fields": (
+                            "period",
+                            "group",
+                            "amount",
+                            "paid_users",
+                            "orders",
+                            "first_paid_users",
+                        ),
+                        "optional_fields": ("payment_status",),
+                        "derived_fields": (
+                            "paid_frequency",
+                            "avg_order_amount",
+                            "first_pay_user_share",
+                            "payment_success_rate",
+                        ),
+                    },
+                ),
+            },
+            table="paid_order_success_clean_20240101_20260704",
+            run_id="run-components",
+        )
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["intent"], "component_driver_scan")
+        self.assertIn("count() / nullIf(uniqExact(user_id), 0) AS paid_frequency", specs[0]["sql_text"])
+        self.assertIn("sum(paid_amount_ngn) / nullIf(count(), 0) AS avg_order_amount", specs[0]["sql_text"])
+        self.assertIn("first_pay_user_share", specs[0]["sql_text"])
+        self.assertIn("payment_success_rate", specs[0]["sql_text"])
+        self.assertIn("paid_frequency", specs[0]["required_fields"])
+        self.assertIn("payment_success_rate", specs[0]["required_fields"])
+
     def test_unsafe_table_returns_no_specs(self):
         specs = build_clickhouse_query_specs(
             {

@@ -1585,7 +1585,7 @@ def _capability_rows_for(
 ) -> Sequence[Mapping[str, Any]]:
     rows_by_intent = state.get("request", {}).get("runtime_rows_by_intent") or {}
     if isinstance(rows_by_intent, Mapping):
-        for intent in _capability_query_intents(capability_id):
+        for intent in _compiler_capability_query_intents(state, capability_id):
             if intent in rows_by_intent:
                 rows = rows_by_intent[intent]
                 if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
@@ -1596,12 +1596,30 @@ def _capability_rows_for(
 def _capability_result_refs_for(state: WorkflowState, capability_id: str) -> tuple[str, ...]:
     refs_by_intent = state.get("request", {}).get("result_refs_by_intent") or {}
     if isinstance(refs_by_intent, Mapping):
-        for intent in _capability_query_intents(capability_id):
+        for intent in _compiler_capability_query_intents(state, capability_id):
             if intent in refs_by_intent:
                 refs = refs_by_intent[intent]
                 if isinstance(refs, Sequence) and not isinstance(refs, (str, bytes)):
                     return tuple(str(ref) for ref in refs if ref)
     return _capability_result_refs(state)
+
+
+def _compiler_capability_query_intents(
+    state: WorkflowState,
+    capability_id: str,
+) -> tuple[str, ...]:
+    plan = state.get("request", {}).get("compiler_runtime_plan") or {}
+    if isinstance(plan, Mapping):
+        capability_inputs = plan.get("capability_inputs") or {}
+        if isinstance(capability_inputs, Mapping):
+            contract = capability_inputs.get(capability_id)
+            if isinstance(contract, Mapping):
+                intents = contract.get("preferred_query_intents") or ()
+                if isinstance(intents, Sequence) and not isinstance(intents, (str, bytes)):
+                    normalized = tuple(str(intent) for intent in intents if intent)
+                    if normalized:
+                        return normalized
+    return _capability_query_intents(capability_id)
 
 
 def _capability_query_intents(capability_id: str) -> tuple[str, ...]:
@@ -1618,12 +1636,13 @@ def _capability_query_intents(capability_id: str) -> tuple[str, ...]:
     if capability_id in {
         "compare_periods",
         "rolling_window_compare",
-        "driver_decomposition",
         "outlier_scan",
         "outlier_contribution",
         "pattern_scan",
     }:
         return ("daily_metric_baselines", "dimension_scan", "joint_candidate_scan", "clickhouse_revenue_rows")
+    if capability_id == "driver_decomposition":
+        return ("component_driver_scan", "daily_metric_baselines", "dimension_scan", "joint_candidate_scan", "clickhouse_revenue_rows")
     return ("clickhouse_revenue_rows", "daily_metric_baselines", "dimension_scan", "joint_candidate_scan")
 
 
@@ -1635,6 +1654,10 @@ COMPARISON_MEASURE_KEYS = frozenset(
         "first_paid_users",
         "high_value_amount",
         "high_value_paid_users",
+        "paid_frequency",
+        "avg_order_amount",
+        "first_pay_user_share",
+        "payment_success_rate",
         "n",
         "sample_size",
         "order_count",
@@ -1868,6 +1891,10 @@ def _infer_runtime_dimension_keys(rows: Sequence[Any]) -> tuple[str, ...]:
         "first_paid_users",
         "high_value_amount",
         "high_value_paid_users",
+        "paid_frequency",
+        "avg_order_amount",
+        "first_pay_user_share",
+        "payment_success_rate",
         "n",
         "sample_size",
         "order_count",
@@ -3025,7 +3052,10 @@ def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
             ],
         }
 
-    final_answer_audit = _final_answer_audit(state)
+    final_answer_audit = _with_local_final_summary_repair_warnings(
+        _final_answer_audit(state),
+        state,
+    )
     repair_attempts = 0
     while (
         repair_attempts < 2
@@ -3072,7 +3102,10 @@ def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
                     if issue not in {"missing_verified_claim", "missing_business_insight"}
                 ],
             }
-        final_answer_audit = _final_answer_audit(state)
+        final_answer_audit = _with_local_final_summary_repair_warnings(
+            _final_answer_audit(state),
+            state,
+        )
 
     state["final_answer_audit"] = final_answer_audit
     state["quality_gate"] = {
@@ -3807,6 +3840,38 @@ def _final_summary_retry_instruction(
             "不要只返回状态说明。"
         ).strip()
     return instruction
+
+
+def _with_local_final_summary_repair_warnings(
+    audit: Mapping[str, Any],
+    state: WorkflowState,
+) -> dict[str, Any]:
+    merged = dict(audit)
+    if merged.get("blocks_display"):
+        return merged
+    repairable_display_warnings = {
+        "missing_required_summary_markers",
+        "internal_visible_token",
+        "unsupported_material_claim",
+        "missing_pattern_evidence",
+        "missing_driver_claim",
+        "missing_primary_claim",
+    }
+    local_warnings = [
+        str(item)
+        for item in state.get("final_summary_display_warnings", ())
+        if str(item) in repairable_display_warnings
+    ]
+    if not local_warnings:
+        return merged
+    merged["repairable_warnings"] = list(
+        dict.fromkeys([*list(merged.get("repairable_warnings", ())), *local_warnings])
+    )
+    if not str(merged.get("retry_instruction") or ""):
+        merged["retry_instruction"] = "请重新输出完整中文业务答案，修复本地展示检查指出的问题。"
+    if merged.get("display_status") == "ready":
+        merged["display_status"] = "ready_with_warnings"
+    return merged
 
 
 def _apply_final_business_summary_output(
