@@ -47,6 +47,7 @@ class AnalysisAssetsTest(unittest.TestCase):
                                     "text": "当前只能支持渠道贡献候选判断。",
                                     "evidence_refs": ["segment_contribution:inline"],
                                     "strength": "medium",
+                                    "wording_limit": "candidate",
                                     "limitations": ["no_comparable_segments"],
                                     "verifier_status": "passed",
                                 }
@@ -68,6 +69,7 @@ class AnalysisAssetsTest(unittest.TestCase):
         self.assertEqual(tuple(dimension_scan["dimensions"]), ("channel",))
         self.assertEqual(tuple(claim_context["limitations"]), ("no_comparable_segments",))
         self.assertEqual(claim_context["verifier_status"], "passed")
+        self.assertEqual(claim_context["wording_limit"], "candidate")
         self.assertFalse(claim_context["can_support_business_truth"])
 
     def test_store_round_trips_topic_assets(self):
@@ -82,6 +84,43 @@ class AnalysisAssetsTest(unittest.TestCase):
 
         assets = store.list_analysis_assets("thread-assets", topic.topic_id)
         self.assertEqual(assets[0]["query_ref"], "query:1")
+
+    def test_store_dedupes_reusable_assets_by_content_and_keeps_latest_metadata(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-assets-dedupe", owner_id="analyst-1")
+        topic = store.create_topic("thread-assets-dedupe", title="收入分析")
+
+        store.save_analysis_assets(
+            "thread-assets-dedupe",
+            topic.topic_id,
+            (
+                {
+                    "asset_type": "dimension_scan",
+                    "status": "usable",
+                    "dimensions": ("channel",),
+                    "query_ref": "query:channel-scan",
+                    "source_run_id": "run-01",
+                },
+            ),
+        )
+        store.save_analysis_assets(
+            "thread-assets-dedupe",
+            topic.topic_id,
+            (
+                {
+                    "asset_type": "dimension_scan",
+                    "status": "usable",
+                    "dimensions": ("channel",),
+                    "query_ref": "query:channel-scan",
+                    "source_run_id": "run-02",
+                },
+            ),
+        )
+
+        assets = store.list_analysis_assets("thread-assets-dedupe", topic.topic_id)
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0]["query_ref"], "query:channel-scan")
+        self.assertEqual(assets[0]["source_run_id"], "run-02")
 
     def test_store_retains_latest_unique_assets_with_bound(self):
         store = InMemoryConversationStore()
@@ -198,6 +237,7 @@ class AnalysisAssetsTest(unittest.TestCase):
                                         "text": "直营渠道贡献较高。",
                                         "evidence_refs": ["segment_contribution:inline"],
                                         "strength": "medium",
+                                        "wording_limit": "candidate",
                                         "limitations": ["needs_segment_sample_review"],
                                         "verifier_status": "passed",
                                     }
@@ -243,7 +283,48 @@ class AnalysisAssetsTest(unittest.TestCase):
         claim_context = next(asset for asset in assets if asset["asset_type"] == "claim_context_slot")
         self.assertEqual(tuple(claim_context["limitations"]), ("needs_segment_sample_review",))
         self.assertEqual(claim_context["verifier_status"], "passed")
+        self.assertEqual(claim_context["wording_limit"], "candidate")
         self.assertFalse(claim_context["can_support_business_truth"])
+
+    def test_claim_asset_requires_strong_wording_limit_for_business_truth_support(self):
+        assets = build_analysis_assets(
+            {
+                "run_id": "run-claim-wording",
+                "sections": [
+                    {
+                        "section_id": "summary",
+                        "payload": {
+                            "claim_groups": [
+                                {
+                                    "text": "候选判断不能升级成复用真值。",
+                                    "evidence_refs": ["segment_contribution:inline"],
+                                    "strength": "high",
+                                    "wording_limit": "candidate",
+                                    "verifier_status": "passed",
+                                },
+                                {
+                                    "text": "量化支持可复用。",
+                                    "evidence_refs": ["driver_decomposition:inline"],
+                                    "strength": "high",
+                                    "wording_limit": "quantified",
+                                    "verifier_status": "passed",
+                                },
+                            ]
+                        },
+                    }
+                ],
+            }
+        )
+
+        candidate_claim, quantified_claim = [
+            asset for asset in assets if asset["asset_type"] == "claim_context_slot"
+        ]
+        self.assertEqual(candidate_claim["status"], "context_only")
+        self.assertFalse(candidate_claim["can_support_business_truth"])
+        self.assertEqual(candidate_claim["wording_limit"], "candidate")
+        self.assertEqual(quantified_claim["status"], "claim_supported")
+        self.assertTrue(quantified_claim["can_support_business_truth"])
+        self.assertEqual(quantified_claim["wording_limit"], "quantified")
 
     def test_follow_up_run_reuses_persisted_dimension_scan_assets(self):
         class Provider:

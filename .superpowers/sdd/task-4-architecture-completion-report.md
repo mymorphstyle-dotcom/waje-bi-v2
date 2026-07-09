@@ -94,3 +94,96 @@ OK
 - Topic analysis assets are now normalized, deduped, and capped at 20 items in both in-memory and Postgres stores.
 - Claim assets were downgraded from `verified_claim_slot` to `claim_context_slot`, and now preserve `verifier_status`, `strength`, `limitations`, and `evidence_refs` without overstating business-truth usability.
 - `context_manifest.analysis_assets` now records the same merged asset set that flows into compiler input, including externally supplied prior assets.
+
+## Reviewer Fix Round 2
+
+### RED
+
+Pre-fix contract checks against `HEAD`:
+
+```bash
+tmp_old=/tmp/analysis_assets_old_claim_$$.py
+git show HEAD:bi_agent/runtime/analysis_assets.py > "$tmp_old"
+PYTHONPATH=/Users/luka/.codex/worktrees/250d/waje-bi-v2 python3 - <<'PY' "$tmp_old"
+import importlib.util
+import sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location('analysis_assets_old', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assets = mod.build_analysis_assets({
+    'run_id': 'run-old',
+    'sections': [{
+        'section_id': 'summary',
+        'payload': {'claim_groups': [{
+            'text': '候选判断',
+            'evidence_refs': ['segment_contribution:inline'],
+            'strength': 'high',
+            'wording_limit': 'candidate',
+            'verifier_status': 'passed',
+        }]}
+    }],
+})
+claim = next(asset for asset in assets if asset['asset_type'] == 'claim_context_slot')
+assert claim['can_support_business_truth'] is False, claim
+PY
+```
+
+Observed failure:
+
+```text
+AssertionError: {'asset_type': 'claim_context_slot', 'status': 'claim_supported', 'source_run_id': 'run-old', 'text': '候选判断', 'evidence_refs': ['segment_contribution:inline'], 'strength': 'high', 'evidence_type': '', 'limitations': [], 'verifier_status': 'passed', 'wording_limit': 'candidate', 'can_support_business_truth': True}
+```
+
+```bash
+tmp_old=/tmp/analysis_assets_old_dedupe_$$.py
+git show HEAD:bi_agent/runtime/analysis_assets.py > "$tmp_old"
+PYTHONPATH=/Users/luka/.codex/worktrees/250d/waje-bi-v2 python3 - <<'PY' "$tmp_old"
+import importlib.util
+import sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location('analysis_assets_old', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assets = mod.merge_analysis_assets(
+    ({'asset_type': 'dimension_scan', 'status': 'usable', 'dimensions': ('channel',), 'query_ref': 'query:channel-scan', 'source_run_id': 'run-01'},),
+    ({'asset_type': 'dimension_scan', 'status': 'usable', 'dimensions': ('channel',), 'query_ref': 'query:channel-scan', 'source_run_id': 'run-02'},),
+)
+assert len(assets) == 1 and assets[0]['source_run_id'] == 'run-02', assets
+PY
+```
+
+Observed failure:
+
+```text
+AssertionError: ({'asset_type': 'dimension_scan', 'status': 'usable', 'dimensions': ['channel'], 'query_ref': 'query:channel-scan', 'source_run_id': 'run-01', 'dimension': 'channel'}, {'asset_type': 'dimension_scan', 'status': 'usable', 'dimensions': ['channel'], 'query_ref': 'query:channel-scan', 'source_run_id': 'run-02', 'dimension': 'channel'})
+```
+
+### GREEN
+
+Commands:
+
+```bash
+python3 -m unittest tests.phase7.test_analysis_assets
+python3 -m unittest tests.phase4.test_workflow_artifacts_answer
+python3 -m unittest tests.phase7.test_analysis_assets tests.phase7.test_conversation_runtime tests.phase7.test_conversation_persistence tests.phase4.test_workflow_artifacts_answer
+```
+
+Results:
+
+```text
+Ran 8 tests in 0.084s
+OK
+
+Ran 24 tests in 0.473s
+OK
+
+Ran 61 tests in 0.707s
+OK
+```
+
+### Fix summary
+
+- `claim_context_slot.can_support_business_truth` now requires a reusable wording limit and preserves the original `wording_limit` on the stored asset.
+- Reusable asset dedupe now ignores `source_run_id`, so identical semantic content collapses to one asset while the latest run metadata stays on the retained payload.
+- Phase 7 tests now lock the reviewer findings: claim assets keep wording/limitations/truth boundary, and repeated reusable content keeps only the latest asset.

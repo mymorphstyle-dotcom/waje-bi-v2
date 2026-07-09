@@ -10,6 +10,7 @@ from bi_agent.runtime.artifacts import to_jsonable
 
 MAX_TOPIC_ANALYSIS_ASSETS = 20
 REUSABLE_VERIFIER_STATUSES = frozenset(("passed", "verified"))
+REUSABLE_BUSINESS_TRUTH_WORDING_LIMITS = frozenset(("supported", "quantified", "stable_pattern"))
 
 
 def build_analysis_assets(answer_package: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
@@ -44,10 +45,12 @@ def build_analysis_assets(answer_package: Mapping[str, Any]) -> tuple[dict[str, 
         limitations = tuple(str(item) for item in claim.get("limitations") or ())
         verifier_status = str(claim.get("verifier_status") or "")
         strength = str(claim.get("strength") or "")
+        wording_limit = str(claim.get("wording_limit") or "")
         can_support_business_truth = (
             verifier_status in REUSABLE_VERIFIER_STATUSES
             and bool(evidence_refs)
             and strength in {"high", "medium"}
+            and wording_limit in REUSABLE_BUSINESS_TRUTH_WORDING_LIMITS
             and not limitations
         )
         assets.append(
@@ -61,7 +64,7 @@ def build_analysis_assets(answer_package: Mapping[str, Any]) -> tuple[dict[str, 
                 "evidence_type": str(claim.get("evidence_type") or ""),
                 "limitations": limitations,
                 "verifier_status": verifier_status,
-                "wording_limit": str(claim.get("wording_limit") or ""),
+                "wording_limit": wording_limit,
                 "can_support_business_truth": can_support_business_truth,
             }
         )
@@ -104,7 +107,7 @@ def asset_dedup_key(asset: Mapping[str, Any]) -> str:
     payload = {
         key: value
         for key, value in _normalized_asset(asset).items()
-        if key not in {"asset_id", "created_at", "recorded_at"}
+        if key not in {"asset_id", "created_at", "recorded_at", "source_run_id"}
     }
     encoded = json.dumps(to_jsonable(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
