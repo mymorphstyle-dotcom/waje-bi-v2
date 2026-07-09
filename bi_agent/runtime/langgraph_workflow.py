@@ -1215,12 +1215,11 @@ def _fetch_runtime_rows(state: WorkflowState) -> WorkflowState:
 
 def _interpret_data_coverage(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "interpret_data_coverage")
+    coverage_rows = _coverage_rows_for_local_check(state)
     coverage_payload = {
         "intent": state["intent"],
         "schema_summary": state["schema"],
-        "data_result_summary": _data_result_summary(
-            state["request"].get("rows") or []
-        ),
+        "data_result_summary": _data_result_summary(coverage_rows),
         "validator_results": state["validator_results"],
         "sql_hash": state["sql_hash"],
     }
@@ -2874,9 +2873,26 @@ def _local_coverage_answerable_reason(state: WorkflowState) -> str:
 
 def _coverage_rows_for_local_check(state: WorkflowState) -> list[dict[str, Any]]:
     request = state.get("request", {})
+    rows_by_intent = request.get("runtime_rows_by_intent") or {}
+    if isinstance(rows_by_intent, Mapping):
+        for intent in _coverage_query_intents():
+            if intent in rows_by_intent:
+                rows = rows_by_intent[intent]
+                if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
+                    return list(rows)
     if "rows" in request:
         return list(request.get("rows") or [])
     return _default_pattern_rows()
+
+
+def _coverage_query_intents() -> tuple[str, ...]:
+    return (
+        "daily_metric_baselines",
+        "dimension_scan",
+        "joint_candidate_scan",
+        "clickhouse_revenue_rows",
+        "data_quality_probe",
+    )
 
 
 def _coverage_text_requests_confirmation(coverage: Mapping[str, Any]) -> bool:

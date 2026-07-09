@@ -447,22 +447,50 @@ def _query_spec_executable(spec: Mapping[str, Any]) -> bool:
 
 def _preferred_intents(graph: set[str]) -> tuple[str, ...]:
     if "joint_attribution" in graph:
-        return ("joint_candidate_scan", "dimension_scan", "dimension_scan_reuse")
+        return (
+            "joint_candidate_scan",
+            "dimension_scan",
+            "dimension_scan_reuse",
+            "daily_metric_baselines",
+            "data_quality_probe",
+        )
     if "segment_contribution" in graph or "segment_bridge" in graph:
-        return ("dimension_scan_reuse", "dimension_scan", "joint_candidate_scan")
+        return (
+            "dimension_scan_reuse",
+            "dimension_scan",
+            "joint_candidate_scan",
+            "daily_metric_baselines",
+            "data_quality_probe",
+        )
     if "event_evidence" in graph:
         if (
             "compare_periods" in graph
             or "rolling_window_compare" in graph
             or "driver_decomposition" in graph
         ):
-            return ("daily_metric_baselines", "event_context_probe")
+            return ("daily_metric_baselines", "event_context_probe", "data_quality_probe")
         return ("event_context_probe",)
+    if "data_quality_profile" in graph and _metric_analysis_needs_baseline(graph):
+        return ("daily_metric_baselines", "data_quality_probe")
     if "data_quality_profile" in graph:
         return ("data_quality_probe",)
     if "compare_periods" in graph or "rolling_window_compare" in graph:
         return ("daily_metric_baselines",)
     return ()
+
+
+def _metric_analysis_needs_baseline(graph: set[str]) -> bool:
+    return bool(
+        graph
+        & {
+            "compare_periods",
+            "rolling_window_compare",
+            "driver_decomposition",
+            "outlier_scan",
+            "outlier_contribution",
+            "pattern_scan",
+        }
+    )
 
 
 def _fallback_spec_score(spec: Mapping[str, Any], graph: set[str]) -> tuple[int, int, int]:

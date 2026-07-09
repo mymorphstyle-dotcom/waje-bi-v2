@@ -21,6 +21,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _final_business_summary_fallback,
     _final_summary_has_unsupported_wording,
     _final_summary_needs_display_repair,
+    _local_coverage_answerable_reason,
     _infer_question_families_from_requested_nodes,
     _normalize_evidence_interpretation_output,
     _align_route_output_to_requested,
@@ -173,6 +174,54 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(_capability_rows_for(state, "data_quality_profile")[0]["orders"], 10)
         self.assertEqual(_capability_result_refs_for(state, "joint_attribution"), ("joint-ref",))
         self.assertEqual(_segment_contribution_params(state)["segment_key"], "channel")
+
+    def test_coverage_uses_baseline_rows_when_quality_probe_is_primary(self):
+        state = {
+            "validator_results": [{"ok": True}],
+            "request": {
+                "required_fields": ("period", "group", "amount", "orders"),
+                "rows": (
+                    {
+                        "period": "2026-07-08",
+                        "group": "target",
+                        "orders": 10,
+                        "paid_users": 8,
+                        "min_period": "2026-07-01",
+                        "max_period": "2026-07-08",
+                    },
+                ),
+                "runtime_rows_by_intent": {
+                    "daily_metric_baselines": (
+                        {
+                            "period": "2026-07-07",
+                            "group": "previous_day",
+                            "amount": 90.0,
+                            "orders": 9,
+                        },
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "amount": 120.0,
+                            "orders": 10,
+                        },
+                    ),
+                    "data_quality_probe": (
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "orders": 10,
+                            "paid_users": 8,
+                        },
+                    ),
+                },
+            },
+            "intent": {
+                "pattern_family": "daily_change",
+                "pattern_params": {},
+            },
+        }
+
+        self.assertIn("本地聚合结果", _local_coverage_answerable_reason(state))
 
     def test_workflow_uses_clickhouse_provider_rows_instead_of_default_rows(self):
         class Provider:
@@ -4014,6 +4063,82 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(summary["fields"], ["week", "weekday", "amount"])
         self.assertEqual(summary["field_values"]["week"], ["2026-01-05"])
         self.assertEqual(summary["field_values"]["weekday"], ["1", "4"])
+
+    def test_data_coverage_input_prefers_baseline_runtime_rows_over_quality_probe_rows(self):
+        class Provider:
+            def configured(self):
+                return True
+
+            def binding_reason(self):
+                return ""
+
+            def plan(self, request, intent, accepted_graph):
+                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowPlan
+
+                return RevenueRowPlan(
+                    sql_text="SELECT 1",
+                    query_id="coverage-runtime:data_quality_probe",
+                    required_fields=("period", "group", "amount", "orders"),
+                    dimension_keys=(),
+                )
+
+            def fetch(self, plan):
+                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowsResult
+
+                quality_rows = (
+                    {
+                        "period": "2026-07-08",
+                        "group": "target",
+                        "orders": 10,
+                        "paid_users": 8,
+                        "min_period": "2026-07-01",
+                        "max_period": "2026-07-08",
+                    },
+                )
+                baseline_rows = (
+                    {"period": "2026-07-07", "group": "previous_day", "amount": 90.0, "orders": 9},
+                    {"period": "2026-07-08", "group": "target", "amount": 120.0, "orders": 10},
+                )
+                return RevenueRowsResult(
+                    ok=True,
+                    rows=quality_rows,
+                    query_hash="hash-coverage-runtime",
+                    query_id=plan.query_id,
+                    result_refs=("quality-ref",),
+                    rows_by_intent={
+                        "data_quality_probe": quality_rows,
+                        "daily_metric_baselines": baseline_rows,
+                    },
+                    result_refs_by_intent={
+                        "data_quality_probe": ("quality-ref",),
+                        "daily_metric_baselines": ("baseline-ref",),
+                    },
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "coverage-runtime",
+                    "question": "昨天付费金额为什么上涨？",
+                    "llm_client": FakeLLMClient(),
+                    "row_provider": Provider(),
+                    "requested_nodes": [
+                        "data_quality_profile",
+                        "compare_periods",
+                        "driver_decomposition",
+                        "answer_verify",
+                    ],
+                }
+            )
+
+        payload = _llm_input_payload(result.answer_package, "data_coverage_interpretation")
+        summary = payload["data_result_summary"]
+
+        self.assertEqual(summary["row_count"], 2)
+        self.assertIn("amount", summary["fields"])
+        self.assertEqual(summary["field_values"]["group"], ["previous_day", "target"])
+        self.assertNotIn("min_period", summary["fields"])
 
     def test_repeated_evidence_expansion_is_capped_by_trace(self):
         fake = FakeLLMClient({"next_action": {"next_action": "scan_sibling"}})

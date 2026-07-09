@@ -402,6 +402,61 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
             ("hash-run-multi:dimension_scan",),
         )
 
+    def test_compare_plan_uses_baseline_rows_as_primary_when_quality_probe_also_runs(self):
+        runtime = FakeRuntime(
+            rows_by_query_id={
+                "run-quality:daily_metric_baselines": (
+                    {"period": "2026-07-07", "group": "previous_day", "amount": 90.0, "orders": 9},
+                    {"period": "2026-07-08", "group": "target", "amount": 120.0, "orders": 10},
+                ),
+                "run-quality:data_quality_probe": (
+                    {
+                        "period": "2026-07-08",
+                        "group": "target",
+                        "orders": 10,
+                        "paid_users": 8,
+                        "min_period": "2026-07-01",
+                        "max_period": "2026-07-08",
+                    },
+                ),
+            }
+        )
+        provider = ClickHouseRevenueRows(
+            runtime=runtime,
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-quality",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "yesterday", "history_days": 12},
+                    "baselines": ("previous_day",),
+                    "query_intents": ("daily_metric_baselines", "data_quality_probe"),
+                    "row_shapes": [
+                        {
+                            "dimension_keys": (),
+                            "required_fields": (
+                                "period",
+                                "group",
+                                "amount",
+                                "orders",
+                                "paid_users",
+                            ),
+                        }
+                    ],
+                },
+            },
+            {"time_window": "yesterday"},
+            ("data_quality_profile", "compare_periods", "driver_decomposition"),
+        )
+
+        result = provider.fetch(plan)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(plan.query_id, "run-quality:daily_metric_baselines")
+        self.assertEqual(result.rows[0]["amount"], 90.0)
+        self.assertEqual(result.rows_by_intent["data_quality_probe"][0]["orders"], 10)
+
     def test_fetch_blocks_when_runtime_query_fails(self):
         provider = ClickHouseRevenueRows(
             runtime=FakeRuntime(ok=False, reason="clickhouse_query_failed"),
