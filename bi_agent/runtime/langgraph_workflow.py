@@ -1416,33 +1416,53 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
             )
         )
     if "driver_decomposition" in capabilities:
-        capability_rows = _capability_rows_for(state, "driver_decomposition")
+        driver_params = _driver_params(state)
+        capability_rows, driver_params = _comparison_rows_and_params(
+            state,
+            "driver_decomposition",
+            params=driver_params,
+            dimension_keys=(),
+            period_key=driver_params.get("period_key", "period"),
+        )
         capability_refs = _capability_result_refs_for(state, "driver_decomposition")
         evidence.append(
             driver_decomposition(
                 capability_rows,
                 result_refs=capability_refs,
-                **_driver_params(state),
+                **driver_params,
             )
         )
     if "segment_contribution" in capabilities:
-        capability_rows = _capability_rows_for(state, "segment_contribution")
+        segment_params = _segment_contribution_params(state)
+        capability_rows, segment_params = _comparison_rows_and_params(
+            state,
+            "segment_contribution",
+            params=segment_params,
+            dimension_keys=(segment_params.get("segment_key", "period"),),
+        )
         capability_refs = _capability_result_refs_for(state, "segment_contribution")
         evidence.append(
             segment_contribution(
                 capability_rows,
                 result_refs=capability_refs,
-                **_segment_contribution_params(state),
+                **segment_params,
             )
         )
     if "outlier_contribution" in capabilities:
-        capability_rows = _capability_rows_for(state, "outlier_contribution")
+        outlier_params = _outlier_contribution_params(state)
+        capability_rows, outlier_params = _comparison_rows_and_params(
+            state,
+            "outlier_contribution",
+            params=outlier_params,
+            dimension_keys=(),
+            period_key=outlier_params.get("period_key", "period"),
+        )
         capability_refs = _capability_result_refs_for(state, "outlier_contribution")
         evidence.append(
             outlier_contribution(
                 capability_rows,
                 result_refs=capability_refs,
-                **_outlier_contribution_params(state),
+                **outlier_params,
             )
         )
     if "user_mix_contribution" in capabilities:
@@ -1492,14 +1512,20 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
             )
         )
     if "joint_attribution" in capabilities:
-        capability_rows = _capability_rows_for(state, "joint_attribution")
+        joint_params = _joint_attribution_params(state)
+        capability_rows, joint_params = _comparison_rows_and_params(
+            state,
+            "joint_attribution",
+            params=joint_params,
+            dimension_keys=tuple(joint_params.get("dimension_keys") or ()),
+        )
         capability_refs = _capability_result_refs_for(state, "joint_attribution")
         evidence.append(
             joint_attribution(
                 capability_rows,
                 segment_evidence=segment,
                 result_refs=capability_refs,
-                **_joint_attribution_params(state),
+                **joint_params,
             )
         )
 
@@ -1570,9 +1596,9 @@ def _capability_query_intents(capability_id: str) -> tuple[str, ...]:
     if capability_id in {"data_quality_profile", "data_quality_check"}:
         return ("data_quality_probe", "daily_metric_baselines", "clickhouse_revenue_rows")
     if capability_id in {"segment_contribution", "segment_bridge", "user_mix_contribution", "high_value_user_contribution"}:
-        return ("dimension_scan", "joint_candidate_scan", "daily_metric_baselines", "clickhouse_revenue_rows")
+        return ("dimension_scan_reuse", "dimension_scan", "joint_candidate_scan", "daily_metric_baselines", "clickhouse_revenue_rows")
     if capability_id == "joint_attribution":
-        return ("joint_candidate_scan", "dimension_scan", "daily_metric_baselines", "clickhouse_revenue_rows")
+        return ("joint_candidate_scan", "dimension_scan_reuse", "dimension_scan", "daily_metric_baselines", "clickhouse_revenue_rows")
     if capability_id == "event_evidence":
         return ("event_context_probe", "daily_metric_baselines", "clickhouse_revenue_rows")
     if capability_id in {
@@ -1585,6 +1611,172 @@ def _capability_query_intents(capability_id: str) -> tuple[str, ...]:
     }:
         return ("daily_metric_baselines", "dimension_scan", "joint_candidate_scan", "clickhouse_revenue_rows")
     return ("clickhouse_revenue_rows", "daily_metric_baselines", "dimension_scan", "joint_candidate_scan")
+
+
+COMPARISON_MEASURE_KEYS = frozenset(
+    {
+        "amount",
+        "paid_users",
+        "orders",
+        "first_paid_users",
+        "high_value_amount",
+        "high_value_paid_users",
+        "n",
+        "sample_size",
+        "order_count",
+        "user_count",
+    }
+)
+
+
+def _comparison_rows_and_params(
+    state: WorkflowState,
+    capability_id: str,
+    *,
+    params: Mapping[str, Any],
+    dimension_keys: Sequence[str],
+    period_key: str | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rows = [dict(row) for row in _capability_rows_for(state, capability_id)]
+    output_params = dict(params)
+    group_key = str(output_params.get("group_key", "group"))
+    target_group = str(output_params.get("target_group", "target"))
+    requested_baseline = str(output_params.get("baseline_group", "baseline"))
+    baseline_group = _comparison_baseline_group(
+        state,
+        rows,
+        group_key=group_key,
+        target_group=target_group,
+        requested_baseline=requested_baseline,
+    )
+    output_params["baseline_group"] = baseline_group
+    if not _has_comparison_groups(
+        rows,
+        group_key=group_key,
+        target_group=target_group,
+        baseline_group=baseline_group,
+    ):
+        return rows, output_params
+
+    dimensions = tuple(str(key) for key in dimension_keys if key)
+    comparison_rows = _aggregate_comparison_rows(
+        rows,
+        group_key=group_key,
+        target_group=target_group,
+        baseline_group=baseline_group,
+        dimension_keys=dimensions,
+        period_key=period_key,
+    )
+    if not comparison_rows:
+        return rows, output_params
+    return comparison_rows, output_params
+
+
+def _comparison_baseline_group(
+    state: WorkflowState,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    group_key: str,
+    target_group: str,
+    requested_baseline: str,
+) -> str:
+    groups = {
+        str(row.get(group_key))
+        for row in rows
+        if row.get(group_key) not in (None, "")
+    }
+    candidates = [requested_baseline]
+    runtime_plan = state.get("request", {}).get("compiler_runtime_plan") or {}
+    if isinstance(runtime_plan, Mapping):
+        baselines = runtime_plan.get("baselines") or ()
+        if isinstance(baselines, Sequence) and not isinstance(baselines, (str, bytes)):
+            candidates.extend(str(item) for item in baselines if item)
+        capability_params = runtime_plan.get("capability_params") or {}
+        if isinstance(capability_params, Mapping):
+            compare_params = capability_params.get("compare_periods") or {}
+            if isinstance(compare_params, Mapping):
+                compare_baselines = compare_params.get("baselines") or ()
+                if isinstance(compare_baselines, Sequence) and not isinstance(
+                    compare_baselines,
+                    (str, bytes),
+                ):
+                    candidates.extend(str(item) for item in compare_baselines if item)
+    candidates.extend(
+        (
+            "baseline",
+            "previous_day",
+            "same_weekday_last_week",
+            "rolling_7_day_baseline",
+            "custom_baseline",
+            "history",
+        )
+    )
+    for candidate in dict.fromkeys(candidates):
+        if candidate and candidate != target_group and candidate in groups:
+            return candidate
+    return requested_baseline
+
+
+def _has_comparison_groups(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    group_key: str,
+    target_group: str,
+    baseline_group: str,
+) -> bool:
+    groups = {
+        str(row.get(group_key))
+        for row in rows
+        if row.get(group_key) not in (None, "")
+    }
+    return target_group in groups and baseline_group in groups
+
+
+def _aggregate_comparison_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    group_key: str,
+    target_group: str,
+    baseline_group: str,
+    dimension_keys: tuple[str, ...],
+    period_key: str | None,
+) -> list[dict[str, Any]]:
+    selected_groups = {target_group, baseline_group}
+    buckets: dict[tuple[Any, ...], dict[str, Any]] = {}
+    counts: dict[tuple[Any, ...], int] = {}
+    for row in rows:
+        group = row.get(group_key)
+        if str(group) not in selected_groups:
+            continue
+        dimension_values = tuple(row.get(key) for key in dimension_keys)
+        if any(value in (None, "") for value in dimension_values):
+            continue
+        bucket_key = dimension_values + (str(group),)
+        bucket = buckets.setdefault(
+            bucket_key,
+            {
+                **{key: value for key, value in zip(dimension_keys, dimension_values)},
+                group_key: str(group),
+            },
+        )
+        if period_key:
+            bucket[period_key] = "comparison_window"
+        counts[bucket_key] = counts.get(bucket_key, 0) + 1
+        for measure in COMPARISON_MEASURE_KEYS:
+            value = _as_float(row.get(measure))
+            if value is None:
+                continue
+            bucket[measure] = _as_float(bucket.get(measure)) or 0.0
+            bucket[measure] += value
+
+    for key, bucket in buckets.items():
+        if bucket.get(group_key) != "rolling_7_day_baseline":
+            continue
+        count = counts.get(key) or 1
+        for measure in COMPARISON_MEASURE_KEYS:
+            if measure in bucket:
+                bucket[measure] = bucket[measure] / count
+    return list(buckets.values())
 
 
 def _runtime_dimension_keys_for_intents(
@@ -1604,10 +1796,49 @@ def _runtime_dimension_keys_for_intents(
             if str(item_intent or "") != intent:
                 continue
             dimensions = item.get("dimension_keys") or ()
+            keys: tuple[str, ...] = ()
             if isinstance(dimensions, Sequence) and not isinstance(dimensions, (str, bytes)):
                 keys = tuple(str(key) for key in dimensions if key)
+            if keys:
+                return keys
+    rows_by_intent = state.get("request", {}).get("runtime_rows_by_intent") or {}
+    if isinstance(rows_by_intent, Mapping):
+        for intent in intents:
+            rows = rows_by_intent.get(intent)
+            if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
+                keys = _infer_runtime_dimension_keys(rows)
                 if keys:
                     return keys
+    return ()
+
+
+def _infer_runtime_dimension_keys(rows: Sequence[Any]) -> tuple[str, ...]:
+    excluded = {
+        "period",
+        "group",
+        "amount",
+        "paid_users",
+        "orders",
+        "first_paid_users",
+        "high_value_amount",
+        "high_value_paid_users",
+        "n",
+        "sample_size",
+        "order_count",
+        "user_count",
+        "min_period",
+        "max_period",
+    }
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        keys = [
+            str(key)
+            for key, value in row.items()
+            if key not in excluded and value not in (None, "")
+        ]
+        if keys:
+            return tuple(keys)
     return ()
 
 
@@ -1625,7 +1856,7 @@ def _segment_contribution_params(state: WorkflowState) -> dict[str, Any]:
     params = dict(state.get("intent", {}).get("pattern_params", {}))
     runtime_dimensions = _runtime_dimension_keys_for_intents(
         state,
-        ("dimension_scan", "joint_candidate_scan"),
+        ("dimension_scan_reuse", "dimension_scan", "joint_candidate_scan"),
     )
     return {
         "segment_key": params.get("segment_key") or (runtime_dimensions[0] if runtime_dimensions else params.get("period_key", "period")),
@@ -1783,11 +2014,31 @@ def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
     }
     if request.get("role"):
         context["permission_scope"] = str(request.get("role"))
+    if isinstance(request.get("contract_versions"), Mapping):
+        context["contract_versions"] = {
+            str(key): str(value)
+            for key, value in request["contract_versions"].items()
+            if key not in ("", None) and value not in ("", None)
+        }
+    elif request.get("contract_version") not in ("", None):
+        context["contract_versions"] = {"runtime": str(request.get("contract_version"))}
+    if request.get("schema_fingerprint") not in ("", None):
+        context["schema_fingerprint"] = str(request.get("schema_fingerprint"))
     manifest = request.get("context_manifest")
     if isinstance(manifest, Mapping):
         snapshot_version = manifest.get("snapshot_version")
         if snapshot_version not in ("", None):
             context["snapshot_version"] = str(snapshot_version)
+        contract_versions = manifest.get("contract_versions")
+        if isinstance(contract_versions, Mapping):
+            context["contract_versions"] = {
+                str(key): str(value)
+                for key, value in contract_versions.items()
+                if key not in ("", None) and value not in ("", None)
+            }
+        schema_fingerprint = manifest.get("schema_fingerprint")
+        if schema_fingerprint not in ("", None):
+            context["schema_fingerprint"] = str(schema_fingerprint)
         permission_context = manifest.get("permission_context")
         if (
             "permission_scope" not in context
@@ -1799,6 +2050,10 @@ def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
         context["windows"] = dict(request["runtime_windows"])
     elif isinstance(analysis_route.get("windows"), dict):
         context["windows"] = dict(analysis_route["windows"])
+    for schema_key in ("schema_fields", "clickhouse_schema_fields"):
+        values = request.get(schema_key)
+        if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+            context[schema_key] = tuple(str(value) for value in values if value)
     if request.get("runtime_baselines"):
         context["baselines"] = tuple(request["runtime_baselines"])
     elif analysis_route.get("baselines"):
@@ -1846,6 +2101,26 @@ def _apply_reused_dimension_scan_input(
     request["runtime_rows_source"] = "analysis_asset"
     request["result_refs"] = tuple(dict.fromkeys(result_refs))
     request["joint_dimension_keys"] = tuple(asset_input.get("dimensions") or ())
+    existing_request_rows = request.get("runtime_rows_by_intent")
+    if not isinstance(existing_request_rows, Mapping):
+        existing_request_rows = {}
+    request["runtime_rows_by_intent"] = {
+        **{
+            str(intent): [dict(row) for row in rows_]
+            for intent, rows_ in dict(existing_request_rows).items()
+        },
+        "dimension_scan_reuse": rows,
+    }
+    existing_request_refs = request.get("result_refs_by_intent")
+    if not isinstance(existing_request_refs, Mapping):
+        existing_request_refs = {}
+    request["result_refs_by_intent"] = {
+        **{
+            str(intent): list(refs)
+            for intent, refs in dict(existing_request_refs).items()
+        },
+        "dimension_scan_reuse": list(dict.fromkeys(result_refs)),
+    }
 
     row_query_plan = state.setdefault("row_query_plan", {})
     row_query_plan["query_intent"] = "dimension_scan_reuse"

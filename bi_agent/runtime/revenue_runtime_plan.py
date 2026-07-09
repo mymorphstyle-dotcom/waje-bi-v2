@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import hashlib
+import json
 from typing import Any
 
 from bi_agent.runtime.analysis_assets import (
@@ -60,8 +62,14 @@ def build_revenue_runtime_plan(
     scope = _scope(normalized_context)
     permission_scope = _permission_scope(normalized_context)
     snapshot_version = _snapshot_version(normalized_context)
+    contract_versions = _contract_versions(normalized_context)
     dimensions = _dimension_candidates(graph, axes)
     row_shape = _row_shape(graph, axes, dimensions)
+    schema_fingerprint = _schema_fingerprint(
+        normalized_context,
+        row_shape=row_shape,
+        required_dimensions=_required_dimension_scan_dimensions(graph),
+    )
     reusable_asset_rows = _reusable_asset_rows(
         graph,
         prior_assets,
@@ -72,6 +80,8 @@ def build_revenue_runtime_plan(
         baselines=baselines,
         permission_scope=permission_scope,
         snapshot_version=snapshot_version,
+        contract_versions=contract_versions,
+        schema_fingerprint=schema_fingerprint,
         required_fields=tuple(row_shape["required_fields"]),
     )
     reusable_assets = tuple(item["query_ref"] for item in reusable_asset_rows)
@@ -85,6 +95,8 @@ def build_revenue_runtime_plan(
         snapshot_version=snapshot_version,
         dimensions=_required_dimension_scan_dimensions(graph),
         required_fields=tuple(row_shape["required_fields"]),
+        contract_versions=contract_versions,
+        schema_fingerprint=schema_fingerprint,
     )
     return {
         "target_metric": target_metric,
@@ -95,6 +107,8 @@ def build_revenue_runtime_plan(
         "baselines": baselines,
         "permission_scope": permission_scope,
         "snapshot_version": snapshot_version,
+        "contract_versions": contract_versions,
+        "schema_fingerprint": schema_fingerprint,
         "dimension_candidates": dimensions,
         "measures": BASE_MEASURES,
         "capability_params": _capability_params(graph, baselines, dimensions, normalized_context),
@@ -262,6 +276,8 @@ def _reusable_asset_rows(
     baselines: tuple[str, ...],
     permission_scope: str,
     snapshot_version: str,
+    contract_versions: Mapping[str, str],
+    schema_fingerprint: str,
     required_fields: tuple[str, ...],
 ) -> tuple[dict[str, Any], ...]:
     needed_dimensions = _required_dimension_scan_dimensions(graph)
@@ -278,6 +294,8 @@ def _reusable_asset_rows(
         snapshot_version=snapshot_version,
         required_dimensions=tuple(needed_dimensions),
         required_fields=required_fields,
+        contract_versions=contract_versions,
+        schema_fingerprint=schema_fingerprint,
     )
 
 
@@ -329,3 +347,46 @@ def _permission_scope(bound_context: Mapping[str, Any]) -> str:
 
 def _snapshot_version(bound_context: Mapping[str, Any]) -> str:
     return str(bound_context.get("snapshot_version") or "")
+
+
+def _contract_versions(bound_context: Mapping[str, Any]) -> dict[str, str]:
+    source = bound_context.get("contract_versions") or bound_context.get("contract_version")
+    if isinstance(source, Mapping):
+        return {
+            str(key): str(value)
+            for key, value in source.items()
+            if key not in ("", None) and value not in ("", None)
+        }
+    if source not in ("", None):
+        return {"runtime": str(source)}
+    return {}
+
+
+def _schema_fingerprint(
+    bound_context: Mapping[str, Any],
+    *,
+    row_shape: Mapping[str, Any],
+    required_dimensions: frozenset[str],
+) -> str:
+    explicit = bound_context.get("schema_fingerprint")
+    if explicit not in ("", None):
+        return str(explicit)
+    schema_fields = bound_context.get("schema_fields") or bound_context.get("clickhouse_schema_fields")
+    if isinstance(schema_fields, Iterable) and not isinstance(schema_fields, (str, bytes, Mapping)):
+        fields = tuple(str(field) for field in schema_fields if field)
+    else:
+        fields = tuple(str(field) for field in row_shape.get("required_fields") or ())
+    payload = {
+        "fields": fields,
+        "required_dimensions": tuple(sorted(required_dimensions)),
+        "grain": row_shape.get("grain"),
+        "source": row_shape.get("source"),
+    }
+    return hashlib.sha1(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()

@@ -4,7 +4,12 @@ from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.compiler import compile_graph
-from bi_agent.runtime.analysis_assets import build_analysis_assets, merge_analysis_assets
+from bi_agent.runtime.analysis_assets import (
+    build_analysis_assets,
+    build_dimension_scan_reuse_contract,
+    merge_analysis_assets,
+    reusable_dimension_scan_inputs,
+)
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult, run_pattern_workflow
 from tests.phase4.fake_llm import FakeLLMClient
 
@@ -175,6 +180,87 @@ class AnalysisAssetsTest(unittest.TestCase):
 
         assets = store.list_analysis_assets("thread-assets", topic.topic_id)
         self.assertEqual(assets[0]["query_ref"], "query:1")
+
+    def test_dimension_scan_reuse_rejects_contract_version_or_schema_drift(self):
+        base_contract = build_dimension_scan_reuse_contract(
+            target_metric="paid_amount",
+            scope="full_sample",
+            time_window="yesterday",
+            windows={"target": "yesterday"},
+            baselines=("previous_day",),
+            permission_scope="analyst",
+            snapshot_version="2026H1",
+            dimensions=("channel",),
+            required_fields=("period", "group", "amount", "orders"),
+            contract_versions={"payment_fact": "v1"},
+            schema_fingerprint="schema:v1",
+        )
+        asset = {
+            "asset_type": "dimension_scan",
+            "status": "usable",
+            "dimensions": ("channel",),
+            "query_ref": "query:channel-v1",
+            "result_refs": ("result:channel-v1",),
+            "created_at": "2026-07-09T00:00:00+00:00",
+            "expires_at": "2026-07-10T00:00:00+00:00",
+            "reuse_contract": base_contract,
+            "row_payload": {
+                "row_count": 2,
+                "truncated": False,
+                "rows": [
+                    {"period": "2026-07-07", "group": "previous_day", "amount": 80, "orders": 12, "channel": "ads"},
+                    {"period": "2026-07-08", "group": "target", "amount": 120, "orders": 18, "channel": "ads"},
+                ],
+            },
+            "applicable_scans": ("dimension_scan",),
+        }
+
+        matched = reusable_dimension_scan_inputs(
+            (asset,),
+            target_metric="paid_amount",
+            scope="full_sample",
+            time_window="yesterday",
+            windows={"target": "yesterday"},
+            baselines=("previous_day",),
+            permission_scope="analyst",
+            snapshot_version="2026H1",
+            required_dimensions=("channel",),
+            required_fields=("period", "group", "amount", "orders"),
+            contract_versions={"payment_fact": "v1"},
+            schema_fingerprint="schema:v1",
+        )
+        contract_drift = reusable_dimension_scan_inputs(
+            (asset,),
+            target_metric="paid_amount",
+            scope="full_sample",
+            time_window="yesterday",
+            windows={"target": "yesterday"},
+            baselines=("previous_day",),
+            permission_scope="analyst",
+            snapshot_version="2026H1",
+            required_dimensions=("channel",),
+            required_fields=("period", "group", "amount", "orders"),
+            contract_versions={"payment_fact": "v2"},
+            schema_fingerprint="schema:v1",
+        )
+        schema_drift = reusable_dimension_scan_inputs(
+            (asset,),
+            target_metric="paid_amount",
+            scope="full_sample",
+            time_window="yesterday",
+            windows={"target": "yesterday"},
+            baselines=("previous_day",),
+            permission_scope="analyst",
+            snapshot_version="2026H1",
+            required_dimensions=("channel",),
+            required_fields=("period", "group", "amount", "orders"),
+            contract_versions={"payment_fact": "v1"},
+            schema_fingerprint="schema:v2",
+        )
+
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(contract_drift, ())
+        self.assertEqual(schema_drift, ())
 
     def test_store_dedupes_reusable_assets_by_content_and_keeps_latest_metadata(self):
         store = InMemoryConversationStore()
@@ -698,6 +784,8 @@ class AnalysisAssetsTest(unittest.TestCase):
                 "baselines": (),
                 "permission_scope": "analyst",
                 "snapshot_version": "2026H1",
+                "contract_versions": {"runtime": "contracts-v1"},
+                "schema_fingerprint": "contracts-v1:2026H1",
             },
             prior_analysis_assets=tuple(prior_assets),
         )

@@ -10,6 +10,7 @@ from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.exploration_budget import default_budget
 from bi_agent.runtime.langgraph_workflow import (
     _answer_synthesis_context,
+    _apply_reused_dimension_scan_input,
     _capability_path_labels,
     _capability_result_refs_for,
     _capability_rows_for,
@@ -222,6 +223,83 @@ class LLMWorkflowTest(unittest.TestCase):
         }
 
         self.assertIn("本地聚合结果", _local_coverage_answerable_reason(state))
+
+    def test_reused_dimension_scan_rows_feed_segment_capability(self):
+        compiled = compile_graph(
+            question_family="paid_amount_change_explanation",
+            target_metric="paid_amount",
+            pattern_family="custom_baseline",
+            requested_nodes=(
+                "data_quality_profile",
+                "driver_decomposition",
+                "segment_contribution",
+                "answer_verify",
+            ),
+        )
+        state = {
+            "request": {
+                "rows": [
+                    {"period": "fallback", "group": "target", "amount": 1.0},
+                ],
+                "compiler_runtime_plan": {"baselines": ("previous_day",)},
+                "required_fields": ("period", "group", "amount", "orders"),
+                "role": "analyst",
+            },
+            "run_id": "reuse-segment-capability",
+            "sql_hash": "sqlhash-reuse-segment",
+            "budget_state": default_budget("ordinary"),
+            "compiled_graph": compiled,
+            "intent": {
+                "question_family": "paid_amount_change_explanation",
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "pattern_params": {"group_key": "group", "target_group": "target"},
+                "scope": "full_sample",
+                "time_window": "yesterday",
+                "target_claim": "按渠道解释昨天付费金额变化",
+            },
+        }
+        _apply_reused_dimension_scan_input(
+            state,
+            {
+                "query_ref": "asset-dimension-ref",
+                "dimensions": ("channel",),
+                "rows": [
+                    {
+                        "period": "2026-07-07",
+                        "group": "previous_day",
+                        "channel": "ads",
+                        "amount": 60.0,
+                        "orders": 12,
+                    },
+                    {
+                        "period": "2026-07-08",
+                        "group": "target",
+                        "channel": "ads",
+                        "amount": 95.0,
+                        "orders": 18,
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(
+            _capability_result_refs_for(state, "segment_contribution"),
+            ("asset-dimension-ref",),
+        )
+        self.assertEqual(
+            _capability_rows_for(state, "segment_contribution")[0]["channel"],
+            "ads",
+        )
+
+        result = _execute_capabilities(state)
+        segment = next(
+            item for item in result["evidence"] if item.get("capability_id") == "segment_contribution"
+        )
+
+        self.assertEqual(segment["evidence_type"], "statistical_association")
+        self.assertEqual(segment["result_refs"], ["asset-dimension-ref"])
+        self.assertEqual(segment["typed_payload"]["segment_count"], 1)
 
     def test_workflow_uses_clickhouse_provider_rows_instead_of_default_rows(self):
         class Provider:
@@ -2733,6 +2811,199 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertTrue(
             any(item.get("capability_id") == "data_quality_profile" for item in evidence)
         )
+
+    def test_execute_capabilities_pairs_runtime_previous_day_baseline_for_attribution(self):
+        compiled = compile_graph(
+            question_family="custom_baseline_comparison",
+            target_metric="paid_amount",
+            pattern_family="custom_baseline",
+            requested_nodes=(
+                "driver_decomposition",
+                "segment_contribution",
+                "joint_attribution",
+                "answer_verify",
+            ),
+        )
+        state = {
+            "request": {
+                "rows": [
+                    {
+                        "period": "2026-07-08",
+                        "group": "target",
+                        "amount": 150.0,
+                        "paid_users": 12,
+                        "orders": 30,
+                        "first_paid_users": 5,
+                    }
+                ],
+                "runtime_rows_by_intent": {
+                    "daily_metric_baselines": [
+                        {
+                            "period": "2026-07-07",
+                            "group": "previous_day",
+                            "amount": 100.0,
+                            "paid_users": 10,
+                            "orders": 20,
+                            "first_paid_users": 3,
+                        },
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "amount": 150.0,
+                            "paid_users": 12,
+                            "orders": 30,
+                            "first_paid_users": 5,
+                        },
+                    ],
+                    "dimension_scan": [
+                        {
+                            "period": "2026-07-07",
+                            "group": "previous_day",
+                            "channel": "ads",
+                            "amount": 60.0,
+                            "orders": 12,
+                        },
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "channel": "ads",
+                            "amount": 95.0,
+                            "orders": 18,
+                        },
+                    ],
+                    "joint_candidate_scan": [
+                        {
+                            "period": "2026-07-07",
+                            "group": "previous_day",
+                            "channel": "ads",
+                            "payment_method": "card",
+                            "amount": 45.0,
+                            "orders": 12,
+                        },
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "channel": "ads",
+                            "payment_method": "card",
+                            "amount": 80.0,
+                            "orders": 18,
+                        },
+                    ],
+                },
+                "result_refs_by_intent": {
+                    "daily_metric_baselines": ("baseline-ref",),
+                    "dimension_scan": ("dimension-ref",),
+                    "joint_candidate_scan": ("joint-ref",),
+                },
+                "compiler_runtime_plan": {"baselines": ("previous_day",)},
+                "required_fields": ("period", "group", "amount", "paid_users", "orders"),
+                "role": "analyst",
+                "joint_dimension_keys": ("channel", "payment_method"),
+            },
+            "run_id": "execute-runtime-previous-day",
+            "sql_hash": "sqlhash-runtime-baseline",
+            "budget_state": default_budget("ordinary"),
+            "compiled_graph": compiled,
+            "intent": {
+                "question_family": "custom_baseline_comparison",
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "pattern_params": {"group_key": "group", "target_group": "target"},
+                "scope": "full_sample",
+                "time_window": "yesterday",
+                "target_claim": "昨天付费金额变化原因",
+                "baseline": {"label": "前一天"},
+                "target": {"label": "昨天"},
+            },
+        }
+
+        result = _execute_capabilities(state)
+        by_capability = {
+            item.get("capability_id"): item for item in result["evidence"]
+        }
+
+        driver = by_capability["driver_decomposition"]
+        self.assertEqual(driver["evidence_type"], "accounting_contribution")
+        self.assertEqual(driver["result_refs"], ["baseline-ref"])
+        self.assertTrue(driver["typed_payload"]["decompositions"])
+
+        segment = by_capability["segment_contribution"]
+        self.assertEqual(segment["evidence_type"], "statistical_association")
+        self.assertEqual(segment["typed_payload"]["segment_count"], 1)
+
+        joint = by_capability["joint_attribution"]
+        self.assertEqual(joint["evidence_type"], "statistical_association")
+        self.assertEqual(joint["typed_payload"]["combination_count"], 1)
+
+    def test_execute_capabilities_averages_runtime_rolling_baseline_for_driver(self):
+        compiled = compile_graph(
+            question_family="custom_baseline_comparison",
+            target_metric="paid_amount",
+            pattern_family="custom_baseline",
+            requested_nodes=("driver_decomposition", "answer_verify"),
+        )
+        state = {
+            "request": {
+                "runtime_rows_by_intent": {
+                    "daily_metric_baselines": [
+                        {
+                            "period": "2026-07-01",
+                            "group": "rolling_7_day_baseline",
+                            "amount": 70.0,
+                            "paid_users": 7,
+                            "orders": 14,
+                        },
+                        {
+                            "period": "2026-07-02",
+                            "group": "rolling_7_day_baseline",
+                            "amount": 90.0,
+                            "paid_users": 9,
+                            "orders": 18,
+                        },
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "amount": 140.0,
+                            "paid_users": 14,
+                            "orders": 28,
+                        },
+                    ],
+                },
+                "result_refs_by_intent": {"daily_metric_baselines": ("rolling-ref",)},
+                "compiler_runtime_plan": {"baselines": ("rolling_7_day_baseline",)},
+                "required_fields": ("period", "group", "amount", "paid_users", "orders"),
+                "role": "analyst",
+            },
+            "run_id": "execute-runtime-rolling",
+            "sql_hash": "sqlhash-runtime-rolling",
+            "budget_state": default_budget("ordinary"),
+            "compiled_graph": compiled,
+            "intent": {
+                "question_family": "custom_baseline_comparison",
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "pattern_params": {
+                    "group_key": "group",
+                    "target_group": "target",
+                    "baseline_group": "rolling_7_day_baseline",
+                },
+                "scope": "full_sample",
+                "time_window": "yesterday",
+                "target_claim": "昨天付费金额相比近 7 日均值变化",
+                "baseline": {"label": "近 7 日均值"},
+                "target": {"label": "昨天"},
+            },
+        }
+
+        result = _execute_capabilities(state)
+        driver = next(
+            item for item in result["evidence"] if item.get("capability_id") == "driver_decomposition"
+        )
+        decomposition = driver["typed_payload"]["decompositions"][0]
+
+        self.assertEqual(driver["evidence_type"], "accounting_contribution")
+        self.assertEqual(decomposition["baseline_volume"], 8.0)
+        self.assertEqual(decomposition["amount_delta"], 60.0)
 
     def test_reduce_evidence_uses_public_compare_as_primary_evidence(self):
         state = {

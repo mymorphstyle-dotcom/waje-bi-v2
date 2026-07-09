@@ -843,6 +843,58 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertTrue(review["real_clickhouse_verified"])
         self.assertEqual(review["clickhouse_result_refs"], ["hash-real"])
 
+    def test_live_harness_checks_each_clickhouse_query_intent_executed(self):
+        from tools.phase7.run_live_conversation_system_test import _real_clickhouse_review
+
+        review = _real_clickhouse_review(
+            {
+                "answer_package": {
+                    "sections": [
+                        {
+                            "section_id": "evidence",
+                            "payload": {
+                                "evidence": [{"result_refs": ["hash-real"]}]
+                            },
+                        }
+                    ],
+                    "admin_audit": {
+                        "validator_results": [
+                            {
+                                "validator": "clickhouse_runtime",
+                                "ok": True,
+                                "reason": "provider_rows_loaded",
+                            }
+                        ],
+                        "row_query_plan": {
+                            "query_plans": [
+                                {
+                                    "query_intent": "daily_metric_baselines",
+                                    "sql_text": "SELECT 1",
+                                },
+                                {
+                                    "query_intent": "dimension_scan",
+                                    "sql_text": "SELECT 2",
+                                },
+                            ],
+                            "query_results": [
+                                {"intent": "daily_metric_baselines"},
+                            ],
+                            "result_refs_by_intent": {
+                                "daily_metric_baselines": ["hash-real"],
+                            },
+                        },
+                    },
+                }
+            },
+            real_clickhouse=True,
+        )
+
+        self.assertFalse(review["real_clickhouse_verified"])
+        self.assertIn(
+            "missing_clickhouse_query_intent:dimension_scan",
+            review["issues"],
+        )
+
     def test_live_harness_fails_real_clickhouse_case_without_verified_refs(self):
         from tempfile import TemporaryDirectory
 
@@ -959,6 +1011,12 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 "blocks_display": False,
                 "display_status": "ready_with_warnings",
                 "final_answer_audit_warnings": ["missing_business_interpretation"],
+                "quality_gate_issues": ["missing_verified_claim"],
+                "final_summary_display_warnings": [],
+                "quality_warnings": [
+                    "missing_verified_claim",
+                    "missing_business_interpretation",
+                ],
                 "direct_answer": True,
                 "has_verified_claims": True,
                 "verified_claim_preserved": False,

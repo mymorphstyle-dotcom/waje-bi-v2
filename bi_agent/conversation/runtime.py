@@ -522,6 +522,8 @@ class ConversationRuntime:
             snapshot_version=current_snapshot,
             permission_context={"role": role},
             analysis_assets=list(analysis_assets),
+            contract_versions={"runtime": contract_version},
+            schema_fingerprint=f"{contract_version}:{current_snapshot}",
             can_support_claims=has_claim_support and claim_safe and not artifact_context_blocked,
         )
 

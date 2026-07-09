@@ -224,6 +224,8 @@ def _dimension_scan_asset(
         snapshot_version=answer_package.get("snapshot_id") or answer_package.get("snapshot"),
         dimensions=dimensions,
         required_fields=_required_fields(plan),
+        contract_versions=plan.get("contract_versions"),
+        schema_fingerprint=plan.get("schema_fingerprint"),
     )
     reusable = _dimension_scan_rows_complete(row_payload)
     asset: dict[str, Any] = {
@@ -240,6 +242,8 @@ def _dimension_scan_asset(
         "result_refs": result_refs,
         "query_identity": query_identity,
         "reuse_contract": reuse_contract,
+        "contract_versions": reuse_contract.get("contract_versions", {}),
+        "schema_fingerprint": reuse_contract.get("schema_fingerprint", ""),
         "row_payload": row_payload,
         "applicable_scans": ("dimension_scan",),
     }
@@ -398,6 +402,8 @@ def build_dimension_scan_reuse_contract(
     snapshot_version: Any,
     dimensions: Sequence[str],
     required_fields: Sequence[str],
+    contract_versions: Any = None,
+    schema_fingerprint: Any = None,
     query_intent: str = "dimension_scan",
 ) -> dict[str, Any]:
     contract = {
@@ -410,6 +416,8 @@ def build_dimension_scan_reuse_contract(
         "snapshot_version": str(snapshot_version or ""),
         "dimensions": [str(item) for item in dimensions if item],
         "required_fields": [str(item) for item in required_fields if item],
+        "contract_versions": _mapping_jsonable(contract_versions),
+        "schema_fingerprint": str(schema_fingerprint or ""),
         "query_intent": str(query_intent or "dimension_scan"),
     }
     signature_payload = {
@@ -422,6 +430,8 @@ def build_dimension_scan_reuse_contract(
             "baselines",
             "dimensions",
             "required_fields",
+            "contract_versions",
+            "schema_fingerprint",
             "query_intent",
         )
     }
@@ -448,6 +458,8 @@ def reusable_dimension_scan_inputs(
     snapshot_version: str,
     required_dimensions: Sequence[str],
     required_fields: Sequence[str],
+    contract_versions: Any = None,
+    schema_fingerprint: Any = None,
     now: datetime | None = None,
 ) -> tuple[dict[str, Any], ...]:
     expected_contract = build_dimension_scan_reuse_contract(
@@ -460,6 +472,8 @@ def reusable_dimension_scan_inputs(
         snapshot_version=snapshot_version,
         dimensions=required_dimensions,
         required_fields=required_fields,
+        contract_versions=contract_versions,
+        schema_fingerprint=schema_fingerprint,
     )
     required = set(str(item) for item in required_dimensions if item)
     covered: set[str] = set()
@@ -543,6 +557,10 @@ def _is_reusable_dimension_scan_candidate(
     if _mapping_jsonable(contract.get("windows")) != _mapping_jsonable(expected_contract.get("windows")):
         return False
     if list(_string_list(contract.get("baselines"))) != list(_string_list(expected_contract.get("baselines"))):
+        return False
+    if _mapping_jsonable(contract.get("contract_versions")) != _mapping_jsonable(expected_contract.get("contract_versions")):
+        return False
+    if str(contract.get("schema_fingerprint") or "") != str(expected_contract.get("schema_fingerprint") or ""):
         return False
     query_intent = str(contract.get("query_intent") or "dimension_scan")
     if query_intent not in {"dimension_scan", "dimension_scan_reuse"}:

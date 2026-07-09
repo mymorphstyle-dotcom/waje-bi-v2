@@ -214,10 +214,28 @@ def _quality_review(answer_package: dict[str, Any]) -> dict[str, Any]:
     quality_gate = answer_package.get("quality_gate") if isinstance(answer_package, dict) else {}
     if not isinstance(quality_gate, dict):
         quality_gate = {}
+    issues = list(quality_gate.get("issues") or ())
+    final_summary_warnings = list(quality_gate.get("final_summary_display_warnings") or ())
+    soft_warnings = list(
+        dict.fromkeys(
+            [
+                str(item)
+                for item in (
+                    *issues,
+                    *list(quality_gate.get("repairable_warnings") or ()),
+                    *final_summary_warnings,
+                )
+                if item
+            ]
+        )
+    )
     return {
         "blocks_display": bool(quality_gate.get("blocks_display")),
         "display_status": str(quality_gate.get("display_status") or ""),
         "final_answer_audit_warnings": list(quality_gate.get("repairable_warnings") or ()),
+        "quality_gate_issues": issues,
+        "final_summary_display_warnings": final_summary_warnings,
+        "quality_warnings": soft_warnings,
         "direct_answer": bool(quality_gate.get("direct_answer")),
         "has_verified_claims": bool(quality_gate.get("has_verified_claims")),
         "verified_claim_preserved": bool(quality_gate.get("verified_claim_preserved")),
@@ -265,12 +283,50 @@ def _real_clickhouse_review(
         issues.append("missing_clickhouse_result_refs")
     if not validator_ok:
         issues.append("missing_clickhouse_runtime_validator")
+    issues.extend(_clickhouse_query_intent_issues(package))
     return {
         "required": True,
         "real_clickhouse_verified": not issues,
         "clickhouse_result_refs": sorted(set(verified_refs)),
         "issues": issues,
     }
+
+
+def _clickhouse_query_intent_issues(answer_package: dict[str, Any]) -> list[str]:
+    admin = answer_package.get("admin_audit") or {}
+    if not isinstance(admin, dict):
+        return []
+    row_query_plan = admin.get("row_query_plan") or {}
+    if not isinstance(row_query_plan, dict):
+        return []
+    query_plans = row_query_plan.get("query_plans") or ()
+    expected: list[str] = []
+    if isinstance(query_plans, (list, tuple)):
+        for item in query_plans:
+            if not isinstance(item, dict):
+                continue
+            if item.get("reason") or not item.get("sql_text"):
+                continue
+            intent = str(item.get("query_intent") or item.get("intent") or "")
+            if intent and intent != "dimension_scan_reuse":
+                expected.append(intent)
+    if not expected:
+        return []
+    query_results = row_query_plan.get("query_results") or ()
+    actual_results = {
+        str(item.get("intent") or item.get("query_intent") or "")
+        for item in query_results
+        if isinstance(item, dict)
+    }
+    refs_by_intent = row_query_plan.get("result_refs_by_intent") or {}
+    if not isinstance(refs_by_intent, dict):
+        refs_by_intent = {}
+    issues = []
+    for intent in dict.fromkeys(expected):
+        refs = refs_by_intent.get(intent) or ()
+        if intent not in actual_results or not refs:
+            issues.append(f"missing_clickhouse_query_intent:{intent}")
+    return issues
 
 
 def _clickhouse_result_refs(answer_package: dict[str, Any]) -> list[str]:
@@ -471,6 +527,20 @@ def _case_output(
         for turn in turns
     )
     real_clickhouse_review = _aggregate_real_clickhouse_review(turns, real_clickhouse)
+    quality_warnings = sorted(
+        {
+            str(warning)
+            for turn in turns
+            for warning in (
+                (
+                    (turn.get("resumed_quality_review") or turn.get("quality_review") or {})
+                    .get("quality_warnings")
+                    or ()
+                )
+            )
+            if warning
+        }
+    )
     return {
         "case_id": case["id"],
         "thread_id": thread_id,
@@ -483,6 +553,8 @@ def _case_output(
         ),
         "strict_quality": strict_quality,
         "strict_quality_failed": strict_quality_failed,
+        "quality_warnings": quality_warnings,
+        "quality_warning_count": len(quality_warnings),
         "real_clickhouse_review": real_clickhouse_review,
         "real_clickhouse_verified": real_clickhouse_review["real_clickhouse_verified"],
         "clickhouse_result_refs": real_clickhouse_review["clickhouse_result_refs"],

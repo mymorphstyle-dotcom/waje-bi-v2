@@ -53,6 +53,8 @@ class ContextManifest:
     snapshot_version: str | None
     permission_context: dict[str, Any]
     analysis_assets: list[dict[str, Any]]
+    contract_versions: dict[str, str]
+    schema_fingerprint: str
     created_at: str
     can_support_claims: bool
 
@@ -70,6 +72,8 @@ class ContextManifest:
         snapshot_version: str | None = None,
         permission_context: Mapping[str, Any] | None = None,
         analysis_assets: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        contract_versions: Mapping[str, Any] | None = None,
+        schema_fingerprint: str | None = None,
         created_at: str | None = None,
     ) -> None:
         normalized_items = tuple(items or ())
@@ -105,6 +109,16 @@ class ContextManifest:
         object.__setattr__(self, "snapshot_version", snapshot_version)
         object.__setattr__(self, "permission_context", dict(permission_context or {}))
         object.__setattr__(self, "analysis_assets", [dict(item) for item in analysis_assets or ()])
+        object.__setattr__(
+            self,
+            "contract_versions",
+            {
+                str(key): str(value)
+                for key, value in dict(contract_versions or {}).items()
+                if key not in ("", None) and value not in ("", None)
+            },
+        )
+        object.__setattr__(self, "schema_fingerprint", str(schema_fingerprint or ""))
         object.__setattr__(
             self,
             "created_at",

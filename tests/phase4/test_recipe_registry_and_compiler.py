@@ -2,6 +2,7 @@ import tempfile
 import unittest
 
 from bi_agent.runtime.compiler import SUPPORTED_CAPABILITIES, compile_graph
+from bi_agent.runtime.analysis_assets import build_dimension_scan_reuse_contract
 from bi_agent.runtime.contracts import load_contract
 from bi_agent.runtime.models import RecipeEntry
 from bi_agent.runtime.recipe_registry import load_recipe_registry
@@ -427,6 +428,8 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
                 "baselines": ("previous_day",),
                 "permission_scope": "analyst",
                 "snapshot_version": "2026H1",
+                "contract_versions": {"runtime": "contract-v1"},
+                "schema_fingerprint": "schema-v1",
             },
             prior_analysis_assets=(
                 {
@@ -434,15 +437,26 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
                     "dimensions": ("channel",),
                     "status": "usable",
                     "query_ref": "query:channel-scan",
-                    "reuse_contract": {
-                        "target_metric": "paid_amount",
-                        "scope": "full_sample",
-                        "time_window": "2026-07-08",
-                        "windows": {"target": "2026-07-08", "baseline": "2026-07-07"},
-                        "baselines": ("previous_day",),
-                        "permission_scope": "analyst",
-                        "snapshot_version": "2026H1",
-                    },
+                    "reuse_contract": build_dimension_scan_reuse_contract(
+                        target_metric="paid_amount",
+                        scope="full_sample",
+                        time_window="2026-07-08",
+                        windows={"target": "2026-07-08", "baseline": "2026-07-07"},
+                        baselines=("previous_day",),
+                        permission_scope="analyst",
+                        snapshot_version="2026H1",
+                        dimensions=("channel",),
+                        required_fields=(
+                            "period",
+                            "group",
+                            "amount",
+                            "paid_users",
+                            "orders",
+                            "first_paid_users",
+                        ),
+                        contract_versions={"runtime": "contract-v1"},
+                        schema_fingerprint="schema-v1",
+                    ),
                     "created_at": "2026-07-08T08:00:00+00:00",
                     "expires_at": "2026-07-10T08:00:00+00:00",
                     "row_payload": {
