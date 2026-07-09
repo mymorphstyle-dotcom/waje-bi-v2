@@ -34,6 +34,8 @@ def build_answer_package(
     compiler_runtime_plan: Optional[Mapping[str, Any]] = None,
     contract_gap_diagnostics: Optional[Sequence[Mapping[str, Any]]] = None,
     row_query_plan: Optional[Mapping[str, Any]] = None,
+    snapshot_id: str = "",
+    permission_scope: str = "",
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
     semantic_audit = {} if semantic_audit is None else semantic_audit
@@ -88,6 +90,8 @@ def build_answer_package(
         "run_id": run_id,
         "status": "draft",
         "package_type": "draft_answer_package",
+        "snapshot_id": snapshot_id,
+        "permission_scope": permission_scope,
         "context_manifest_ref": context_manifest_ref,
         "reuse_decisions": to_jsonable(reuse_decisions),
         "final_answer": final_business_summary or answer_text,

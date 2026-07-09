@@ -133,13 +133,60 @@ class RevenueRuntimePlanTest(unittest.TestCase):
                     "dimensions": ("channel",),
                     "status": "usable",
                     "query_ref": "query:channel-scan",
+                    "reuse_contract": {
+                        "target_metric": "paid_amount",
+                        "scope": "full_sample",
+                        "time_window": "2026-07-08",
+                        "windows": {"target": "2026-07-08", "baseline": "2026-07-07"},
+                        "baselines": ("previous_day",),
+                        "permission_scope": "analyst",
+                        "snapshot_version": "2026H1",
+                        "contract_signature": "scan:channel:paid_amount:full_sample",
+                    },
+                    "created_at": "2026-07-08T08:00:00+00:00",
+                    "expires_at": "2026-07-10T08:00:00+00:00",
+                    "row_payload": {
+                        "rows": (
+                            {
+                                "period": "2026-07-07",
+                                "group": "baseline",
+                                "amount": 100,
+                                "paid_users": 10,
+                                "orders": 12,
+                                "first_paid_users": 3,
+                                "channel": "A",
+                            },
+                            {
+                                "period": "2026-07-08",
+                                "group": "target",
+                                "amount": 130,
+                                "paid_users": 11,
+                                "orders": 14,
+                                "first_paid_users": 4,
+                                "channel": "A",
+                            },
+                        ),
+                        "row_count": 2,
+                        "truncated": False,
+                    },
                 },
             ),
+            bound_context={
+                "scope": "full_sample",
+                "time_window": "2026-07-08",
+                "windows": {"target": "2026-07-08", "baseline": "2026-07-07"},
+                "baselines": ("previous_day",),
+                "permission_scope": "analyst",
+                "snapshot_version": "2026H1",
+            },
         )
 
         self.assertIn("query:channel-scan", plan["asset_inputs_used"])
         self.assertIn("dimension_scan_reuse", plan["query_intents"])
         self.assertNotIn("dimension_scan", plan["query_intents"])
+        self.assertEqual(plan["asset_row_inputs"][0]["query_ref"], "query:channel-scan")
+        self.assertEqual(len(plan["asset_row_inputs"][0]["rows"]), 2)
+        self.assertEqual(plan["asset_row_inputs"][0]["rows"][0]["channel"], "A")
 
     def test_non_matching_prior_assets_do_not_suppress_needed_scan(self):
         plan = build_revenue_runtime_plan(
@@ -165,6 +212,198 @@ class RevenueRuntimePlanTest(unittest.TestCase):
 
         self.assertEqual(plan["asset_inputs_used"], ())
         self.assertNotIn("dimension_scan_reuse", plan["query_intents"])
+        self.assertIn("dimension_scan", plan["query_intents"])
+
+    def test_stale_prior_dimension_scan_does_not_suppress_fresh_scan(self):
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=("segment_contribution", "answer_verify"),
+            diagnostic_axes=("factor_topk",),
+            question_text="继续看哪个渠道影响最大",
+            bound_context={
+                "scope": "full_sample",
+                "time_window": "2026-07-09",
+                "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
+                "baselines": ("previous_day",),
+                "permission_scope": "analyst",
+                "snapshot_version": "2026H1",
+            },
+            prior_assets=(
+                {
+                    "asset_type": "dimension_scan",
+                    "dimensions": ("channel",),
+                    "status": "usable",
+                    "query_ref": "query:stale-channel-scan",
+                    "reuse_contract": {
+                        "target_metric": "paid_amount",
+                        "scope": "full_sample",
+                        "time_window": "2026-07-09",
+                        "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
+                        "baselines": ("previous_day",),
+                        "permission_scope": "analyst",
+                        "snapshot_version": "2026H1",
+                        "contract_signature": "scan:channel:paid_amount:full_sample",
+                    },
+                    "created_at": "2026-07-07T08:00:00+00:00",
+                    "expires_at": "2026-07-08T08:00:00+00:00",
+                    "row_payload": {"rows": (), "row_count": 0, "truncated": False},
+                },
+            ),
+        )
+
+        self.assertEqual(plan["asset_inputs_used"], ())
+        self.assertEqual(plan["asset_row_inputs"], ())
+        self.assertIn("dimension_scan", plan["query_intents"])
+
+    def test_permission_mismatch_does_not_reuse_prior_dimension_scan(self):
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=("segment_contribution", "answer_verify"),
+            diagnostic_axes=("factor_topk",),
+            question_text="继续看哪个渠道影响最大",
+            bound_context={
+                "scope": "full_sample",
+                "time_window": "2026-07-09",
+                "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
+                "baselines": ("previous_day",),
+                "permission_scope": "business_reader",
+                "snapshot_version": "2026H1",
+            },
+            prior_assets=(
+                {
+                    "asset_type": "dimension_scan",
+                    "dimensions": ("channel",),
+                    "status": "usable",
+                    "query_ref": "query:analyst-channel-scan",
+                    "reuse_contract": {
+                        "target_metric": "paid_amount",
+                        "scope": "full_sample",
+                        "time_window": "2026-07-09",
+                        "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
+                        "baselines": ("previous_day",),
+                        "permission_scope": "analyst",
+                        "snapshot_version": "2026H1",
+                        "contract_signature": "scan:channel:paid_amount:full_sample",
+                    },
+                    "created_at": "2026-07-09T08:00:00+00:00",
+                    "expires_at": "2026-07-10T08:00:00+00:00",
+                    "row_payload": {
+                        "rows": (
+                            {
+                                "period": "2026-07-09",
+                                "group": "target",
+                                "amount": 130,
+                                "paid_users": 11,
+                                "orders": 14,
+                                "first_paid_users": 4,
+                                "channel": "A",
+                            },
+                        ),
+                        "row_count": 1,
+                        "truncated": False,
+                    },
+                },
+            ),
+        )
+
+        self.assertEqual(plan["asset_inputs_used"], ())
+        self.assertEqual(plan["asset_row_inputs"], ())
+        self.assertIn("dimension_scan", plan["query_intents"])
+
+    def test_scope_mismatch_does_not_reuse_prior_dimension_scan(self):
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=("segment_contribution", "answer_verify"),
+            diagnostic_axes=("factor_topk",),
+            question_text="继续看哪个渠道影响最大",
+            bound_context={
+                "scope": "new_users",
+                "time_window": "2026-07-09",
+                "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
+                "baselines": ("previous_day",),
+                "permission_scope": "analyst",
+                "snapshot_version": "2026H1",
+            },
+            prior_assets=(
+                {
+                    "asset_type": "dimension_scan",
+                    "dimensions": ("channel",),
+                    "status": "usable",
+                    "query_ref": "query:full-sample-channel-scan",
+                    "reuse_contract": {
+                        "target_metric": "paid_amount",
+                        "scope": "full_sample",
+                        "time_window": "2026-07-09",
+                        "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
+                        "baselines": ("previous_day",),
+                        "permission_scope": "analyst",
+                        "snapshot_version": "2026H1",
+                        "contract_signature": "scan:channel:paid_amount:full_sample",
+                    },
+                    "created_at": "2026-07-09T08:00:00+00:00",
+                    "expires_at": "2026-07-10T08:00:00+00:00",
+                    "row_payload": {
+                        "rows": (
+                            {
+                                "period": "2026-07-09",
+                                "group": "target",
+                                "amount": 130,
+                                "paid_users": 11,
+                                "orders": 14,
+                                "first_paid_users": 4,
+                                "channel": "A",
+                            },
+                        ),
+                        "row_count": 1,
+                        "truncated": False,
+                    },
+                },
+            ),
+        )
+
+        self.assertEqual(plan["asset_inputs_used"], ())
+        self.assertEqual(plan["asset_row_inputs"], ())
+        self.assertIn("dimension_scan", plan["query_intents"])
+
+    def test_missing_row_payload_does_not_reuse_prior_dimension_scan(self):
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=("segment_contribution", "answer_verify"),
+            diagnostic_axes=("factor_topk",),
+            question_text="继续看哪个渠道影响最大",
+            bound_context={
+                "scope": "full_sample",
+                "time_window": "2026-07-09",
+                "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
+                "baselines": ("previous_day",),
+                "permission_scope": "analyst",
+                "snapshot_version": "2026H1",
+            },
+            prior_assets=(
+                {
+                    "asset_type": "dimension_scan",
+                    "dimensions": ("channel",),
+                    "status": "usable",
+                    "query_ref": "query:missing-rows",
+                    "reuse_contract": {
+                        "target_metric": "paid_amount",
+                        "scope": "full_sample",
+                        "time_window": "2026-07-09",
+                        "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
+                        "baselines": ("previous_day",),
+                        "permission_scope": "analyst",
+                        "snapshot_version": "2026H1",
+                        "contract_signature": "scan:channel:paid_amount:full_sample",
+                    },
+                    "created_at": "2026-07-09T08:00:00+00:00",
+                    "expires_at": "2026-07-10T08:00:00+00:00",
+                    "row_payload": {"rows": (), "row_count": 2, "truncated": False},
+                },
+            ),
+        )
+
+        self.assertEqual(plan["asset_inputs_used"], ())
+        self.assertEqual(plan["asset_row_inputs"], ())
         self.assertIn("dimension_scan", plan["query_intents"])
 
 

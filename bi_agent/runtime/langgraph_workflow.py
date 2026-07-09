@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -99,6 +101,7 @@ class WorkflowState(TypedDict, total=False):
     sql_text: str
     sql_hash: str
     row_query_plan: dict[str, Any]
+    runtime_rows_by_intent: dict[str, list[dict[str, Any]]]
     coverage_interpretation: dict[str, Any]
     evidence: list[dict[str, Any]]
     evidence_brief: dict[str, Any]
@@ -1074,10 +1077,32 @@ def _validate_runtime_binding(state: WorkflowState) -> WorkflowState:
 
 def _fetch_runtime_rows(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "fetch_runtime_rows")
+    reused_asset_input = _reused_dimension_scan_input(state)
     provider = _runtime_row_provider(state["request"])
     if provider is None:
+        if reused_asset_input:
+            _apply_reused_dimension_scan_input(state, reused_asset_input)
+            state.setdefault("validator_results", []).append(
+                {
+                    "validator": "analysis_asset_runtime",
+                    "ok": True,
+                    "reason": "prior_dimension_scan_rows_loaded",
+                    "query_ref": reused_asset_input.get("query_ref", ""),
+                }
+            )
         return state
     if not provider.configured():
+        if reused_asset_input:
+            _apply_reused_dimension_scan_input(state, reused_asset_input)
+            state.setdefault("validator_results", []).append(
+                {
+                    "validator": "analysis_asset_runtime",
+                    "ok": True,
+                    "reason": "prior_dimension_scan_rows_loaded",
+                    "query_ref": reused_asset_input.get("query_ref", ""),
+                }
+            )
+            return state
         state.setdefault("validator_results", []).append(
             {
                 "validator": "clickhouse_runtime",
@@ -1092,13 +1117,26 @@ def _fetch_runtime_rows(state: WorkflowState) -> WorkflowState:
         state["intent"],
         tuple(state["compiled_graph"].mutations.accepted_graph),
     )
+    query_intent = _row_query_intent(plan.query_id, plan.reason)
     state["row_query_plan"] = {
         "sql_text": plan.sql_text,
         "query_id": plan.query_id,
         "required_fields": list(plan.required_fields),
         "dimension_keys": list(plan.dimension_keys),
-        "query_intent": _row_query_intent(plan.query_id, plan.reason),
+        "query_intent": query_intent,
         "reason": plan.reason,
+        "query_plans": [
+            {
+                "sql_text": item.sql_text,
+                "query_id": item.query_id,
+                "query_intent": item.intent,
+                "required_fields": list(item.required_fields),
+                "dimension_keys": list(item.dimension_keys),
+                "reason": item.reason,
+                "claim_use": item.claim_use,
+            }
+            for item in plan.query_plans
+        ],
         "compiler_runtime_plan": to_jsonable(
             state["request"].get("compiler_runtime_plan", {})
         ),
@@ -1121,20 +1159,46 @@ def _fetch_runtime_rows(state: WorkflowState) -> WorkflowState:
         return state
 
     rows = [dict(row) for row in result.rows]
+    rows_by_intent = {
+        str(intent): [dict(row) for row in intent_rows]
+        for intent, intent_rows in result.rows_by_intent.items()
+    }
+    result_refs_by_intent = {
+        str(intent): list(refs)
+        for intent, refs in result.result_refs_by_intent.items()
+    }
+    if rows and query_intent not in rows_by_intent:
+        rows_by_intent[query_intent] = rows
+    if result.result_refs and query_intent not in result_refs_by_intent:
+        result_refs_by_intent[query_intent] = list(result.result_refs)
     state["request"]["rows"] = rows
     state["request"]["runtime_rows_source"] = "clickhouse"
+    state["request"]["runtime_rows_by_intent"] = rows_by_intent
+    state["request"]["result_refs_by_intent"] = result_refs_by_intent
+    state["request"]["query_results"] = to_jsonable(result.query_results)
     state["request"]["joint_dimension_keys"] = tuple(plan.dimension_keys)
     state["request"]["result_refs"] = tuple(result.result_refs)
     state["row_query_plan"]["query_hash"] = result.query_hash
     state["row_query_plan"]["result_refs"] = list(result.result_refs)
+    state["row_query_plan"]["rows"] = rows
+    state["row_query_plan"]["rows_by_intent"] = rows_by_intent
+    state["row_query_plan"]["result_refs_by_intent"] = result_refs_by_intent
+    state["row_query_plan"]["query_results"] = to_jsonable(result.query_results)
     if result.query_hash:
         state["sql_hash"] = result.query_hash
+    if reused_asset_input:
+        _apply_reused_dimension_scan_input(
+            state,
+            reused_asset_input,
+            additional_result_refs=result.result_refs,
+        )
     if state.get("schema") is not None:
-        fields = tuple(rows[0].keys()) if rows else tuple(plan.required_fields)
+        effective_rows = state["request"].get("rows") or rows
+        fields = tuple(effective_rows[0].keys()) if effective_rows else tuple(plan.required_fields)
         state["schema"] = {
             **state["schema"],
             "fields": fields,
-            "row_source": "clickhouse",
+            "row_source": state["request"].get("runtime_rows_source", "clickhouse"),
             "query_id": result.query_id or plan.query_id,
         }
     state.setdefault("validator_results", []).append(
@@ -1228,6 +1292,8 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
     budget = state.get("budget_state") or default_budget("ordinary")
 
     if "data_quality_profile" in capabilities:
+        capability_rows = _capability_rows_for(state, "data_quality_profile")
+        capability_refs = _capability_result_refs_for(state, "data_quality_profile")
         evidence.append(
             execute_capability(
                 CapabilityRequest(
@@ -1251,8 +1317,8 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
                     budget_state=budget,
                     llm_business_reason="检查本次聚合结果是否足以支撑业务判断。",
                     params={
-                        "rows": rows,
-                        "result_refs": query_ref,
+                        "rows": capability_rows,
+                        "result_refs": capability_refs,
                         "required_fields": tuple(
                             state["request"].get("required_fields", ())
                         ),
@@ -1267,6 +1333,8 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
         for capability in capabilities
         if capability in PATTERN_COMPARE_CAPABILITIES
     ):
+        capability_rows = _capability_rows_for(state, capability_id)
+        capability_refs = _capability_result_refs_for(state, capability_id)
         pattern_family = state["intent"]["pattern_family"]
         pattern_params = dict(state["intent"].get("pattern_params", {}))
         if pattern_family == "intra_period":
@@ -1300,8 +1368,8 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
                     budget_state=budget,
                     llm_business_reason="执行已接受的业务对比能力。",
                     params={
-                        "rows": rows,
-                        "result_refs": query_ref,
+                        "rows": capability_rows,
+                        "result_refs": capability_refs,
                         "pattern_family": pattern_family,
                         **pattern_params,
                     },
@@ -1312,26 +1380,30 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
     state["budget_state"] = budget
 
     if "data_quality_check" in capabilities:
+        capability_rows = _capability_rows_for(state, "data_quality_check")
+        capability_refs = _capability_result_refs_for(state, "data_quality_check")
         evidence.append(
             data_quality_check(
-                rows,
+                capability_rows,
                 required_fields=tuple(
                     state["request"].get("required_fields", ("month", "phase", "amount"))
                 ),
-                result_refs=query_ref,
+                result_refs=capability_refs,
             )
         )
     if "pattern_scan" in capabilities:
+        capability_rows = _capability_rows_for(state, "pattern_scan")
+        capability_refs = _capability_result_refs_for(state, "pattern_scan")
         pattern_family = state["intent"]["pattern_family"]
         pattern_params = dict(state["intent"].get("pattern_params", {}))
         if pattern_family == "intra_period":
             pattern_params.setdefault("target_phase", "start")
         evidence.append(
             scan_pattern(
-                rows,
+                capability_rows,
                 pattern_family=pattern_family,
                 materiality_floor=0.03,
-                result_refs=query_ref,
+                result_refs=capability_refs,
                 evidence_ref=f"pattern_scan:{pattern_family}",
                 **pattern_params,
             )
@@ -1341,46 +1413,56 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
             formula_decompose(
                 [{"formula_id": "paid_amount", "components": ("paid_amount",)}],
                 available_components=("paid_amount",),
-                result_refs=query_ref,
+                result_refs=_capability_result_refs_for(state, "formula_decompose"),
             )
         )
     if "driver_decomposition" in capabilities:
+        capability_rows = _capability_rows_for(state, "driver_decomposition")
+        capability_refs = _capability_result_refs_for(state, "driver_decomposition")
         evidence.append(
             driver_decomposition(
-                rows,
-                result_refs=query_ref,
+                capability_rows,
+                result_refs=capability_refs,
                 **_driver_params(state),
             )
         )
     if "segment_contribution" in capabilities:
+        capability_rows = _capability_rows_for(state, "segment_contribution")
+        capability_refs = _capability_result_refs_for(state, "segment_contribution")
         evidence.append(
             segment_contribution(
-                rows,
-                result_refs=query_ref,
+                capability_rows,
+                result_refs=capability_refs,
                 **_segment_contribution_params(state),
             )
         )
     if "outlier_contribution" in capabilities:
+        capability_rows = _capability_rows_for(state, "outlier_contribution")
+        capability_refs = _capability_result_refs_for(state, "outlier_contribution")
         evidence.append(
             outlier_contribution(
-                rows,
-                result_refs=query_ref,
+                capability_rows,
+                result_refs=capability_refs,
                 **_outlier_contribution_params(state),
             )
         )
     if "user_mix_contribution" in capabilities:
+        capability_rows = _capability_rows_for(state, "user_mix_contribution")
+        capability_refs = _capability_result_refs_for(state, "user_mix_contribution")
         evidence.append(
             user_mix_contribution(
-                rows,
-                result_refs=query_ref,
+                capability_rows,
+                result_refs=capability_refs,
                 **_user_mix_contribution_params(state),
             )
         )
     if "high_value_user_contribution" in capabilities:
+        capability_rows = _capability_rows_for(state, "high_value_user_contribution")
+        capability_refs = _capability_result_refs_for(state, "high_value_user_contribution")
         evidence.append(
             high_value_user_contribution(
-                rows,
-                result_refs=query_ref,
+                capability_rows,
+                result_refs=capability_refs,
                 **_high_value_user_contribution_params(state),
             )
         )
@@ -1388,7 +1470,7 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
         evidence.append(
             event_evidence(
                 state["request"].get("events", ()),
-                result_refs=query_ref,
+                result_refs=_capability_result_refs_for(state, "event_evidence"),
                 **_event_evidence_params(state),
             )
         )
@@ -1404,13 +1486,20 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
     else:
         segment = None
     if "outlier_scan" in capabilities:
-        evidence.append(outlier_scan(rows, result_refs=query_ref))
+        evidence.append(
+            outlier_scan(
+                _capability_rows_for(state, "outlier_scan"),
+                result_refs=_capability_result_refs_for(state, "outlier_scan"),
+            )
+        )
     if "joint_attribution" in capabilities:
+        capability_rows = _capability_rows_for(state, "joint_attribution")
+        capability_refs = _capability_result_refs_for(state, "joint_attribution")
         evidence.append(
             joint_attribution(
-                rows,
+                capability_rows,
                 segment_evidence=segment,
-                result_refs=query_ref,
+                result_refs=capability_refs,
                 **_joint_attribution_params(state),
             )
         )
@@ -1453,6 +1542,76 @@ def _capability_result_refs(state: WorkflowState) -> tuple[str, ...]:
     return tuple(state.get("request", {}).get("result_refs") or (state.get("sql_hash", ""),))
 
 
+def _capability_rows_for(
+    state: WorkflowState,
+    capability_id: str,
+) -> Sequence[Mapping[str, Any]]:
+    rows_by_intent = state.get("request", {}).get("runtime_rows_by_intent") or {}
+    if isinstance(rows_by_intent, Mapping):
+        for intent in _capability_query_intents(capability_id):
+            if intent in rows_by_intent:
+                rows = rows_by_intent[intent]
+                if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
+                    return rows
+    return _capability_rows(state)
+
+
+def _capability_result_refs_for(state: WorkflowState, capability_id: str) -> tuple[str, ...]:
+    refs_by_intent = state.get("request", {}).get("result_refs_by_intent") or {}
+    if isinstance(refs_by_intent, Mapping):
+        for intent in _capability_query_intents(capability_id):
+            if intent in refs_by_intent:
+                refs = refs_by_intent[intent]
+                if isinstance(refs, Sequence) and not isinstance(refs, (str, bytes)):
+                    return tuple(str(ref) for ref in refs if ref)
+    return _capability_result_refs(state)
+
+
+def _capability_query_intents(capability_id: str) -> tuple[str, ...]:
+    if capability_id in {"data_quality_profile", "data_quality_check"}:
+        return ("data_quality_probe", "daily_metric_baselines", "clickhouse_revenue_rows")
+    if capability_id in {"segment_contribution", "segment_bridge", "user_mix_contribution", "high_value_user_contribution"}:
+        return ("dimension_scan", "joint_candidate_scan", "daily_metric_baselines", "clickhouse_revenue_rows")
+    if capability_id == "joint_attribution":
+        return ("joint_candidate_scan", "dimension_scan", "daily_metric_baselines", "clickhouse_revenue_rows")
+    if capability_id == "event_evidence":
+        return ("event_context_probe", "daily_metric_baselines", "clickhouse_revenue_rows")
+    if capability_id in {
+        "compare_periods",
+        "rolling_window_compare",
+        "driver_decomposition",
+        "outlier_scan",
+        "outlier_contribution",
+        "pattern_scan",
+    }:
+        return ("daily_metric_baselines", "dimension_scan", "joint_candidate_scan", "clickhouse_revenue_rows")
+    return ("clickhouse_revenue_rows", "daily_metric_baselines", "dimension_scan", "joint_candidate_scan")
+
+
+def _runtime_dimension_keys_for_intents(
+    state: WorkflowState,
+    intents: Sequence[str],
+) -> tuple[str, ...]:
+    row_query_plan = state.get("row_query_plan") or {}
+    candidates = []
+    if isinstance(row_query_plan, Mapping):
+        for key in ("query_results", "query_plans"):
+            values = row_query_plan.get(key) or ()
+            if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+                candidates.extend(item for item in values if isinstance(item, Mapping))
+    for intent in intents:
+        for item in candidates:
+            item_intent = item.get("intent") or item.get("query_intent")
+            if str(item_intent or "") != intent:
+                continue
+            dimensions = item.get("dimension_keys") or ()
+            if isinstance(dimensions, Sequence) and not isinstance(dimensions, (str, bytes)):
+                keys = tuple(str(key) for key in dimensions if key)
+                if keys:
+                    return keys
+    return ()
+
+
 def _driver_params(state: WorkflowState) -> dict[str, Any]:
     params = dict(state.get("intent", {}).get("pattern_params", {}))
     return {
@@ -1465,8 +1624,12 @@ def _driver_params(state: WorkflowState) -> dict[str, Any]:
 
 def _segment_contribution_params(state: WorkflowState) -> dict[str, Any]:
     params = dict(state.get("intent", {}).get("pattern_params", {}))
+    runtime_dimensions = _runtime_dimension_keys_for_intents(
+        state,
+        ("dimension_scan", "joint_candidate_scan"),
+    )
     return {
-        "segment_key": params.get("period_key", "period"),
+        "segment_key": params.get("segment_key") or (runtime_dimensions[0] if runtime_dimensions else params.get("period_key", "period")),
         "group_key": params.get("group_key", "group"),
         "target_group": params.get("target_group", "target"),
         "baseline_group": params.get("baseline_group", "baseline"),
@@ -1616,9 +1779,23 @@ def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
     request = state.get("request") or {}
     context = {
         key: intent.get(key)
-        for key in ("pattern_family", "pattern_params", "time_window", "baseline", "target")
+        for key in ("pattern_family", "pattern_params", "time_window", "baseline", "target", "scope")
         if intent.get(key) not in ("", None, {}, [])
     }
+    if request.get("role"):
+        context["permission_scope"] = str(request.get("role"))
+    manifest = request.get("context_manifest")
+    if isinstance(manifest, Mapping):
+        snapshot_version = manifest.get("snapshot_version")
+        if snapshot_version not in ("", None):
+            context["snapshot_version"] = str(snapshot_version)
+        permission_context = manifest.get("permission_context")
+        if (
+            "permission_scope" not in context
+            and isinstance(permission_context, Mapping)
+            and permission_context.get("role") not in ("", None)
+        ):
+            context["permission_scope"] = str(permission_context.get("role"))
     if isinstance(request.get("runtime_windows"), dict):
         context["windows"] = dict(request["runtime_windows"])
     elif isinstance(analysis_route.get("windows"), dict):
@@ -1628,6 +1805,66 @@ def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
     elif analysis_route.get("baselines"):
         context["baselines"] = tuple(analysis_route["baselines"])
     return context
+
+
+def _reused_dimension_scan_input(state: WorkflowState) -> Optional[Mapping[str, Any]]:
+    request = state.get("request") or {}
+    plan = request.get("compiler_runtime_plan")
+    if not isinstance(plan, Mapping):
+        return None
+    asset_rows = plan.get("asset_row_inputs")
+    if not isinstance(asset_rows, Sequence) or isinstance(asset_rows, (str, bytes)):
+        return None
+    for item in asset_rows:
+        if isinstance(item, Mapping) and item.get("query_ref") and item.get("rows"):
+            return item
+    return None
+
+
+def _apply_reused_dimension_scan_input(
+    state: WorkflowState,
+    asset_input: Mapping[str, Any],
+    *,
+    additional_result_refs: Sequence[str] = (),
+) -> None:
+    request = state.setdefault("request", {})
+    rows = [
+        dict(row)
+        for row in (asset_input.get("rows") or ())
+        if isinstance(row, Mapping)
+    ]
+    result_refs = [
+        str(ref)
+        for ref in (
+            *(asset_input.get("result_refs") or ()),
+            *tuple(additional_result_refs or ()),
+        )
+        if ref
+    ]
+    if not result_refs and asset_input.get("query_ref"):
+        result_refs = [str(asset_input["query_ref"])]
+    request["rows"] = rows
+    request["runtime_rows_source"] = "analysis_asset"
+    request["result_refs"] = tuple(dict.fromkeys(result_refs))
+    request["joint_dimension_keys"] = tuple(asset_input.get("dimensions") or ())
+
+    row_query_plan = state.setdefault("row_query_plan", {})
+    row_query_plan["query_intent"] = "dimension_scan_reuse"
+    row_query_plan["query_ref"] = str(asset_input.get("query_ref") or "")
+    row_query_plan["result_refs"] = list(dict.fromkeys(result_refs))
+    row_query_plan["reused_asset_ref"] = str(asset_input.get("query_ref") or "")
+    row_query_plan["dimension_keys"] = list(asset_input.get("dimensions") or ())
+    row_query_plan["rows"] = rows
+    existing_rows = row_query_plan.get("rows_by_intent")
+    if not isinstance(existing_rows, Mapping):
+        existing_rows = {}
+    row_query_plan["rows_by_intent"] = {
+        **{
+            str(intent): [dict(row) for row in rows_]
+            for intent, rows_ in dict(existing_rows).items()
+        },
+        "dimension_scan_reuse": rows,
+    }
 
 
 def _intent_business_text(intent: Mapping[str, Any]) -> str:
@@ -2865,6 +3102,8 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         compiler_runtime_plan=request.get("compiler_runtime_plan", {}),
         contract_gap_diagnostics=contract_gap_diagnostics,
         row_query_plan=state.get("row_query_plan", {}),
+        snapshot_id=str(context_manifest.get("snapshot_version") or request.get("snapshot_id") or ""),
+        permission_scope=str(request.get("role") or ""),
     )
 
 

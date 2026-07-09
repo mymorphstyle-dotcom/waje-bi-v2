@@ -14,22 +14,60 @@ class AnalysisAssetsTest(unittest.TestCase):
         assets = build_analysis_assets(
             {
                 "run_id": "run-assets-build",
+                "snapshot_id": "2026H1",
+                "permission_scope": "analyst",
                 "admin_audit": {
                     "compiler_runtime_plan": {
+                        "target_metric": "paid_amount",
+                        "scope": "full_sample",
+                        "time_window": "2026-07-08",
+                        "windows": {"target": "2026-07-08", "baseline": "2026-07-07"},
+                        "baselines": ("previous_day",),
                         "query_intents": ("dimension_scan",),
                         "row_shapes": (
                             {
                                 "source": "clickhouse",
+                                "required_fields": (
+                                    "period",
+                                    "group",
+                                    "amount",
+                                    "paid_users",
+                                    "orders",
+                                    "first_paid_users",
+                                ),
                                 "dimension_keys": ("channel",),
                             },
                         ),
                         "contract_gaps": ("payment_status_contract_missing",),
                     },
                     "row_query_plan": {
+                        "query_intent": "dimension_scan",
                         "query_id": "run-assets-build:dimension_scan",
                         "query_hash": "hash-channel-scan",
                         "result_refs": ["hash-channel-scan"],
                         "dimension_keys": ["channel"],
+                        "rows_by_intent": {
+                            "dimension_scan": [
+                                {
+                                    "period": "2026-07-07",
+                                    "group": "baseline",
+                                    "amount": 100,
+                                    "paid_users": 10,
+                                    "orders": 12,
+                                    "first_paid_users": 3,
+                                    "channel": "A",
+                                },
+                                {
+                                    "period": "2026-07-08",
+                                    "group": "target",
+                                    "amount": 130,
+                                    "paid_users": 11,
+                                    "orders": 14,
+                                    "first_paid_users": 4,
+                                    "channel": "A",
+                                },
+                            ]
+                        },
                     },
                     "contract_gap_diagnostics": (
                         {
@@ -67,10 +105,63 @@ class AnalysisAssetsTest(unittest.TestCase):
         claim_context = next(asset for asset in assets if asset["asset_type"] == "claim_context_slot")
         self.assertEqual(dimension_scan["query_ref"], "hash-channel-scan")
         self.assertEqual(tuple(dimension_scan["dimensions"]), ("channel",))
+        self.assertEqual(dimension_scan["snapshot_version"], "2026H1")
+        self.assertEqual(dimension_scan["permission_scope"], "analyst")
+        self.assertIn("created_at", dimension_scan)
+        self.assertIn("expires_at", dimension_scan)
+        self.assertEqual(dimension_scan["result_refs"], ["hash-channel-scan"])
+        self.assertEqual(dimension_scan["row_payload"]["row_count"], 2)
+        self.assertFalse(dimension_scan["row_payload"]["truncated"])
+        self.assertEqual(dimension_scan["row_payload"]["rows"][0]["channel"], "A")
+        self.assertEqual(dimension_scan["reuse_contract"]["target_metric"], "paid_amount")
+        self.assertEqual(dimension_scan["reuse_contract"]["scope"], "full_sample")
+        self.assertEqual(
+            dimension_scan["reuse_contract"]["windows"],
+            {"target": "2026-07-08", "baseline": "2026-07-07"},
+        )
+        self.assertTrue(dimension_scan["reuse_contract"]["contract_signature"])
         self.assertEqual(tuple(claim_context["limitations"]), ("no_comparable_segments",))
         self.assertEqual(claim_context["verifier_status"], "passed")
         self.assertEqual(claim_context["wording_limit"], "candidate")
         self.assertFalse(claim_context["can_support_business_truth"])
+
+    def test_dimension_scan_asset_without_rows_is_context_only(self):
+        assets = build_analysis_assets(
+            {
+                "run_id": "run-assets-missing-rows",
+                "snapshot_id": "2026H1",
+                "permission_scope": "analyst",
+                "admin_audit": {
+                    "compiler_runtime_plan": {
+                        "target_metric": "paid_amount",
+                        "scope": "full_sample",
+                        "time_window": "2026-07-08",
+                        "windows": {"target": "2026-07-08", "baseline": "2026-07-07"},
+                        "baselines": ("previous_day",),
+                        "query_intents": ("dimension_scan",),
+                        "row_shapes": (
+                            {
+                                "source": "clickhouse",
+                                "required_fields": ("period", "group", "amount"),
+                                "dimension_keys": ("channel",),
+                            },
+                        ),
+                    },
+                    "row_query_plan": {
+                        "query_intent": "dimension_scan",
+                        "query_id": "run-assets-missing-rows:dimension_scan",
+                        "query_hash": "hash-missing-rows",
+                        "result_refs": ["hash-missing-rows"],
+                        "dimension_keys": ["channel"],
+                    },
+                },
+            }
+        )
+
+        dimension_scan = next(asset for asset in assets if asset["asset_type"] == "dimension_scan")
+        self.assertEqual(dimension_scan["status"], "context_only")
+        self.assertEqual(dimension_scan["row_payload"]["row_count"], 0)
+        self.assertEqual(dimension_scan["row_payload"]["rows"], [])
 
     def test_store_round_trips_topic_assets(self):
         store = InMemoryConversationStore()
@@ -531,8 +622,24 @@ class AnalysisAssetsTest(unittest.TestCase):
                 return RevenueRowsResult(
                     ok=True,
                     rows=(
-                        {"period": "2026-07-07", "group": "baseline", "amount": 100, "channel": "A"},
-                        {"period": "2026-07-08", "group": "target", "amount": 130, "channel": "A"},
+                        {
+                            "period": "2026-07-07",
+                            "group": "baseline",
+                            "amount": 100,
+                            "paid_users": 10,
+                            "orders": 12,
+                            "first_paid_users": 3,
+                            "channel": "A",
+                        },
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "amount": 130,
+                            "paid_users": 11,
+                            "orders": 14,
+                            "first_paid_users": 4,
+                            "channel": "A",
+                        },
                     ),
                     query_hash="hash-channel-scan",
                     query_id=plan.query_id,
@@ -584,6 +691,14 @@ class AnalysisAssetsTest(unittest.TestCase):
             target_metric="paid_amount",
             requested_nodes=("segment_contribution", "answer_verify"),
             question_text="继续看哪个渠道影响最大",
+            bound_context={
+                "scope": "full_sample",
+                "time_window": "2024-01..2026-05",
+                "windows": {"time_window": "2024-01..2026-05"},
+                "baselines": (),
+                "permission_scope": "analyst",
+                "snapshot_version": "2026H1",
+            },
             prior_analysis_assets=tuple(prior_assets),
         )
         self.assertIn("dimension_scan_reuse", compiled.runtime_plan["query_intents"])
