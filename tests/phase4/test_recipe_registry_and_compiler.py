@@ -386,8 +386,27 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
         self.assertIn("answer_verify", compiled.mutations.accepted_graph)
         self.assertIn(
             "rolling_7_day_baseline",
-            compiled.runtime_plan["baseline_windows"],
+            compiled.runtime_plan["baselines"],
         )
+
+    def test_compiler_passes_prior_analysis_assets_into_runtime_plan(self):
+        compiled = compile_graph(
+            question_family="segment_or_factor_attribution",
+            target_metric="paid_amount",
+            requested_nodes=("segment_contribution", "answer_verify"),
+            question_text="继续看哪个渠道影响最大",
+            prior_analysis_assets=(
+                {
+                    "asset_type": "dimension_scan",
+                    "dimension": "channel",
+                    "status": "usable",
+                    "query_ref": "query:channel-scan",
+                },
+            ),
+        )
+
+        self.assertIn("query:channel-scan", compiled.runtime_plan["asset_inputs_used"])
+        self.assertIn("dimension_scan_reuse", compiled.runtime_plan["query_intents"])
 
     def test_evidence_quality_question_compiles_audit_and_attribution_bundle(self):
         compiled = compile_graph(

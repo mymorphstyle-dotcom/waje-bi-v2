@@ -991,6 +991,7 @@ def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
         requested_nodes=intent["requested_nodes"],
         question_families=intent.get("question_families", ()),
         question_text=str(state["request"].get("question") or ""),
+        prior_analysis_assets=tuple(state["request"].get("prior_analysis_assets") or ()),
     )
     state["compiled_graph"] = compiled
     state["request"]["compiler_runtime_plan"] = compiled.runtime_plan

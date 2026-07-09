@@ -10,6 +10,7 @@ from bi_agent.runtime.models import (
 )
 from bi_agent.runtime.capability_registry import get_capability_card, public_capability_ids
 from bi_agent.runtime.recipe_registry import load_recipe_registry
+from bi_agent.runtime.revenue_runtime_plan import build_revenue_runtime_plan
 
 
 REQUIRED_PATTERN_PATHS = (
@@ -44,9 +45,6 @@ PHASE6_ENABLED_FAMILY_REQUIREMENTS = {
     ),
     "business_object_impact_review": frozenset(("event_evidence", "answer_verify")),
 }
-REVENUE_BASE_FIELDS = ("period", "group", "amount", "paid_users", "orders", "first_paid_users")
-REVENUE_JOINT_DIMENSIONS = ("channel", "payment_method", "region", "device_brand")
-REVENUE_SEGMENT_DIMENSIONS = ("channel",)
 REVENUE_DIAGNOSTIC_BUNDLES = {
     "driver_focus": (
         "data_quality_profile",
@@ -165,6 +163,7 @@ def compile_graph(
     requested_nodes: Iterable[str] = (),
     question_families: Iterable[str] = (),
     question_text: str = "",
+    prior_analysis_assets: Iterable[Mapping[str, Any]] = (),
     registry: Optional[Mapping[str, RecipeEntry]] = None,
 ) -> CompiledGraph:
     registry = load_recipe_registry() if registry is None else registry
@@ -255,11 +254,12 @@ def compile_graph(
         ),
     )
     def make_runtime_plan(accepted: tuple[str, ...]) -> dict:
-        return _runtime_plan(
+        return build_revenue_runtime_plan(
             target_metric=target_metric,
-            accepted=accepted,
-            question_families=supported_families,
+            accepted_graph=accepted,
             diagnostic_axes=diagnostic_axes,
+            question_text=question_text,
+            prior_assets=prior_analysis_assets,
         )
 
     if question_family == "pattern_explanation":
@@ -564,92 +564,6 @@ def _families_from_nodes(nodes: Iterable[str]) -> tuple[str, ...]:
         if node in PUBLIC_CAPABILITIES:
             families.extend(get_capability_card(node).supported_question_families)
     return _dedupe(families)
-
-
-CONTRACT_GAP_DESCRIPTORS = {
-    "high_value_user_contract_missing": {
-        "required_fields": ("user_id", "paid_amount_ngn"),
-    },
-    "gameplay_contract_missing": {
-        "fields": ("gameplay_id", "gameplay", "play_mode"),
-    },
-    "event_context_contract_missing": {
-        "required_fields": ("event_id", "event_time", "campaign_id"),
-    },
-    "payment_status_contract_missing": {
-        "fields": ("payment_status", "pay_status", "status"),
-    },
-    "duplicate_order_contract_missing": {
-        "fields": ("order_id", "payment_order_id"),
-    },
-}
-
-
-def _contract_gap_descriptor(gap_id: str) -> dict[str, Any]:
-    descriptor = CONTRACT_GAP_DESCRIPTORS[gap_id]
-    return {"gap_id": gap_id, **descriptor}
-
-
-def _runtime_plan(
-    *,
-    target_metric: str,
-    accepted: tuple[str, ...],
-    question_families: Iterable[str],
-    diagnostic_axes: tuple[str, ...],
-) -> dict:
-    graph = set(accepted)
-    dimension_keys: tuple[str, ...] = ()
-    if "joint_attribution" in graph:
-        dimension_keys = REVENUE_JOINT_DIMENSIONS
-    elif "segment_contribution" in graph or "segment_bridge" in graph:
-        dimension_keys = REVENUE_SEGMENT_DIMENSIONS
-
-    optional_fields: list[str] = []
-    contract_gaps: list[dict[str, Any]] = []
-
-    def add_contract_gap(gap_id: str) -> None:
-        descriptor = _contract_gap_descriptor(gap_id)
-        if descriptor not in contract_gaps:
-            contract_gaps.append(descriptor)
-
-    if "user_mix_contribution" in graph:
-        optional_fields.append("user_mix_bucket")
-    if "high_value_user_contribution" in graph:
-        optional_fields.extend(
-            ("high_value_amount", "high_value_paid_users", "value_percentile")
-        )
-        add_contract_gap("high_value_user_contract_missing")
-    if "joint_attribution" in graph and "pattern_attribution" in diagnostic_axes:
-        add_contract_gap("gameplay_contract_missing")
-    if "event_impact" in diagnostic_axes:
-        add_contract_gap("event_context_contract_missing")
-    if "evidence_quality" in diagnostic_axes:
-        add_contract_gap("payment_status_contract_missing")
-        add_contract_gap("duplicate_order_contract_missing")
-
-    baseline_windows = []
-    if "multi_baseline" in diagnostic_axes:
-        baseline_windows.extend(
-            ("previous_day", "rolling_7_day_baseline", "same_weekday_last_week")
-        )
-
-    return {
-        "target_metric": target_metric,
-        "question_families": tuple(question_families),
-        "diagnostic_axes": diagnostic_axes,
-        "baseline_windows": tuple(baseline_windows),
-        "row_shapes": (
-            {
-                "shape_id": "revenue_daily_diagnostic",
-                "source": "clickhouse",
-                "grain": "business_date_lagos_by_group",
-                "required_fields": REVENUE_BASE_FIELDS,
-                "optional_fields": tuple(_dedupe(optional_fields)),
-                "dimension_keys": dimension_keys,
-                "contract_gaps": tuple(contract_gaps),
-            },
-        ),
-    }
 
 
 def _order_capabilities(nodes: tuple[str, ...], diagnostic_axes: tuple[str, ...]) -> tuple[str, ...]:
