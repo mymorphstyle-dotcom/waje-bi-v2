@@ -3142,6 +3142,74 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(state["intent"]["pattern_params"]["target_weekdays"], [6, 7])
         self.assertEqual(state["intent"]["pattern_params"]["baseline_weekdays"], [1, 2, 3, 4, 5])
 
+    def test_business_intent_treats_null_list_fields_as_empty_lists(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "pattern_explanation",
+                    "pattern_family": "intra_period",
+                    "baseline_candidates": None,
+                    "sub_intents": None,
+                    "ambiguous_slots": None,
+                    "question_families": None,
+                    "secondary_question_families": None,
+                }
+            }
+        )
+        state = {
+            "request": {"question": "最近付费金额走势怎么样？"},
+            "run_id": "intent-null-lists",
+            "llm_client": fake,
+            "llm_calls": [],
+        }
+
+        _understand_business_intent(state)
+
+        self.assertEqual(state["intent"]["baseline_candidates"], [])
+        self.assertEqual(state["intent"]["sub_intents"], [])
+        self.assertEqual(state["intent"]["ambiguous_slots"], [])
+        self.assertEqual(state["intent"]["secondary_question_families"], [])
+
+    def test_business_intent_normalizes_none_pattern_family_to_custom_baseline_for_period_recompare(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "custom_baseline_comparison",
+                    "pattern_family": "none",
+                }
+            }
+        )
+        state = {
+            "request": {"question": "2026年Q2相比Q1，付费金额变化了多少？"},
+            "run_id": "intent-pattern-family-none",
+            "llm_client": fake,
+            "llm_calls": [],
+        }
+
+        _understand_business_intent(state)
+
+        self.assertEqual(state["intent"]["pattern_family"], "custom_baseline")
+
+    def test_business_intent_normalizes_unsupported_pattern_family_to_intra_period(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "pattern_explanation",
+                    "pattern_family": "surprise_mode",
+                }
+            }
+        )
+        state = {
+            "request": {"question": "最近付费金额走势怎么样？"},
+            "run_id": "intent-pattern-family-unsupported",
+            "llm_client": fake,
+            "llm_calls": [],
+        }
+
+        _understand_business_intent(state)
+
+        self.assertEqual(state["intent"]["pattern_family"], "intra_period")
+
     def test_route_normalization_keeps_answer_verify_for_actionability_challenges(self):
         nodes = _normalize_route_requested_nodes(
             ("data_quality_profile",),

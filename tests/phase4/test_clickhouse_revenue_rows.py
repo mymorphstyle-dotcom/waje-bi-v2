@@ -214,12 +214,34 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
                 },
             },
             {"time_window": "yesterday"},
-            ("compare_periods", "event_evidence"),
+            ("event_evidence",),
         )
 
         self.assertEqual(plan.sql_text, "")
         self.assertEqual(plan.reason, "event_context_probe_unbound")
         self.assertEqual(plan.query_id, "run-event:event_context_probe")
+
+    def test_plan_prefers_executable_baseline_query_when_event_probe_is_blocked(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-event-fallback",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "yesterday", "history_days": 12},
+                    "baselines": ("previous_day",),
+                    "query_intents": ("daily_metric_baselines", "event_context_probe"),
+                },
+            },
+            {"time_window": "yesterday"},
+            ("compare_periods", "driver_decomposition", "event_evidence"),
+        )
+
+        self.assertIn("SELECT", plan.sql_text)
+        self.assertEqual(plan.reason, "")
+        self.assertEqual(plan.query_id, "run-event-fallback:daily_metric_baselines")
 
     def test_plan_with_explicit_dimension_scan_and_empty_dimensions_stays_blocked(self):
         provider = ClickHouseRevenueRows(

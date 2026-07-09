@@ -247,6 +247,12 @@ def _preferred_intents(graph: set[str]) -> tuple[str, ...]:
     if "segment_contribution" in graph or "segment_bridge" in graph:
         return ("dimension_scan_reuse", "dimension_scan", "joint_candidate_scan")
     if "event_evidence" in graph:
+        if (
+            "compare_periods" in graph
+            or "rolling_window_compare" in graph
+            or "driver_decomposition" in graph
+        ):
+            return ("daily_metric_baselines", "event_context_probe")
         return ("event_context_probe",)
     if "data_quality_profile" in graph:
         return ("data_quality_probe",)
