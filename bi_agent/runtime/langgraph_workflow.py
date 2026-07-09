@@ -3018,48 +3018,53 @@ def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
         }
 
     final_answer_audit = _final_answer_audit(state)
-    if (
-        final_answer_audit["retry_instruction"]
+    repair_attempts = 0
+    while (
+        repair_attempts < 2
+        and final_answer_audit["retry_instruction"]
         and not final_answer_audit["blocks_display"]
         and final_answer_audit["repairable_warnings"]
     ):
+        repair_attempts += 1
         try:
             output = _invoke_llm(
                 state,
                 "final_business_summary",
                 _final_business_summary_payload(
                     state,
-                    retry_instruction=final_answer_audit["retry_instruction"],
+                    retry_instruction=_final_summary_retry_instruction(
+                        final_answer_audit,
+                        attempt=repair_attempts,
+                    ),
                 ),
             )
         except WorkflowFailure:
-            pass
-        else:
-            _apply_final_business_summary_output(state, output)
-            legacy_quality_gate = evaluate_answer_quality(
-                user_question=str(state.get("request", {}).get("question") or ""),
-                verified_claims=_verified_claims(state),
-                final_answer=state.get("final_business_summary") or state.get("answer_text", ""),
-                follow_up_questions=state["follow_up_questions"],
-            )
-            if state.get("final_summary_display_warnings"):
-                legacy_quality_gate = {
-                    **legacy_quality_gate,
-                    "final_summary_display_warnings": state["final_summary_display_warnings"],
-                }
-            if state.get("final_explanation") and not state.get("draft_claims"):
-                legacy_quality_gate = {
-                    **legacy_quality_gate,
-                    "has_verified_claims": False,
-                    "verified_claim_preserved": True,
-                    "business_insight_present": True,
-                    "issues": [
-                        issue
-                        for issue in legacy_quality_gate.get("issues", [])
-                        if issue not in {"missing_verified_claim", "missing_business_insight"}
-                    ],
-                }
-            final_answer_audit = _final_answer_audit(state)
+            break
+        _apply_final_business_summary_output(state, output)
+        legacy_quality_gate = evaluate_answer_quality(
+            user_question=str(state.get("request", {}).get("question") or ""),
+            verified_claims=_verified_claims(state),
+            final_answer=state.get("final_business_summary") or state.get("answer_text", ""),
+            follow_up_questions=state["follow_up_questions"],
+        )
+        if state.get("final_summary_display_warnings"):
+            legacy_quality_gate = {
+                **legacy_quality_gate,
+                "final_summary_display_warnings": state["final_summary_display_warnings"],
+            }
+        if state.get("final_explanation") and not state.get("draft_claims"):
+            legacy_quality_gate = {
+                **legacy_quality_gate,
+                "has_verified_claims": False,
+                "verified_claim_preserved": True,
+                "business_insight_present": True,
+                "issues": [
+                    issue
+                    for issue in legacy_quality_gate.get("issues", [])
+                    if issue not in {"missing_verified_claim", "missing_business_insight"}
+                ],
+            }
+        final_answer_audit = _final_answer_audit(state)
 
     state["final_answer_audit"] = final_answer_audit
     state["quality_gate"] = {
@@ -3762,6 +3767,26 @@ def _final_business_summary_payload(
         "business_threads": _business_threads(state),
         "final_answer_retry_instruction": retry_instruction,
     }
+
+
+def _final_summary_retry_instruction(
+    final_answer_audit: Mapping[str, Any],
+    *,
+    attempt: int,
+) -> str:
+    warnings = ", ".join(str(item) for item in final_answer_audit.get("repairable_warnings", ()) if item)
+    base = str(final_answer_audit.get("retry_instruction") or "")
+    instruction = base
+    if warnings:
+        instruction = f"{instruction}\n需要修复的问题：{warnings}。".strip()
+    if attempt >= 2:
+        instruction = (
+            f"{instruction}\n"
+            "这是第二次修复，请输出完整中文业务答案，必须包含："
+            "我对问题的理解是、分析脉络、关键发现、最终结论、需要注意。"
+            "不要只返回状态说明。"
+        ).strip()
+    return instruction
 
 
 def _apply_final_business_summary_output(
