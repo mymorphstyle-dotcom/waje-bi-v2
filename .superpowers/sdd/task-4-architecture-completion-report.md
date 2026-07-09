@@ -187,3 +187,127 @@ OK
 - `claim_context_slot.can_support_business_truth` now requires a reusable wording limit and preserves the original `wording_limit` on the stored asset.
 - Reusable asset dedupe now ignores `source_run_id`, so identical semantic content collapses to one asset while the latest run metadata stays on the retained payload.
 - Phase 7 tests now lock the reviewer findings: claim assets keep wording/limitations/truth boundary, and repeated reusable content keeps only the latest asset.
+
+## Reviewer Fix Round 3
+
+Wording correction for this report: the reusable claim asset in Task 4 is `claim_context_slot`. Earlier mentions of `verified_claim_slot` were stale wording from a prior design shape.
+
+### RED
+
+Pre-fix checks against `HEAD`:
+
+```bash
+tmp_old=/tmp/analysis_assets_head_task4_$$.py
+cp <(git show HEAD:bi_agent/runtime/analysis_assets.py) "$tmp_old"
+PYTHONPATH=/Users/luka/.codex/worktrees/250d/waje-bi-v2 python3 - <<'PY' "$tmp_old"
+import importlib.util
+import sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location('analysis_assets_old', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assets = mod.build_analysis_assets({
+    'run_id': 'run-old-claim-class',
+    'sections': [{
+        'section_id': 'summary',
+        'payload': {'claim_groups': [
+            {
+                'text': '候选机制不该升级成业务真值。',
+                'evidence_refs': ['event_evidence:inline'],
+                'evidence_type': 'candidate_mechanism',
+                'strength': 'high',
+                'wording_limit': 'quantified',
+                'verifier_status': 'passed',
+            },
+            {
+                'text': '上下文证据不该升级成业务真值。',
+                'evidence_refs': ['outlier_scan:inline'],
+                'evidence_type': 'contextual_evidence',
+                'strength': 'high',
+                'wording_limit': 'supported',
+                'verifier_status': 'passed',
+            },
+        ]}
+    }],
+})
+for asset in assets:
+    assert asset['can_support_business_truth'] is False, asset
+PY
+```
+
+Observed failure:
+
+```text
+AssertionError: {'asset_type': 'claim_context_slot', 'status': 'claim_supported', 'source_run_id': 'run-old-claim-class', 'text': '候选机制不该升级成业务真值。', 'evidence_refs': ['event_evidence:inline'], 'strength': 'high', 'evidence_type': 'candidate_mechanism', 'limitations': [], 'verifier_status': 'passed', 'wording_limit': 'quantified', 'can_support_business_truth': True}
+```
+
+```bash
+tmp_old=/tmp/analysis_assets_head_task4_$$.py
+cp <(git show HEAD:bi_agent/runtime/analysis_assets.py) "$tmp_old"
+PYTHONPATH=/Users/luka/.codex/worktrees/250d/waje-bi-v2 python3 - <<'PY' "$tmp_old"
+import importlib.util
+import sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location('analysis_assets_old', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assets = mod.merge_analysis_assets(
+    ({
+        'asset_type': 'claim_context_slot',
+        'status': 'context_only',
+        'text': '直营渠道贡献较高。',
+        'evidence_refs': ('segment_contribution:inline',),
+        'target_metric': 'paid_amount',
+        'scope': 'all_users',
+        'time_window': '2026-07-01..2026-07-07',
+        'verifier_status': 'failed',
+        'can_support_business_truth': False,
+        'source_run_id': 'run-01',
+    },),
+    ({
+        'asset_type': 'claim_context_slot',
+        'status': 'claim_supported',
+        'text': '直营渠道贡献较高。',
+        'evidence_refs': ('segment_contribution:inline',),
+        'target_metric': 'paid_amount',
+        'scope': 'all_users',
+        'time_window': '2026-07-01..2026-07-07',
+        'verifier_status': 'passed',
+        'can_support_business_truth': True,
+        'source_run_id': 'run-02',
+    },),
+)
+assert len(assets) == 1 and assets[0]['source_run_id'] == 'run-02', assets
+PY
+```
+
+Observed failure:
+
+```text
+AssertionError: ({'asset_type': 'claim_context_slot', 'status': 'context_only', 'text': '直营渠道贡献较高。', 'evidence_refs': ['segment_contribution:inline'], 'target_metric': 'paid_amount', 'scope': 'all_users', 'time_window': '2026-07-01..2026-07-07', 'verifier_status': 'failed', 'can_support_business_truth': False, 'source_run_id': 'run-01'}, {'asset_type': 'claim_context_slot', 'status': 'claim_supported', 'text': '直营渠道贡献较高。', 'evidence_refs': ['segment_contribution:inline'], 'target_metric': 'paid_amount', 'scope': 'all_users', 'time_window': '2026-07-01..2026-07-07', 'verifier_status': 'passed', 'can_support_business_truth': True, 'source_run_id': 'run-02'})
+```
+
+### GREEN
+
+Commands:
+
+```bash
+python3 -m unittest tests.phase7.test_analysis_assets
+python3 -m unittest tests.phase7.test_analysis_assets tests.phase7.test_conversation_runtime tests.phase7.test_conversation_persistence tests.phase4.test_workflow_artifacts_answer
+```
+
+Results:
+
+```text
+Ran 9 tests in 0.086s
+OK
+
+Ran 62 tests in 0.686s
+OK
+```
+
+### Fix summary
+
+- `claim_context_slot.can_support_business_truth` now also checks `evidence_type`, so `candidate_mechanism` and `contextual_evidence` stay context-only even when strength and wording look strong.
+- Reusable asset dedupe identity now keys `dimension_scan` and `claim_context_slot` by stable reusable content, while the latest status, verifier result, and truth metadata remain on the retained asset payload.
+- Added regression tests for context-only evidence classes and metadata-only asset changes collapsing to the latest reusable asset.

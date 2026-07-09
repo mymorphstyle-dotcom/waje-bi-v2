@@ -11,6 +11,16 @@ from bi_agent.runtime.artifacts import to_jsonable
 MAX_TOPIC_ANALYSIS_ASSETS = 20
 REUSABLE_VERIFIER_STATUSES = frozenset(("passed", "verified"))
 REUSABLE_BUSINESS_TRUTH_WORDING_LIMITS = frozenset(("supported", "quantified", "stable_pattern"))
+CONTEXT_ONLY_EVIDENCE_TYPES = frozenset(
+    (
+        "candidate_mechanism",
+        "contextual_evidence",
+        "insufficient",
+        "insufficient_evidence",
+        "permission_limited",
+        "data_gap",
+    )
+)
 
 
 def build_analysis_assets(answer_package: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
@@ -45,11 +55,13 @@ def build_analysis_assets(answer_package: Mapping[str, Any]) -> tuple[dict[str, 
         limitations = tuple(str(item) for item in claim.get("limitations") or ())
         verifier_status = str(claim.get("verifier_status") or "")
         strength = str(claim.get("strength") or "")
+        evidence_type = str(claim.get("evidence_type") or "")
         wording_limit = str(claim.get("wording_limit") or "")
         can_support_business_truth = (
             verifier_status in REUSABLE_VERIFIER_STATUSES
             and bool(evidence_refs)
             and strength in {"high", "medium"}
+            and evidence_type not in CONTEXT_ONLY_EVIDENCE_TYPES
             and wording_limit in REUSABLE_BUSINESS_TRUTH_WORDING_LIMITS
             and not limitations
         )
@@ -61,11 +73,14 @@ def build_analysis_assets(answer_package: Mapping[str, Any]) -> tuple[dict[str, 
                 "text": str(claim.get("text") or ""),
                 "evidence_refs": evidence_refs,
                 "strength": strength,
-                "evidence_type": str(claim.get("evidence_type") or ""),
+                "evidence_type": evidence_type,
                 "limitations": limitations,
                 "verifier_status": verifier_status,
                 "wording_limit": wording_limit,
                 "can_support_business_truth": can_support_business_truth,
+                "target_metric": str(claim.get("target_metric") or ""),
+                "scope": str(claim.get("scope") or ""),
+                "time_window": str(claim.get("time_window") or ""),
             }
         )
     return normalize_analysis_assets(assets)
@@ -104,11 +119,7 @@ def normalize_analysis_assets(
 
 
 def asset_dedup_key(asset: Mapping[str, Any]) -> str:
-    payload = {
-        key: value
-        for key, value in _normalized_asset(asset).items()
-        if key not in {"asset_id", "created_at", "recorded_at", "source_run_id"}
-    }
+    payload = _asset_identity_payload(_normalized_asset(asset))
     encoded = json.dumps(to_jsonable(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
 
@@ -264,3 +275,33 @@ def _normalized_asset(asset: Mapping[str, Any]) -> dict[str, Any]:
         if len(dimensions) == 1:
             normalized["dimension"] = dimensions[0]
     return normalized
+
+
+def _asset_identity_payload(asset: Mapping[str, Any]) -> dict[str, Any]:
+    asset_type = str(asset.get("asset_type") or "")
+    if asset_type == "dimension_scan":
+        payload = {
+            "asset_type": asset_type,
+            "dimensions": list(asset_dimensions(asset)),
+        }
+        for key in ("query_ref", "query_intent"):
+            value = asset.get(key)
+            if value:
+                payload[key] = value
+        return payload
+    if asset_type == "claim_context_slot":
+        payload = {
+            "asset_type": asset_type,
+            "text": str(asset.get("text") or ""),
+            "evidence_refs": list(asset.get("evidence_refs") or ()),
+        }
+        for key in ("target_metric", "scope", "time_window"):
+            value = asset.get(key)
+            if value:
+                payload[key] = value
+        return payload
+    return {
+        key: value
+        for key, value in asset.items()
+        if key not in {"asset_id", "created_at", "recorded_at", "source_run_id"}
+    }

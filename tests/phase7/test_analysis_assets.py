@@ -4,7 +4,7 @@ from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.compiler import compile_graph
-from bi_agent.runtime.analysis_assets import build_analysis_assets
+from bi_agent.runtime.analysis_assets import build_analysis_assets, merge_analysis_assets
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult, run_pattern_workflow
 from tests.phase4.fake_llm import FakeLLMClient
 
@@ -298,13 +298,23 @@ class AnalysisAssetsTest(unittest.TestCase):
                                 {
                                     "text": "候选判断不能升级成复用真值。",
                                     "evidence_refs": ["segment_contribution:inline"],
+                                    "evidence_type": "candidate_mechanism",
                                     "strength": "high",
-                                    "wording_limit": "candidate",
+                                    "wording_limit": "quantified",
+                                    "verifier_status": "passed",
+                                },
+                                {
+                                    "text": "上下文证据也不能升级成复用真值。",
+                                    "evidence_refs": ["outlier_scan:inline"],
+                                    "evidence_type": "contextual_evidence",
+                                    "strength": "high",
+                                    "wording_limit": "supported",
                                     "verifier_status": "passed",
                                 },
                                 {
                                     "text": "量化支持可复用。",
                                     "evidence_refs": ["driver_decomposition:inline"],
+                                    "evidence_type": "accounting_contribution",
                                     "strength": "high",
                                     "wording_limit": "quantified",
                                     "verifier_status": "passed",
@@ -316,15 +326,59 @@ class AnalysisAssetsTest(unittest.TestCase):
             }
         )
 
-        candidate_claim, quantified_claim = [
+        candidate_claim, contextual_claim, quantified_claim = [
             asset for asset in assets if asset["asset_type"] == "claim_context_slot"
         ]
         self.assertEqual(candidate_claim["status"], "context_only")
         self.assertFalse(candidate_claim["can_support_business_truth"])
-        self.assertEqual(candidate_claim["wording_limit"], "candidate")
+        self.assertEqual(candidate_claim["evidence_type"], "candidate_mechanism")
+        self.assertEqual(candidate_claim["wording_limit"], "quantified")
+        self.assertEqual(contextual_claim["status"], "context_only")
+        self.assertFalse(contextual_claim["can_support_business_truth"])
+        self.assertEqual(contextual_claim["evidence_type"], "contextual_evidence")
+        self.assertEqual(contextual_claim["wording_limit"], "supported")
         self.assertEqual(quantified_claim["status"], "claim_supported")
         self.assertTrue(quantified_claim["can_support_business_truth"])
+        self.assertEqual(quantified_claim["evidence_type"], "accounting_contribution")
         self.assertEqual(quantified_claim["wording_limit"], "quantified")
+
+    def test_claim_asset_metadata_only_changes_dedupe_to_latest_payload(self):
+        assets = merge_analysis_assets(
+            (
+                {
+                    "asset_type": "claim_context_slot",
+                    "status": "context_only",
+                    "text": "直营渠道贡献较高。",
+                    "evidence_refs": ("segment_contribution:inline",),
+                    "target_metric": "paid_amount",
+                    "scope": "all_users",
+                    "time_window": "2026-07-01..2026-07-07",
+                    "verifier_status": "failed",
+                    "can_support_business_truth": False,
+                    "source_run_id": "run-01",
+                },
+            ),
+            (
+                {
+                    "asset_type": "claim_context_slot",
+                    "status": "claim_supported",
+                    "text": "直营渠道贡献较高。",
+                    "evidence_refs": ("segment_contribution:inline",),
+                    "target_metric": "paid_amount",
+                    "scope": "all_users",
+                    "time_window": "2026-07-01..2026-07-07",
+                    "verifier_status": "passed",
+                    "can_support_business_truth": True,
+                    "source_run_id": "run-02",
+                },
+            ),
+        )
+
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0]["source_run_id"], "run-02")
+        self.assertEqual(assets[0]["status"], "claim_supported")
+        self.assertEqual(assets[0]["verifier_status"], "passed")
+        self.assertTrue(assets[0]["can_support_business_truth"])
 
     def test_follow_up_run_reuses_persisted_dimension_scan_assets(self):
         class Provider:
