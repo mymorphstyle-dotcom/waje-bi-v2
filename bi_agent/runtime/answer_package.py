@@ -151,6 +151,13 @@ def build_claim_groups(
         refs = list(claim.get("evidence_refs", ()))
         ref_items = [evidence_by_ref[ref] for ref in refs if ref in evidence_by_ref]
         first = ref_items[0] if ref_items else {}
+        evidence_types = [
+            item.get("evidence_type") for item in ref_items if item.get("evidence_type")
+        ]
+        strengths = [item.get("strength") for item in ref_items if item.get("strength")]
+        wording_limits = [
+            item.get("wording_limit") for item in ref_items if item.get("wording_limit")
+        ]
         limitations = []
         for item in ref_items:
             for limitation in item.get("limitations", ()):
@@ -166,8 +173,11 @@ def build_claim_groups(
                 "time_window": claim.get("time_window"),
                 "evidence_refs": refs,
                 "evidence_type": first.get("evidence_type"),
+                "evidence_types": evidence_types,
                 "strength": first.get("strength"),
+                "strengths": strengths,
                 "wording_limit": first.get("wording_limit"),
+                "wording_limits": wording_limits,
                 "limitations": limitations,
                 "verifier_status": verifier.get("status"),
             }

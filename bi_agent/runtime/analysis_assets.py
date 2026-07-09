@@ -21,6 +21,7 @@ CONTEXT_ONLY_EVIDENCE_TYPES = frozenset(
         "data_gap",
     )
 )
+CONTEXT_ONLY_WORDING_LIMITS = frozenset(("candidate", "contextual", "insufficient"))
 
 
 def build_analysis_assets(answer_package: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
@@ -57,12 +58,24 @@ def build_analysis_assets(answer_package: Mapping[str, Any]) -> tuple[dict[str, 
         strength = str(claim.get("strength") or "")
         evidence_type = str(claim.get("evidence_type") or "")
         wording_limit = str(claim.get("wording_limit") or "")
+        evidence_types = _string_list(claim.get("evidence_types"))
+        strengths = _string_list(claim.get("strengths"))
+        wording_limits = _string_list(claim.get("wording_limits"))
+        effective_evidence_types = evidence_types or ((evidence_type,) if evidence_type else ())
+        effective_strengths = strengths or ((strength,) if strength else ())
+        effective_wording_limits = wording_limits or ((wording_limit,) if wording_limit else ())
         can_support_business_truth = (
             verifier_status in REUSABLE_VERIFIER_STATUSES
             and bool(evidence_refs)
-            and strength in {"high", "medium"}
-            and evidence_type not in CONTEXT_ONLY_EVIDENCE_TYPES
-            and wording_limit in REUSABLE_BUSINESS_TRUTH_WORDING_LIMITS
+            and bool(effective_strengths)
+            and all(item in {"high", "medium"} for item in effective_strengths)
+            and all(item not in CONTEXT_ONLY_EVIDENCE_TYPES for item in effective_evidence_types)
+            and bool(effective_wording_limits)
+            and all(
+                item in REUSABLE_BUSINESS_TRUTH_WORDING_LIMITS
+                and item not in CONTEXT_ONLY_WORDING_LIMITS
+                for item in effective_wording_limits
+            )
             and not limitations
         )
         assets.append(
@@ -73,10 +86,13 @@ def build_analysis_assets(answer_package: Mapping[str, Any]) -> tuple[dict[str, 
                 "text": str(claim.get("text") or ""),
                 "evidence_refs": evidence_refs,
                 "strength": strength,
+                "strengths": effective_strengths,
                 "evidence_type": evidence_type,
+                "evidence_types": effective_evidence_types,
                 "limitations": limitations,
                 "verifier_status": verifier_status,
                 "wording_limit": wording_limit,
+                "wording_limits": effective_wording_limits,
                 "can_support_business_truth": can_support_business_truth,
                 "target_metric": str(claim.get("target_metric") or ""),
                 "scope": str(claim.get("scope") or ""),
@@ -275,6 +291,12 @@ def _normalized_asset(asset: Mapping[str, Any]) -> dict[str, Any]:
         if len(dimensions) == 1:
             normalized["dimension"] = dimensions[0]
     return normalized
+
+
+def _string_list(values: Any) -> tuple[str, ...]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+        return ()
+    return tuple(str(item) for item in values if item)
 
 
 def _asset_identity_payload(asset: Mapping[str, Any]) -> dict[str, Any]:

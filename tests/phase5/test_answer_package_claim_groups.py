@@ -58,13 +58,67 @@ class AnswerPackageClaimGroupsTest(unittest.TestCase):
                     "time_window": "2026-01-01..2026-06-30",
                     "evidence_refs": ["compare_periods:run"],
                     "evidence_type": "statistical_association",
+                    "evidence_types": ["statistical_association"],
                     "strength": "high",
+                    "strengths": ["high"],
                     "wording_limit": "supported",
+                    "wording_limits": ["supported"],
                     "limitations": [],
                     "verifier_status": "passed",
                 }
             ],
         )
+
+    def test_claim_groups_preserve_mixed_evidence_metadata_across_refs(self):
+        package = build_answer_package(
+            run_id="phase5-mixed-claim-group",
+            draft_claims=[
+                {
+                    "text": "渠道差异有信号，但机制结论仍是候选。",
+                    "evidence_refs": ["compare_periods:run", "outlier_scan:inline"],
+                    "scope": "full_sample",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "target_metric": "paid_amount",
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_ref": "compare_periods:run",
+                    "capability_id": "compare_periods",
+                    "evidence_type": "statistical_association",
+                    "strength": "high",
+                    "wording_limit": "supported",
+                    "limitations": [],
+                    "typed_payload": {},
+                },
+                {
+                    "evidence_ref": "outlier_scan:inline",
+                    "capability_id": "outlier_scan",
+                    "evidence_type": "contextual_evidence",
+                    "strength": "medium",
+                    "wording_limit": "contextual",
+                    "limitations": [],
+                    "typed_payload": {},
+                },
+            ],
+            checkpoint_events=[],
+            proposed_graph=[],
+            accepted_graph=["compare_periods", "outlier_scan", "answer_verify"],
+            rejected_or_degraded_mutations=[],
+            validator_results=[],
+            sql_text="SELECT 1",
+            sql_hash="hash",
+            artifact_audit={},
+        )
+
+        claim_group = package["sections"][0]["payload"]["claim_groups"][0]
+        self.assertEqual(claim_group["evidence_type"], "statistical_association")
+        self.assertEqual(
+            claim_group["evidence_types"],
+            ["statistical_association", "contextual_evidence"],
+        )
+        self.assertEqual(claim_group["strengths"], ["high", "medium"])
+        self.assertEqual(claim_group["wording_limits"], ["supported", "contextual"])
 
     def test_answer_package_emits_visualization_plan_from_verified_claim_groups(self):
         package = build_answer_package(

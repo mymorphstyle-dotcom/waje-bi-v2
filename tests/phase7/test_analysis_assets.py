@@ -342,6 +342,51 @@ class AnalysisAssetsTest(unittest.TestCase):
         self.assertEqual(quantified_claim["evidence_type"], "accounting_contribution")
         self.assertEqual(quantified_claim["wording_limit"], "quantified")
 
+    def test_claim_asset_mixed_evidence_stays_context_only_even_when_first_ref_is_strong(self):
+        assets = build_analysis_assets(
+            {
+                "run_id": "run-mixed-claim-wording",
+                "sections": [
+                    {
+                        "section_id": "summary",
+                        "payload": {
+                            "claim_groups": [
+                                {
+                                    "text": "第一条 ref 很强，但整组证据里还有候选边界。",
+                                    "evidence_refs": [
+                                        "driver_decomposition:inline",
+                                        "joint_attribution:inline",
+                                    ],
+                                    "evidence_type": "accounting_contribution",
+                                    "evidence_types": [
+                                        "accounting_contribution",
+                                        "contextual_evidence",
+                                    ],
+                                    "strength": "high",
+                                    "strengths": ["high", "medium"],
+                                    "wording_limit": "quantified",
+                                    "wording_limits": ["quantified", "contextual"],
+                                    "verifier_status": "passed",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        )
+
+        claim_context = next(asset for asset in assets if asset["asset_type"] == "claim_context_slot")
+        self.assertEqual(claim_context["status"], "context_only")
+        self.assertFalse(claim_context["can_support_business_truth"])
+        self.assertEqual(
+            tuple(claim_context["evidence_types"]),
+            ("accounting_contribution", "contextual_evidence"),
+        )
+        self.assertEqual(
+            tuple(claim_context["wording_limits"]),
+            ("quantified", "contextual"),
+        )
+
     def test_claim_asset_metadata_only_changes_dedupe_to_latest_payload(self):
         assets = merge_analysis_assets(
             (

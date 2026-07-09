@@ -311,3 +311,187 @@ OK
 - `claim_context_slot.can_support_business_truth` now also checks `evidence_type`, so `candidate_mechanism` and `contextual_evidence` stay context-only even when strength and wording look strong.
 - Reusable asset dedupe identity now keys `dimension_scan` and `claim_context_slot` by stable reusable content, while the latest status, verifier result, and truth metadata remain on the retained asset payload.
 - Added regression tests for context-only evidence classes and metadata-only asset changes collapsing to the latest reusable asset.
+
+## Task 4 final mixed-evidence claim boundary
+
+### RED
+
+Commands:
+
+```bash
+tmp_old_answer=/tmp/task4_old_answer_package_$$.py
+cp <(git show de3fce7f:bi_agent/runtime/answer_package.py) "$tmp_old_answer"
+PYTHONPATH=/Users/luka/.codex/worktrees/250d/waje-bi-v2 python3 - <<'PY' "$tmp_old_answer"
+import importlib.util
+import sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location('answer_package_old', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+package = mod.build_answer_package(
+    run_id='task4-old-answer',
+    draft_claims=[{
+        'text': '第一条证据强，但第二条仍是上下文。',
+        'evidence_refs': ['driver_decomposition:inline', 'outlier_scan:inline'],
+        'scope': 'full_sample',
+        'time_window': '2026-01-01..2026-06-30',
+        'target_metric': 'paid_amount',
+    }],
+    evidence=[
+        {
+            'evidence_ref': 'driver_decomposition:inline',
+            'evidence_type': 'accounting_contribution',
+            'strength': 'high',
+            'wording_limit': 'quantified',
+            'limitations': [],
+            'typed_payload': {},
+        },
+        {
+            'evidence_ref': 'outlier_scan:inline',
+            'evidence_type': 'contextual_evidence',
+            'strength': 'medium',
+            'wording_limit': 'contextual',
+            'limitations': [],
+            'typed_payload': {},
+        },
+    ],
+    checkpoint_events=[],
+    proposed_graph=[],
+    accepted_graph=['driver_decomposition', 'outlier_scan', 'answer_verify'],
+    rejected_or_degraded_mutations=[],
+    validator_results=[],
+    sql_text='SELECT 1',
+    sql_hash='hash',
+    artifact_audit={},
+)
+claim_group = package['sections'][0]['payload']['claim_groups'][0]
+assert claim_group['evidence_types'] == ['accounting_contribution', 'contextual_evidence'], claim_group
+PY
+
+tmp_old_assets=/tmp/task4_old_analysis_assets_$$.py
+cp <(git show de3fce7f:bi_agent/runtime/analysis_assets.py) "$tmp_old_assets"
+PYTHONPATH=/Users/luka/.codex/worktrees/250d/waje-bi-v2 python3 - <<'PY' "$tmp_old_assets"
+import importlib.util
+import sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location('analysis_assets_old', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assets = mod.build_analysis_assets({
+    'run_id': 'task4-old-assets',
+    'sections': [{
+        'section_id': 'summary',
+        'payload': {'claim_groups': [{
+            'text': '第一条证据强，但第二条仍是上下文。',
+            'evidence_refs': ['driver_decomposition:inline', 'outlier_scan:inline'],
+            'evidence_type': 'accounting_contribution',
+            'strength': 'high',
+            'wording_limit': 'quantified',
+            'verifier_status': 'passed',
+        }]}
+    }]
+})
+asset = next(item for item in assets if item['asset_type'] == 'claim_context_slot')
+assert asset['can_support_business_truth'] is False, asset
+PY
+```
+
+Observed failure:
+
+```text
+Traceback (most recent call last):
+  File "<stdin>", line 44, in <module>
+KeyError: 'evidence_types'
+
+Traceback (most recent call last):
+  File "<stdin>", line 22, in <module>
+AssertionError: {'asset_type': 'claim_context_slot', 'status': 'claim_supported', 'source_run_id': 'task4-old-assets', 'text': '第一条证据强，但第二条仍是上下文。', 'evidence_refs': ['driver_decomposition:inline', 'outlier_scan:inline'], 'strength': 'high', 'evidence_type': 'accounting_contribution', 'limitations': [], 'verifier_status': 'passed', 'wording_limit': 'quantified', 'can_support_business_truth': True, 'target_metric': '', 'scope': '', 'time_window': ''}
+```
+
+### GREEN
+
+Commands:
+
+```bash
+PYTHONPATH=/Users/luka/.codex/worktrees/250d/waje-bi-v2 python3 - <<'PY'
+from bi_agent.runtime.answer_package import build_answer_package
+package = build_answer_package(
+    run_id='task4-new-answer',
+    draft_claims=[{
+        'text': '第一条证据强，但第二条仍是上下文。',
+        'evidence_refs': ['driver_decomposition:inline', 'outlier_scan:inline'],
+        'scope': 'full_sample',
+        'time_window': '2026-01-01..2026-06-30',
+        'target_metric': 'paid_amount',
+    }],
+    evidence=[
+        {
+            'evidence_ref': 'driver_decomposition:inline',
+            'evidence_type': 'accounting_contribution',
+            'strength': 'high',
+            'wording_limit': 'quantified',
+            'limitations': [],
+            'typed_payload': {},
+        },
+        {
+            'evidence_ref': 'outlier_scan:inline',
+            'evidence_type': 'contextual_evidence',
+            'strength': 'medium',
+            'wording_limit': 'contextual',
+            'limitations': [],
+            'typed_payload': {},
+        },
+    ],
+    checkpoint_events=[],
+    proposed_graph=[],
+    accepted_graph=['driver_decomposition', 'outlier_scan', 'answer_verify'],
+    rejected_or_degraded_mutations=[],
+    validator_results=[],
+    sql_text='SELECT 1',
+    sql_hash='hash',
+    artifact_audit={},
+)
+claim_group = package['sections'][0]['payload']['claim_groups'][0]
+assert claim_group['evidence_types'] == ['accounting_contribution', 'contextual_evidence'], claim_group
+assert claim_group['wording_limits'] == ['quantified', 'contextual'], claim_group
+PY
+
+PYTHONPATH=/Users/luka/.codex/worktrees/250d/waje-bi-v2 python3 - <<'PY'
+from bi_agent.runtime.analysis_assets import build_analysis_assets
+assets = build_analysis_assets({
+    'run_id': 'task4-new-assets',
+    'sections': [{
+        'section_id': 'summary',
+        'payload': {'claim_groups': [{
+            'text': '第一条证据强，但第二条仍是上下文。',
+            'evidence_refs': ['driver_decomposition:inline', 'outlier_scan:inline'],
+            'evidence_type': 'accounting_contribution',
+            'evidence_types': ['accounting_contribution', 'contextual_evidence'],
+            'strength': 'high',
+            'strengths': ['high', 'medium'],
+            'wording_limit': 'quantified',
+            'wording_limits': ['quantified', 'contextual'],
+            'verifier_status': 'passed',
+        }]}
+    }]
+})
+asset = next(item for item in assets if item['asset_type'] == 'claim_context_slot')
+assert asset['can_support_business_truth'] is False, asset
+assert asset['status'] == 'context_only', asset
+PY
+
+python3 -m unittest tests.phase7.test_analysis_assets tests.phase4.test_workflow_artifacts_answer tests.phase5.test_answer_package_claim_groups
+```
+
+Results:
+
+```text
+Ran 41 tests in 0.540s
+OK
+```
+
+### Fix summary
+
+- `build_claim_groups(...)` now preserves per-ref `evidence_types`, `strengths`, and `wording_limits`, while retaining the old singular fields for existing readers.
+- `claim_context_slot.can_support_business_truth` now evaluates the aggregated evidence boundary, so any contextual or candidate component keeps the slot in `context_only`.
+- Added regressions for mixed-evidence claim groups and for analysis asset truth gating when the first ref is strong and a later ref is contextual.
