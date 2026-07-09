@@ -1,4 +1,5 @@
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -286,6 +287,35 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertIs(captured["row_provider"], provider)
+
+    def test_agent_core_persists_json_safe_request_when_row_provider_is_object(self):
+        captured: dict[str, object] = {}
+        provider = object()
+
+        def workflow(request):
+            captured.update(request)
+            return fake_workflow(request)
+
+        store = JsonStrictStore()
+        store.create_thread("thread-row-provider-json", owner_id="analyst-1")
+        core = ConversationAgentCore(
+            store,
+            workflow_runner=workflow,
+            row_provider=provider,
+        )
+
+        result = core.run_message(
+            thread_id="thread-row-provider-json",
+            run_id="run-row-provider-json",
+            user_message="昨天付费金额为什么上涨/下跌？",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIs(captured["row_provider"], provider)
+        self.assertEqual(
+            store.runs["run-row-provider-json"]["request"]["row_provider"]["type"],
+            "object",
+        )
 
     def test_agent_core_from_environment_real_clickhouse_configures_row_provider(self):
         from bi_agent.runtime.clickhouse_revenue_rows import ClickHouseRevenueRows
@@ -892,6 +922,19 @@ class StrictThreadStore(InMemoryConversationStore):
     def upsert_run(self, run_id, *, thread_id, turn_id="", topic_id="", status, request=None):
         if thread_id not in self.threads:
             raise AssertionError("thread must exist before run insert")
+        return super().upsert_run(
+            run_id,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            topic_id=topic_id,
+            status=status,
+            request=request,
+        )
+
+
+class JsonStrictStore(InMemoryConversationStore):
+    def upsert_run(self, run_id, *, thread_id, turn_id="", topic_id="", status, request=None):
+        json.dumps(request or {}, ensure_ascii=False, sort_keys=True)
         return super().upsert_run(
             run_id,
             thread_id=thread_id,

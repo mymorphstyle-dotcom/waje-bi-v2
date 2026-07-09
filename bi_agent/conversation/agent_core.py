@@ -146,7 +146,7 @@ class ConversationAgentCore:
             turn_id=turn.turn_id,
             topic_id=turn.topic_id or "",
             status="running_workflow",
-            request=request,
+            request=_persistable_request(request),
         )
         result = self.workflow_runner(request)
         if result.status != "draft" or not result.answer_package:
@@ -156,7 +156,10 @@ class ConversationAgentCore:
                 turn_id=turn.turn_id,
                 topic_id=turn.topic_id or "",
                 status="failed",
-                request={**request, "failure_reason": result.failure_reason},
+                request={
+                    **_persistable_request(request),
+                    "failure_reason": result.failure_reason,
+                },
             )
             self.store.add_audit_event(
                 "workflow_failed",
@@ -194,7 +197,7 @@ class ConversationAgentCore:
             turn_id=turn.turn_id,
             topic_id=turn.topic_id or "",
             status="completed",
-            request=request,
+            request=_persistable_request(request),
         )
         return {
             "status": "completed",
@@ -239,6 +242,28 @@ def _conversation_llm_from_env() -> Any:
         return OpenAICompatibleLLMClient.from_env()
     except Exception:
         return None
+
+
+def _persistable_request(request: dict[str, Any]) -> dict[str, Any]:
+    safe = dict(request or {})
+    for key in ("row_provider", "llm_client"):
+        if key in safe:
+            safe[key] = _runtime_object_descriptor(safe[key])
+    runtime = safe.get("runtime")
+    if isinstance(runtime, dict):
+        safe_runtime = dict(runtime)
+        for key in ("row_provider", "llm_client"):
+            if key in safe_runtime:
+                safe_runtime[key] = _runtime_object_descriptor(safe_runtime[key])
+        safe["runtime"] = safe_runtime
+    return safe
+
+
+def _runtime_object_descriptor(value: Any) -> dict[str, str]:
+    return {
+        "type": value.__class__.__name__,
+        "module": value.__class__.__module__,
+    }
 
 
 def _clarification_choice_from_answer(
