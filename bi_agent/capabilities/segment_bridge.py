@@ -16,7 +16,20 @@ SENSITIVE_KEYS = frozenset(
         "user_id",
     }
 )
-SAFE_SEGMENT_KEYS = frozenset({"amount", "delta", "fit", "n", "order_count", "segment", "share", "user_count"})
+SAFE_SEGMENT_KEYS = frozenset(
+    {
+        "amount",
+        "delta",
+        "fit",
+        "n",
+        "order_count",
+        "orders",
+        "paid_users",
+        "segment",
+        "share",
+        "user_count",
+    }
+)
 SPARSE_THRESHOLD = 10
 
 
@@ -76,7 +89,7 @@ def segment_bridge(
 
 def _sample_size(segment: dict[str, Any]):
     found = False
-    for key in ("n", "sample_size", "order_count", "user_count"):
+    for key in ("n", "sample_size", "order_count", "orders", "user_count", "paid_users"):
         value = segment.get(key)
         if value is not None:
             found = True

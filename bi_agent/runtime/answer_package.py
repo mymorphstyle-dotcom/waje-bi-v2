@@ -31,6 +31,7 @@ def build_answer_package(
     reuse_decisions: Sequence[Mapping[str, Any]] = (),
     quality_gate: Optional[Mapping[str, Any]] = None,
     follow_up_questions: Sequence[str] = (),
+    compiler_runtime_plan: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
     semantic_audit = {} if semantic_audit is None else semantic_audit
@@ -46,6 +47,7 @@ def build_answer_package(
         {} if causal_evidence_dossier is None else causal_evidence_dossier
     )
     quality_gate = {} if quality_gate is None else quality_gate
+    compiler_runtime_plan = {} if compiler_runtime_plan is None else compiler_runtime_plan
     visible_limitations = collect_visible_limitations(evidence)
     verifier = verify_answer_package(
         draft_claims=draft_claims,
@@ -71,6 +73,7 @@ def build_answer_package(
         "clarification_outcome": to_jsonable(clarification_outcome),
         "causal_audit": to_jsonable(causal_audit),
         "causal_evidence_dossier": to_jsonable(causal_evidence_dossier),
+        "compiler_runtime_plan": to_jsonable(compiler_runtime_plan),
     }
 
     return {

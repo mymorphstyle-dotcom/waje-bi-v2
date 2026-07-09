@@ -160,6 +160,19 @@ class PatternScanTest(unittest.TestCase):
                 self.assertEqual(result.wording_limit, "blocked")
                 self.assertIn("sample_size_unverified", result.limitations)
 
+    def test_aggregate_payment_aliases_count_as_sample_size(self):
+        result = joint_attribution(
+            [
+                {"channel": "A", "phase": "start", "group": "baseline", "amount": 100, "orders": 40},
+                {"channel": "A", "phase": "start", "group": "target", "amount": 150, "orders": 42},
+                {"channel": "B", "phase": "start", "group": "baseline", "amount": 100, "paid_users": 30},
+                {"channel": "B", "phase": "start", "group": "target", "amount": 80, "paid_users": 31},
+            ],
+            dimension_keys=("channel", "phase"),
+        )
+
+        self.assertNotIn("sample_size_unverified", result.limitations)
+
     def test_segment_bridge_outputs_only_safe_aggregate_payload(self):
         result = segment_bridge(
             [{"segment": "A", "amount": 100, "n": 20, "payment_method": "OPAY"}]

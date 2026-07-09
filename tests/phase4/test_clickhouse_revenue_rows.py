@@ -51,6 +51,30 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         self.assertIn("payment_method", plan.dimension_keys)
         self.assertIn("amount", plan.required_fields)
 
+    def test_plan_uses_compiler_runtime_row_shape_dimensions(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-compiler-plan",
+                "compiler_runtime_plan": {
+                    "row_shapes": [
+                        {
+                            "dimension_keys": ("channel", "payment_method", "region"),
+                            "required_fields": ("period", "group", "amount", "orders"),
+                        }
+                    ]
+                },
+            },
+            {"time_window": "yesterday"},
+            ("segment_contribution",),
+        )
+
+        self.assertEqual(plan.dimension_keys, ("channel", "payment_method", "region"))
+        self.assertEqual(plan.required_fields, ("period", "group", "amount", "orders"))
+
     def test_fetch_returns_bounded_aggregate_rows_and_query_ref(self):
         runtime = FakeRuntime(
             rows=({"period": "2026-07-08", "group": "target", "amount": 120.0},)

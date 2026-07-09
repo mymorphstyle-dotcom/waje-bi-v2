@@ -115,7 +115,7 @@ class OpenAICompatibleLLMClient:
         messages_payload = [dict(message) for message in messages]
         for attempt in range(1, self.max_attempts + 1):
             try:
-                response_payload = self._request_json_once(messages_payload)
+                response_payload = self._request_json_once(messages_payload, attempt=attempt)
                 content = response_payload["content"] or "{}"
                 output = _localize_narrative_fields(_parse_json_object(content))
                 missing = [key for key in required_keys if key not in output]
@@ -150,7 +150,9 @@ class OpenAICompatibleLLMClient:
             },
         )
 
-    def _request_json_once(self, messages: Sequence[Mapping[str, str]]) -> dict[str, Any]:
+    def _request_json_once(
+        self, messages: Sequence[Mapping[str, str]], *, attempt: int = 1
+    ) -> dict[str, Any]:
         if isinstance(self._client, OpenAI):
             return _request_openai_json_in_subprocess(
                 {
@@ -158,6 +160,7 @@ class OpenAICompatibleLLMClient:
                     "base_url": self.base_url,
                     "timeout_seconds": self.timeout_seconds,
                     "model": self.model,
+                    "attempt": attempt,
                 },
                 [dict(message) for message in messages],
                 self.timeout_seconds,

@@ -967,7 +967,6 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         output.get("requested_nodes"),
         excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
     )
-    requested = _normalize_route_requested_nodes(requested, state["intent"])
     if not requested:
         requested = ("pattern_scan",)
     output = _align_route_output_to_requested(output, requested)
@@ -986,8 +985,10 @@ def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
         pattern_family=intent["pattern_family"],
         requested_nodes=intent["requested_nodes"],
         question_families=intent.get("question_families", ()),
+        question_text=str(state["request"].get("question") or ""),
     )
     state["compiled_graph"] = compiled
+    state["request"]["compiler_runtime_plan"] = compiled.runtime_plan
     return state
 
 
@@ -1008,7 +1009,6 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
         output.get("requested_nodes"),
         excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
     )
-    requested = _normalize_route_requested_nodes(requested, state["intent"])
     if not requested:
         requested = ("pattern_scan",)
     output = _align_route_output_to_requested(output, requested)
@@ -1092,6 +1092,9 @@ def _fetch_runtime_rows(state: WorkflowState) -> WorkflowState:
         "query_id": plan.query_id,
         "required_fields": list(plan.required_fields),
         "dimension_keys": list(plan.dimension_keys),
+        "compiler_runtime_plan": to_jsonable(
+            state["request"].get("compiler_runtime_plan", {})
+        ),
     }
     if plan.sql_text:
         state["sql_text"] = plan.sql_text
@@ -1586,103 +1589,15 @@ def _normalize_route_requested_nodes(
     nodes: tuple[str, ...],
     intent: Mapping[str, Any],
 ) -> tuple[str, ...]:
-    normalized = []
-    business_text = _intent_business_text(intent)
-    families = _intent_question_family_set(intent)
-    for node in nodes:
-        value = node
-        if (
-            intent.get("pattern_family") == "custom_baseline"
-            and node == "rolling_window_compare"
-        ):
-            value = "compare_periods"
-        if node == "joint_attribution":
-            if _contains_any(business_text, ("用户数", "客单价", "arppu", "aov", "单价")):
-                value = "driver_decomposition"
-            elif _contains_any(business_text, ("组合", "交互", "共同解释")) or intent.get(
-                "pattern_params", {}
-            ).get("joint_dimension_keys"):
-                value = "joint_attribution"
-            elif _contains_any(business_text, ("渠道", "分群", "拖累", "贡献")):
-                value = "segment_contribution"
-        normalized.append(value)
-    if _contains_any(business_text, ("活动", "原因", "带来", "导致")) and "event_evidence" not in normalized:
-        normalized.append("event_evidence")
-    if (
-        _contains_any(business_text, ("付费用户数", "用户数", "paid_users", "订单数", "orders"))
-        and _contains_any(
-            business_text,
-            (
-                "单付费用户",
-                "单用户",
-                "客单价",
-                "人均",
-                "单均",
-                "arppu",
-                "aov",
-                "unit_value",
-            ),
-        )
-        and "driver_decomposition" not in normalized
-    ):
-        normalized.append("driver_decomposition")
-    if (
-        _business_text_requests_change_explanation(business_text)
-        and "driver_decomposition" not in normalized
-    ):
-        normalized.append("driver_decomposition")
-    if (
-        _business_text_requests_change_explanation(business_text)
-        and "answer_verify" not in normalized
-    ):
-        normalized.append("answer_verify")
-    if (
-        (
-            "segment_or_factor_attribution" in families
-            or _business_text_requests_segment_contribution(business_text)
-        )
-        and _contains_segment_dimension(business_text)
-        and "joint_attribution" not in normalized
-        and "segment_contribution" not in normalized
-    ):
-        normalized.append("segment_contribution")
-    if "segment_contribution" in normalized and not _contains_segment_dimension(business_text):
-        normalized = [node for node in normalized if node != "segment_contribution"]
-    if (
-        "segment_contribution" in normalized
-        and "joint_attribution" not in normalized
-        and _business_text_requests_joint_attribution(business_text)
-    ):
-        normalized.append("joint_attribution")
-    if (
-        _business_text_requests_joint_attribution(business_text)
-        and "joint_attribution" not in normalized
-    ):
-        normalized.append("joint_attribution")
-    if (
-        _business_text_requests_joint_attribution(business_text)
-        and "answer_verify" not in normalized
-    ):
-        normalized.append("answer_verify")
-    if _business_text_requests_outlier_recalc(business_text):
-        if "outlier_scan" not in normalized:
-            normalized.append("outlier_scan")
-        if "outlier_contribution" not in normalized:
-            normalized.append("outlier_contribution")
-    if _contains_any(business_text, ("少数", "几天", "异常日", "撑起来")) and "outlier_contribution" not in normalized:
-        normalized.append("outlier_contribution")
-    if _contains_any(business_text, ("新老用户", "新用户", "老用户", "用户质量")) and "user_mix_contribution" not in normalized:
-        normalized.append("user_mix_contribution")
-    if _contains_any(business_text, ("大客户", "高价值用户", "高净值用户")) and "high_value_user_contribution" not in normalized:
-        normalized.append("high_value_user_contribution")
-    if _business_text_requests_period_recompare(business_text):
-        if "compare_periods" not in normalized:
-            normalized.append("compare_periods")
-        if "answer_verify" not in normalized:
-            normalized.append("answer_verify")
-    if _business_text_requests_actionability_verification(business_text) and "answer_verify" not in normalized:
-        normalized.append("answer_verify")
-    return tuple(dict.fromkeys(normalized))
+    compiled = compile_graph(
+        question_family=str(intent.get("question_family") or "pattern_explanation"),
+        target_metric=str(intent.get("target_metric") or "paid_amount"),
+        pattern_family=str(intent.get("pattern_family") or "intra_period"),
+        requested_nodes=nodes,
+        question_families=tuple(_intent_question_family_set(intent)),
+        question_text=_intent_business_text(intent),
+    )
+    return compiled.mutations.accepted_graph
 
 
 def _intent_business_text(intent: Mapping[str, Any]) -> str:
@@ -2736,6 +2651,7 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         reuse_decisions=request.get("reuse_decisions", ()),
         quality_gate=state.get("quality_gate", {}),
         follow_up_questions=state.get("follow_up_questions", ()),
+        compiler_runtime_plan=request.get("compiler_runtime_plan", {}),
     )
 
 

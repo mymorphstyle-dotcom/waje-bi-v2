@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -38,3 +39,4 @@ class CompiledGraph:
     status: str
     accepted_nodes: tuple[GraphNode, ...]
     mutations: MutationLedger
+    runtime_plan: dict[str, Any] = field(default_factory=dict)

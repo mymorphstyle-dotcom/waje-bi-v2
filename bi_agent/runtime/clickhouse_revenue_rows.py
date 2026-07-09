@@ -57,13 +57,14 @@ class ClickHouseRevenueRows:
         intent: Mapping[str, Any],
         accepted_graph: Sequence[str],
     ) -> RevenueRowPlan:
-        dimensions = _dimension_keys(accepted_graph)
+        dimensions = _dimension_keys(accepted_graph, request)
+        required_fields = _required_fields(request)
         query_id = f"{request.get('run_id', 'run')}:clickhouse_revenue_rows"
         if not _safe_identifier(self.table):
             return RevenueRowPlan(
                 sql_text="",
                 query_id=query_id,
-                required_fields=BASE_FIELDS,
+                required_fields=required_fields,
                 dimension_keys=dimensions,
                 reason="invalid_identifier",
             )
@@ -93,7 +94,7 @@ LIMIT {MAX_ROWS}
         return RevenueRowPlan(
             sql_text=sql.strip(),
             query_id=query_id,
-            required_fields=BASE_FIELDS,
+            required_fields=required_fields,
             dimension_keys=dimensions,
         )
 
@@ -136,13 +137,43 @@ LIMIT {MAX_ROWS}
         )
 
 
-def _dimension_keys(accepted_graph: Sequence[str]) -> tuple[str, ...]:
+def _dimension_keys(
+    accepted_graph: Sequence[str],
+    request: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
+    row_shape = _compiler_row_shape(request or {})
+    if row_shape:
+        dimensions = row_shape.get("dimension_keys") or ()
+        if isinstance(dimensions, Sequence) and not isinstance(dimensions, (str, bytes)):
+            return tuple(str(item) for item in dimensions if item)
     graph = set(accepted_graph)
     if "joint_attribution" in graph:
         return JOINT_DIMENSIONS
     if "segment_bridge" in graph:
         return SEGMENT_DIMENSIONS
     return ()
+
+
+def _required_fields(request: Mapping[str, Any]) -> tuple[str, ...]:
+    row_shape = _compiler_row_shape(request)
+    if row_shape:
+        fields = row_shape.get("required_fields") or ()
+        if isinstance(fields, Sequence) and not isinstance(fields, (str, bytes)):
+            return tuple(str(item) for item in fields if item)
+    return BASE_FIELDS
+
+
+def _compiler_row_shape(request: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    plan = request.get("compiler_runtime_plan")
+    if not isinstance(plan, Mapping):
+        return None
+    shapes = plan.get("row_shapes") or ()
+    if not isinstance(shapes, Sequence) or isinstance(shapes, (str, bytes)):
+        return None
+    for shape in shapes:
+        if isinstance(shape, Mapping) and shape.get("source") in (None, "clickhouse"):
+            return shape
+    return None
 
 
 def _safe_identifier(value: str) -> bool:

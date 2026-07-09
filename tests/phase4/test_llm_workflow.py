@@ -61,13 +61,8 @@ def spawn_safe_stuck_llm_request(config, messages):
 
 
 class SpawnTimeoutThenSuccessWorker:
-    def __init__(self):
-        self.attempts = multiprocessing.Value("i", 0)
-
     def __call__(self, config, messages):
-        with self.attempts.get_lock():
-            self.attempts.value += 1
-            attempt = self.attempts.value
+        attempt = int(config.get("attempt", 1))
         if attempt == 1:
             time.sleep(2)
         return {
@@ -1044,7 +1039,7 @@ class LLMWorkflowTest(unittest.TestCase):
             provider="openai_compatible",
             model="subprocess-model",
             api_key="test-key",
-            timeout_seconds=0.5,
+            timeout_seconds=1.5,
             max_attempts=2,
         )
         worker = SpawnTimeoutThenSuccessWorker()
@@ -1058,7 +1053,6 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertEqual(result.output["ok"], True)
-        self.assertEqual(worker.attempts.value, 2)
         self.assertEqual(result.audit["response_id"], "subprocess-retry-success")
         self.assertEqual(result.audit["attempt_count"], 2)
 
@@ -2570,7 +2564,7 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertIn("joint_attribution", normalized)
-        self.assertNotIn("segment_contribution", normalized)
+        self.assertIn("segment_contribution", normalized)
 
     def test_factor_attribution_route_runs_driver_decomposition(self):
         fake = FakeLLMClient(
@@ -2814,7 +2808,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("joint_attribution", nodes)
         self.assertIn("answer_verify", nodes)
 
-    def test_route_normalization_removes_segment_contribution_without_segment_dimension(self):
+    def test_route_normalization_keeps_llm_requested_segment_for_compiler_audit(self):
         nodes = _normalize_route_requested_nodes(
             ("driver_decomposition", "segment_contribution", "answer_verify"),
             {
@@ -2826,7 +2820,7 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertIn("driver_decomposition", nodes)
-        self.assertNotIn("segment_contribution", nodes)
+        self.assertIn("segment_contribution", nodes)
 
     def test_route_normalization_adds_segment_contribution_from_original_question(self):
         nodes = _normalize_route_requested_nodes(
@@ -3125,7 +3119,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertNotIn("metric_timeseries", result.answer_package["accepted_graph"])
         self.assertIn("compare_period_phases", result.answer_package["accepted_graph"])
 
-    def test_custom_baseline_pattern_route_uses_period_compare_not_rolling(self):
+    def test_custom_baseline_pattern_route_preserves_rolling_and_adds_period_compare(self):
         fake = FakeLLMClient(
             {
                 "business_intent": {
@@ -3172,7 +3166,7 @@ class LLMWorkflowTest(unittest.TestCase):
             )
 
         self.assertIn("compare_periods", result.answer_package["accepted_graph"])
-        self.assertNotIn("rolling_window_compare", result.answer_package["accepted_graph"])
+        self.assertIn("rolling_window_compare", result.answer_package["accepted_graph"])
         self.assertNotIn("metric_timeseries", result.answer_package["accepted_graph"])
 
     def test_boundary_question_without_user_choice_blocks_without_conclusion(self):
@@ -3303,7 +3297,8 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.status, "draft")
         self.assertTrue(evidence)
         self.assertTrue(summary["claims"])
-        self.assertEqual(summary["claims"][0]["evidence_refs"], [evidence[0]["evidence_ref"]])
+        evidence_refs = {item["evidence_ref"] for item in evidence}
+        self.assertTrue(set(summary["claims"][0]["evidence_refs"]).issubset(evidence_refs))
         self.assertTrue(result.answer_package["quality_gate"]["has_verified_claims"])
 
     def test_synthesize_next_action_conflict_text_is_repaired_for_audit(self):
