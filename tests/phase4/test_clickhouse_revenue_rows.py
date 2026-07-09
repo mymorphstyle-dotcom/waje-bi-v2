@@ -166,7 +166,7 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         self.assertEqual(plan.reason, "custom_baseline_window_unbound")
         self.assertEqual(plan.query_id, "run-custom-baseline:daily_metric_baselines")
 
-    def test_plan_keeps_dimension_scan_reuse_non_executable(self):
+    def test_plan_prefers_executable_dimension_scan_when_reuse_is_blocked(self):
         provider = ClickHouseRevenueRows(
             runtime=FakeRuntime(),
             table="paid_order_success_clean_20240101_20260704",
@@ -195,11 +195,11 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
             ("segment_contribution",),
         )
 
-        self.assertEqual(plan.sql_text, "")
-        self.assertEqual(plan.reason, "dimension_scan_reuse")
-        self.assertEqual(plan.query_id, "run-reuse:dimension_scan_reuse")
+        self.assertIn("SELECT", plan.sql_text)
+        self.assertEqual(plan.reason, "")
+        self.assertEqual(plan.query_id, "run-reuse:daily_metric_baselines")
 
-    def test_plan_keeps_event_probe_non_executable_without_binding(self):
+    def test_plan_prefers_executable_baseline_when_event_probe_is_unbound(self):
         provider = ClickHouseRevenueRows(
             runtime=FakeRuntime(),
             table="paid_order_success_clean_20240101_20260704",
@@ -217,9 +217,9 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
             ("event_evidence",),
         )
 
-        self.assertEqual(plan.sql_text, "")
-        self.assertEqual(plan.reason, "event_context_probe_unbound")
-        self.assertEqual(plan.query_id, "run-event:event_context_probe")
+        self.assertIn("SELECT", plan.sql_text)
+        self.assertEqual(plan.reason, "")
+        self.assertEqual(plan.query_id, "run-event:daily_metric_baselines")
 
     def test_plan_prefers_executable_baseline_query_when_event_probe_is_blocked(self):
         provider = ClickHouseRevenueRows(

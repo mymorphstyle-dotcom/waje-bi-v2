@@ -2196,6 +2196,8 @@ def _degraded_boundary_evidence(state: WorkflowState) -> dict[str, Any]:
         "sql_hashes": [state.get("sql_hash", "")],
         "typed_payload": {
             "status": "degraded",
+            "scope": state["intent"]["scope"],
+            "time_window": state["intent"]["time_window"],
             "limitations": limitations,
             "repair_path": _terminal_repair_path(state, "degraded"),
         },
@@ -2248,14 +2250,28 @@ def _generate_blocked_explanation(state: WorkflowState) -> WorkflowState:
         state["evidence"] = []
     if "draft_claims" not in state:
         state["draft_claims"] = []
-    _ensure_blocked_coverage_audit(state)
+    _ensure_blocked_boundary_audit(state)
     return state
 
 
-def _ensure_blocked_coverage_audit(state: WorkflowState) -> None:
-    evidence = _blocked_coverage_evidence(state)
-    if not evidence:
+def _ensure_blocked_boundary_audit(state: WorkflowState) -> None:
+    for evidence, claim_builder in (
+        (_blocked_coverage_evidence(state), _blocked_coverage_claim),
+        (_blocked_contract_gap_evidence(state), _blocked_contract_gap_claim),
+        (_blocked_validator_boundary_evidence(state), _blocked_validator_boundary_claim),
+    ):
+        if not evidence:
+            continue
+        _append_blocked_boundary_audit(state, evidence, claim_builder)
         return
+
+
+def _append_blocked_boundary_audit(
+    state: WorkflowState,
+    evidence: Mapping[str, Any],
+    claim_builder: Any,
+) -> None:
+    evidence = dict(evidence)
 
     evidence_items = list(state.get("evidence") or [])
     evidence_ref = str(evidence["evidence_ref"])
@@ -2265,7 +2281,7 @@ def _ensure_blocked_coverage_audit(state: WorkflowState) -> None:
 
     draft_claims = list(state.get("draft_claims") or [])
     if not any(evidence_ref in claim.get("evidence_refs", ()) for claim in draft_claims):
-        draft_claims.append(_blocked_coverage_claim(state, evidence_ref))
+        draft_claims.append(claim_builder(state, evidence_ref))
     state["draft_claims"] = draft_claims
 
 
@@ -2285,6 +2301,8 @@ def _blocked_coverage_evidence(state: WorkflowState) -> dict[str, Any]:
         "result_refs": [state.get("sql_hash", "")],
         "sql_hashes": [state.get("sql_hash", "")],
         "typed_payload": {
+            "scope": state["intent"]["scope"],
+            "time_window": state["intent"]["time_window"],
             "coverage_status": coverage.get("coverage_status"),
             "local_block_reason": local_reason,
             "business_impact": reason_text,
@@ -2292,6 +2310,126 @@ def _blocked_coverage_evidence(state: WorkflowState) -> dict[str, Any]:
             "repair_path": _terminal_repair_path(state, "blocked"),
         },
     }
+
+
+def _blocked_contract_gap_evidence(state: WorkflowState) -> dict[str, Any]:
+    gap = _blocking_contract_gap(state)
+    if not gap:
+        return {}
+    limitations = [str(gap.get("gap_id") or "contract_gap_missing")]
+    if gap.get("status"):
+        limitations.append(str(gap["status"]))
+    return {
+        "evidence_ref": f"blocked_boundary:{state['run_id']}:contract_gap",
+        "capability_id": "answer_verify",
+        "evidence_type": "insufficient",
+        "strength": "insufficient",
+        "wording_limit": "insufficient",
+        "limitations": limitations,
+        "result_refs": [state.get("sql_hash", "")],
+        "sql_hashes": [state.get("sql_hash", "")],
+        "typed_payload": {
+            "status": "blocked",
+            "scope": state["intent"]["scope"],
+            "time_window": state["intent"]["time_window"],
+            "boundary_type": "contract_gap",
+            "gap_id": str(gap.get("gap_id") or ""),
+            "gap_status": str(gap.get("status") or ""),
+            "claim_effect": str(gap.get("claim_effect") or ""),
+            "owner": str(gap.get("owner") or ""),
+            "repair_path": str(gap.get("repair_path") or _terminal_repair_path(state, "blocked")),
+        },
+    }
+
+
+def _blocking_contract_gap(state: WorkflowState) -> dict[str, Any]:
+    diagnostics = state.get("contract_gap_diagnostics")
+    if diagnostics is None:
+        diagnostics = _refresh_contract_gap_diagnostics(state)
+    for item in diagnostics or ():
+        if not isinstance(item, Mapping):
+            continue
+        claim_effect = str(item.get("claim_effect") or "")
+        status = str(item.get("status") or "")
+        if claim_effect.startswith("block_") or status in {
+            "data_absent",
+            "permission_blocked",
+            "unsupported_grain",
+        }:
+            return dict(item)
+    return {}
+
+
+def _blocked_contract_gap_claim(state: WorkflowState, evidence_ref: str) -> dict[str, Any]:
+    reason = _blocked_contract_gap_reason(_blocking_contract_gap(state))
+    return _with_claim_audit(
+        state,
+        {
+            "text": f"当前主业务结论被明确的数据或合同缺口阻断；{reason}。",
+            "evidence_refs": [evidence_ref],
+            "numbers": {},
+            "scope": state["intent"]["scope"],
+            "time_window": state["intent"]["time_window"],
+            "claim_strength": "insufficient",
+        },
+    )
+
+
+def _blocked_contract_gap_reason(gap: Mapping[str, Any]) -> str:
+    status = str(gap.get("status") or "")
+    if status == "data_absent":
+        return "依赖的关键数据当前缺失，本轮只能确认边界存在，不能继续判断具体业务影响"
+    if status == "permission_blocked":
+        return "依赖的聚合信息受权限限制，本轮不能发布对应业务结论"
+    if status == "unsupported_grain":
+        return "当前合同只支持更粗粒度，本轮不能在该口径下发布结论"
+    return "依赖的合同边界尚未满足，本轮不能发布主业务结论"
+
+
+def _blocked_validator_boundary_evidence(state: WorkflowState) -> dict[str, Any]:
+    failed = [
+        item
+        for item in state.get("validator_results", ())
+        if isinstance(item, Mapping) and not item.get("ok", True)
+    ]
+    if not failed:
+        return {}
+    validators = [str(item.get("validator") or "validator") for item in failed]
+    return {
+        "evidence_ref": f"blocked_boundary:{state['run_id']}:validator",
+        "capability_id": "answer_verify",
+        "evidence_type": "insufficient",
+        "strength": "insufficient",
+        "wording_limit": "insufficient",
+        "limitations": validators,
+        "result_refs": [state.get("sql_hash", "")],
+        "sql_hashes": [state.get("sql_hash", "")],
+        "typed_payload": {
+            "status": "blocked",
+            "scope": state["intent"]["scope"],
+            "time_window": state["intent"]["time_window"],
+            "boundary_type": "validator",
+            "validators": validators,
+            "business_reasons": list(_business_validator_reasons(failed)),
+            "repair_path": _terminal_repair_path(state, "blocked"),
+        },
+    }
+
+
+def _blocked_validator_boundary_claim(state: WorkflowState, evidence_ref: str) -> dict[str, Any]:
+    reasons = _business_validator_reasons(state.get("validator_results", ()))
+    reason_text = "；".join(reasons) if reasons else "当前运行时校验未通过"
+    return _with_claim_audit(
+        state,
+        {
+            "text": f"当前主业务结论被运行时校验边界阻断；{reason_text}。",
+            "evidence_refs": [evidence_ref],
+            "numbers": {},
+            "scope": state["intent"]["scope"],
+            "time_window": state["intent"]["time_window"],
+            "claim_strength": "insufficient",
+        },
+    )
 
 
 def _blocked_coverage_claim(state: WorkflowState, evidence_ref: str) -> dict[str, Any]:

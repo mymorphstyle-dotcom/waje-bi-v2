@@ -228,17 +228,24 @@ def _select_query_spec(
 ) -> Mapping[str, Any]:
     graph = set(accepted_graph)
     preferred_intents = _preferred_intents(graph)
+    executable_specs = [spec for spec in specs if _query_spec_executable(spec)]
+    for intent in preferred_intents:
+        matching = [
+            spec for spec in executable_specs if str(spec.get("intent") or "") == intent
+        ]
+        if matching:
+            return max(matching, key=lambda spec: len(tuple(spec.get("dimension_keys") or ())))
+    if executable_specs:
+        return max(executable_specs, key=lambda spec: _fallback_spec_score(spec, graph))
     for intent in preferred_intents:
         matching = [spec for spec in specs if str(spec.get("intent") or "") == intent]
         if matching:
-            return max(
-                matching,
-                key=lambda spec: (
-                    1 if spec.get("sql_text") and not spec.get("reason") else 0,
-                    len(tuple(spec.get("dimension_keys") or ())),
-                ),
-            )
+            return max(matching, key=lambda spec: len(tuple(spec.get("dimension_keys") or ())))
     return max(specs, key=lambda spec: _fallback_spec_score(spec, graph))
+
+
+def _query_spec_executable(spec: Mapping[str, Any]) -> bool:
+    return bool(spec.get("sql_text")) and not spec.get("reason")
 
 
 def _preferred_intents(graph: set[str]) -> tuple[str, ...]:

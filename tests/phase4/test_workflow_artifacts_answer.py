@@ -837,6 +837,59 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             payload["contract_gap_diagnostics"],
         )
 
+    def test_blocked_contract_gap_emits_auditable_evidence_and_claim(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "business_object_impact_review",
+                },
+                "analysis_route": {
+                    "requested_nodes": [
+                        "data_quality_profile",
+                        "compare_periods",
+                        "driver_decomposition",
+                        "segment_contribution",
+                        "outlier_contribution",
+                        "event_evidence",
+                        "answer_verify",
+                    ],
+                },
+                "blocked_explanation": {
+                    "status": "blocked",
+                    "explanation": "当前缺少活动事件上下文合同与数据，不能判断这些事件是否影响了付费金额。",
+                    "owner": "语义合同 owner",
+                    "repair_path": "补活动事件上下文合同与数据后重跑。",
+                },
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "blocked-contract-gap-audit",
+                    "llm_client": fake,
+                    "question": "昨天的活动、投放预算、素材更换、版本更新、支付通道、节日或外部事件，是否影响了付费金额？",
+                    "available_fields": ("business_date_lagos", "paid_amount_ngn"),
+                    "sql_text": "DROP TABLE paid_order_detail",
+                }
+            )
+
+        summary = result.answer_package["sections"][0]["payload"]
+        evidence = result.answer_package["sections"][1]["payload"]["evidence"]
+        verifier = result.answer_package["admin_audit"]["verifier"]
+
+        self.assertEqual(result.status, "draft")
+        self.assertTrue(summary["claims"])
+        self.assertTrue(evidence)
+        self.assertEqual(verifier["status"], "passed")
+        claim = summary["claims"][0]
+        self.assertTrue(claim["evidence_refs"])
+        self.assertEqual(claim["evidence_refs"], [evidence[0]["evidence_ref"]])
+        self.assertEqual(
+            result.answer_package["admin_audit"]["contract_gap_diagnostics"][0]["gap_id"],
+            "event_context_contract_missing",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
