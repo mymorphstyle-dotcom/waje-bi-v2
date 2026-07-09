@@ -56,6 +56,7 @@ class ClickHouseRevenueRows:
     ) -> None:
         self.runtime = runtime or ClickHouseRuntime.from_env()
         self.table = table or os.environ.get("WAJE_CLICKHOUSE_PAYMENT_TABLE", DEFAULT_TABLE)
+        self._schema_fields: tuple[str, ...] | None = None
 
     @classmethod
     def from_env(cls) -> "ClickHouseRevenueRows":
@@ -66,6 +67,27 @@ class ClickHouseRevenueRows:
 
     def binding_reason(self) -> str:
         return self.runtime.binding.reason
+
+    def schema_fields(self) -> tuple[str, ...]:
+        if self._schema_fields is not None:
+            return self._schema_fields
+        if not self.configured() or not _safe_identifier(self.table):
+            self._schema_fields = ()
+            return self._schema_fields
+        result = self.runtime.describe_table(self.table)
+        if not result.ok:
+            self._schema_fields = ()
+            return self._schema_fields
+        fields = tuple(
+            dict.fromkeys(
+                field
+                for row in result.rows
+                for field in (_describe_field_name(row),)
+                if field
+            )
+        )
+        self._schema_fields = fields
+        return fields
 
     def plan(
         self,
@@ -288,6 +310,21 @@ def _query_plan_from_spec(spec: Mapping[str, Any]) -> RevenueQueryPlan:
         reason=str(spec.get("reason") or ""),
         claim_use=str(spec.get("claim_use") or ""),
     )
+
+
+def _describe_field_name(row: Any) -> str:
+    if isinstance(row, Mapping):
+        for key in ("name", "field", "column", "column_name"):
+            value = row.get(key)
+            if value not in ("", None):
+                return str(value)
+        for value in row.values():
+            if value not in ("", None):
+                return str(value)
+        return ""
+    if isinstance(row, Sequence) and not isinstance(row, (str, bytes)) and row:
+        return str(row[0])
+    return ""
 
 
 def _query_plan_executable(plan: RevenueQueryPlan) -> bool:

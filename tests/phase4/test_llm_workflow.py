@@ -177,6 +177,45 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(_capability_result_refs_for(state, "joint_attribution"), ("joint-ref",))
         self.assertEqual(_segment_contribution_params(state)["segment_key"], "channel")
 
+    def test_high_value_capability_prefers_high_value_scan_rows(self):
+        state = {
+            "request": {
+                "rows": ({"period": "fallback", "group": "target", "amount": 1.0},),
+                "result_refs": ("fallback-ref",),
+                "runtime_rows_by_intent": {
+                    "daily_metric_baselines": (
+                        {"period": "2026-07-08", "group": "target", "amount": 120.0},
+                    ),
+                    "high_value_scan": (
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "amount": 120.0,
+                            "paid_users": 10,
+                            "high_value_amount": 80.0,
+                            "high_value_paid_users": 2,
+                        },
+                    ),
+                },
+                "result_refs_by_intent": {
+                    "daily_metric_baselines": ("baseline-ref",),
+                    "high_value_scan": ("high-value-ref",),
+                },
+            },
+            "intent": {"pattern_params": {}},
+        }
+
+        self.assertEqual(
+            _capability_rows_for(state, "high_value_user_contribution")[0][
+                "high_value_amount"
+            ],
+            80.0,
+        )
+        self.assertEqual(
+            _capability_result_refs_for(state, "high_value_user_contribution"),
+            ("high-value-ref",),
+        )
+
     def test_coverage_uses_baseline_rows_when_quality_probe_is_primary(self):
         state = {
             "validator_results": [{"ok": True}],
@@ -382,6 +421,90 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertTrue(provider.planned)
         self.assertTrue(provider.fetched)
         self.assertIn("hash-real", result_refs)
+
+    def test_workflow_compiler_uses_row_provider_schema_fields(self):
+        class Provider:
+            def __init__(self):
+                self.compiler_plan = None
+
+            def configured(self):
+                return True
+
+            def binding_reason(self):
+                return ""
+
+            def schema_fields(self):
+                return (
+                    "business_date_lagos",
+                    "paid_amount_ngn",
+                    "user_id",
+                    "channel",
+                    "payment_method",
+                    "package_name",
+                    "gameplay_id",
+                    "payment_status",
+                    "order_id",
+                )
+
+            def plan(self, request, intent, accepted_graph):
+                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowPlan
+
+                self.compiler_plan = request["compiler_runtime_plan"]
+                return RevenueRowPlan(
+                    sql_text=(
+                        "SELECT period, group, sum(amount) AS amount "
+                        "FROM t GROUP BY period, group"
+                    ),
+                    query_id="query-schema-aware",
+                    required_fields=("period", "group", "amount"),
+                    dimension_keys=("package_name", "gameplay_id"),
+                )
+
+            def fetch(self, plan):
+                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowsResult
+
+                return RevenueRowsResult(
+                    ok=True,
+                    rows=(
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "amount": 130,
+                            "package_name": "pkg-a",
+                            "gameplay_id": "mode-a",
+                        },
+                    ),
+                    query_hash="hash-schema-aware",
+                    query_id="query-schema-aware",
+                    result_refs=("hash-schema-aware",),
+                )
+
+        provider = Provider()
+        run_pattern_workflow(
+            {
+                "run_id": "schema-aware-provider",
+                "question": "昨天收入变化最大的是哪个包或玩法？支付状态和重复订单会不会影响判断？",
+                "llm_client": FakeLLMClient(
+                    {
+                        "analysis_route": {
+                            "requested_nodes": [
+                                "data_quality_profile",
+                                "segment_contribution",
+                                "joint_attribution",
+                                "answer_verify",
+                            ]
+                        }
+                    }
+                ),
+                "row_provider": provider,
+            }
+        )
+
+        row_shape = provider.compiler_plan["row_shapes"][0]
+        self.assertIn("package_name", row_shape["dimension_keys"])
+        self.assertIn("gameplay_id", row_shape["dimension_keys"])
+        self.assertIn("payment_status", row_shape["optional_fields"])
+        self.assertIn("order_id", row_shape["optional_fields"])
 
     def test_workflow_blocks_when_clickhouse_provider_is_unconfigured(self):
         class Provider:

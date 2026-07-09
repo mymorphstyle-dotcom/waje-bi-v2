@@ -5,8 +5,9 @@ from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult
 
 
 class FakeRuntime:
-    def __init__(self, rows=(), ok=True, reason="", rows_by_query_id=None):
+    def __init__(self, rows=(), ok=True, reason="", rows_by_query_id=None, describe_rows=()):
         self.rows = tuple(rows)
+        self.describe_rows = tuple(describe_rows)
         self.rows_by_query_id = {
             str(query_id): tuple(query_rows)
             for query_id, query_rows in (rows_by_query_id or {}).items()
@@ -18,6 +19,15 @@ class FakeRuntime:
 
     def configured(self):
         return self.binding.ok
+
+    def describe_table(self, table_name):
+        return ClickHouseQueryResult(
+            ok=self.ok,
+            reason=self.reason,
+            rows=self.describe_rows,
+            query_hash=f"hash-describe-{table_name}",
+            query_id=f"describe:{table_name}",
+        )
 
     def aggregate(self, sql, query_id):
         self.calls.append((sql, query_id))
@@ -32,6 +42,22 @@ class FakeRuntime:
 
 
 class ClickHouseRevenueRowsTest(unittest.TestCase):
+    def test_schema_fields_reads_clickhouse_describe_rows(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(
+                describe_rows=(
+                    {"name": "business_date_lagos", "type": "Date"},
+                    {"name": "package_name", "type": "String"},
+                )
+            ),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+
+        self.assertEqual(
+            provider.schema_fields(),
+            ("business_date_lagos", "package_name"),
+        )
+
     def test_plans_aggregate_only_rows_for_driver_and_joint_attribution(self):
         provider = ClickHouseRevenueRows(
             runtime=FakeRuntime(),
@@ -114,6 +140,77 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         self.assertEqual(plan.dimension_keys, ("channel",))
         self.assertIn("GROUP BY period, group, channel", plan.sql_text)
         self.assertIn("- 12", plan.sql_text)
+
+    def test_data_quality_probe_uses_schema_safe_payment_and_duplicate_metrics(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-quality-risk",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "yesterday", "history_days": 12},
+                    "baselines": ("previous_day",),
+                    "query_intents": ("data_quality_probe",),
+                    "row_shapes": [
+                        {
+                            "required_fields": (
+                                "period",
+                                "group",
+                                "amount",
+                                "orders",
+                                "paid_users",
+                            ),
+                            "optional_fields": ("payment_status", "order_id"),
+                            "schema_fields": ("payment_status", "order_id"),
+                        }
+                    ],
+                },
+            },
+            {"time_window": "yesterday"},
+            ("data_quality_profile",),
+        )
+
+        self.assertIn("non_success_orders", plan.sql_text)
+        self.assertIn("duplicate_orders", plan.sql_text)
+        self.assertIn("non_success_orders", plan.required_fields)
+        self.assertIn("duplicate_orders", plan.required_fields)
+
+    def test_high_value_scan_uses_schema_safe_aggregate_fields(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-high-value",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "yesterday", "history_days": 12},
+                    "baselines": ("previous_day",),
+                    "query_intents": ("high_value_scan",),
+                    "row_shapes": [
+                        {
+                            "required_fields": (
+                                "period",
+                                "group",
+                                "amount",
+                                "paid_users",
+                            ),
+                            "optional_fields": ("high_value_amount", "high_value_paid_users"),
+                            "schema_fields": ("high_value_amount", "high_value_paid_users"),
+                        }
+                    ],
+                },
+            },
+            {"time_window": "yesterday"},
+            ("high_value_user_contribution",),
+        )
+
+        self.assertIn("sum(high_value_amount) AS high_value_amount", plan.sql_text)
+        self.assertIn("sum(high_value_paid_users) AS high_value_paid_users", plan.sql_text)
+        self.assertIn("high_value_amount", plan.required_fields)
+        self.assertIn("high_value_paid_users", plan.required_fields)
 
     def test_plan_prefers_joint_scan_when_multi_intent_graph_needs_dimensions(self):
         provider = ClickHouseRevenueRows(

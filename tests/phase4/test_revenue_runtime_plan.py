@@ -93,6 +93,67 @@ class RevenueRuntimePlanTest(unittest.TestCase):
         )
         self.assertEqual(plan["capability_params"]["segment_contribution"]["top_k"], 5)
 
+    def test_schema_fields_promote_optional_factor_dimensions(self):
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=(
+                "segment_contribution",
+                "joint_attribution",
+                "data_quality_profile",
+                "answer_verify",
+            ),
+            diagnostic_axes=("factor_topk", "evidence_quality"),
+            question_text="昨天收入变化最大的是哪个包或玩法？支付状态和重复订单会不会影响判断？",
+            bound_context={
+                "schema_fields": (
+                    "business_date_lagos",
+                    "paid_amount_ngn",
+                    "user_id",
+                    "channel",
+                    "payment_method",
+                    "package_name",
+                    "gameplay_id",
+                    "payment_status",
+                    "order_id",
+                )
+            },
+            prior_assets=(),
+        )
+
+        row_shape = plan["row_shapes"][0]
+        self.assertIn("package_name", row_shape["dimension_keys"])
+        self.assertIn("gameplay_id", row_shape["dimension_keys"])
+        self.assertIn("payment_status", row_shape["optional_fields"])
+        self.assertIn("order_id", row_shape["optional_fields"])
+        self.assertIn("schema_fields", row_shape)
+
+    def test_high_value_schema_fields_add_high_value_scan_intent(self):
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=(
+                "driver_decomposition",
+                "high_value_user_contribution",
+                "answer_verify",
+            ),
+            diagnostic_axes=("revenue_health",),
+            question_text="当前收入是否靠少数大额用户拉动？",
+            bound_context={
+                "schema_fields": (
+                    "business_date_lagos",
+                    "paid_amount_ngn",
+                    "user_id",
+                    "high_value_amount",
+                    "high_value_paid_users",
+                )
+            },
+            prior_assets=(),
+        )
+
+        self.assertIn("high_value_scan", plan["query_intents"])
+        row_shape = plan["row_shapes"][0]
+        self.assertIn("high_value_amount", row_shape["optional_fields"])
+        self.assertIn("high_value_paid_users", row_shape["optional_fields"])
+
     def test_candidate_only_dimensions_require_contract_gap_descriptors(self):
         plan = build_revenue_runtime_plan(
             target_metric="paid_amount",

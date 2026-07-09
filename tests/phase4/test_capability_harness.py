@@ -1,6 +1,7 @@
 import unittest
 
 from bi_agent.capabilities.driver_decomposition import driver_decomposition
+from bi_agent.capabilities.data_quality_check import data_quality_check
 from bi_agent.capabilities.outlier_contribution import outlier_contribution
 from bi_agent.capabilities.segment_contribution import segment_contribution
 from bi_agent.runtime.capability_harness import execute_capability
@@ -26,6 +27,25 @@ def run_capability(capability_id, params):
 
 
 class CapabilityHarnessTest(unittest.TestCase):
+    def test_data_quality_check_carries_payment_and_duplicate_risks(self):
+        result = data_quality_check(
+            [
+                {
+                    "period": "2026-07-08",
+                    "group": "target",
+                    "amount": 120,
+                    "non_success_orders": 2,
+                    "duplicate_orders": 1,
+                }
+            ],
+            result_refs=("hash-quality",),
+        )
+
+        self.assertEqual(result.typed_payload["quality_risks"]["non_success_orders"], 2)
+        self.assertEqual(result.typed_payload["quality_risks"]["duplicate_orders"], 1)
+        self.assertIn("payment_status_risk", result.limitations)
+        self.assertIn("duplicate_order_risk", result.limitations)
+
     def test_pattern_scan_returns_normalized_envelope(self):
         request = CapabilityRequest(
             run_id="run-1",

@@ -63,8 +63,9 @@ def build_revenue_runtime_plan(
     permission_scope = _permission_scope(normalized_context)
     snapshot_version = _snapshot_version(normalized_context)
     contract_versions = _contract_versions(normalized_context)
+    schema_fields = _schema_fields(normalized_context)
     dimensions = _dimension_candidates(graph, axes)
-    row_shape = _row_shape(graph, axes, dimensions)
+    row_shape = _row_shape(graph, axes, dimensions, schema_fields=schema_fields)
     schema_fingerprint = _schema_fingerprint(
         normalized_context,
         row_shape=row_shape,
@@ -112,7 +113,7 @@ def build_revenue_runtime_plan(
         "dimension_candidates": dimensions,
         "measures": BASE_MEASURES,
         "capability_params": _capability_params(graph, baselines, dimensions, normalized_context),
-        "query_intents": _query_intents(graph, axes, reusable_assets),
+        "query_intents": _query_intents(graph, axes, reusable_assets, row_shape),
         "row_shapes": (row_shape,),
         "contract_gaps": row_shape["contract_gaps"],
         "asset_inputs_used": reusable_assets,
@@ -186,29 +187,39 @@ def _row_shape(
     graph: tuple[str, ...],
     axes: tuple[str, ...],
     dimensions: tuple[dict[str, Any], ...],
+    *,
+    schema_fields: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     graph_set = set(graph)
+    schema = set(schema_fields)
     optional_fields: list[str] = []
     contract_gaps: list[dict[str, Any]] = []
     if "joint_attribution" in graph_set:
-        dimension_keys = JOINT_DIMENSION_KEYS
+        dimension_keys = list(JOINT_DIMENSION_KEYS)
     elif "segment_contribution" in graph_set or "segment_bridge" in graph_set:
-        dimension_keys = SEGMENT_DIMENSION_KEYS
+        dimension_keys = list(SEGMENT_DIMENSION_KEYS)
     else:
-        dimension_keys = ()
+        dimension_keys = []
+
+    if schema:
+        dimension_keys = [field for field in dimension_keys if field in schema]
+        for item in dimensions:
+            field = item["field"]
+            if field in schema and field not in dimension_keys:
+                dimension_keys.append(field)
 
     if "user_mix_contribution" in graph_set:
         optional_fields.append("user_mix_bucket")
     if "high_value_user_contribution" in graph_set:
-        optional_fields.extend(
-            ("high_value_amount", "high_value_paid_users", "value_percentile")
-        )
+        for field in ("high_value_amount", "high_value_paid_users", "value_percentile"):
+            if not schema or field in schema:
+                optional_fields.append(field)
         _append_contract_gap(contract_gaps, "high_value_user_contract_missing")
-    for field in (
-        item["field"]
-        for item in dimensions
-        if item["field"] not in dimension_keys
-    ):
+    if "evidence_quality" in axes:
+        for field in ("payment_status", "pay_status", "status", "order_id", "payment_order_id"):
+            if field in schema:
+                optional_fields.append(field)
+    for field in (item["field"] for item in dimensions):
         gap_id = DIMENSION_CONTRACT_GAPS.get(field)
         if gap_id:
             _append_contract_gap(contract_gaps, gap_id)
@@ -224,8 +235,9 @@ def _row_shape(
         "grain": "business_date_lagos_by_group",
         "required_fields": REQUIRED_FIELDS,
         "optional_fields": tuple(dict.fromkeys(optional_fields)),
-        "dimension_keys": dimension_keys,
+        "dimension_keys": tuple(dimension_keys),
         "contract_gaps": tuple(contract_gaps),
+        **({"schema_fields": schema_fields} if schema_fields else {}),
     }
 
 
@@ -309,6 +321,7 @@ def _query_intents(
     graph: tuple[str, ...],
     axes: tuple[str, ...],
     reusable_assets: tuple[str, ...],
+    row_shape: Mapping[str, Any],
 ) -> tuple[str, ...]:
     intents = ["daily_metric_baselines"]
     if reusable_assets:
@@ -317,11 +330,20 @@ def _query_intents(
         intents.append("dimension_scan")
     if "joint_attribution" in graph:
         intents.append("joint_candidate_scan")
+    if "high_value_user_contribution" in graph and _has_all_optional_fields(
+        row_shape, ("high_value_amount", "high_value_paid_users")
+    ):
+        intents.append("high_value_scan")
     if "data_quality_profile" in graph:
         intents.append("data_quality_probe")
     if "event_impact" in axes:
         intents.append("event_context_probe")
     return tuple(dict.fromkeys(intents))
+
+
+def _has_all_optional_fields(row_shape: Mapping[str, Any], fields: tuple[str, ...]) -> bool:
+    optional = set(row_shape.get("optional_fields") or ())
+    return all(field in optional for field in fields)
 
 
 DIMENSION_CONTRACT_GAPS = {
@@ -360,6 +382,13 @@ def _contract_versions(bound_context: Mapping[str, Any]) -> dict[str, str]:
     if source not in ("", None):
         return {"runtime": str(source)}
     return {}
+
+
+def _schema_fields(bound_context: Mapping[str, Any]) -> tuple[str, ...]:
+    schema_fields = bound_context.get("schema_fields") or bound_context.get("clickhouse_schema_fields")
+    if isinstance(schema_fields, Iterable) and not isinstance(schema_fields, (str, bytes, Mapping)):
+        return tuple(str(field) for field in schema_fields if field)
+    return ()
 
 
 def _schema_fingerprint(

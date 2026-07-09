@@ -1607,7 +1607,9 @@ def _capability_result_refs_for(state: WorkflowState, capability_id: str) -> tup
 def _capability_query_intents(capability_id: str) -> tuple[str, ...]:
     if capability_id in {"data_quality_profile", "data_quality_check"}:
         return ("data_quality_probe", "daily_metric_baselines", "clickhouse_revenue_rows")
-    if capability_id in {"segment_contribution", "segment_bridge", "user_mix_contribution", "high_value_user_contribution"}:
+    if capability_id == "high_value_user_contribution":
+        return ("high_value_scan", "dimension_scan", "joint_candidate_scan", "daily_metric_baselines", "clickhouse_revenue_rows")
+    if capability_id in {"segment_contribution", "segment_bridge", "user_mix_contribution"}:
         return ("dimension_scan_reuse", "dimension_scan", "joint_candidate_scan", "daily_metric_baselines", "clickhouse_revenue_rows")
     if capability_id == "joint_attribution":
         return ("joint_candidate_scan", "dimension_scan_reuse", "dimension_scan", "daily_metric_baselines", "clickhouse_revenue_rows")
@@ -2098,6 +2100,12 @@ def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
         values = request.get(schema_key)
         if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
             context[schema_key] = tuple(str(value) for value in values if value)
+    if "schema_fields" not in context and "clickhouse_schema_fields" not in context:
+        provider = _runtime_row_provider(request)
+        if provider is not None and hasattr(provider, "schema_fields"):
+            fields = provider.schema_fields()
+            if isinstance(fields, Sequence) and not isinstance(fields, (str, bytes)):
+                context["clickhouse_schema_fields"] = tuple(str(value) for value in fields if value)
     if request.get("runtime_baselines"):
         context["baselines"] = tuple(request["runtime_baselines"])
     elif analysis_route.get("baselines"):

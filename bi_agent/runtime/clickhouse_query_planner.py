@@ -14,6 +14,7 @@ EXECUTABLE_INTENTS = frozenset(
         "daily_metric_baselines",
         "dimension_scan",
         "joint_candidate_scan",
+        "high_value_scan",
         "data_quality_probe",
     )
 )
@@ -26,6 +27,8 @@ MEASURE_SQL = {
     "paid_users": "uniqExact(user_id) AS paid_users",
     "orders": "count() AS orders",
     "first_paid_users": "countIf(is_first_payment = '1') AS first_paid_users",
+    "high_value_amount": "sum(high_value_amount) AS high_value_amount",
+    "high_value_paid_users": "sum(high_value_paid_users) AS high_value_paid_users",
 }
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DATE_RANGE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$")
@@ -120,12 +123,28 @@ def build_clickhouse_query_specs(
                 where_clause=where_clause,
                 claim_use="joint_attribution_candidates",
             )
+        elif intent == "high_value_scan":
+            spec = _grouped_metric_query(
+                table=table,
+                run_id=run_id,
+                intent=intent,
+                required_fields=_with_optional_required_fields(
+                    required_fields,
+                    _string_tuple(row_shape.get("optional_fields")),
+                    ("high_value_amount", "high_value_paid_users"),
+                ),
+                dimension_keys=(),
+                group_expression=group_expression,
+                where_clause=where_clause,
+                claim_use="high_value_user_contribution",
+            )
         else:
             spec = _data_quality_probe(
                 table=table,
                 run_id=run_id,
                 group_expression=group_expression,
                 where_clause=where_clause,
+                optional_fields=_string_tuple(row_shape.get("optional_fields")),
             )
         if spec:
             specs.append(spec)
@@ -145,7 +164,7 @@ def _grouped_metric_query(
 ) -> dict[str, Any] | None:
     raw_dimensions = tuple(str(key) for key in dimension_keys if key)
     safe_dimensions = tuple(key for key in raw_dimensions if _safe_identifier(key))
-    if intent != "daily_metric_baselines":
+    if intent not in {"daily_metric_baselines", "high_value_scan"}:
         if not raw_dimensions:
             return _blocked_spec(
                 run_id=run_id,
@@ -196,7 +215,9 @@ def _data_quality_probe(
     run_id: str,
     group_expression: str,
     where_clause: str,
+    optional_fields: tuple[str, ...] = (),
 ) -> dict[str, Any]:
+    optional_sql, optional_outputs = _optional_quality_probe_sql(optional_fields)
     return {
         "query_id": f"{run_id}:data_quality_probe",
         "intent": "data_quality_probe",
@@ -213,6 +234,7 @@ def _data_quality_probe(
                         "uniqExact(user_id) AS paid_users",
                         "count() AS orders",
                         "countIf(is_first_payment = '1') AS first_paid_users",
+                        *optional_sql,
                     )
                 ),
                 f"FROM {table}",
@@ -230,11 +252,31 @@ def _data_quality_probe(
             "first_paid_users",
             "min_period",
             "max_period",
+            *optional_outputs,
         ),
         "dimension_keys": (),
         "claim_use": "data_quality_context",
         "reason": "",
     }
+
+
+def _optional_quality_probe_sql(optional_fields: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    fields = {str(field) for field in optional_fields if _safe_identifier(str(field))}
+    sql: list[str] = []
+    outputs: list[str] = []
+    status_field = next((field for field in ("payment_status", "pay_status", "status") if field in fields), "")
+    if status_field:
+        sql.append(
+            "countIf("
+            f"{status_field} NOT IN ('success', 'SUCCESS', 'paid', 'PAID', '1')"
+            ") AS non_success_orders"
+        )
+        outputs.append("non_success_orders")
+    order_field = next((field for field in ("order_id", "payment_order_id") if field in fields), "")
+    if order_field:
+        sql.append(f"greatest(count() - uniqExact({order_field}), 0) AS duplicate_orders")
+        outputs.append("duplicate_orders")
+    return tuple(sql), tuple(outputs)
 
 
 def _measure_sql(required_fields: Sequence[str]) -> tuple[str, ...]:
@@ -246,6 +288,19 @@ def _measure_sql(required_fields: Sequence[str]) -> tuple[str, ...]:
     if fields:
         return tuple(fields)
     return (MEASURE_SQL["amount"],)
+
+
+def _with_optional_required_fields(
+    required_fields: tuple[str, ...],
+    optional_fields: tuple[str, ...],
+    needed: tuple[str, ...],
+) -> tuple[str, ...]:
+    fields = list(required_fields)
+    optional = set(optional_fields)
+    for field in needed:
+        if field in optional and field not in fields:
+            fields.append(field)
+    return tuple(fields)
 
 
 def _blocked_spec(
