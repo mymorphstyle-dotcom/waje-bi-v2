@@ -39,6 +39,10 @@ from bi_agent.runtime.capability_harness import (
 from bi_agent.runtime.capability_models import CapabilityRequest
 from bi_agent.runtime.capability_registry import llm_capability_cards
 from bi_agent.runtime.compiler import compile_graph
+from bi_agent.runtime.data_contract_diagnostics import (
+    contract_fields_from_records,
+    diagnose_contract_gaps,
+)
 from bi_agent.runtime.exploration_budget import default_budget, record_capability_call
 from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
 from bi_agent.runtime.llm_prompts import build_prompt
@@ -114,6 +118,7 @@ class WorkflowState(TypedDict, total=False):
     follow_up_questions: list[str]
     answer_package: dict[str, Any]
     artifact_path: str
+    contract_gap_diagnostics: tuple[dict[str, Any], ...]
 
 
 @dataclass(frozen=True)
@@ -2622,6 +2627,10 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
     records = compiled.mutations.records if compiled else ()
     request = state.get("request", {})
     context_manifest = request.get("context_manifest") or {}
+    contract_gap_diagnostics = state.get("contract_gap_diagnostics")
+    if contract_gap_diagnostics is None:
+        contract_gap_diagnostics = _contract_gap_diagnostics_from_state(state)
+        state["contract_gap_diagnostics"] = contract_gap_diagnostics
     return build_answer_package(
         run_id=state["run_id"],
         draft_claims=state.get("draft_claims", []),
@@ -2652,7 +2661,71 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         quality_gate=state.get("quality_gate", {}),
         follow_up_questions=state.get("follow_up_questions", ()),
         compiler_runtime_plan=request.get("compiler_runtime_plan", {}),
+        contract_gap_diagnostics=contract_gap_diagnostics,
     )
+
+
+def _contract_gap_diagnostics_from_state(
+    state: WorkflowState,
+) -> tuple[dict[str, Any], ...]:
+    request = state.get("request", {})
+    plan = request.get("compiler_runtime_plan")
+    if not isinstance(plan, Mapping):
+        return ()
+    row_shapes = plan.get("row_shapes") or ()
+    if not isinstance(row_shapes, Sequence) or isinstance(row_shapes, (str, bytes)):
+        return ()
+
+    contract_gaps: list[str] = []
+    for row_shape in row_shapes:
+        if not isinstance(row_shape, Mapping):
+            continue
+        gaps = row_shape.get("contract_gaps") or ()
+        if isinstance(gaps, Sequence) and not isinstance(gaps, (str, bytes)):
+            contract_gaps.extend(str(gap) for gap in gaps if gap)
+    if not contract_gaps:
+        return ()
+
+    available_fields = _available_fields_for_contract_diagnostics(state)
+    contract_fields = _contract_fields_for_contract_diagnostics(request)
+    return diagnose_contract_gaps(
+        contract_gaps=tuple(dict.fromkeys(contract_gaps)),
+        available_fields=available_fields,
+        contract_fields=contract_fields,
+        permission_denied_fields=request.get("permission_denied_fields", ()),
+        unsupported_grains=request.get("unsupported_grains", ()),
+    )
+
+
+def _available_fields_for_contract_diagnostics(state: WorkflowState) -> tuple[str, ...]:
+    request = state.get("request", {})
+    available_fields: list[str] = []
+    schema = state.get("schema") or {}
+    schema_fields = schema.get("fields") or ()
+    if isinstance(schema_fields, Sequence) and not isinstance(schema_fields, (str, bytes)):
+        for field in schema_fields:
+            value = str(field)
+            if value and value not in available_fields:
+                available_fields.append(value)
+    rows = request.get("rows") or ()
+    if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            for field in row.keys():
+                value = str(field)
+                if value and value not in available_fields:
+                    available_fields.append(value)
+    return tuple(available_fields)
+
+
+def _contract_fields_for_contract_diagnostics(
+    request: Mapping[str, Any],
+) -> tuple[str, ...]:
+    explicit = request.get("contract_fields") or ()
+    if isinstance(explicit, Sequence) and not isinstance(explicit, (str, bytes)):
+        return tuple(str(field) for field in explicit if field)
+    return contract_fields_from_records(request.get("contract_registry_records"))
 
 
 def evaluate_answer_quality(

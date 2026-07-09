@@ -50,6 +50,37 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             "候选机制",
         )
 
+    def test_answer_package_keeps_contract_gap_diagnostics_in_admin_audit(self):
+        package = build_answer_package(
+            run_id="contract-gap-package",
+            draft_claims=[],
+            evidence=[],
+            checkpoint_events=[],
+            proposed_graph=[],
+            accepted_graph=[],
+            rejected_or_degraded_mutations=[],
+            validator_results=[],
+            sql_text="SELECT 1",
+            sql_hash="hash",
+            artifact_audit={},
+            contract_gap_diagnostics=(
+                {
+                    "gap_id": "payment_status_contract_missing",
+                    "status": "contract_absent",
+                    "data_presence": "field_present",
+                    "contract_presence": "missing",
+                    "owner": "语义合同 owner",
+                    "repair_path": "补语义合同，声明口径、粒度、刷新规则和可支持 claim。",
+                    "claim_effect": "degrade_claim_strength",
+                },
+            ),
+        )
+
+        self.assertEqual(
+            package["admin_audit"]["contract_gap_diagnostics"][0]["status"],
+            "contract_absent",
+        )
+
     def test_joint_attribution_visual_plan_uses_contribution_breakdown(self):
         package = build_answer_package(
             run_id="joint-visual-package",
