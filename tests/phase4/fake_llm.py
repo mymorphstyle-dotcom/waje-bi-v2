@@ -126,6 +126,13 @@ DEFAULT_OUTPUTS = {
     "final_business_summary": {
         "summary_text": "最终结论：当前证据能把排查方向收敛到已验证业务结论。",
     },
+    "final_answer_audit": {
+        "display_status": "ready",
+        "hard_blockers": [],
+        "repairable_warnings": [],
+        "retry_instruction": "",
+        "business_audit_summary": "答案满足当前展示边界。",
+    },
     "degraded_explanation": {
         "status": "degraded",
         "explanation": "当前证据有限。",

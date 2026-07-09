@@ -193,11 +193,14 @@ def _answer_text(answer_package: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _quality_review(answer_package: dict[str, Any]) -> dict[str, bool]:
+def _quality_review(answer_package: dict[str, Any]) -> dict[str, Any]:
     quality_gate = answer_package.get("quality_gate") if isinstance(answer_package, dict) else {}
     if not isinstance(quality_gate, dict):
         quality_gate = {}
     return {
+        "blocks_display": bool(quality_gate.get("blocks_display")),
+        "display_status": str(quality_gate.get("display_status") or ""),
+        "final_answer_audit_warnings": list(quality_gate.get("repairable_warnings") or ()),
         "direct_answer": bool(quality_gate.get("direct_answer")),
         "has_verified_claims": bool(quality_gate.get("has_verified_claims")),
         "verified_claim_preserved": bool(quality_gate.get("verified_claim_preserved")),
@@ -210,6 +213,8 @@ def _strict_quality_failed(turn_record: dict[str, Any]) -> bool:
     review = turn_record.get("quality_review")
     if not isinstance(review, dict) or not review:
         return True
+    if "blocks_display" in review:
+        return bool(review.get("blocks_display"))
     return not (
         review.get("direct_answer") is True
         and review.get("has_verified_claims") is True

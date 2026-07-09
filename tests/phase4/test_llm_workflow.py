@@ -41,6 +41,7 @@ from bi_agent.runtime.llm_client import (
 )
 from bi_agent.runtime.llm_prompts import build_prompt, validate_prompt_specs
 from tests.phase4.fake_llm import FakeLLMClient
+from tests.phase4.fake_llm import FakeLLMResult
 
 
 def spawn_safe_fake_llm_request(config, messages):
@@ -2199,6 +2200,132 @@ class LLMWorkflowTest(unittest.TestCase):
             result.answer_package["quality_gate"]["final_summary_display_warnings"],
         )
         self.assertIn("missing_verified_claim", result.answer_package["quality_gate"]["issues"])
+
+    def test_final_answer_audit_warning_retries_summary_once_without_blocking_display(self):
+        class RetryAuditLLM(FakeLLMClient):
+            def __init__(self):
+                super().__init__()
+                self.summary_inputs = []
+                self.audit_count = 0
+
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                if task == "final_business_summary":
+                    self.calls.append(task)
+                    payload = _input_payload(messages)
+                    self.summary_inputs.append(payload)
+                    summary_text = (
+                        "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
+                        "分析脉络：我检查了目标窗口、基线窗口和贡献证据。\n"
+                        "关键发现：Q2 相比 Q1 的付费金额提升 20.0%。\n"
+                        "最终结论：已验证结论是：Q2 相比 Q1 的付费金额提升 20.0%。\n"
+                        "需要注意：还不能直接说这是唯一原因或已被因果证明。"
+                    )
+                    if payload.get("final_answer_retry_instruction"):
+                        summary_text = (
+                            "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
+                            "分析脉络：我检查了目标窗口、基线窗口和贡献证据。\n"
+                            "关键发现：Q2 相比 Q1 的付费金额提升 20.0%，当前证据能把排查方向收敛到渠道贡献方向。\n"
+                            "最终结论：已验证结论是：Q2 相比 Q1 的付费金额提升 20.0%。"
+                            "当前证据能把排查方向收敛到渠道贡献方向。\n"
+                            "需要注意：还不能直接说这是唯一原因或已被因果证明。"
+                        )
+                    return FakeLLMResult(
+                        {"summary_text": summary_text, "display_summary": "已生成最终业务总结。"},
+                        {
+                            "task": task,
+                            "provider": "fake",
+                            "model": "fake-model",
+                            "prompt_version": prompt_version,
+                            "response_id": f"fake-{task}-{len(self.summary_inputs)}",
+                            "messages": [dict(message) for message in messages],
+                            "required_keys": list(required_keys),
+                            "raw_response_content": "{}",
+                            "started_at": "2026-01-01T00:00:00+00:00",
+                            "finished_at": "2026-01-01T00:00:00+00:00",
+                            "duration_ms": 0.0,
+                            "input_hash": f"input-{task}-{len(self.summary_inputs)}",
+                            "output_hash": f"output-{task}-{len(self.summary_inputs)}",
+                            "usage": {},
+                            "structured_output": {"summary_text": summary_text},
+                        },
+                    )
+                if task == "final_answer_audit":
+                    self.calls.append(task)
+                    self.audit_count += 1
+                    output = {
+                        "display_status": "ready_with_warnings",
+                        "hard_blockers": [],
+                        "repairable_warnings": ["missing_business_interpretation"],
+                        "retry_instruction": "补一句业务排查方向。",
+                        "business_audit_summary": "答案可展示，但业务洞察还不够完整。",
+                        "display_summary": "答案可展示，但建议补强业务洞察。",
+                    }
+                    if self.audit_count > 1:
+                        output = {
+                            "display_status": "ready",
+                            "hard_blockers": [],
+                            "repairable_warnings": [],
+                            "retry_instruction": "",
+                            "business_audit_summary": "答案满足当前展示边界。",
+                            "display_summary": "答案满足当前展示边界。",
+                        }
+                    return FakeLLMResult(
+                        output,
+                        {
+                            "task": task,
+                            "provider": "fake",
+                            "model": "fake-model",
+                            "prompt_version": prompt_version,
+                            "response_id": f"fake-{task}-{self.audit_count}",
+                            "messages": [dict(message) for message in messages],
+                            "required_keys": list(required_keys),
+                            "raw_response_content": "{}",
+                            "started_at": "2026-01-01T00:00:00+00:00",
+                            "finished_at": "2026-01-01T00:00:00+00:00",
+                            "duration_ms": 0.0,
+                            "input_hash": f"input-{task}-{self.audit_count}",
+                            "output_hash": f"output-{task}-{self.audit_count}",
+                            "usage": {},
+                            "structured_output": output,
+                        },
+                    )
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
+
+        def _input_payload(messages):
+            for message in messages:
+                content = message.get("content", "") if isinstance(message, dict) else ""
+                if "<input_json>" not in content:
+                    continue
+                start = content.index("<input_json>") + len("<input_json>")
+                end = content.index("</input_json>")
+                return json.loads(content[start:end].strip())
+            return {}
+
+        fake = RetryAuditLLM()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "final-answer-audit-retry",
+                    "llm_client": fake,
+                    "question": "Q2 相比 Q1 付费金额为什么变了？",
+                }
+            )
+
+        self.assertEqual(result.status, "draft")
+        self.assertEqual(fake.calls.count("final_business_summary"), 2)
+        self.assertEqual(fake.calls.count("final_answer_audit"), 2)
+        self.assertEqual(fake.summary_inputs[0].get("final_answer_retry_instruction"), "")
+        self.assertEqual(fake.summary_inputs[1].get("final_answer_retry_instruction"), "补一句业务排查方向。")
+        self.assertFalse(result.answer_package["quality_gate"]["blocks_display"])
+        self.assertEqual(result.answer_package["quality_gate"]["display_status"], "ready")
+        self.assertEqual(result.answer_package["quality_gate"]["repairable_warnings"], [])
+        self.assertIn("当前证据能把排查方向收敛到渠道贡献方向", result.answer_package["final_answer"])
 
     def test_final_business_summary_timeout_keeps_answer_synthesis_with_audit_marker(self):
         class TimeoutOnFinalSummaryLLM(FakeLLMClient):

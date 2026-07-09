@@ -83,6 +83,13 @@ TASK_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
     ),
     "answer_repair": ("answer_text", "claims"),
     "final_business_summary": ("summary_text",),
+    "final_answer_audit": (
+        "display_status",
+        "hard_blockers",
+        "repairable_warnings",
+        "retry_instruction",
+        "business_audit_summary",
+    ),
     "degraded_explanation": ("status", "explanation", "owner", "repair_path"),
     "blocked_explanation": ("status", "explanation", "owner", "repair_path"),
 }
@@ -501,6 +508,10 @@ def _task_rules(task: str) -> str:
             "their key facts, numbers, scope, and evidence boundary, but it may add "
             "clearly labeled observations or follow-up hypotheses that are not presented "
             "as proven conclusions. Do not strengthen verified claims. In the final "
+            "answer, if final_answer_retry_instruction is supplied, treat it as one "
+            "targeted rewrite instruction for this pass and keep the rest of the answer "
+            "stable unless the supplied evidence requires a broader boundary correction. "
+            "Do not answer the retry instruction as a meta comment. In the final "
             "answer, include a natural business insight using this wording when it is "
             "supported by the supplied claims: 当前证据能把排查方向收敛到... "
             "After the five paragraphs, provide exactly three natural follow-up question "
@@ -511,6 +522,18 @@ def _task_rules(task: str) -> str:
             "business boundary and repair path without publishing an unsupported claim. "
             "Use concise Simplified Chinese business language. The summary_text should "
             "be readable as the user's final answer, not as an audit log."
+        ),
+        "final_answer_audit": (
+            "Audit whether the final answer can be shown to the user. Use the supplied "
+            "verified claims, evidence boundaries, final answer, compiler runtime plan, "
+            "and prior verifier results. Return hard_blocked only for permission leak, "
+            "SQL/security failure, unsupported main claim, or a claim that directly "
+            "contradicts verified evidence. Use ready_with_warnings for paraphrase drift, "
+            "weak business insight, missing wording anchors, or follow-up quality issues. "
+            "Do not require exact wording. retry_instruction must be a concise business "
+            "instruction that can be passed into one final-summary retry. "
+            "business_audit_summary must explain the display decision in user-safe "
+            "business language without exposing internal node names or hidden reasoning."
         ),
         "degraded_explanation": (
             "Explain the degraded result with supported conclusion boundary, visible "

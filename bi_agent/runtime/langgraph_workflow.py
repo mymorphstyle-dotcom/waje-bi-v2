@@ -113,6 +113,7 @@ class WorkflowState(TypedDict, total=False):
     retry_context: dict[str, Any]
     final_explanation: dict[str, Any]
     final_business_summary: str
+    final_answer_audit: dict[str, Any]
     final_summary_display_warnings: list[str]
     quality_gate: dict[str, Any]
     follow_up_questions: list[str]
@@ -2282,26 +2283,7 @@ def _coverage_block_reason_text(coverage: Mapping[str, Any]) -> str:
 
 def _final_business_summary(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "final_business_summary")
-    contract_gap_diagnostics = _refresh_contract_gap_diagnostics(state)
-    summary_payload = {
-        "intent": state.get("intent", {}),
-        "confirmed_understanding": state.get("confirmed_understanding", {}),
-        "accepted_graph": to_jsonable(
-            state.get("compiled_graph").mutations.accepted_graph
-            if state.get("compiled_graph")
-            else ()
-        ),
-        "evidence_brief": state.get("evidence_brief", {}),
-        "evidence_interpretation": state.get("evidence_interpretation", {}),
-        "answer_text": state.get("answer_text", ""),
-        "claims": state.get("draft_claims", []),
-        "semantic_audit": state.get("semantic_audit", {}),
-        "verifier": state.get("verifier", {}),
-        "final_explanation": state.get("final_explanation", {}),
-        "contract_gap_diagnostics": contract_gap_diagnostics,
-        "checkpoint_summary": _checkpoint_summary(state),
-        "business_threads": _business_threads(state),
-    }
+    summary_payload = _final_business_summary_payload(state)
     try:
         output = _invoke_llm(state, "final_business_summary", summary_payload)
     except WorkflowFailure as exc:
@@ -2315,50 +2297,99 @@ def _final_business_summary(state: WorkflowState) -> WorkflowState:
             {*state.get("final_summary_display_warnings", []), "final_summary_timeout"}
         )
         return state
-    state["final_business_summary"] = _weaken_unsupported_causal_wording(
-        output.get("summary_text", "")
-    )
-    state["final_business_summary"] = _normalize_visible_business_text(
-        state["final_business_summary"],
-        state,
-    )
-    repair_reasons = _final_summary_display_repair_reasons(
-        state["final_business_summary"],
-        state,
-    )
-    if repair_reasons:
-        state["final_summary_display_warnings"] = repair_reasons
+    _apply_final_business_summary_output(state, output)
     return state
 
 
 def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "answer_quality_gate")
     state["follow_up_questions"] = _follow_up_questions(state)
-    quality_gate = evaluate_answer_quality(
+    legacy_quality_gate = evaluate_answer_quality(
         user_question=str(state.get("request", {}).get("question") or ""),
         verified_claims=_verified_claims(state),
         final_answer=state.get("final_business_summary") or state.get("answer_text", ""),
         follow_up_questions=state["follow_up_questions"],
     )
     if state.get("final_summary_display_warnings"):
-        quality_gate = {
-            **quality_gate,
+        legacy_quality_gate = {
+            **legacy_quality_gate,
             "final_summary_display_warnings": state["final_summary_display_warnings"],
         }
     if state.get("final_explanation") and not state.get("draft_claims"):
-        state["quality_gate"] = {
-            **quality_gate,
+        legacy_quality_gate = {
+            **legacy_quality_gate,
             "has_verified_claims": False,
             "verified_claim_preserved": True,
             "business_insight_present": True,
             "issues": [
                 issue
-                for issue in quality_gate.get("issues", [])
+                for issue in legacy_quality_gate.get("issues", [])
                 if issue not in {"missing_verified_claim", "missing_business_insight"}
             ],
         }
-        return state
-    state["quality_gate"] = quality_gate
+
+    final_answer_audit = _final_answer_audit(state)
+    if (
+        final_answer_audit["retry_instruction"]
+        and not final_answer_audit["blocks_display"]
+        and final_answer_audit["repairable_warnings"]
+    ):
+        try:
+            output = _invoke_llm(
+                state,
+                "final_business_summary",
+                _final_business_summary_payload(
+                    state,
+                    retry_instruction=final_answer_audit["retry_instruction"],
+                ),
+            )
+        except WorkflowFailure:
+            pass
+        else:
+            _apply_final_business_summary_output(state, output)
+            legacy_quality_gate = evaluate_answer_quality(
+                user_question=str(state.get("request", {}).get("question") or ""),
+                verified_claims=_verified_claims(state),
+                final_answer=state.get("final_business_summary") or state.get("answer_text", ""),
+                follow_up_questions=state["follow_up_questions"],
+            )
+            if state.get("final_summary_display_warnings"):
+                legacy_quality_gate = {
+                    **legacy_quality_gate,
+                    "final_summary_display_warnings": state["final_summary_display_warnings"],
+                }
+            if state.get("final_explanation") and not state.get("draft_claims"):
+                legacy_quality_gate = {
+                    **legacy_quality_gate,
+                    "has_verified_claims": False,
+                    "verified_claim_preserved": True,
+                    "business_insight_present": True,
+                    "issues": [
+                        issue
+                        for issue in legacy_quality_gate.get("issues", [])
+                        if issue not in {"missing_verified_claim", "missing_business_insight"}
+                    ],
+                }
+            final_answer_audit = _final_answer_audit(state)
+
+    state["final_answer_audit"] = final_answer_audit
+    state["quality_gate"] = {
+        **legacy_quality_gate,
+        "display_status": final_answer_audit["display_status"],
+        "hard_blockers": list(final_answer_audit["hard_blockers"]),
+        "repairable_warnings": list(final_answer_audit["repairable_warnings"]),
+        "retry_instruction": final_answer_audit["retry_instruction"],
+        "business_audit_summary": final_answer_audit["business_audit_summary"],
+        "issues": [
+            *list(legacy_quality_gate.get("issues", [])),
+            *list(final_answer_audit["hard_blockers"]),
+            *list(final_answer_audit["repairable_warnings"]),
+        ],
+        "blocks_display": final_answer_audit["blocks_display"],
+        "final_summary_display_warnings": list(
+            state.get("final_summary_display_warnings", ())
+        ),
+    }
     return state
 
 
@@ -2947,6 +2978,130 @@ def _follow_up_questions(state: WorkflowState) -> list[str]:
         "要复核异常日期对结果的影响吗？",
         "要换成日均口径再算一次吗？",
     ]
+
+
+def normalize_final_answer_audit(output: Mapping[str, Any]) -> dict[str, Any]:
+    status = str(output.get("display_status") or "ready_with_warnings")
+    if status not in {"ready", "ready_with_warnings", "hard_blocked"}:
+        status = "ready_with_warnings"
+    hard_blockers = [str(item) for item in output.get("hard_blockers") or ()]
+    warnings = [str(item) for item in output.get("repairable_warnings") or ()]
+    audit = {
+        "display_status": status,
+        "blocks_display": status == "hard_blocked" or bool(hard_blockers),
+        "hard_blockers": hard_blockers,
+        "repairable_warnings": warnings,
+        "retry_instruction": str(output.get("retry_instruction") or ""),
+        "business_audit_summary": str(output.get("business_audit_summary") or ""),
+    }
+    if not audit["blocks_display"] and audit["repairable_warnings"] and audit["display_status"] == "ready":
+        audit["display_status"] = "ready_with_warnings"
+    return audit
+
+
+def _final_business_summary_payload(
+    state: WorkflowState,
+    *,
+    retry_instruction: str = "",
+) -> dict[str, Any]:
+    contract_gap_diagnostics = _refresh_contract_gap_diagnostics(state)
+    return {
+        "intent": state.get("intent", {}),
+        "confirmed_understanding": state.get("confirmed_understanding", {}),
+        "accepted_graph": to_jsonable(
+            state.get("compiled_graph").mutations.accepted_graph
+            if state.get("compiled_graph")
+            else ()
+        ),
+        "evidence_brief": state.get("evidence_brief", {}),
+        "evidence_interpretation": state.get("evidence_interpretation", {}),
+        "answer_text": state.get("answer_text", ""),
+        "claims": state.get("draft_claims", []),
+        "semantic_audit": state.get("semantic_audit", {}),
+        "verifier": state.get("verifier", {}),
+        "final_explanation": state.get("final_explanation", {}),
+        "contract_gap_diagnostics": contract_gap_diagnostics,
+        "checkpoint_summary": _checkpoint_summary(state),
+        "business_threads": _business_threads(state),
+        "final_answer_retry_instruction": retry_instruction,
+    }
+
+
+def _apply_final_business_summary_output(
+    state: WorkflowState,
+    output: Mapping[str, Any],
+) -> None:
+    state["final_business_summary"] = _weaken_unsupported_causal_wording(
+        output.get("summary_text", "")
+    )
+    state["final_business_summary"] = _normalize_visible_business_text(
+        state["final_business_summary"],
+        state,
+    )
+    state["final_summary_display_warnings"] = _final_summary_display_repair_reasons(
+        state["final_business_summary"],
+        state,
+    )
+
+
+def _final_answer_audit(state: WorkflowState) -> dict[str, Any]:
+    audit = normalize_final_answer_audit(
+        _invoke_llm(
+            state,
+            "final_answer_audit",
+            {
+                "user_question": state.get("request", {}).get("question", ""),
+                "verified_claims": _verified_claims(state),
+                "final_answer": state.get("final_business_summary") or state.get("answer_text", ""),
+                "follow_up_questions": state.get("follow_up_questions", ()),
+                "compiler_runtime_plan": state.get("request", {}).get(
+                    "compiler_runtime_plan", {}
+                ),
+                "verifier": state.get("verifier", {}),
+                "semantic_audit": state.get("semantic_audit", {}),
+                "final_summary_display_warnings": state.get(
+                    "final_summary_display_warnings", ()
+                ),
+                "evidence_brief": state.get("evidence_brief", {}),
+            },
+        )
+    )
+    hard_blockers = list(audit["hard_blockers"])
+    for blocker in _local_final_answer_hard_blockers(state):
+        if blocker not in hard_blockers:
+            hard_blockers.append(blocker)
+    audit["hard_blockers"] = hard_blockers
+    audit["blocks_display"] = audit["display_status"] == "hard_blocked" or bool(hard_blockers)
+    if audit["blocks_display"]:
+        audit["display_status"] = "hard_blocked"
+    elif audit["repairable_warnings"] and audit["display_status"] == "ready":
+        audit["display_status"] = "ready_with_warnings"
+    return audit
+
+
+def _local_final_answer_hard_blockers(state: WorkflowState) -> list[str]:
+    blockers: list[str] = []
+    validators = state.get("validator_results", ())
+    if any(
+        isinstance(item, Mapping)
+        and item.get("validator") == "permission"
+        and not item.get("ok", False)
+        for item in validators
+    ):
+        blockers.append("permission_leak")
+    if any(
+        isinstance(item, Mapping)
+        and item.get("validator") == "sql_safety"
+        and not item.get("ok", False)
+        for item in validators
+    ):
+        blockers.append("sql_security_failure")
+    verifier_errors = state.get("verifier", {}).get("errors") or ()
+    if verifier_errors:
+        blockers.append("verifier_evidence_contradiction")
+        if state.get("draft_claims"):
+            blockers.append("unsupported_main_claim")
+    return blockers
 
 
 def _invoke_llm(state: WorkflowState, task: str, payload: dict[str, Any]) -> dict[str, Any]:

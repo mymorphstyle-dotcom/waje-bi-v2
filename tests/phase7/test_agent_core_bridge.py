@@ -321,6 +321,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 {
                     "asset_type": "dimension_scan",
                     "dimension": "channel",
+                    "dimensions": ["channel"],
                     "status": "usable",
                     "query_ref": "query:channel-scan",
                 },
@@ -939,6 +940,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
         review = _quality_review(
             {
                 "quality_gate": {
+                    "blocks_display": False,
+                    "display_status": "ready_with_warnings",
+                    "repairable_warnings": ["missing_business_interpretation"],
                     "direct_answer": True,
                     "has_verified_claims": True,
                     "verified_claim_preserved": False,
@@ -952,6 +956,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(
             review,
             {
+                "blocks_display": False,
+                "display_status": "ready_with_warnings",
+                "final_answer_audit_warnings": ["missing_business_interpretation"],
                 "direct_answer": True,
                 "has_verified_claims": True,
                 "verified_claim_preserved": False,
@@ -959,7 +966,10 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 "followups_one_intent": False,
             },
         )
-        self.assertTrue(_strict_quality_failed({"quality_review": review}))
+        self.assertFalse(_strict_quality_failed({"quality_review": review}))
+        self.assertTrue(
+            _strict_quality_failed({"quality_review": {**review, "blocks_display": True}})
+        )
 
     def test_live_harness_uses_fresh_thread_for_each_case_run(self):
         from tools.phase7.run_live_conversation_system_test import _case_thread_id
