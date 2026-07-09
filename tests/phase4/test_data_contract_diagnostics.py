@@ -128,6 +128,16 @@ class DataContractDiagnosticsTest(unittest.TestCase):
             ("payment_status", "order_id", "paid_amount_ngn", "shop_id"),
         )
 
+    def test_contract_fields_from_records_accepts_mapping_input(self):
+        fields = contract_fields_from_records(
+            {
+                "payment_status": {"field": "payment_status"},
+                "orders": {"fields": ("order_id", "payment_order_id")},
+            }
+        )
+
+        self.assertEqual(fields, ("payment_status", "order_id", "payment_order_id"))
+
 
 if __name__ == "__main__":
     unittest.main()

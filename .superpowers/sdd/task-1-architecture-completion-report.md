@@ -181,3 +181,73 @@ Ran 29 tests in 0.659s
 
 OK
 ```
+
+## Second Reviewer Findings Fix Record
+
+### RED
+
+Command:
+
+```bash
+python3 - <<'PY'
+from bi_agent.runtime.compiler import compile_graph
+from bi_agent.runtime.langgraph_workflow import _contract_gap_diagnostics_from_state
+
+compiled = compile_graph(
+    question_family="data_quality_or_evidence_review",
+    target_metric="paid_amount",
+    requested_nodes=("data_quality_profile", "answer_verify"),
+    question_text="这个结论的数据证据够不够？是否存在支付状态缺失或重复订单影响判断？",
+)
+print(
+    _contract_gap_diagnostics_from_state(
+        {
+            "request": {
+                "compiler_runtime_plan": compiled.runtime_plan,
+                "available_fields": ("payment_status",),
+                "contract_fields": (),
+            }
+        }
+    )
+)
+PY
+```
+
+Observed failure before the fix:
+
+```text
+payment_status_contract_missing -> unknown
+duplicate_order_contract_missing -> unknown
+```
+
+Compiler `row_shapes[].contract_gaps` on the real path still emitted bare string ids, so runtime diagnostics had no declared fields to classify.
+
+### GREEN
+
+Commands:
+
+```bash
+python3 -m unittest tests.phase4.test_data_contract_diagnostics
+python3 -m unittest tests.phase4.test_workflow_artifacts_answer
+python3 -m unittest tests.phase4.test_recipe_registry_and_compiler
+```
+
+Observed result:
+
+```text
+Ran 8 tests in 0.000s
+OK
+
+Ran 24 tests in 0.722s
+OK
+
+Ran 19 tests in 0.006s
+OK
+```
+
+### Reviewer-Finding Coverage
+
+- Real compiler/runtime-plan gaps now emit explicit descriptors with `gap_id` plus `fields` or `required_fields`; diagnostics no longer depend on gap-id heuristics.
+- `contract_fields_from_records(...)` now accepts mapping input and preserves nested `fields`.
+- Workflow computes `contract_gap_diagnostics` as soon as the compiler runtime plan exists, then passes them into blocked/degraded/final-summary LLM payloads and persists the same diagnostics in `Answer Package.admin_audit`.
+- Added end-to-end coverage for `compile_graph -> workflow/answer_package`, asserting real compiler gap descriptors classify as `contract_absent` or `data_absent`, never `unknown`.

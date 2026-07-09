@@ -994,6 +994,7 @@ def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
     )
     state["compiled_graph"] = compiled
     state["request"]["compiler_runtime_plan"] = compiled.runtime_plan
+    _refresh_contract_gap_diagnostics(state)
     return state
 
 
@@ -2082,10 +2083,12 @@ def _repair_answer(state: WorkflowState) -> WorkflowState:
 
 def _generate_degraded_explanation(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "generate_degraded_explanation")
+    contract_gap_diagnostics = _refresh_contract_gap_diagnostics(state)
     explanation_payload = {
         "intent": state.get("intent", {}),
         "evidence_brief": state.get("evidence_brief", {}),
         "verifier": state.get("verifier", {}),
+        "contract_gap_diagnostics": contract_gap_diagnostics,
     }
     output = _invoke_llm(state, "degraded_explanation", explanation_payload)
     state["final_explanation"] = _sanitize_terminal_explanation(output, state, "degraded")
@@ -2164,10 +2167,12 @@ def _degraded_limitations(state: WorkflowState) -> list[str]:
 def _generate_blocked_explanation(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "generate_blocked_explanation")
     if "final_explanation" not in state:
+        contract_gap_diagnostics = _refresh_contract_gap_diagnostics(state)
         explanation_payload = {
             "intent": state.get("intent", {}),
             "boundary_decision": state.get("boundary_decision", {}),
             "validator_results": state.get("validator_results", []),
+            "contract_gap_diagnostics": contract_gap_diagnostics,
         }
         output = _invoke_llm(state, "blocked_explanation", explanation_payload)
         state["final_explanation"] = _sanitize_terminal_explanation(output, state, "blocked")
@@ -2250,6 +2255,7 @@ def _coverage_block_reason_text(coverage: Mapping[str, Any]) -> str:
 
 def _final_business_summary(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "final_business_summary")
+    contract_gap_diagnostics = _refresh_contract_gap_diagnostics(state)
     summary_payload = {
         "intent": state.get("intent", {}),
         "confirmed_understanding": state.get("confirmed_understanding", {}),
@@ -2265,6 +2271,7 @@ def _final_business_summary(state: WorkflowState) -> WorkflowState:
         "semantic_audit": state.get("semantic_audit", {}),
         "verifier": state.get("verifier", {}),
         "final_explanation": state.get("final_explanation", {}),
+        "contract_gap_diagnostics": contract_gap_diagnostics,
         "checkpoint_summary": _checkpoint_summary(state),
         "business_threads": _business_threads(state),
     }
@@ -2697,6 +2704,14 @@ def _contract_gap_diagnostics_from_state(
     )
 
 
+def _refresh_contract_gap_diagnostics(
+    state: WorkflowState,
+) -> tuple[dict[str, Any], ...]:
+    diagnostics = _contract_gap_diagnostics_from_state(state)
+    state["contract_gap_diagnostics"] = diagnostics
+    return diagnostics
+
+
 def _available_fields_for_contract_diagnostics(state: WorkflowState) -> tuple[str, ...]:
     request = state.get("request", {})
     available_fields: list[str] = []
@@ -2717,6 +2732,30 @@ def _available_fields_for_contract_diagnostics(state: WorkflowState) -> tuple[st
             value = str(field)
             if value and value not in available_fields:
                 available_fields.append(value)
+    plan = request.get("compiler_runtime_plan") or {}
+    if isinstance(plan, Mapping):
+        for source in (
+            plan.get("schema_fields"),
+            (plan.get("schema") or {}).get("fields")
+            if isinstance(plan.get("schema"), Mapping)
+            else (),
+        ):
+            if isinstance(source, Sequence) and not isinstance(source, (str, bytes)):
+                for field in source:
+                    value = str(field)
+                    if value and value not in available_fields:
+                        available_fields.append(value)
+        row_shapes = plan.get("row_shapes") or ()
+        if isinstance(row_shapes, Sequence) and not isinstance(row_shapes, (str, bytes)):
+            for row_shape in row_shapes:
+                if not isinstance(row_shape, Mapping):
+                    continue
+                source = row_shape.get("schema_fields") or ()
+                if isinstance(source, Sequence) and not isinstance(source, (str, bytes)):
+                    for field in source:
+                        value = str(field)
+                        if value and value not in available_fields:
+                            available_fields.append(value)
     return tuple(available_fields)
 
 

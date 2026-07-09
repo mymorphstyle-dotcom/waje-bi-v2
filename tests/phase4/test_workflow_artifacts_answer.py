@@ -3,6 +3,7 @@ import tempfile
 import unittest
 
 from bi_agent.runtime.answer_package import build_answer_package, verify_answer_package
+from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.langgraph_workflow import (
     _available_fields_for_contract_diagnostics,
     _contract_gap_diagnostics_from_state,
@@ -62,6 +63,29 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
 
         self.assertEqual(diagnostics[0]["status"], "contract_absent")
         self.assertEqual(diagnostics[0]["data_presence"], "field_present")
+
+    def test_contract_gap_diagnostics_use_real_compiler_gap_descriptors(self):
+        compiled = compile_graph(
+            question_family="data_quality_or_evidence_review",
+            target_metric="paid_amount",
+            requested_nodes=("data_quality_profile", "answer_verify"),
+            question_text="这个结论的数据证据够不够？是否存在支付状态缺失或重复订单影响判断？",
+        )
+
+        diagnostics = _contract_gap_diagnostics_from_state(
+            {
+                "request": {
+                    "compiler_runtime_plan": compiled.runtime_plan,
+                    "available_fields": ("payment_status",),
+                    "contract_fields": (),
+                }
+            }
+        )
+
+        by_id = {item["gap_id"]: item for item in diagnostics}
+        self.assertEqual(by_id["payment_status_contract_missing"]["status"], "contract_absent")
+        self.assertEqual(by_id["duplicate_order_contract_missing"]["status"], "data_absent")
+        self.assertTrue(all(item["status"] != "unknown" for item in diagnostics))
 
     def test_answer_package_keeps_causal_audit_in_admin_audit_only(self):
         package = build_answer_package(
@@ -774,6 +798,44 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         ]
         self.assertEqual(failed_validators[0]["validator"], "sql_safety")
         self.assertTrue(failed_validators[0]["reason"])
+
+    def test_blocked_explanation_payload_receives_contract_gap_diagnostics(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "data_quality_or_evidence_review",
+                },
+                "analysis_route": {
+                    "requested_nodes": ["data_quality_profile", "answer_verify"],
+                },
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "blocked-contract-gap-diagnostics",
+                    "llm_client": fake,
+                    "question": "这个结论的数据证据够不够？是否存在支付状态缺失或重复订单影响判断？",
+                    "available_fields": ("payment_status",),
+                    "sql_text": "DROP TABLE paid_order_detail",
+                }
+            )
+
+        self.assertEqual(result.status, "draft")
+        payload = _llm_input_payload(result.answer_package, "blocked_explanation")
+        diagnostics = {item["gap_id"]: item for item in payload["contract_gap_diagnostics"]}
+        self.assertEqual(diagnostics["payment_status_contract_missing"]["status"], "contract_absent")
+        self.assertEqual(diagnostics["duplicate_order_contract_missing"]["status"], "data_absent")
+        final_payload = _llm_input_payload(result.answer_package, "final_business_summary")
+        self.assertEqual(
+            result.answer_package["admin_audit"]["contract_gap_diagnostics"],
+            payload["contract_gap_diagnostics"],
+        )
+        self.assertEqual(
+            final_payload["contract_gap_diagnostics"],
+            payload["contract_gap_diagnostics"],
+        )
 
 
 if __name__ == "__main__":

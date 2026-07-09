@@ -7,6 +7,21 @@ from bi_agent.runtime.models import RecipeEntry
 from bi_agent.runtime.recipe_registry import load_recipe_registry
 
 
+def _contract_gap_ids(row_shape):
+    return tuple(
+        gap.get("gap_id") if isinstance(gap, dict) else gap
+        for gap in row_shape.get("contract_gaps", ())
+    )
+
+
+def _contract_gap_descriptor(row_shape, gap_id):
+    return next(
+        gap
+        for gap in row_shape.get("contract_gaps", ())
+        if isinstance(gap, dict) and gap.get("gap_id") == gap_id
+    )
+
+
 class RecipeRegistryAndCompilerTest(unittest.TestCase):
     def test_registry_has_eight_recipe_entries(self):
         registry = load_recipe_registry()
@@ -305,7 +320,11 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
         self.assertIn("payment_method", row_shape["dimension_keys"])
         self.assertIn("region", row_shape["dimension_keys"])
         self.assertIn("device_brand", row_shape["dimension_keys"])
-        self.assertIn("gameplay_contract_missing", row_shape["contract_gaps"])
+        self.assertIn("gameplay_contract_missing", _contract_gap_ids(row_shape))
+        self.assertEqual(
+            _contract_gap_descriptor(row_shape, "gameplay_contract_missing")["fields"],
+            ("gameplay_id", "gameplay", "play_mode"),
+        )
         self.assertTrue(
             any(
                 record.action == "auto_added"
@@ -342,7 +361,13 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
         row_shape = compiled.runtime_plan["row_shapes"][0]
         self.assertIn("user_mix_bucket", row_shape["optional_fields"])
         self.assertIn("high_value_amount", row_shape["optional_fields"])
-        self.assertIn("high_value_user_contract_missing", row_shape["contract_gaps"])
+        self.assertIn("high_value_user_contract_missing", _contract_gap_ids(row_shape))
+        self.assertEqual(
+            _contract_gap_descriptor(row_shape, "high_value_user_contract_missing")[
+                "required_fields"
+            ],
+            ("user_id", "paid_amount_ngn"),
+        )
 
     def test_multi_baseline_question_preserves_rolling_window_and_adds_compare(self):
         compiled = compile_graph(
@@ -386,8 +411,14 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
             }.issubset(set(compiled.mutations.accepted_graph))
         )
         row_shape = compiled.runtime_plan["row_shapes"][0]
-        self.assertIn("payment_status_contract_missing", row_shape["contract_gaps"])
-        self.assertIn("duplicate_order_contract_missing", row_shape["contract_gaps"])
+        self.assertIn("payment_status_contract_missing", _contract_gap_ids(row_shape))
+        self.assertIn("duplicate_order_contract_missing", _contract_gap_ids(row_shape))
+        self.assertEqual(
+            _contract_gap_descriptor(row_shape, "payment_status_contract_missing")[
+                "fields"
+            ],
+            ("payment_status", "pay_status", "status"),
+        )
 
     def test_compiler_keeps_llm_requested_nodes_when_adding_supporting_nodes(self):
         compiled = compile_graph(

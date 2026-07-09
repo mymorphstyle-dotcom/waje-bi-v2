@@ -1,5 +1,5 @@
 from collections.abc import Iterable, Mapping
-from typing import Optional
+from typing import Any, Optional
 
 from bi_agent.runtime.models import (
     CompiledGraph,
@@ -566,6 +566,30 @@ def _families_from_nodes(nodes: Iterable[str]) -> tuple[str, ...]:
     return _dedupe(families)
 
 
+CONTRACT_GAP_DESCRIPTORS = {
+    "high_value_user_contract_missing": {
+        "required_fields": ("user_id", "paid_amount_ngn"),
+    },
+    "gameplay_contract_missing": {
+        "fields": ("gameplay_id", "gameplay", "play_mode"),
+    },
+    "event_context_contract_missing": {
+        "required_fields": ("event_id", "event_time", "campaign_id"),
+    },
+    "payment_status_contract_missing": {
+        "fields": ("payment_status", "pay_status", "status"),
+    },
+    "duplicate_order_contract_missing": {
+        "fields": ("order_id", "payment_order_id"),
+    },
+}
+
+
+def _contract_gap_descriptor(gap_id: str) -> dict[str, Any]:
+    descriptor = CONTRACT_GAP_DESCRIPTORS[gap_id]
+    return {"gap_id": gap_id, **descriptor}
+
+
 def _runtime_plan(
     *,
     target_metric: str,
@@ -581,22 +605,27 @@ def _runtime_plan(
         dimension_keys = REVENUE_SEGMENT_DIMENSIONS
 
     optional_fields: list[str] = []
-    contract_gaps: list[str] = []
+    contract_gaps: list[dict[str, Any]] = []
+
+    def add_contract_gap(gap_id: str) -> None:
+        descriptor = _contract_gap_descriptor(gap_id)
+        if descriptor not in contract_gaps:
+            contract_gaps.append(descriptor)
+
     if "user_mix_contribution" in graph:
         optional_fields.append("user_mix_bucket")
     if "high_value_user_contribution" in graph:
         optional_fields.extend(
             ("high_value_amount", "high_value_paid_users", "value_percentile")
         )
-        contract_gaps.append("high_value_user_contract_missing")
+        add_contract_gap("high_value_user_contract_missing")
     if "joint_attribution" in graph and "pattern_attribution" in diagnostic_axes:
-        contract_gaps.append("gameplay_contract_missing")
+        add_contract_gap("gameplay_contract_missing")
     if "event_impact" in diagnostic_axes:
-        contract_gaps.append("event_context_contract_missing")
+        add_contract_gap("event_context_contract_missing")
     if "evidence_quality" in diagnostic_axes:
-        contract_gaps.extend(
-            ("payment_status_contract_missing", "duplicate_order_contract_missing")
-        )
+        add_contract_gap("payment_status_contract_missing")
+        add_contract_gap("duplicate_order_contract_missing")
 
     baseline_windows = []
     if "multi_baseline" in diagnostic_axes:
@@ -617,7 +646,7 @@ def _runtime_plan(
                 "required_fields": REVENUE_BASE_FIELDS,
                 "optional_fields": tuple(_dedupe(optional_fields)),
                 "dimension_keys": dimension_keys,
-                "contract_gaps": tuple(_dedupe(contract_gaps)),
+                "contract_gaps": tuple(contract_gaps),
             },
         ),
     }
