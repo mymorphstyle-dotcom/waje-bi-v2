@@ -2818,6 +2818,7 @@ class LLMWorkflowTest(unittest.TestCase):
             target_metric="paid_amount",
             pattern_family="custom_baseline",
             requested_nodes=(
+                "compare_periods",
                 "driver_decomposition",
                 "segment_contribution",
                 "joint_attribution",
@@ -2921,6 +2922,11 @@ class LLMWorkflowTest(unittest.TestCase):
         by_capability = {
             item.get("capability_id"): item for item in result["evidence"]
         }
+
+        compare = by_capability["compare_periods"]
+        self.assertEqual(compare["evidence_type"], "statistical_association")
+        self.assertEqual(compare["typed_payload"]["comparable_periods"], 1)
+        self.assertNotIn("no_comparable_periods", compare["limitations"])
 
         driver = by_capability["driver_decomposition"]
         self.assertEqual(driver["evidence_type"], "accounting_contribution")

@@ -209,8 +209,10 @@ def _data_quality_probe(
                         group_expression,
                         "min(business_date_lagos) AS min_period",
                         "max(business_date_lagos) AS max_period",
+                        "sum(paid_amount_ngn) AS amount",
                         "uniqExact(user_id) AS paid_users",
                         "count() AS orders",
+                        "countIf(is_first_payment = '1') AS first_paid_users",
                     )
                 ),
                 f"FROM {table}",
@@ -219,7 +221,16 @@ def _data_quality_probe(
                 "LIMIT 1",
             )
         ),
-        "required_fields": ("period", "group", "orders", "paid_users", "min_period", "max_period"),
+        "required_fields": (
+            "period",
+            "group",
+            "amount",
+            "paid_users",
+            "orders",
+            "first_paid_users",
+            "min_period",
+            "max_period",
+        ),
         "dimension_keys": (),
         "claim_use": "data_quality_context",
         "reason": "",

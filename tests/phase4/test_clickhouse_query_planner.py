@@ -34,6 +34,35 @@ class ClickHouseQueryPlannerTest(unittest.TestCase):
         )
         self.assertTrue(any("rolling_7_day_baseline" in spec["sql_text"] for spec in specs))
 
+    def test_data_quality_probe_includes_business_measure_fields(self):
+        specs = build_clickhouse_query_specs(
+            {
+                "windows": {"target": "yesterday", "history_days": 36},
+                "baselines": ("previous_day",),
+                "query_intents": ("data_quality_probe",),
+                "row_shapes": (
+                    {
+                        "required_fields": (
+                            "period",
+                            "group",
+                            "amount",
+                            "paid_users",
+                            "orders",
+                            "first_paid_users",
+                        ),
+                    },
+                ),
+            },
+            table="paid_order_success_clean_20240101_20260704",
+            run_id="run-quality",
+        )
+
+        self.assertEqual(len(specs), 1)
+        self.assertIn("sum(paid_amount_ngn) AS amount", specs[0]["sql_text"])
+        self.assertIn("countIf(is_first_payment = '1') AS first_paid_users", specs[0]["sql_text"])
+        self.assertIn("amount", specs[0]["required_fields"])
+        self.assertIn("first_paid_users", specs[0]["required_fields"])
+
     def test_unsafe_table_returns_no_specs(self):
         specs = build_clickhouse_query_specs(
             {

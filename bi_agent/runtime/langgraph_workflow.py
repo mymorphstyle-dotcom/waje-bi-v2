@@ -1332,12 +1332,18 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
         for capability in capabilities
         if capability in PATTERN_COMPARE_CAPABILITIES
     ):
-        capability_rows = _capability_rows_for(state, capability_id)
-        capability_refs = _capability_result_refs_for(state, capability_id)
         pattern_family = state["intent"]["pattern_family"]
         pattern_params = dict(state["intent"].get("pattern_params", {}))
         if pattern_family == "intra_period":
             pattern_params.setdefault("target_phase", "start")
+        capability_rows, pattern_params = _comparison_rows_and_params(
+            state,
+            capability_id,
+            params=pattern_params,
+            dimension_keys=(),
+            period_key=pattern_params.get("period_key", "period"),
+        )
+        capability_refs = _capability_result_refs_for(state, capability_id)
         target = state["intent"].get("target") or {
             "label": _target_label_from_pattern_params(pattern_params)
         }
@@ -1391,12 +1397,18 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
             )
         )
     if "pattern_scan" in capabilities:
-        capability_rows = _capability_rows_for(state, "pattern_scan")
-        capability_refs = _capability_result_refs_for(state, "pattern_scan")
         pattern_family = state["intent"]["pattern_family"]
         pattern_params = dict(state["intent"].get("pattern_params", {}))
         if pattern_family == "intra_period":
             pattern_params.setdefault("target_phase", "start")
+        capability_rows, pattern_params = _comparison_rows_and_params(
+            state,
+            "pattern_scan",
+            params=pattern_params,
+            dimension_keys=(),
+            period_key=pattern_params.get("period_key", "period"),
+        )
+        capability_refs = _capability_result_refs_for(state, "pattern_scan")
         evidence.append(
             scan_pattern(
                 capability_rows,
@@ -1659,6 +1671,15 @@ def _comparison_rows_and_params(
         return rows, output_params
 
     dimensions = tuple(str(key) for key in dimension_keys if key)
+    if period_key and _has_paired_comparison_rows(
+        rows,
+        group_key=group_key,
+        target_group=target_group,
+        baseline_group=baseline_group,
+        period_key=str(period_key),
+        dimension_keys=dimensions,
+    ):
+        return rows, output_params
     comparison_rows = _aggregate_comparison_rows(
         rows,
         group_key=group_key,
@@ -1730,6 +1751,29 @@ def _has_comparison_groups(
         if row.get(group_key) not in (None, "")
     }
     return target_group in groups and baseline_group in groups
+
+
+def _has_paired_comparison_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    group_key: str,
+    target_group: str,
+    baseline_group: str,
+    period_key: str,
+    dimension_keys: tuple[str, ...],
+) -> bool:
+    buckets: dict[tuple[Any, ...], set[str]] = {}
+    for row in rows:
+        period = row.get(period_key)
+        group = row.get(group_key)
+        if period in (None, "") or group in (None, ""):
+            continue
+        dimension_values = tuple(row.get(key) for key in dimension_keys)
+        if any(value in (None, "") for value in dimension_values):
+            continue
+        key = (period, *dimension_values)
+        buckets.setdefault(key, set()).add(str(group))
+    return any({target_group, baseline_group}.issubset(groups) for groups in buckets.values())
 
 
 def _aggregate_comparison_rows(
