@@ -94,6 +94,7 @@ class WorkflowState(TypedDict, total=False):
     schema: dict[str, Any]
     sql_text: str
     sql_hash: str
+    row_query_plan: dict[str, Any]
     coverage_interpretation: dict[str, Any]
     evidence: list[dict[str, Any]]
     evidence_brief: dict[str, Any]
@@ -200,6 +201,7 @@ def build_pattern_graph():
         ("repair_analysis_route", _repair_analysis_route),
         ("inspect_schema", _inspect_schema),
         ("validate_runtime_binding", _validate_runtime_binding),
+        ("fetch_runtime_rows", _fetch_runtime_rows),
         ("interpret_data_coverage", _interpret_data_coverage),
         ("execute_capabilities", _execute_capabilities),
         ("reduce_evidence", _reduce_evidence),
@@ -258,6 +260,14 @@ def build_pattern_graph():
     graph.add_conditional_edges(
         "validate_runtime_binding",
         _route_after_runtime_binding,
+        {
+            "valid": "fetch_runtime_rows",
+            "block": "generate_blocked_explanation",
+        },
+    )
+    graph.add_conditional_edges(
+        "fetch_runtime_rows",
+        _route_after_runtime_rows,
         {
             "valid": "interpret_data_coverage",
             "block": "generate_blocked_explanation",
@@ -1057,6 +1067,76 @@ def _validate_runtime_binding(state: WorkflowState) -> WorkflowState:
     return state
 
 
+def _fetch_runtime_rows(state: WorkflowState) -> WorkflowState:
+    _maybe_force_node_failure(state, "fetch_runtime_rows")
+    provider = _runtime_row_provider(state["request"])
+    if provider is None:
+        return state
+    if not provider.configured():
+        state.setdefault("validator_results", []).append(
+            {
+                "validator": "clickhouse_runtime",
+                "ok": False,
+                "reason": provider.binding_reason(),
+            }
+        )
+        return state
+
+    plan = provider.plan(
+        state["request"],
+        state["intent"],
+        tuple(state["compiled_graph"].mutations.accepted_graph),
+    )
+    state["row_query_plan"] = {
+        "sql_text": plan.sql_text,
+        "query_id": plan.query_id,
+        "required_fields": list(plan.required_fields),
+        "dimension_keys": list(plan.dimension_keys),
+    }
+    if plan.sql_text:
+        state["sql_text"] = plan.sql_text
+    state["request"]["required_fields"] = tuple(plan.required_fields)
+
+    result = provider.fetch(plan)
+    if not result.ok:
+        state.setdefault("validator_results", []).append(
+            {
+                "validator": "clickhouse_query",
+                "ok": False,
+                "reason": result.reason,
+                "sql_hash": result.query_hash,
+                "query_id": result.query_id or plan.query_id,
+            }
+        )
+        return state
+
+    rows = [dict(row) for row in result.rows]
+    state["request"]["rows"] = rows
+    state["request"]["runtime_rows_source"] = "clickhouse"
+    state["request"]["joint_dimension_keys"] = tuple(plan.dimension_keys)
+    state["request"]["result_refs"] = tuple(result.result_refs)
+    if result.query_hash:
+        state["sql_hash"] = result.query_hash
+    if state.get("schema") is not None:
+        fields = tuple(rows[0].keys()) if rows else tuple(plan.required_fields)
+        state["schema"] = {
+            **state["schema"],
+            "fields": fields,
+            "row_source": "clickhouse",
+            "query_id": result.query_id or plan.query_id,
+        }
+    state.setdefault("validator_results", []).append(
+        {
+            "validator": "clickhouse_runtime",
+            "ok": True,
+            "reason": "provider_rows_loaded",
+            "sql_hash": result.query_hash,
+            "query_id": result.query_id or plan.query_id,
+        }
+    )
+    return state
+
+
 def _interpret_data_coverage(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "interpret_data_coverage")
     coverage_payload = {
@@ -1128,8 +1208,8 @@ def _data_result_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _execute_capabilities(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "execute_capabilities")
-    rows = state["request"].get("rows") or _default_pattern_rows()
-    query_ref = (state["sql_hash"],)
+    rows = _capability_rows(state)
+    query_ref = _capability_result_refs(state)
     evidence = []
     compiled = state["compiled_graph"]
     capabilities = tuple(compiled.mutations.accepted_graph)
@@ -1344,6 +1424,14 @@ def _reduce_evidence(state: WorkflowState) -> WorkflowState:
         "evidence_refs": [item.get("evidence_ref") for item in state.get("evidence", [])],
     }
     return state
+
+
+def _capability_rows(state: WorkflowState) -> Sequence[Mapping[str, Any]]:
+    return state.get("request", {}).get("rows") or state.get("rows", ()) or _default_pattern_rows()
+
+
+def _capability_result_refs(state: WorkflowState) -> tuple[str, ...]:
+    return tuple(state.get("request", {}).get("result_refs") or (state.get("sql_hash", ""),))
 
 
 def _driver_params(state: WorkflowState) -> dict[str, Any]:
@@ -1810,9 +1898,9 @@ def _execute_joint_attribution(state: WorkflowState) -> WorkflowState:
     evidence.append(
         _evidence_dict(
             joint_attribution(
-                state.get("rows", ()),
+                _capability_rows(state),
                 segment_evidence=segment,
-                result_refs=(state["sql_hash"],),
+                result_refs=_capability_result_refs(state),
                 **_joint_attribution_params(state),
             ),
             state,
@@ -2339,6 +2427,16 @@ def _route_after_runtime_binding(state: WorkflowState) -> str:
     if any(not result.get("ok", True) for result in state.get("validator_results", ())):
         return "block"
     return "valid"
+
+
+def _route_after_runtime_rows(state: WorkflowState) -> str:
+    if any(not result.get("ok", True) for result in state.get("validator_results", ())):
+        return "block"
+    return "valid"
+
+
+def _runtime_row_provider(request: Mapping[str, Any]) -> Any:
+    return request.get("row_provider") or request.get("runtime", {}).get("row_provider")
 
 
 def _local_coverage_block_reason(state: WorkflowState) -> str:

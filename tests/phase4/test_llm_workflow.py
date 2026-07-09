@@ -97,6 +97,112 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("付费金额", text)
         self.assertIn("paid_amount", text)
 
+    def test_workflow_uses_clickhouse_provider_rows_instead_of_default_rows(self):
+        class Provider:
+            def __init__(self):
+                self.planned = False
+                self.fetched = False
+
+            def configured(self):
+                return True
+
+            def binding_reason(self):
+                return ""
+
+            def plan(self, request, intent, accepted_graph):
+                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowPlan
+
+                self.planned = True
+                return RevenueRowPlan(
+                    sql_text=(
+                        "SELECT period, group, sum(amount) AS amount "
+                        "FROM t GROUP BY period, group"
+                    ),
+                    query_id="query-real",
+                    required_fields=("period", "group", "amount"),
+                    dimension_keys=("channel", "payment_method"),
+                )
+
+            def fetch(self, plan):
+                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowsResult
+
+                self.fetched = True
+                return RevenueRowsResult(
+                    ok=True,
+                    rows=(
+                        {
+                            "period": "2026-07-07",
+                            "group": "baseline",
+                            "amount": 100,
+                            "channel": "A",
+                            "payment_method": "M",
+                        },
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "amount": 130,
+                            "channel": "A",
+                            "payment_method": "M",
+                        },
+                    ),
+                    query_hash="hash-real",
+                    query_id="query-real",
+                    result_refs=("hash-real",),
+                )
+
+        provider = Provider()
+        result = run_pattern_workflow(
+            {
+                "run_id": "clickhouse-provider-rows",
+                "llm_client": FakeLLMClient(
+                    {
+                        "analysis_route": {
+                            "requested_nodes": [
+                                "compare_periods",
+                                "joint_attribution",
+                                "answer_verify",
+                            ]
+                        }
+                    }
+                ),
+                "row_provider": provider,
+            }
+        )
+
+        evidence = result.answer_package["sections"][1]["payload"]["evidence"]
+        result_refs = {
+            ref for item in evidence for ref in item.get("result_refs", ())
+        }
+        self.assertEqual(result.status, "draft")
+        self.assertTrue(provider.planned)
+        self.assertTrue(provider.fetched)
+        self.assertIn("hash-real", result_refs)
+
+    def test_workflow_blocks_when_clickhouse_provider_is_unconfigured(self):
+        class Provider:
+            def configured(self):
+                return False
+
+            def binding_reason(self):
+                return "missing_clickhouse_env"
+
+        fake = FakeLLMClient()
+        result = run_pattern_workflow(
+            {
+                "run_id": "clickhouse-provider-missing-env",
+                "llm_client": fake,
+                "row_provider": Provider(),
+            }
+        )
+
+        self.assertEqual(result.status, "draft")
+        self.assertIn("blocked_explanation", fake.calls)
+        self.assertNotIn("data_coverage_interpretation", fake.calls)
+        validators = result.answer_package["admin_audit"]["validator_results"]
+        clickhouse = next(item for item in validators if item["validator"] == "clickhouse_runtime")
+        self.assertFalse(clickhouse["ok"])
+        self.assertEqual(clickhouse["reason"], "missing_clickhouse_env")
+
     def test_boundary_decision_prompt_hides_internal_tokens_from_business_text(self):
         messages = build_prompt("boundary_decision", {"intent": {}}).messages
         text = "\n".join(message["content"] for message in messages)

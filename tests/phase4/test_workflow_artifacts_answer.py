@@ -147,6 +147,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 "accept_analysis_route",
                 "inspect_schema",
                 "validate_runtime_binding",
+                "fetch_runtime_rows",
                 "interpret_data_coverage",
                 "execute_capabilities",
                 "reduce_evidence",
