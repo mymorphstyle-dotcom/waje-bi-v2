@@ -105,8 +105,10 @@ class WorkflowState(TypedDict, total=False):
     draft_claims: list[dict[str, Any]]
     semantic_audit: dict[str, Any]
     verifier: dict[str, Any]
+    retry_context: dict[str, Any]
     final_explanation: dict[str, Any]
     final_business_summary: str
+    final_summary_display_warnings: list[str]
     quality_gate: dict[str, Any]
     follow_up_questions: list[str]
     answer_package: dict[str, Any]
@@ -253,7 +255,14 @@ def build_pattern_graph():
     )
     graph.add_edge("repair_analysis_route", "accept_analysis_route")
     graph.add_edge("inspect_schema", "validate_runtime_binding")
-    graph.add_edge("validate_runtime_binding", "interpret_data_coverage")
+    graph.add_conditional_edges(
+        "validate_runtime_binding",
+        _route_after_runtime_binding,
+        {
+            "valid": "interpret_data_coverage",
+            "block": "generate_blocked_explanation",
+        },
+    )
     graph.add_conditional_edges(
         "interpret_data_coverage",
         _route_after_coverage,
@@ -1045,8 +1054,6 @@ def _validate_runtime_binding(state: WorkflowState) -> WorkflowState:
         },
     ]
     state["validator_results"] = validator_results
-    if not sql_result.ok:
-        raise WorkflowFailure(sql_result.reason, failure_type="sql")
     return state
 
 
@@ -1986,6 +1993,14 @@ def _semantic_audit(state: WorkflowState) -> WorkflowState:
         "wording_boundary": "causal and main-driver wording require explicit supporting evidence",
     }
     state["semantic_audit"] = _invoke_llm(state, "semantic_audit", audit_payload)
+    audit = state["semantic_audit"]
+    status = str(audit.get("audit_status", "")).lower()
+    if status in {"fail", "failed", "needs_revision"} or audit.get("issues"):
+        state["retry_context"] = _retry_context(
+            "semantic_audit",
+            "semantic_audit",
+            audit.get("issues", []) or audit.get("audit_status", ""),
+        )
     return state
 
 
@@ -2006,6 +2021,12 @@ def _hard_verify_answer(state: WorkflowState) -> WorkflowState:
     package = _build_answer_package_from_state(state)
     verifier = package["admin_audit"]["verifier"]
     state["verifier"] = verifier
+    if verifier.get("errors"):
+        state["retry_context"] = _retry_context(
+            "hard_verify_answer",
+            "verifier",
+            verifier.get("errors", []),
+        )
     return state
 
 
@@ -2020,6 +2041,7 @@ def _repair_answer(state: WorkflowState) -> WorkflowState:
             "draft_claims": state["draft_claims"],
             "semantic_audit": state["semantic_audit"],
             "verifier": state.get("verifier", {}),
+            "retry_context": state.get("retry_context", {}),
             "evidence_brief": state["evidence_brief"],
             "answer_context": _answer_synthesis_context(state),
         },
@@ -2233,11 +2255,7 @@ def _final_business_summary(state: WorkflowState) -> WorkflowState:
         state,
     )
     if repair_reasons:
-        raise WorkflowFailure(
-            "final_business_summary_failed_verification:"
-            + ",".join(repair_reasons),
-            failure_type="llm",
-        )
+        state["final_summary_display_warnings"] = repair_reasons
     return state
 
 
@@ -2250,6 +2268,11 @@ def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
         final_answer=state.get("final_business_summary") or state.get("answer_text", ""),
         follow_up_questions=state["follow_up_questions"],
     )
+    if state.get("final_summary_display_warnings"):
+        quality_gate = {
+            **quality_gate,
+            "final_summary_display_warnings": state["final_summary_display_warnings"],
+        }
     if state.get("final_explanation") and not state.get("draft_claims"):
         state["quality_gate"] = {
             **quality_gate,
@@ -2263,12 +2286,6 @@ def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
             ],
         }
         return state
-    if not quality_gate["verified_claim_preserved"] or not quality_gate["business_insight_present"]:
-        raise WorkflowFailure(
-            "answer_quality_gate_failed_verification:"
-            + ",".join(quality_gate.get("issues") or ["unknown_quality_issue"]),
-            failure_type="llm",
-        )
     state["quality_gate"] = quality_gate
     return state
 
@@ -2316,6 +2333,12 @@ def _route_after_coverage(state: WorkflowState) -> str:
     if status == "coverage_gap_but_answerable":
         return "sufficient"
     return "sufficient"
+
+
+def _route_after_runtime_binding(state: WorkflowState) -> str:
+    if any(not result.get("ok", True) for result in state.get("validator_results", ())):
+        return "block"
+    return "valid"
 
 
 def _local_coverage_block_reason(state: WorkflowState) -> str:
@@ -2530,6 +2553,19 @@ def _route_after_semantic_audit(state: WorkflowState) -> str:
             return "sanitize"
         return "degrade"
     return "verify"
+
+
+def _retry_context(failed_node: str, failure_type: str, reason: Any) -> dict[str, Any]:
+    return {
+        "failed_node": failed_node,
+        "failure_type": failure_type,
+        "failure_reason": _compact_failure_reason(reason),
+    }
+
+
+def _compact_failure_reason(reason: Any) -> str:
+    text = json.dumps(to_jsonable(reason), ensure_ascii=False, sort_keys=True)
+    return text[:2000]
 
 
 def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:

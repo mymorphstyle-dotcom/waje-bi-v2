@@ -554,6 +554,13 @@ class LLMWorkflowTest(unittest.TestCase):
             self.assertIn("remove them from answer_text", text)
             self.assertIn("Do not add operational action recommendations", text)
 
+    def test_answer_repair_prompt_uses_retry_context(self):
+        messages = build_prompt("answer_repair", {"answer_context": {}}).messages
+        text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("retry_context", text)
+        self.assertIn("failure_reason", text)
+
     def test_answer_prompts_block_business_reader_metadata_leaks(self):
         for task in ("answer_synthesis", "answer_repair"):
             messages = build_prompt(task, {"answer_context": {}}).messages
@@ -1955,7 +1962,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(blocked_fake.calls.count("blocked_explanation"), 1)
         self.assertIsNone(blocked_result.answer_package)
 
-    def test_final_business_summary_verification_failure_fails_without_local_fallback(self):
+    def test_final_business_summary_verification_failure_records_quality_issues_without_local_fallback(self):
         fake = FakeLLMClient(
             {
                 "final_business_summary": {
@@ -1974,9 +1981,13 @@ class LLMWorkflowTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.status, "draft")
         self.assertIn("final_business_summary", fake.calls)
-        self.assertIsNone(result.answer_package)
+        self.assertIn(
+            "missing_required_summary_markers",
+            result.answer_package["quality_gate"]["final_summary_display_warnings"],
+        )
+        self.assertIn("missing_verified_claim", result.answer_package["quality_gate"]["issues"])
 
     def test_terminal_explanation_rejected_output_fails_without_local_fallback(self):
         degraded_fake = FakeLLMClient(
@@ -3787,6 +3798,61 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(len(summary["claims"]), 1)
         self.assertEqual(summary["claims"][0]["evidence_refs"], ["pattern_scan:intra_period"])
         self.assertEqual(result.answer_package["admin_audit"]["verifier"]["errors"], [])
+
+    def test_answer_repair_receives_semantic_audit_failure_reason(self):
+        fake = FakeLLMClient(
+            {
+                "semantic_audit": {
+                    "audit_status": "needs_revision",
+                    "extracted_claims": [],
+                    "issues": [{"type": "unsupported_claim", "message": "答案声明超出证据"}],
+                }
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {"artifact_root": tmpdir, "run_id": "semantic-retry-reason", "llm_client": fake}
+            )
+
+        payload = _llm_input_payload(result.answer_package, "answer_repair")
+        retry = payload["retry_context"]
+        self.assertEqual(retry["failed_node"], "semantic_audit")
+        self.assertEqual(retry["failure_type"], "semantic_audit")
+        self.assertIn("答案声明超出证据", retry["failure_reason"])
+
+    def test_answer_repair_receives_verifier_failure_reason(self):
+        fake = FakeLLMClient(
+            {
+                "answer_synthesis": {
+                    "answer_text": "这里引用了不存在的证据。",
+                }
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "verifier-retry-reason",
+                    "llm_client": fake,
+                    "draft_claims": [
+                        {
+                            "text": "这里保留了错误数字。",
+                            "evidence_refs": ["pattern_scan:intra_period"],
+                            "numbers": {"median_uplift": 9.9},
+                            "scope": "full_sample",
+                            "time_window": "2024-01..2026-05",
+                        }
+                    ],
+                }
+            )
+
+        payload = _llm_input_payload(result.answer_package, "answer_repair")
+        retry = payload["retry_context"]
+        self.assertEqual(retry["failed_node"], "hard_verify_answer")
+        self.assertEqual(retry["failure_type"], "verifier")
+        self.assertIn("number_mismatch", retry["failure_reason"])
 
     def test_causal_gap_wording_is_weakened_before_verifier(self):
         fake = FakeLLMClient(

@@ -463,6 +463,8 @@ def _task_rules(task: str) -> str:
             "unless the same fact is present in draft_claims or supplied answer_context "
             "key facts. Do not add operational action recommendations unless supplied "
             "evidence explicitly supports the action; use observable follow-up checks instead. "
+            "When retry_context is supplied, use retry_context.failure_reason as the "
+            "primary repair target and explain the corrected boundary in display_summary. "
             "Do not expose raw SQL, internal ids, enum tokens, evidence refs, or provider "
             "metadata in business-reader text."
         ),

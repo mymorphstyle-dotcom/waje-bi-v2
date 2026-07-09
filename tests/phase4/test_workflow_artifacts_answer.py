@@ -317,11 +317,12 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(result.status, "failed")
-        self.assertTrue(
-            result.failure_reason.startswith("final_business_summary_failed_verification:")
+        self.assertEqual(result.status, "draft")
+        self.assertIsNotNone(result.answer_package)
+        self.assertIn(
+            "missing_required_summary_markers",
+            result.answer_package["quality_gate"]["final_summary_display_warnings"],
         )
-        self.assertIsNone(result.answer_package)
 
     def test_final_business_summary_allows_bounded_insight_without_exact_claim_copy(self):
         fake = FakeLLMClient(
@@ -394,11 +395,12 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(result.status, "failed")
-        self.assertTrue(
-            result.failure_reason.startswith("final_business_summary_failed_verification:")
+        self.assertEqual(result.status, "draft")
+        self.assertIsNotNone(result.answer_package)
+        self.assertIn(
+            "unsupported_wording",
+            result.answer_package["quality_gate"]["final_summary_display_warnings"],
         )
-        self.assertIsNone(result.answer_package)
 
     def test_final_business_summary_businessizes_driver_scope_and_labels(self):
         fake = FakeLLMClient(
@@ -675,6 +677,28 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             ],
             [1],
         )
+
+    def test_sql_safety_failure_returns_blocked_answer_with_validator_reason(self):
+        fake = FakeLLMClient()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "sql-safety-blocked-answer",
+                    "llm_client": fake,
+                    "sql_text": "DROP TABLE paid_order_detail",
+                }
+            )
+
+        self.assertEqual(result.status, "draft")
+        self.assertIn("blocked_explanation", fake.calls)
+        self.assertNotIn("data_coverage_interpretation", fake.calls)
+        payload = _llm_input_payload(result.answer_package, "blocked_explanation")
+        failed_validators = [
+            item for item in payload["validator_results"] if not item.get("ok", True)
+        ]
+        self.assertEqual(failed_validators[0]["validator"], "sql_safety")
+        self.assertTrue(failed_validators[0]["reason"])
 
 
 if __name__ == "__main__":
