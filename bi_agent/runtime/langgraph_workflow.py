@@ -2981,19 +2981,51 @@ def _follow_up_questions(state: WorkflowState) -> list[str]:
 
 
 def normalize_final_answer_audit(output: Mapping[str, Any]) -> dict[str, Any]:
+    allowed_hard_blockers = {
+        "permission_leak",
+        "sql_security_failure",
+        "unsupported_main_claim",
+        "verifier_evidence_contradiction",
+    }
+    allowed_warnings = {
+        "claim_paraphrase_drift",
+        "claim_paraphrase_unclear",
+        "missing_business_interpretation",
+        "weak_business_interpretation",
+        "weak_followup",
+        "missing_wording_anchor",
+        "missing_required_summary_markers",
+        "internal_visible_token",
+        "unsupported_wording",
+        "missing_pattern_evidence",
+        "missing_driver_claim",
+        "missing_primary_claim",
+    }
     status = str(output.get("display_status") or "ready_with_warnings")
     if status not in {"ready", "ready_with_warnings", "hard_blocked"}:
         status = "ready_with_warnings"
-    hard_blockers = [str(item) for item in output.get("hard_blockers") or ()]
-    warnings = [str(item) for item in output.get("repairable_warnings") or ()]
+    hard_blockers = [
+        code
+        for code in dict.fromkeys(str(item) for item in output.get("hard_blockers") or ())
+        if code in allowed_hard_blockers
+    ]
+    warnings = [
+        code
+        for code in dict.fromkeys(str(item) for item in output.get("repairable_warnings") or ())
+        if code in allowed_warnings
+    ]
     audit = {
         "display_status": status,
-        "blocks_display": status == "hard_blocked" or bool(hard_blockers),
+        "blocks_display": bool(hard_blockers),
         "hard_blockers": hard_blockers,
         "repairable_warnings": warnings,
         "retry_instruction": str(output.get("retry_instruction") or ""),
         "business_audit_summary": str(output.get("business_audit_summary") or ""),
     }
+    if audit["display_status"] == "hard_blocked" and not audit["hard_blockers"]:
+        audit["display_status"] = "ready_with_warnings" if audit["repairable_warnings"] else "ready"
+    if audit["display_status"] == "ready_with_warnings" and not audit["repairable_warnings"]:
+        audit["display_status"] = "ready"
     if not audit["blocks_display"] and audit["repairable_warnings"] and audit["display_status"] == "ready":
         audit["display_status"] = "ready_with_warnings"
     return audit
@@ -3099,7 +3131,18 @@ def _local_final_answer_hard_blockers(state: WorkflowState) -> list[str]:
     verifier_errors = state.get("verifier", {}).get("errors") or ()
     if verifier_errors:
         blockers.append("verifier_evidence_contradiction")
-        if state.get("draft_claims"):
+        unsupported_main_claim_codes = {
+            "missing_evidence_ref",
+            "strong_claim_without_supported_wording",
+            "number_mismatch",
+            "scope_mismatch",
+            "time_window_mismatch",
+            "window_mismatch",
+        }
+        if any(
+            isinstance(item, Mapping) and item.get("code") in unsupported_main_claim_codes
+            for item in verifier_errors
+        ):
             blockers.append("unsupported_main_claim")
     return blockers
 
