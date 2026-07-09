@@ -7,6 +7,8 @@ from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.langgraph_workflow import (
     _available_fields_for_contract_diagnostics,
     _contract_gap_diagnostics_from_state,
+    _ensure_blocked_boundary_audit,
+    _local_coverage_block_reason,
     run_pattern_workflow,
 )
 from bi_agent.runtime.artifacts import filter_artifact_for_role
@@ -798,6 +800,55 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         ]
         self.assertEqual(failed_validators[0]["validator"], "sql_safety")
         self.assertTrue(failed_validators[0]["reason"])
+
+    def test_blocked_validator_audit_uses_validator_boundary_over_coverage(self):
+        state = {
+            "run_id": "blocked-validator-audit",
+            "intent": {"scope": "full_sample", "time_window": "2026-01..2026-06"},
+            "validator_results": [
+                {"validator": "permission", "ok": False, "reason": "当前聚合结果受权限限制，不能发布主业务结论。"}
+            ],
+            "coverage_interpretation": {
+                "coverage_status": "blocked",
+                "business_impact": "当前查询没有返回可分析数据",
+                "decision_summary": "本地覆盖检查发现硬边界，不能发布主业务结论。",
+                "local_block_reason": "no_rows",
+            },
+            "evidence": [],
+            "draft_claims": [],
+            "sql_hash": "hash-blocked-validator",
+        }
+
+        _ensure_blocked_boundary_audit(state)
+
+        self.assertEqual(len(state["evidence"]), 1)
+        self.assertEqual(len(state["draft_claims"]), 1)
+        evidence = state["evidence"][0]
+        claim = state["draft_claims"][0]
+        self.assertIn(":validator", evidence["evidence_ref"])
+        self.assertEqual(evidence["typed_payload"]["boundary_type"], "validator")
+        self.assertNotIn("coverage_block", evidence["evidence_ref"])
+        self.assertNotIn("no_rows", evidence["limitations"])
+        self.assertNotIn("数据覆盖不足", claim["text"])
+        self.assertNotIn("没有返回可分析数据", claim["text"])
+        self.assertIn("运行时校验边界", claim["text"])
+
+    def test_local_coverage_block_reason_ignores_failed_validators(self):
+        reason = _local_coverage_block_reason(
+            {
+                "validator_results": [
+                    {"validator": "permission", "ok": False, "reason": "aggregate_only_denied"}
+                ],
+                "request": {
+                    "rows": [
+                        {"period": "2026-07-01", "group": "target", "amount": 100},
+                    ],
+                    "required_fields": ("period", "group", "amount"),
+                },
+            }
+        )
+
+        self.assertEqual(reason, "")
 
     def test_blocked_explanation_payload_receives_contract_gap_diagnostics(self):
         fake = FakeLLMClient(

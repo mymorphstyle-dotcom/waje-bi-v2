@@ -2213,9 +2213,9 @@ def _generate_blocked_explanation(state: WorkflowState) -> WorkflowState:
 
 def _ensure_blocked_boundary_audit(state: WorkflowState) -> None:
     for evidence, claim_builder in (
-        (_blocked_coverage_evidence(state), _blocked_coverage_claim),
         (_blocked_contract_gap_evidence(state), _blocked_contract_gap_claim),
         (_blocked_validator_boundary_evidence(state), _blocked_validator_boundary_claim),
+        (_blocked_coverage_evidence(state), _blocked_coverage_claim),
     ):
         if not evidence:
             continue
@@ -2589,9 +2589,6 @@ def _runtime_row_provider(request: Mapping[str, Any]) -> Any:
 
 
 def _local_coverage_block_reason(state: WorkflowState) -> str:
-    for result in state.get("validator_results", ()):
-        if not result.get("ok", True):
-            return str(result.get("validator") or "validator_failed")
     rows = _coverage_rows_for_local_check(state)
     if not rows:
         return "no_rows"
