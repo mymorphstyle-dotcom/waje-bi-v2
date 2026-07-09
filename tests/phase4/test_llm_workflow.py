@@ -3044,7 +3044,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("compare_periods", nodes)
         self.assertIn("answer_verify", nodes)
 
-    def test_weekly_grain_correction_without_weekday_target_uses_period_compare(self):
+    def test_weekly_grain_without_weekday_target_preserves_llm_choice(self):
         fake = FakeLLMClient(
             {
                 "business_intent": {
@@ -3085,11 +3085,10 @@ class LLMWorkflowTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(result.status, "draft")
-        self.assertIn("compare_periods", result.answer_package["accepted_graph"])
-        errors = result.answer_package["admin_audit"]["verifier"].get("errors", [])
-        self.assertFalse(
-            any("target_weekday" in str(error) for error in errors)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(
+            result.failure_reason,
+            "target_weekday or target_weekdays is required for weekly patterns",
         )
 
     def test_business_intent_preserves_llm_pattern_params(self):
@@ -3170,7 +3169,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(state["intent"]["ambiguous_slots"], [])
         self.assertEqual(state["intent"]["secondary_question_families"], [])
 
-    def test_business_intent_normalizes_none_pattern_family_to_custom_baseline_for_period_recompare(self):
+    def test_business_intent_normalizes_none_pattern_family_to_intra_period(self):
         fake = FakeLLMClient(
             {
                 "business_intent": {
@@ -3188,7 +3187,7 @@ class LLMWorkflowTest(unittest.TestCase):
 
         _understand_business_intent(state)
 
-        self.assertEqual(state["intent"]["pattern_family"], "custom_baseline")
+        self.assertEqual(state["intent"]["pattern_family"], "intra_period")
 
     def test_business_intent_normalizes_unsupported_pattern_family_to_intra_period(self):
         fake = FakeLLMClient(
@@ -3202,6 +3201,30 @@ class LLMWorkflowTest(unittest.TestCase):
         state = {
             "request": {"question": "最近付费金额走势怎么样？"},
             "run_id": "intent-pattern-family-unsupported",
+            "llm_client": fake,
+            "llm_calls": [],
+        }
+
+        _understand_business_intent(state)
+
+        self.assertEqual(state["intent"]["pattern_family"], "intra_period")
+
+    def test_business_intent_does_not_infer_custom_baseline_from_carried_context(self):
+        fake = FakeLLMClient(
+            {
+                "business_intent": {
+                    "question_family": "custom_baseline_comparison",
+                    "pattern_family": "surprise_mode",
+                    "baseline": {"label": "Q1"},
+                    "target": {"label": "Q2"},
+                }
+            }
+        )
+        state = {
+            "request": {
+                "question": "2026年Q2相比Q1，付费金额变化了多少？",
+            },
+            "run_id": "intent-pattern-family-carried-context",
             "llm_client": fake,
             "llm_calls": [],
         }

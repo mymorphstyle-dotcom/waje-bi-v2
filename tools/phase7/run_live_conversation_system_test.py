@@ -128,7 +128,7 @@ def _expectation_review(
     claim_review = _claim_evidence_review(
         effective_result.get("answer_package") or {},
         manifest if isinstance(manifest, dict) else {},
-        requires_claims=bool(expect.get("final_answer_contains")),
+        requires_claims=_expectation_requires_claims(expect),
     )
     manifest_can_support_claims = bool(manifest.get("can_support_claims")) if isinstance(manifest, dict) else False
     claim_support_ok = manifest_present and manifest_can_support_claims and claim_review["passed"]
@@ -176,6 +176,14 @@ def _expectation_review(
             and not missing_hard_boundary_text
         ),
     }
+
+
+def _expectation_requires_claims(expect: dict[str, Any]) -> bool:
+    return bool(
+        expect.get("final_answer_contains")
+        or expect.get("hard_boundary_final_answer_contains")
+        or expect.get("answer_boundary")
+    )
 
 
 def _topic_relation_matches(expected: str | None, actual: str) -> bool:

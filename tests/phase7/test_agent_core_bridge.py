@@ -1042,6 +1042,44 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertTrue(review["claim_support_policy_passed"])
         self.assertTrue(review["passed"])
 
+    def test_expectation_review_requires_claims_for_hard_boundary_only_case(self):
+        from tools.phase7.run_live_conversation_system_test import _expectation_review
+
+        review = _expectation_review(
+            {"expect": {"hard_boundary_final_answer_contains": ["不能直接说"]}},
+            {"intent": "challenge", "topic_relation": "inherit_current"},
+            {
+                "intent": "challenge",
+                "topic_relation": "inherit_current",
+                "answer_package": {
+                    "sections": [
+                        {
+                            "payload": {
+                                "answer_text": "现在只能说不能直接说活动已经证明有效。",
+                            }
+                        }
+                    ]
+                },
+                "context_manifest": {
+                    "manifest_id": "context-1",
+                    "can_support_claims": True,
+                    "items": [
+                        {
+                            "source_type": "evidence",
+                            "source_ref": "evidence:baseline-1",
+                            "can_support_claims": True,
+                            "claim_use": "evidence",
+                        }
+                    ],
+                },
+            },
+            [],
+        )
+
+        self.assertEqual(review["claim_evidence_review"]["claim_count"], 0)
+        self.assertFalse(review["claim_support_policy_passed"])
+        self.assertFalse(review["passed"])
+
     def test_live_harness_uses_fresh_thread_for_each_case_run(self):
         from tools.phase7.run_live_conversation_system_test import _case_thread_id
 

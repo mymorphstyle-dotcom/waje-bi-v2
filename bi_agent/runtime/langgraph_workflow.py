@@ -394,17 +394,7 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         output = _invoke_llm(state, "business_intent", intent_payload)
     except Exception as exc:
         output = _local_business_intent_fallback(state, intent_payload, exc)
-    pattern_family = _normalize_pattern_family(
-        request.get("pattern_family") or output.get("pattern_family") or "intra_period",
-        {
-            **request,
-            "question_family": output.get("question_family"),
-            "primary_question_family": output.get("primary_question_family"),
-            "question_families": output.get("question_families"),
-            "baseline": request.get("baseline") or output.get("baseline") or {},
-            "target": request.get("target") or output.get("target") or {},
-        },
-    )
+    pattern_family = _normalize_pattern_family(output.get("pattern_family"), request)
     state["intent"] = _normalize_question_families({
         "question_family": output.get("question_family") or "pattern_explanation",
         "target_metric": _normalize_target_metric(
@@ -611,19 +601,6 @@ def _normalize_target_metric(metric: Any) -> str:
 
 
 def _normalize_pattern_family(pattern_family: Any, request: Mapping[str, Any]) -> str:
-    value = str(pattern_family or "").strip().lower()
-    params = dict(request.get("pattern_params", {}) or {})
-    question = str(request.get("question") or "")
-    question_family = str(
-        request.get("primary_question_family")
-        or request.get("question_family")
-        or ""
-    )
-    question_families = {
-        str(item)
-        for item in (request.get("question_families") or ())
-        if item
-    }
     supported = {
         "intra_period",
         "weekly",
@@ -632,32 +609,12 @@ def _normalize_pattern_family(pattern_family: Any, request: Mapping[str, Any]) -
         "lag_recovery",
         "custom_baseline",
     }
-    baseline = request.get("baseline")
-    target = request.get("target")
-    has_weekday_target = bool(
-        params.get("target_weekday")
-        or params.get("target_weekdays")
-        or params.get("baseline_weekday")
-        or params.get("baseline_weekdays")
-    )
+    request_value = str(request.get("pattern_family") or "").strip().lower()
+    if request_value in supported:
+        return request_value
+    value = str(pattern_family or "").strip().lower()
     if value in supported:
-        if (
-            value == "weekly"
-            and not has_weekday_target
-            and _business_text_requests_period_recompare(question)
-        ):
-            return "custom_baseline"
         return value
-    if has_weekday_target or "周末" in question:
-        return "weekly"
-    if (
-        question_family == "custom_baseline_comparison"
-        or "custom_baseline_comparison" in question_families
-        or baseline
-        or target
-        or _business_text_requests_period_recompare(question)
-    ):
-        return "custom_baseline"
     return "intra_period"
 
 
