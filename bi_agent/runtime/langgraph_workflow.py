@@ -2213,8 +2213,8 @@ def _generate_blocked_explanation(state: WorkflowState) -> WorkflowState:
 
 def _ensure_blocked_boundary_audit(state: WorkflowState) -> None:
     for evidence, claim_builder in (
-        (_blocked_contract_gap_evidence(state), _blocked_contract_gap_claim),
         (_blocked_validator_boundary_evidence(state), _blocked_validator_boundary_claim),
+        (_blocked_contract_gap_evidence(state), _blocked_contract_gap_claim),
         (_blocked_coverage_evidence(state), _blocked_coverage_claim),
     ):
         if not evidence:

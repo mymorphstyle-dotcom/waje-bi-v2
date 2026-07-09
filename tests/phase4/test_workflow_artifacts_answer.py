@@ -833,6 +833,40 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertNotIn("没有返回可分析数据", claim["text"])
         self.assertIn("运行时校验边界", claim["text"])
 
+    def test_blocked_validator_audit_uses_validator_boundary_over_contract_gap(self):
+        state = {
+            "run_id": "blocked-validator-contract-gap-audit",
+            "intent": {"scope": "full_sample", "time_window": "2026-01..2026-06"},
+            "validator_results": [
+                {"validator": "sql_safety", "ok": False, "reason": "当前 SQL 不满足安全要求，不能继续执行。"}
+            ],
+            "contract_gap_diagnostics": [
+                {
+                    "gap_id": "paid_amount.event_window",
+                    "status": "unsupported_grain",
+                    "claim_effect": "block_main_conclusion",
+                    "owner": "contracts",
+                    "repair_path": "contract_upgrade",
+                }
+            ],
+            "evidence": [],
+            "draft_claims": [],
+            "sql_hash": "hash-blocked-validator-contract-gap",
+        }
+
+        _ensure_blocked_boundary_audit(state)
+
+        self.assertEqual(len(state["evidence"]), 1)
+        self.assertEqual(len(state["draft_claims"]), 1)
+        evidence = state["evidence"][0]
+        claim = state["draft_claims"][0]
+        self.assertIn(":validator", evidence["evidence_ref"])
+        self.assertEqual(evidence["typed_payload"]["boundary_type"], "validator")
+        self.assertEqual(evidence["limitations"], ["sql_safety"])
+        self.assertNotIn(":contract_gap", evidence["evidence_ref"])
+        self.assertIn("运行时校验边界", claim["text"])
+        self.assertNotIn("合同缺口", claim["text"])
+
     def test_local_coverage_block_reason_ignores_failed_validators(self):
         reason = _local_coverage_block_reason(
             {
