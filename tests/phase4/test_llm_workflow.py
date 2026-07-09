@@ -23,6 +23,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _final_summary_has_unsupported_wording,
     _final_summary_has_unsupported_material_claim,
     _final_summary_needs_display_repair,
+    _legacy_quality_with_final_answer_audit,
     _local_coverage_answerable_reason,
     _infer_question_families_from_requested_nodes,
     _normalize_evidence_interpretation_output,
@@ -4013,7 +4014,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("compare_periods", nodes)
         self.assertIn("answer_verify", nodes)
 
-    def test_weekly_grain_without_weekday_target_preserves_llm_choice(self):
+    def test_weekly_grain_without_weekday_target_repairs_to_rolling(self):
         fake = FakeLLMClient(
             {
                 "business_intent": {
@@ -4034,31 +4035,25 @@ class LLMWorkflowTest(unittest.TestCase):
             }
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "weekly-grain-period-compare",
-                    "llm_client": fake,
-                    "question": "口径改成按周看，还一样吗？",
-                    "rows": [
-                        {"period": "2026-W01", "group": "baseline", "amount": 100},
-                        {"period": "2026-W02", "group": "target", "amount": 120},
-                    ],
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                    },
-                }
-            )
+        state = {
+            "request": {
+                "question": "口径改成按周看，还一样吗？",
+                "pattern_params": {
+                    "period_key": "period",
+                    "group_key": "group",
+                    "target_group": "target",
+                    "baseline_group": "baseline",
+                },
+            },
+            "run_id": "weekly-grain-period-compare",
+            "llm_client": fake,
+            "llm_calls": [],
+        }
 
-        self.assertEqual(result.status, "failed")
-        self.assertEqual(
-            result.failure_reason,
-            "target_weekday or target_weekdays is required for weekly patterns",
-        )
+        _understand_business_intent(state)
+
+        self.assertEqual(state["intent"]["pattern_family"], "rolling")
+        self.assertNotIn("target_weekdays", state["intent"]["pattern_params"])
 
     def test_business_intent_preserves_llm_pattern_params(self):
         fake = FakeLLMClient(
@@ -5599,6 +5594,79 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertFalse(quality["verified_claim_preserved"])
         self.assertIn("missing_verified_claim", quality["issues"])
 
+    def test_quality_gate_accepts_paraphrased_insufficient_claim(self):
+        quality = evaluate_answer_quality(
+            user_question="昨天收入变化最大的是哪个维度？",
+            verified_claims=[
+                {
+                    "text": "当前证据不足以支撑主业务结论；主要限制是数据字段缺失、可比周期不足。",
+                    "numbers": {},
+                    "claim_strength": "insufficient",
+                }
+            ],
+            final_answer=(
+                "最终结论：当前证据不足，无法确认收入变化最大的维度和因子；"
+                "主要限制包括包名和玩法字段缺失、可比周期不足。"
+                "当前证据能把排查方向收敛到数据补齐。"
+            ),
+            follow_up_questions=[
+                "要先补哪些字段？",
+                "要复核可比周期吗？",
+                "要看已有维度覆盖吗？",
+            ],
+        )
+
+        self.assertTrue(quality["verified_claim_preserved"])
+        self.assertNotIn("missing_verified_claim", quality["issues"])
+
+    def test_quality_gate_accepts_insufficient_claim_with_unsupported_conclusion_wording(self):
+        quality = evaluate_answer_quality(
+            user_question="昨天活动是否影响了付费金额？",
+            verified_claims=[
+                {
+                    "text": "当前证据不足以支撑主业务结论；主要限制是变化幅度低于当前重要性阈值。",
+                    "numbers": {},
+                    "claim_strength": "insufficient",
+                }
+            ],
+            final_answer=(
+                "最终结论：根据现有证据，无法支持活动影响付费金额的结论；"
+                "主要限制包括变化幅度低于当前重要性阈值。"
+            ),
+            follow_up_questions=[
+                "要补活动记录吗？",
+                "要扩大对比窗口吗？",
+                "要看渠道分层吗？",
+            ],
+        )
+
+        self.assertTrue(quality["verified_claim_preserved"])
+        self.assertNotIn("missing_verified_claim", quality["issues"])
+
+    def test_quality_gate_accepts_generic_evidence_strength_limitation(self):
+        quality = evaluate_answer_quality(
+            user_question="昨天收入变化最大的是哪个维度？",
+            verified_claims=[
+                {
+                    "text": "当前证据不足以支撑主业务结论；主要限制是当前证据强度不足。",
+                    "numbers": {},
+                    "claim_strength": "insufficient",
+                }
+            ],
+            final_answer=(
+                "最终结论：基于当前证据，无法得出昨天收入变化的确定原因。"
+                "现有证据强度不足以支撑主业务结论。"
+            ),
+            follow_up_questions=[
+                "要先补哪些字段？",
+                "要复核可比周期吗？",
+                "要看已有维度覆盖吗？",
+            ],
+        )
+
+        self.assertTrue(quality["verified_claim_preserved"])
+        self.assertNotIn("missing_verified_claim", quality["issues"])
+
     def test_quality_gate_accepts_business_paraphrase_with_claim_numbers(self):
         quality = evaluate_answer_quality(
             user_question="Q2 相比 Q1 付费金额为什么变了？",
@@ -5622,6 +5690,48 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertTrue(quality["verified_claim_preserved"])
         self.assertNotIn("missing_verified_claim", quality["issues"])
+
+    def test_llm_final_audit_can_clear_local_missing_business_insight_warning(self):
+        quality = _legacy_quality_with_final_answer_audit(
+            {
+                "direct_answer": True,
+                "has_verified_claims": True,
+                "verified_claim_preserved": True,
+                "business_insight_present": False,
+                "followups_one_intent": True,
+                "issues": ["missing_business_insight"],
+            },
+            {
+                "display_status": "ready",
+                "hard_blockers": [],
+                "repairable_warnings": [],
+                "blocks_display": False,
+            },
+        )
+
+        self.assertTrue(quality["business_insight_present"])
+        self.assertNotIn("missing_business_insight", quality["issues"])
+
+    def test_llm_final_audit_keeps_business_insight_warning_when_audit_flags_it(self):
+        quality = _legacy_quality_with_final_answer_audit(
+            {
+                "direct_answer": True,
+                "has_verified_claims": True,
+                "verified_claim_preserved": True,
+                "business_insight_present": False,
+                "followups_one_intent": True,
+                "issues": ["missing_business_insight"],
+            },
+            {
+                "display_status": "ready_with_warnings",
+                "hard_blockers": [],
+                "repairable_warnings": ["weak_business_interpretation"],
+                "blocks_display": False,
+            },
+        )
+
+        self.assertFalse(quality["business_insight_present"])
+        self.assertIn("missing_business_insight", quality["issues"])
 
 
 if __name__ == "__main__":

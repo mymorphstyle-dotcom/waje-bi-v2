@@ -398,6 +398,11 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
     except Exception as exc:
         output = _local_business_intent_fallback(state, intent_payload, exc)
     pattern_family = _normalize_pattern_family(output.get("pattern_family"), request)
+    pattern_params = _normalize_pattern_params(request, output, pattern_family)
+    pattern_family, pattern_params = _repair_pattern_family_and_params(
+        pattern_family,
+        pattern_params,
+    )
     state["intent"] = _normalize_question_families({
         "question_family": output.get("question_family") or "pattern_explanation",
         "target_metric": _normalize_target_metric(
@@ -406,7 +411,7 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
             or "paid_amount"
         ),
         "pattern_family": pattern_family,
-        "pattern_params": _normalize_pattern_params(request, output, pattern_family),
+        "pattern_params": pattern_params,
         "scope": _normalize_scope(
             request.get("scope") or output.get("scope") or "full_sample"
         ),
@@ -642,6 +647,23 @@ def _normalize_pattern_params(
     if pattern_family == "intra_period" and "月初" in question:
         params.setdefault("target_phase", "start")
     return params
+
+
+def _repair_pattern_family_and_params(
+    pattern_family: str,
+    pattern_params: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    params = dict(pattern_params)
+    if pattern_family == "weekly" and not _weekly_pattern_has_weekday_target(params):
+        return "rolling", params
+    return pattern_family, params
+
+
+def _weekly_pattern_has_weekday_target(pattern_params: Mapping[str, Any]) -> bool:
+    return bool(
+        pattern_params.get("target_weekdays")
+        or pattern_params.get("target_weekday")
+    )
 
 
 def _empty_business_context_value(value: Any) -> bool:
@@ -3109,6 +3131,10 @@ def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
         )
 
     state["final_answer_audit"] = final_answer_audit
+    legacy_quality_gate = _legacy_quality_with_final_answer_audit(
+        legacy_quality_gate,
+        final_answer_audit,
+    )
     state["quality_gate"] = {
         **legacy_quality_gate,
         "display_status": final_answer_audit["display_status"],
@@ -3127,6 +3153,27 @@ def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
         ),
     }
     return state
+
+
+def _legacy_quality_with_final_answer_audit(
+    legacy_quality_gate: Mapping[str, Any],
+    final_answer_audit: Mapping[str, Any],
+) -> dict[str, Any]:
+    quality = {
+        **dict(legacy_quality_gate),
+        "issues": list(legacy_quality_gate.get("issues", [])),
+    }
+    if (
+        final_answer_audit.get("display_status") == "ready"
+        and not final_answer_audit.get("blocks_display")
+        and not final_answer_audit.get("hard_blockers")
+        and not final_answer_audit.get("repairable_warnings")
+    ):
+        quality["business_insight_present"] = True
+        quality["issues"] = [
+            issue for issue in quality["issues"] if issue != "missing_business_insight"
+        ]
+    return quality
 
 
 def _persist_artifact(state: WorkflowState) -> WorkflowState:
@@ -3649,10 +3696,75 @@ def _verified_claim_preserved_in_answer(claim: Mapping[str, Any], answer: str) -
     text = str(claim.get("text") or "").strip()
     if text and text in answer:
         return True
+    if _insufficient_claim_preserved_in_answer(claim, answer):
+        return True
     numbers = claim.get("numbers")
     if not isinstance(numbers, Mapping) or not numbers:
         return False
     return all(_number_value_present(value, answer) for value in numbers.values())
+
+
+def _insufficient_claim_preserved_in_answer(claim: Mapping[str, Any], answer: str) -> bool:
+    strength = str(claim.get("claim_strength") or "").lower()
+    if strength not in {"insufficient", "degraded", "blocked"}:
+        return False
+    if not any(
+        marker in answer
+        for marker in (
+            "证据不足",
+            "证据不充分",
+            "证据强度不足",
+            "无法支持",
+            "无法支撑",
+            "不能支撑",
+            "不足以支撑",
+            "无法确认",
+            "无法判断",
+            "不能发布主业务结论",
+            "无法得出",
+            "无法进行归因",
+            "无法评估",
+        )
+    ):
+        return False
+    limitation_terms = _insufficient_claim_limitation_terms(claim)
+    if not limitation_terms:
+        return True
+    if any(term in answer for term in limitation_terms):
+        return True
+    non_generic_terms = [
+        term for term in limitation_terms if not _generic_insufficient_limitation_term(term)
+    ]
+    return not non_generic_terms
+
+
+def _insufficient_claim_limitation_terms(claim: Mapping[str, Any]) -> tuple[str, ...]:
+    text_terms = _insufficient_claim_text_limitation_terms(str(claim.get("text") or ""))
+    if text_terms:
+        return text_terms
+
+    explicit = claim.get("limitations")
+    if isinstance(explicit, Sequence) and not isinstance(explicit, (str, bytes)):
+        terms = [str(item).strip() for item in explicit if str(item).strip()]
+        if terms:
+            return tuple(terms)
+
+    return ()
+
+
+def _insufficient_claim_text_limitation_terms(text: str) -> tuple[str, ...]:
+    for marker in ("主要限制是", "主要限制包括", "限制是", "限制包括"):
+        if marker not in text:
+            continue
+        tail = text.split(marker, 1)[1]
+        tail = re.split(r"[。；;]", tail, 1)[0]
+        terms = [item.strip() for item in re.split(r"[、,，]", tail) if item.strip()]
+        return tuple(term for term in terms if len(term) >= 2)
+    return ()
+
+
+def _generic_insufficient_limitation_term(term: str) -> bool:
+    return "证据" in term and any(marker in term for marker in ("不足", "不充分", "不够"))
 
 
 def _number_value_present(value: Any, answer: str) -> bool:
