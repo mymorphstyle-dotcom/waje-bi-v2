@@ -2676,20 +2676,20 @@ def _contract_gap_diagnostics_from_state(
     if not isinstance(row_shapes, Sequence) or isinstance(row_shapes, (str, bytes)):
         return ()
 
-    contract_gaps: list[str] = []
+    contract_gaps: list[Any] = []
     for row_shape in row_shapes:
         if not isinstance(row_shape, Mapping):
             continue
         gaps = row_shape.get("contract_gaps") or ()
         if isinstance(gaps, Sequence) and not isinstance(gaps, (str, bytes)):
-            contract_gaps.extend(str(gap) for gap in gaps if gap)
+            contract_gaps.extend(gap for gap in gaps if gap)
     if not contract_gaps:
         return ()
 
     available_fields = _available_fields_for_contract_diagnostics(state)
     contract_fields = _contract_fields_for_contract_diagnostics(request)
     return diagnose_contract_gaps(
-        contract_gaps=tuple(dict.fromkeys(contract_gaps)),
+        contract_gaps=tuple(contract_gaps),
         available_fields=available_fields,
         contract_fields=contract_fields,
         permission_denied_fields=request.get("permission_denied_fields", ()),
@@ -2700,6 +2700,16 @@ def _contract_gap_diagnostics_from_state(
 def _available_fields_for_contract_diagnostics(state: WorkflowState) -> tuple[str, ...]:
     request = state.get("request", {})
     available_fields: list[str] = []
+    for source in (
+        request.get("available_fields"),
+        request.get("schema_fields"),
+        request.get("clickhouse_schema_fields"),
+    ):
+        if isinstance(source, Sequence) and not isinstance(source, (str, bytes)):
+            for field in source:
+                value = str(field)
+                if value and value not in available_fields:
+                    available_fields.append(value)
     schema = state.get("schema") or {}
     schema_fields = schema.get("fields") or ()
     if isinstance(schema_fields, Sequence) and not isinstance(schema_fields, (str, bytes)):
@@ -2707,15 +2717,6 @@ def _available_fields_for_contract_diagnostics(state: WorkflowState) -> tuple[st
             value = str(field)
             if value and value not in available_fields:
                 available_fields.append(value)
-    rows = request.get("rows") or ()
-    if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
-        for row in rows:
-            if not isinstance(row, Mapping):
-                continue
-            for field in row.keys():
-                value = str(field)
-                if value and value not in available_fields:
-                    available_fields.append(value)
     return tuple(available_fields)
 
 

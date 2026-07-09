@@ -4,23 +4,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 
-GAP_FIELD_HINTS: dict[str, tuple[str, ...]] = {
-    "payment_status_contract_missing": ("payment_status", "pay_status", "status"),
-    "duplicate_order_contract_missing": ("order_id", "payment_order_id"),
-    "high_value_user_contract_missing": (
-        "user_id",
-        "high_value_amount",
-        "high_value_paid_users",
-        "value_percentile",
-    ),
-    "gameplay_contract_missing": ("gameplay_id", "gameplay", "play_mode"),
-    "event_context_contract_missing": ("event_id", "event_time", "campaign_id"),
-}
-
-
 def diagnose_contract_gaps(
     *,
-    contract_gaps: Iterable[str],
+    contract_gaps: Iterable[str | Mapping[str, Any]],
     available_fields: Iterable[str],
     contract_fields: Iterable[str],
     permission_denied_fields: Iterable[str],
@@ -30,16 +16,25 @@ def diagnose_contract_gaps(
     contracted = {str(field) for field in contract_fields if field}
     denied = {str(field) for field in permission_denied_fields if field}
     unsupported = {str(field) for field in unsupported_grains if field}
-    return tuple(
-        _diagnose_gap(
-            gap_id=str(gap_id),
-            available=available,
-            contracted=contracted,
-            denied=denied,
-            unsupported=unsupported,
+    diagnostics: list[dict[str, Any]] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for gap in contract_gaps:
+        gap_id, fields = _normalize_gap_descriptor(gap)
+        key = (gap_id, fields)
+        if key in seen:
+            continue
+        seen.add(key)
+        diagnostics.append(
+            _diagnose_gap(
+                gap_id=gap_id,
+                fields=fields,
+                available=available,
+                contracted=contracted,
+                denied=denied,
+                unsupported=unsupported,
+            )
         )
-        for gap_id in contract_gaps
-    )
+    return tuple(diagnostics)
 
 
 def contract_fields_from_records(records: Any) -> tuple[str, ...]:
@@ -69,23 +64,40 @@ def contract_fields_from_records(records: Any) -> tuple[str, ...]:
 def _diagnose_gap(
     *,
     gap_id: str,
+    fields: tuple[str, ...],
     available: set[str],
     contracted: set[str],
     denied: set[str],
     unsupported: set[str],
 ) -> dict[str, Any]:
-    fields = GAP_FIELD_HINTS.get(gap_id, ())
+    if not fields:
+        return _item(
+            gap_id=gap_id,
+            status="unknown",
+            data_presence="field_unknown",
+            contract_presence="unknown",
+            owner="运行时 owner",
+            repair_path="补充 gap 字段元数据，或检查 schema probe、合同注册和权限绑定是否完整。",
+            claim_effect="degrade_claim_strength",
+        )
+
     present = tuple(field for field in fields if field in available)
     covered = tuple(field for field in fields if field in contracted)
     denied_fields = tuple(field for field in fields if field in denied)
     unsupported_fields = tuple(field for field in fields if field in unsupported)
+    data_presence = "field_present" if len(present) == len(fields) else "field_missing"
+    contract_presence = (
+        "present"
+        if len(covered) == len(fields)
+        else "partial" if covered else "missing"
+    )
 
     if denied_fields:
         return _item(
             gap_id=gap_id,
             status="permission_blocked",
-            data_presence="field_present" if present else "field_unknown",
-            contract_presence="present" if covered else "missing",
+            data_presence=data_presence,
+            contract_presence=contract_presence,
             owner="权限或安全策略 owner",
             repair_path="使用允许的聚合粒度，或由权限 owner 开放对应聚合输出。",
             claim_effect="block_sensitive_detail_claim",
@@ -94,13 +106,23 @@ def _diagnose_gap(
         return _item(
             gap_id=gap_id,
             status="unsupported_grain",
-            data_presence="field_present" if present else "field_unknown",
-            contract_presence="present" if covered else "partial",
+            data_presence=data_presence,
+            contract_presence=contract_presence,
             owner="语义合同 owner",
             repair_path="补充该字段支持的聚合粒度、稀疏阈值和可展示范围。",
             claim_effect="degrade_to_supported_grain",
         )
-    if present and not covered:
+    if len(present) < len(fields):
+        return _item(
+            gap_id=gap_id,
+            status="data_absent",
+            data_presence="field_missing",
+            contract_presence=contract_presence,
+            owner="数据工程 owner",
+            repair_path="补数据字段或接入对应事实表，再补语义合同绑定。",
+            claim_effect="block_dependent_claim",
+        )
+    if not covered:
         return _item(
             gap_id=gap_id,
             status="contract_absent",
@@ -110,7 +132,7 @@ def _diagnose_gap(
             repair_path="补语义合同，声明口径、粒度、刷新规则和可支持 claim。",
             claim_effect="degrade_claim_strength",
         )
-    if present and covered and len(covered) < len(fields):
+    if len(covered) < len(fields):
         return _item(
             gap_id=gap_id,
             status="contract_partial",
@@ -120,25 +142,36 @@ def _diagnose_gap(
             repair_path="补齐缺少的合同字段或降级到已覆盖字段。",
             claim_effect="degrade_claim_strength",
         )
-    if not present:
-        return _item(
-            gap_id=gap_id,
-            status="data_absent",
-            data_presence="field_missing",
-            contract_presence="present" if covered else "missing",
-            owner="数据工程 owner",
-            repair_path="补数据字段或接入对应事实表，再补语义合同绑定。",
-            claim_effect="block_dependent_claim",
-        )
     return _item(
         gap_id=gap_id,
-        status="contract_partial",
-        data_presence="field_unknown",
-        contract_presence="partial" if covered else "missing",
+        status="unknown",
+        data_presence="field_present",
+        contract_presence="present",
         owner="运行时 owner",
-        repair_path="检查 schema probe、合同注册和权限绑定是否完整。",
+        repair_path="检查 gap 元数据、schema probe、合同注册和权限绑定是否一致。",
         claim_effect="degrade_claim_strength",
     )
+
+
+def _normalize_gap_descriptor(gap: str | Mapping[str, Any]) -> tuple[str, tuple[str, ...]]:
+    if isinstance(gap, Mapping):
+        gap_id = str(gap.get("gap_id") or "").strip() or str(gap)
+        fields = _normalize_fields(gap.get("fields"))
+        if not fields:
+            fields = _normalize_fields(gap.get("required_fields"))
+        return gap_id, fields
+    return str(gap), ()
+
+
+def _normalize_fields(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    fields: list[str] = []
+    for item in value:
+        field = str(item).strip()
+        if field and field not in fields:
+            fields.append(field)
+    return tuple(fields)
 
 
 def _item(

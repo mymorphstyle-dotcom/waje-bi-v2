@@ -3,7 +3,11 @@ import tempfile
 import unittest
 
 from bi_agent.runtime.answer_package import build_answer_package, verify_answer_package
-from bi_agent.runtime.langgraph_workflow import run_pattern_workflow
+from bi_agent.runtime.langgraph_workflow import (
+    _available_fields_for_contract_diagnostics,
+    _contract_gap_diagnostics_from_state,
+    run_pattern_workflow,
+)
 from bi_agent.runtime.artifacts import filter_artifact_for_role
 from tests.phase4.fake_llm import FakeLLMClient
 
@@ -20,6 +24,45 @@ def _llm_input_payload(answer_package, task):
 
 
 class WorkflowArtifactsAnswerTest(unittest.TestCase):
+    def test_available_fields_for_contract_diagnostics_ignores_projected_rows(self):
+        fields = _available_fields_for_contract_diagnostics(
+            {
+                "schema": {"fields": ("schema_field",)},
+                "request": {
+                    "available_fields": ("request_field",),
+                    "rows": ({"projected_only_field": 1},),
+                },
+            }
+        )
+
+        self.assertEqual(fields, ("request_field", "schema_field"))
+
+    def test_contract_gap_diagnostics_use_request_available_fields(self):
+        diagnostics = _contract_gap_diagnostics_from_state(
+            {
+                "schema": {"fields": ()},
+                "request": {
+                    "available_fields": ("payment_status",),
+                    "compiler_runtime_plan": {
+                        "row_shapes": (
+                            {
+                                "contract_gaps": (
+                                    {
+                                        "gap_id": "payment_status_contract_missing",
+                                        "fields": ("payment_status",),
+                                    },
+                                )
+                            },
+                        )
+                    },
+                    "contract_fields": (),
+                },
+            }
+        )
+
+        self.assertEqual(diagnostics[0]["status"], "contract_absent")
+        self.assertEqual(diagnostics[0]["data_presence"], "field_present")
+
     def test_answer_package_keeps_causal_audit_in_admin_audit_only(self):
         package = build_answer_package(
             run_id="causal-audit-package",

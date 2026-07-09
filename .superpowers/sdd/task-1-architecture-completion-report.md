@@ -141,3 +141,43 @@ This keeps diagnostics attached to runtime/compiler context and avoids adding a 
 ## Commit
 
 Created after GREEN verification.
+
+## Reviewer Follow-up TDD Record
+
+### RED
+
+Command:
+
+```bash
+python3 -m unittest tests.phase4.test_data_contract_diagnostics tests.phase4.test_workflow_artifacts_answer.WorkflowArtifactsAnswerTest.test_contract_gap_diagnostics_use_request_available_fields
+```
+
+Observed failure:
+
+```text
+FAIL: test_unknown_string_gap_stays_unknown_without_explicit_fields
+AssertionError: 'data_absent' != 'unknown'
+
+FAIL: test_explicit_gap_mapping_uses_declared_fields
+AssertionError: 'data_absent' != 'contract_absent'
+
+FAIL: test_contract_gap_diagnostics_use_request_available_fields
+AssertionError: 'data_absent' != 'contract_absent'
+```
+
+### GREEN
+
+Commands:
+
+```bash
+python3 -m unittest tests.phase4.test_data_contract_diagnostics tests.phase4.test_workflow_artifacts_answer.WorkflowArtifactsAnswerTest.test_available_fields_for_contract_diagnostics_ignores_projected_rows tests.phase4.test_workflow_artifacts_answer.WorkflowArtifactsAnswerTest.test_contract_gap_diagnostics_use_request_available_fields
+python3 -m unittest tests.phase4.test_data_contract_diagnostics tests.phase4.test_workflow_artifacts_answer
+```
+
+Observed result:
+
+```text
+Ran 29 tests in 0.659s
+
+OK
+```
