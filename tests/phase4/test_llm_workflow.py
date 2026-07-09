@@ -11,6 +11,8 @@ from bi_agent.runtime.exploration_budget import default_budget
 from bi_agent.runtime.langgraph_workflow import (
     _answer_synthesis_context,
     _capability_path_labels,
+    _capability_result_refs_for,
+    _capability_rows_for,
     _clarification_policy_gate,
     _claims_from_llm_or_default,
     _default_claim_from_evidence,
@@ -29,6 +31,7 @@ from bi_agent.runtime.langgraph_workflow import (
     repair_final_answer_with_verified_claim,
     _route_after_next_action,
     _sanitize_terminal_explanation,
+    _segment_contribution_params,
     _understand_business_intent,
     WorkflowFailure,
     run_pattern_workflow,
@@ -111,6 +114,65 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("use business labels", text)
         self.assertIn("付费金额", text)
         self.assertIn("paid_amount", text)
+
+    def test_capabilities_select_runtime_rows_by_query_intent(self):
+        state = {
+            "request": {
+                "rows": ({"period": "fallback", "group": "target", "amount": 1.0},),
+                "result_refs": ("fallback-ref",),
+                "runtime_rows_by_intent": {
+                    "daily_metric_baselines": (
+                        {"period": "2026-07-08", "group": "target", "amount": 120.0},
+                    ),
+                    "dimension_scan": (
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "channel": "ads",
+                            "amount": 80.0,
+                        },
+                    ),
+                    "joint_candidate_scan": (
+                        {
+                            "period": "2026-07-08",
+                            "group": "target",
+                            "channel": "ads",
+                            "payment_method": "card",
+                            "amount": 70.0,
+                        },
+                    ),
+                    "data_quality_probe": (
+                        {"period": "2026-07-08", "group": "target", "orders": 10},
+                    ),
+                },
+                "result_refs_by_intent": {
+                    "daily_metric_baselines": ("baseline-ref",),
+                    "dimension_scan": ("dimension-ref",),
+                    "joint_candidate_scan": ("joint-ref",),
+                    "data_quality_probe": ("quality-ref",),
+                },
+            },
+            "row_query_plan": {
+                "query_results": (
+                    {"intent": "dimension_scan", "dimension_keys": ("channel",)},
+                    {
+                        "intent": "joint_candidate_scan",
+                        "dimension_keys": ("channel", "payment_method"),
+                    },
+                )
+            },
+            "intent": {"pattern_params": {}},
+        }
+
+        self.assertEqual(_capability_rows_for(state, "driver_decomposition")[0]["amount"], 120.0)
+        self.assertEqual(_capability_rows_for(state, "segment_contribution")[0]["channel"], "ads")
+        self.assertEqual(
+            _capability_rows_for(state, "joint_attribution")[0]["payment_method"],
+            "card",
+        )
+        self.assertEqual(_capability_rows_for(state, "data_quality_profile")[0]["orders"], 10)
+        self.assertEqual(_capability_result_refs_for(state, "joint_attribution"), ("joint-ref",))
+        self.assertEqual(_segment_contribution_params(state)["segment_key"], "channel")
 
     def test_workflow_uses_clickhouse_provider_rows_instead_of_default_rows(self):
         class Provider:

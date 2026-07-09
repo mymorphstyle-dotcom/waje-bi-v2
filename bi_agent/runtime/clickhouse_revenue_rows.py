@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from typing import Any, Mapping, Optional, Sequence
 
@@ -17,12 +17,24 @@ SEGMENT_DIMENSIONS = ("channel",)
 
 
 @dataclass(frozen=True)
+class RevenueQueryPlan:
+    sql_text: str
+    query_id: str
+    intent: str
+    required_fields: tuple[str, ...]
+    dimension_keys: tuple[str, ...]
+    reason: str = ""
+    claim_use: str = ""
+
+
+@dataclass(frozen=True)
 class RevenueRowPlan:
     sql_text: str
     query_id: str
     required_fields: tuple[str, ...]
     dimension_keys: tuple[str, ...]
     reason: str = ""
+    query_plans: tuple[RevenueQueryPlan, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -33,6 +45,9 @@ class RevenueRowsResult:
     query_hash: str = ""
     query_id: str = ""
     result_refs: tuple[str, ...] = ()
+    rows_by_intent: Mapping[str, tuple[dict[str, Any], ...]] = field(default_factory=dict)
+    result_refs_by_intent: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    query_results: tuple[dict[str, Any], ...] = ()
 
 
 class ClickHouseRevenueRows:
@@ -70,12 +85,14 @@ class ClickHouseRevenueRows:
             )
             if specs:
                 first = _select_query_spec(specs, accepted_graph)
+                query_plans = tuple(_query_plan_from_spec(spec) for spec in specs)
                 return RevenueRowPlan(
                     sql_text=str(first["sql_text"]),
                     query_id=str(first["query_id"]),
                     required_fields=tuple(str(field) for field in first["required_fields"]),
                     dimension_keys=tuple(str(key) for key in first["dimension_keys"]),
                     reason=str(first.get("reason") or ""),
+                    query_plans=query_plans,
                 )
             return RevenueRowPlan(
                 sql_text="",
@@ -124,45 +141,225 @@ LIMIT {MAX_ROWS}
             query_id=query_id,
             required_fields=required_fields,
             dimension_keys=dimensions,
+            query_plans=(
+                RevenueQueryPlan(
+                    sql_text=sql.strip(),
+                    query_id=query_id,
+                    intent="clickhouse_revenue_rows",
+                    required_fields=required_fields,
+                    dimension_keys=dimensions,
+                ),
+            ),
         )
 
     def fetch(self, plan: RevenueRowPlan) -> RevenueRowsResult:
-        if plan.reason:
-            return RevenueRowsResult(ok=False, reason=plan.reason, query_id=plan.query_id)
-        validation = validate_select_only(plan.sql_text, aggregate=True)
-        if not validation.ok:
-            return RevenueRowsResult(
-                ok=False,
-                reason=validation.reason,
-                query_hash=validation.query_hash,
+        query_plans = plan.query_plans or (
+            RevenueQueryPlan(
+                sql_text=plan.sql_text,
                 query_id=plan.query_id,
-            )
-
-        result = self.runtime.aggregate(plan.sql_text, query_id=plan.query_id)
-        if not result.ok:
+                intent=_row_query_intent(plan.query_id, plan.reason),
+                required_fields=plan.required_fields,
+                dimension_keys=plan.dimension_keys,
+                reason=plan.reason,
+            ),
+        )
+        if not any(_query_plan_executable(query_plan) for query_plan in query_plans):
+            blocked = _first_blocked_query(query_plans)
             return RevenueRowsResult(
                 ok=False,
-                reason=result.reason,
-                query_hash=result.query_hash or validation.query_hash,
-                query_id=result.query_id or plan.query_id,
+                reason=blocked.reason or plan.reason or "no_executable_query_spec",
+                query_id=blocked.query_id or plan.query_id,
+                query_results=tuple(_blocked_query_result(item) for item in query_plans),
             )
 
-        rows = _safe_rows(result.rows, plan.required_fields, plan.dimension_keys)
-        if rows is None:
-            return RevenueRowsResult(
-                ok=False,
-                reason="invalid_clickhouse_row_shape",
-                query_hash=result.query_hash or validation.query_hash,
-                query_id=result.query_id or plan.query_id,
+        rows_by_intent: dict[str, tuple[dict[str, Any], ...]] = {}
+        result_refs_by_intent: dict[str, tuple[str, ...]] = {}
+        query_results: list[dict[str, Any]] = []
+        result_refs: list[str] = []
+        query_hashes: list[str] = []
+        for query_plan in query_plans:
+            if not _query_plan_executable(query_plan):
+                query_results.append(_blocked_query_result(query_plan))
+                continue
+
+            validation = validate_select_only(query_plan.sql_text, aggregate=True)
+            if not validation.ok:
+                query_results.append(
+                    _query_result_payload(
+                        query_plan,
+                        ok=False,
+                        reason=validation.reason,
+                        query_hash=validation.query_hash,
+                    )
+                )
+                return RevenueRowsResult(
+                    ok=False,
+                    reason=validation.reason,
+                    query_hash=validation.query_hash,
+                    query_id=query_plan.query_id,
+                    query_results=tuple(query_results),
+                )
+
+            result = self.runtime.aggregate(query_plan.sql_text, query_id=query_plan.query_id)
+            if not result.ok:
+                query_hash = result.query_hash or validation.query_hash
+                query_results.append(
+                    _query_result_payload(
+                        query_plan,
+                        ok=False,
+                        reason=result.reason,
+                        query_hash=query_hash,
+                        query_id=result.query_id or query_plan.query_id,
+                    )
+                )
+                return RevenueRowsResult(
+                    ok=False,
+                    reason=result.reason,
+                    query_hash=query_hash,
+                    query_id=result.query_id or query_plan.query_id,
+                    query_results=tuple(query_results),
+                )
+
+            rows = _safe_rows(result.rows, query_plan.required_fields, query_plan.dimension_keys)
+            if rows is None:
+                query_hash = result.query_hash or validation.query_hash
+                query_results.append(
+                    _query_result_payload(
+                        query_plan,
+                        ok=False,
+                        reason="invalid_clickhouse_row_shape",
+                        query_hash=query_hash,
+                        query_id=result.query_id or query_plan.query_id,
+                    )
+                )
+                return RevenueRowsResult(
+                    ok=False,
+                    reason="invalid_clickhouse_row_shape",
+                    query_hash=query_hash,
+                    query_id=result.query_id or query_plan.query_id,
+                    query_results=tuple(query_results),
+                )
+
+            query_hash = result.query_hash or validation.query_hash
+            refs = (query_hash,) if query_hash else ()
+            rows_by_intent[query_plan.intent] = rows
+            result_refs_by_intent[query_plan.intent] = refs
+            result_refs.extend(ref for ref in refs if ref)
+            if query_hash:
+                query_hashes.append(query_hash)
+            query_results.append(
+                _query_result_payload(
+                    query_plan,
+                    ok=True,
+                    reason="",
+                    query_hash=query_hash,
+                    query_id=result.query_id or query_plan.query_id,
+                    result_refs=refs,
+                    row_count=len(rows),
+                )
             )
-        query_hash = result.query_hash or validation.query_hash
+
+        primary_intent = _row_query_intent(plan.query_id, plan.reason)
+        primary_rows = rows_by_intent.get(primary_intent) or _first_rows(rows_by_intent)
+        query_hash = _primary_query_hash(
+            query_results,
+            primary_intent=primary_intent,
+            fallback_hashes=tuple(query_hashes),
+        )
         return RevenueRowsResult(
             ok=True,
-            rows=rows,
+            rows=primary_rows,
             query_hash=query_hash,
-            query_id=result.query_id or plan.query_id,
-            result_refs=(query_hash,) if query_hash else (),
+            query_id=plan.query_id,
+            result_refs=tuple(dict.fromkeys(result_refs)),
+            rows_by_intent=rows_by_intent,
+            result_refs_by_intent=result_refs_by_intent,
+            query_results=tuple(query_results),
         )
+
+
+def _query_plan_from_spec(spec: Mapping[str, Any]) -> RevenueQueryPlan:
+    return RevenueQueryPlan(
+        sql_text=str(spec.get("sql_text") or ""),
+        query_id=str(spec.get("query_id") or ""),
+        intent=str(spec.get("intent") or ""),
+        required_fields=tuple(str(field) for field in spec.get("required_fields") or ()),
+        dimension_keys=tuple(str(key) for key in spec.get("dimension_keys") or ()),
+        reason=str(spec.get("reason") or ""),
+        claim_use=str(spec.get("claim_use") or ""),
+    )
+
+
+def _query_plan_executable(plan: RevenueQueryPlan) -> bool:
+    return bool(plan.sql_text) and not plan.reason
+
+
+def _first_blocked_query(query_plans: Sequence[RevenueQueryPlan]) -> RevenueQueryPlan:
+    for query_plan in query_plans:
+        if query_plan.reason:
+            return query_plan
+    return query_plans[0]
+
+
+def _blocked_query_result(plan: RevenueQueryPlan) -> dict[str, Any]:
+    return _query_result_payload(
+        plan,
+        ok=False,
+        reason=plan.reason or "no_executable_sql",
+        query_hash="",
+    )
+
+
+def _query_result_payload(
+    plan: RevenueQueryPlan,
+    *,
+    ok: bool,
+    reason: str,
+    query_hash: str,
+    query_id: str | None = None,
+    result_refs: tuple[str, ...] = (),
+    row_count: int = 0,
+) -> dict[str, Any]:
+    refs = result_refs or ((query_hash,) if query_hash else ())
+    return {
+        "query_id": query_id or plan.query_id,
+        "intent": plan.intent,
+        "ok": ok,
+        "reason": reason,
+        "query_hash": query_hash,
+        "result_refs": refs,
+        "row_count": row_count,
+        "dimension_keys": plan.dimension_keys,
+        "claim_use": plan.claim_use,
+    }
+
+
+def _row_query_intent(query_id: str, reason: str = "") -> str:
+    if reason:
+        return reason
+    if ":" in query_id:
+        return query_id.rsplit(":", 1)[-1]
+    return query_id or "clickhouse_revenue_rows"
+
+
+def _first_rows(
+    rows_by_intent: Mapping[str, tuple[dict[str, Any], ...]]
+) -> tuple[dict[str, Any], ...]:
+    for rows in rows_by_intent.values():
+        return rows
+    return ()
+
+
+def _primary_query_hash(
+    query_results: Sequence[Mapping[str, Any]],
+    *,
+    primary_intent: str,
+    fallback_hashes: tuple[str, ...],
+) -> str:
+    for item in query_results:
+        if item.get("intent") == primary_intent and item.get("query_hash"):
+            return str(item["query_hash"])
+    return fallback_hashes[0] if fallback_hashes else ""
 
 
 def _dimension_keys(

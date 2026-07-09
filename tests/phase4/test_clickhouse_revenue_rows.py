@@ -5,8 +5,12 @@ from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult
 
 
 class FakeRuntime:
-    def __init__(self, rows=(), ok=True, reason=""):
+    def __init__(self, rows=(), ok=True, reason="", rows_by_query_id=None):
         self.rows = tuple(rows)
+        self.rows_by_query_id = {
+            str(query_id): tuple(query_rows)
+            for query_id, query_rows in (rows_by_query_id or {}).items()
+        }
         self.ok = ok
         self.reason = reason
         self.calls = []
@@ -17,11 +21,12 @@ class FakeRuntime:
 
     def aggregate(self, sql, query_id):
         self.calls.append((sql, query_id))
+        rows = self.rows_by_query_id.get(query_id, self.rows)
         return ClickHouseQueryResult(
             ok=self.ok,
             reason=self.reason,
-            rows=self.rows,
-            query_hash="hash-real",
+            rows=rows,
+            query_hash=f"hash-{query_id}",
             query_id=query_id,
         )
 
@@ -315,7 +320,87 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.rows[0]["amount"], 120.0)
         self.assertEqual(result.query_id, plan.query_id)
-        self.assertEqual(result.result_refs, ("hash-real",))
+        self.assertEqual(result.result_refs, ("hash-run-1:clickhouse_revenue_rows",))
+
+    def test_fetch_executes_all_compiler_query_specs_and_groups_rows_by_intent(self):
+        runtime = FakeRuntime(
+            rows_by_query_id={
+                "run-multi:daily_metric_baselines": (
+                    {"period": "2026-07-07", "group": "baseline", "amount": 90.0, "orders": 9},
+                    {"period": "2026-07-08", "group": "target", "amount": 120.0, "orders": 10},
+                ),
+                "run-multi:dimension_scan": (
+                    {
+                        "period": "2026-07-08",
+                        "group": "target",
+                        "channel": "ads",
+                        "amount": 80.0,
+                        "orders": 7,
+                    },
+                ),
+                "run-multi:data_quality_probe": (
+                    {
+                        "period": "2026-07-08",
+                        "group": "target",
+                        "orders": 10,
+                        "paid_users": 8,
+                        "min_period": "2026-07-01",
+                        "max_period": "2026-07-08",
+                    },
+                ),
+            }
+        )
+        provider = ClickHouseRevenueRows(
+            runtime=runtime,
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-multi",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "yesterday", "history_days": 12},
+                    "baselines": ("previous_day",),
+                    "query_intents": (
+                        "daily_metric_baselines",
+                        "dimension_scan",
+                        "data_quality_probe",
+                    ),
+                    "row_shapes": [
+                        {
+                            "dimension_keys": ("channel",),
+                            "required_fields": (
+                                "period",
+                                "group",
+                                "amount",
+                                "orders",
+                                "paid_users",
+                            ),
+                        }
+                    ],
+                },
+            },
+            {"time_window": "yesterday"},
+            ("compare_periods", "segment_contribution", "data_quality_profile"),
+        )
+
+        result = provider.fetch(plan)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            [query_id for _, query_id in runtime.calls],
+            [
+                "run-multi:daily_metric_baselines",
+                "run-multi:dimension_scan",
+                "run-multi:data_quality_probe",
+            ],
+        )
+        self.assertEqual(result.rows_by_intent["daily_metric_baselines"][0]["amount"], 90.0)
+        self.assertEqual(result.rows_by_intent["dimension_scan"][0]["channel"], "ads")
+        self.assertEqual(result.rows_by_intent["data_quality_probe"][0]["orders"], 10)
+        self.assertEqual(
+            result.result_refs_by_intent["dimension_scan"],
+            ("hash-run-multi:dimension_scan",),
+        )
 
     def test_fetch_blocks_when_runtime_query_fails(self):
         provider = ClickHouseRevenueRows(
