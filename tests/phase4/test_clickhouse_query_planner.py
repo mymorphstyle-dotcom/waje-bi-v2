@@ -88,6 +88,25 @@ class ClickHouseQueryPlannerTest(unittest.TestCase):
         self.assertEqual(specs[0]["sql_text"], "")
         self.assertEqual(specs[0]["reason"], "custom_baseline_window_unbound")
 
+    def test_dimension_scan_with_unsafe_row_shape_dimensions_returns_blocked_reason(self):
+        specs = build_clickhouse_query_specs(
+            {
+                "query_intents": ("dimension_scan",),
+                "row_shapes": (
+                    {
+                        "required_fields": ("period", "group", "amount"),
+                        "dimension_keys": ("channel;DROP",),
+                    },
+                ),
+            },
+            table="paid_order_success_clean_20240101_20260704",
+            run_id="run-unsafe-dimension",
+        )
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["sql_text"], "")
+        self.assertEqual(specs[0]["reason"], "unsafe_dimension_keys")
+
 
 if __name__ == "__main__":
     unittest.main()

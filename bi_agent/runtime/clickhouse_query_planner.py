@@ -143,9 +143,25 @@ def _grouped_metric_query(
     where_clause: str,
     claim_use: str,
 ) -> dict[str, Any] | None:
-    safe_dimensions = tuple(key for key in dimension_keys if _safe_identifier(key))
-    if intent != "daily_metric_baselines" and not safe_dimensions:
-        return None
+    raw_dimensions = tuple(str(key) for key in dimension_keys if key)
+    safe_dimensions = tuple(key for key in raw_dimensions if _safe_identifier(key))
+    if intent != "daily_metric_baselines":
+        if not raw_dimensions:
+            return _blocked_spec(
+                run_id=run_id,
+                intent=intent,
+                required_fields=required_fields,
+                dimension_keys=(),
+                reason="missing_dimension_keys",
+            )
+        if len(safe_dimensions) != len(raw_dimensions):
+            return _blocked_spec(
+                run_id=run_id,
+                intent=intent,
+                required_fields=required_fields,
+                dimension_keys=(),
+                reason="unsafe_dimension_keys",
+            )
 
     select_parts = [
         "business_date_lagos AS period",

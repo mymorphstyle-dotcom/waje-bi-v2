@@ -218,3 +218,52 @@ OK
 
 - Custom-baseline execution is deterministic only when runtime plan metadata includes concrete date ranges. Label-only windows such as `Q1` / `Q2` remain intentionally blocked with `custom_baseline_window_unbound`.
 - `event_context_probe` remains non-executable until the runtime plan carries an explicit event-binding contract. That is deliberate; this patch avoids fabricating SQL from incomplete metadata.
+
+## Critical Finding Fix: Explicit Compiler Plans Must Not Fall Back
+
+### RED
+
+Command:
+
+```bash
+python3 -m unittest tests.phase4.test_clickhouse_query_planner tests.phase4.test_clickhouse_revenue_rows
+```
+
+Observed failures before the fix:
+
+```text
+FAIL: test_dimension_scan_with_unsafe_row_shape_dimensions_returns_blocked_reason
+AssertionError: 0 != 1
+
+FAIL: test_plan_with_explicit_dimension_scan_and_empty_dimensions_stays_blocked
+AssertionError: expected empty sql_text, got fallback baseline SQL
+
+FAIL: test_plan_with_unsafe_compiler_dimension_does_not_emit_dimension_sql
+AssertionError: expected empty sql_text, got fallback baseline SQL
+```
+
+### GREEN
+
+Commands:
+
+```bash
+python3 -m unittest tests.phase4.test_clickhouse_query_planner tests.phase4.test_clickhouse_revenue_rows
+python3 -m unittest tests.phase4.test_revenue_runtime_plan tests.phase4.test_recipe_registry_and_compiler
+```
+
+Observed result:
+
+```text
+Ran 17 tests in 0.002s
+OK
+
+Ran 27 tests in 0.006s
+OK
+```
+
+### What Changed In This Critical Fix
+
+- `build_clickhouse_query_specs(...)` now turns `dimension_scan` and `joint_candidate_scan` with empty dimension keys into blocked specs with `reason="missing_dimension_keys"`.
+- The same planner now turns unsafe compiler-supplied dimension identifiers into blocked specs with `reason="unsafe_dimension_keys"` and keeps those identifiers out of `sql_text`.
+- `ClickHouseRevenueRows.plan(...)` now treats explicit `compiler_runtime_plan` as authoritative: when spec building yields nothing executable, it returns a blocked `RevenueRowPlan` instead of dropping into the legacy SQL builder.
+- The legacy accepted-graph SQL builder still runs for requests that do not carry `compiler_runtime_plan`.

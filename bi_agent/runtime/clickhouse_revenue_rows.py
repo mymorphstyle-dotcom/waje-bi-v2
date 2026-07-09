@@ -77,6 +77,13 @@ class ClickHouseRevenueRows:
                     dimension_keys=tuple(str(key) for key in first["dimension_keys"]),
                     reason=str(first.get("reason") or ""),
                 )
+            return RevenueRowPlan(
+                sql_text="",
+                query_id=f"{request.get('run_id', 'run')}:compiler_runtime_plan",
+                required_fields=_required_fields(request),
+                dimension_keys=_dimension_keys(accepted_graph, request),
+                reason="invalid_identifier" if not _safe_identifier(self.table) else "no_executable_query_spec",
+            )
 
         dimensions = _dimension_keys(accepted_graph, request)
         required_fields = _required_fields(request)

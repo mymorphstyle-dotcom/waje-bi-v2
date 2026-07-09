@@ -221,6 +221,60 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         self.assertEqual(plan.reason, "event_context_probe_unbound")
         self.assertEqual(plan.query_id, "run-event:event_context_probe")
 
+    def test_plan_with_explicit_dimension_scan_and_empty_dimensions_stays_blocked(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-empty-dimension-scan",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "yesterday", "history_days": 12},
+                    "query_intents": ("dimension_scan",),
+                    "row_shapes": [
+                        {
+                            "required_fields": ("period", "group", "amount"),
+                            "dimension_keys": (),
+                        }
+                    ],
+                },
+            },
+            {"time_window": "yesterday"},
+            ("segment_contribution",),
+        )
+
+        self.assertEqual(plan.sql_text, "")
+        self.assertEqual(plan.reason, "missing_dimension_keys")
+        self.assertEqual(plan.query_id, "run-empty-dimension-scan:dimension_scan")
+
+    def test_plan_with_unsafe_compiler_dimension_does_not_emit_dimension_sql(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-unsafe-dimension-scan",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "yesterday", "history_days": 12},
+                    "query_intents": ("dimension_scan",),
+                    "row_shapes": [
+                        {
+                            "required_fields": ("period", "group", "amount"),
+                            "dimension_keys": ("channel;DROP",),
+                        }
+                    ],
+                },
+            },
+            {"time_window": "yesterday"},
+            ("segment_contribution",),
+        )
+
+        self.assertEqual(plan.sql_text, "")
+        self.assertEqual(plan.reason, "unsafe_dimension_keys")
+        self.assertNotIn("channel;DROP", plan.sql_text)
+
     def test_fetch_returns_bounded_aggregate_rows_and_query_ref(self):
         runtime = FakeRuntime(
             rows=({"period": "2026-07-08", "group": "target", "amount": 120.0},)
