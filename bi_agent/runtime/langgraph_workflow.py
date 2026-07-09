@@ -1394,7 +1394,14 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
     if "outlier_scan" in capabilities:
         evidence.append(outlier_scan(rows, result_refs=query_ref))
     if "joint_attribution" in capabilities:
-        evidence.append(joint_attribution(rows, segment_evidence=segment, result_refs=query_ref))
+        evidence.append(
+            joint_attribution(
+                rows,
+                segment_evidence=segment,
+                result_refs=query_ref,
+                **_joint_attribution_params(state),
+            )
+        )
 
     state["evidence"] = [_evidence_dict(item, state) for item in evidence]
     return state
@@ -1456,7 +1463,17 @@ def _segment_contribution_params(state: WorkflowState) -> dict[str, Any]:
 
 def _joint_attribution_params(state: WorkflowState) -> dict[str, Any]:
     params = dict(state.get("intent", {}).get("pattern_params", {}))
-    dimensions = params.get("joint_dimension_keys") or params.get("dimension_keys") or ()
+    has_explicit_dimensions = bool(
+        state["request"].get("joint_dimension_keys")
+        or params.get("joint_dimension_keys")
+        or params.get("dimension_keys")
+    )
+    dimensions = (
+        state["request"].get("joint_dimension_keys")
+        or params.get("joint_dimension_keys")
+        or params.get("dimension_keys")
+        or ()
+    )
     if isinstance(dimensions, str):
         dimensions = tuple(part.strip() for part in dimensions.split(",") if part.strip())
     return {
@@ -1465,6 +1482,7 @@ def _joint_attribution_params(state: WorkflowState) -> dict[str, Any]:
         "target_group": params.get("target_group", "target"),
         "baseline_group": params.get("baseline_group", "baseline"),
         "amount_key": params.get("amount_key", "amount"),
+        "force_run": has_explicit_dimensions,
     }
 
 

@@ -15,6 +15,7 @@ def joint_attribution(
     amount_key: str = "amount",
     residual: float = 0.0,
     fit: float = 1.0,
+    force_run: bool = False,
     result_refs: tuple[str, ...] = (),
 ):
     rows = tuple(rows)
@@ -26,7 +27,7 @@ def joint_attribution(
         )
         residual = payload.get("residual", residual)
         fit = payload.get("fit", fit)
-    needs_escalation = segment_evidence is None or abs(residual) > 0.10 or fit < 0.80
+    needs_escalation = force_run or segment_evidence is None or abs(residual) > 0.10 or fit < 0.80
     dimension_keys = dimension_keys or _infer_dimension_keys(rows, group_key, amount_key)
     if segment_evidence is None and (not rows or len(dimension_keys) < 2):
         return make_evidence_envelope(

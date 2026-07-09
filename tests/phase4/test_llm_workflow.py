@@ -203,6 +203,62 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertFalse(clickhouse["ok"])
         self.assertEqual(clickhouse["reason"], "missing_clickhouse_env")
 
+    def test_joint_attribution_uses_clickhouse_dimension_keys(self):
+        result = run_pattern_workflow(
+            {
+                "run_id": "joint-dimensions",
+                "question": "渠道和支付方式组合共同解释昨天收入变化吗？",
+                "llm_client": FakeLLMClient(
+                    {
+                        "analysis_route": {
+                            "requested_nodes": ["joint_attribution", "answer_verify"]
+                        }
+                    }
+                ),
+                "requested_nodes": ["joint_attribution", "answer_verify"],
+                "joint_dimension_keys": ("channel", "payment_method"),
+                "rows": [
+                    {
+                        "period": "p1",
+                        "group": "baseline",
+                        "amount": 100,
+                        "channel": "A",
+                        "payment_method": "M",
+                        "n": 50,
+                    },
+                    {
+                        "period": "p1",
+                        "group": "target",
+                        "amount": 150,
+                        "channel": "A",
+                        "payment_method": "M",
+                        "n": 50,
+                    },
+                    {
+                        "period": "p1",
+                        "group": "baseline",
+                        "amount": 80,
+                        "channel": "B",
+                        "payment_method": "N",
+                        "n": 50,
+                    },
+                    {
+                        "period": "p1",
+                        "group": "target",
+                        "amount": 70,
+                        "channel": "B",
+                        "payment_method": "N",
+                        "n": 50,
+                    },
+                ],
+            }
+        )
+
+        evidence = result.answer_package["sections"][1]["payload"]["evidence"]
+        joint = next(item for item in evidence if item["capability_id"] == "joint_attribution")
+        self.assertEqual(joint["typed_payload"]["dimension_keys"], ["channel", "payment_method"])
+        self.assertEqual(joint["evidence_type"], "statistical_association")
+
     def test_boundary_decision_prompt_hides_internal_tokens_from_business_text(self):
         messages = build_prompt("boundary_decision", {"intent": {}}).messages
         text = "\n".join(message["content"] for message in messages)
