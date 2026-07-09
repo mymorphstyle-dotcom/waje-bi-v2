@@ -2061,7 +2061,6 @@ class LLMWorkflowTest(unittest.TestCase):
             "evidence_interpretation",
             "answer_synthesis",
             "semantic_audit",
-            "final_business_summary",
         ):
             with self.subTest(failing_task=failing_task):
                 class TimeoutOnAnswerNodeLLM(FakeLLMClient):
@@ -2206,6 +2205,39 @@ class LLMWorkflowTest(unittest.TestCase):
             result.answer_package["quality_gate"]["final_summary_display_warnings"],
         )
         self.assertIn("missing_verified_claim", result.answer_package["quality_gate"]["issues"])
+
+    def test_final_business_summary_timeout_keeps_answer_synthesis_with_audit_marker(self):
+        class TimeoutOnFinalSummaryLLM(FakeLLMClient):
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                if task == "final_business_summary":
+                    self.calls.append(task)
+                    raise TimeoutError("llm_response_timeout")
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
+
+        fake = TimeoutOnFinalSummaryLLM()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "final-summary-timeout-keeps-answer",
+                    "llm_client": fake,
+                    "question": "Q2 相比 Q1 付费金额为什么变了？",
+                }
+            )
+
+        self.assertEqual(result.status, "draft")
+        self.assertIn("final_business_summary", fake.calls)
+        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
+        self.assertEqual(summary, result.answer_package["sections"][0]["payload"]["answer_text"])
+        self.assertIn(
+            "final_summary_timeout",
+            result.answer_package["quality_gate"]["final_summary_display_warnings"],
+        )
 
     def test_terminal_explanation_rejected_output_fails_without_local_fallback(self):
         degraded_fake = FakeLLMClient(

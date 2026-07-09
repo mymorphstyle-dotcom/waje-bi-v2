@@ -768,6 +768,39 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertFalse(result["real_clickhouse_review"]["real_clickhouse_verified"])
         self.assertFalse(result["turns"][0]["real_clickhouse_review"]["real_clickhouse_verified"])
 
+    def test_live_harness_writes_partial_case_artifact_after_each_turn(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import run_case
+
+        calls = {"count": 0}
+
+        def workflow(request):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                raise RuntimeError("second_turn_stopped")
+            return fake_workflow(request)
+
+        store = InMemoryConversationStore()
+        core = ConversationAgentCore(store, workflow_runner=workflow)
+        case = {
+            "id": "partial_turn_artifact",
+            "turns": [
+                {"user": "Q2 比 Q1 付费金额为什么变了？", "expect": {}},
+                {"user": "继续看渠道。", "expect": {}},
+            ],
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "partial_turn_artifact.json"
+            with self.assertRaisesRegex(RuntimeError, "second_turn_stopped"):
+                run_case(core, case, Path(tmpdir))
+            data = json.loads(artifact_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(data["status"], "running")
+        self.assertEqual(len(data["turns"]), 1)
+        self.assertEqual(data["turns"][0]["status"], "completed")
+
     def test_live_harness_loads_local_env_without_overriding_shell(self):
         import os
         from tempfile import TemporaryDirectory

@@ -429,6 +429,63 @@ def _aggregate_real_clickhouse_review(
     }
 
 
+def _case_output(
+    *,
+    case: dict[str, Any],
+    thread_id: str,
+    run_mode: str,
+    strict_quality: bool,
+    real_clickhouse: bool,
+    turns: list[dict[str, Any]],
+    status: str | None = None,
+) -> dict[str, Any]:
+    final_result = _effective_result(turns[-1]) if turns else {}
+    expectation_failed = any(not turn["expectation_review"]["passed"] for turn in turns)
+    strict_quality_failed = any(turn.get("strict_quality_failed") for turn in turns)
+    real_clickhouse_failed = any(
+        not turn.get("real_clickhouse_review", {}).get("real_clickhouse_verified", True)
+        for turn in turns
+    )
+    real_clickhouse_review = _aggregate_real_clickhouse_review(turns, real_clickhouse)
+    return {
+        "case_id": case["id"],
+        "thread_id": thread_id,
+        "run_mode": run_mode,
+        "status": status
+        or (
+            "failed"
+            if expectation_failed or strict_quality_failed or real_clickhouse_failed
+            else "passed"
+        ),
+        "strict_quality": strict_quality,
+        "strict_quality_failed": strict_quality_failed,
+        "real_clickhouse_review": real_clickhouse_review,
+        "real_clickhouse_verified": real_clickhouse_review["real_clickhouse_verified"],
+        "clickhouse_result_refs": real_clickhouse_review["clickhouse_result_refs"],
+        "final_turn_status": final_result.get("status"),
+        "run_id": final_result.get("run_id"),
+        "topic_id": final_result.get("topic_id"),
+        "answer_package": final_result.get("answer_package"),
+        "context_manifest": final_result.get("context_manifest"),
+        "accepted_graph": final_result.get("accepted_graph") or [],
+        "llm_calls": final_result.get("llm_calls", []),
+        "quality_review": final_result.get("quality_review"),
+        "turns": turns,
+    }
+
+
+def _write_case_artifact(
+    artifact_dir: Path,
+    case_id: str,
+    output: dict[str, Any],
+) -> None:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / f"{case_id}.json").write_text(
+        json.dumps(output, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def run_case(
     core: ConversationAgentCore,
     case: dict[str, Any],
@@ -485,43 +542,28 @@ def run_case(
             strict_quality and _strict_quality_failed(effective)
         )
         turns.append(turn_record)
-    final_result = _effective_result(turns[-1]) if turns else {}
-    expectation_failed = any(not turn["expectation_review"]["passed"] for turn in turns)
-    strict_quality_failed = any(turn.get("strict_quality_failed") for turn in turns)
-    real_clickhouse_failed = any(
-        not turn.get("real_clickhouse_review", {}).get("real_clickhouse_verified", True)
-        for turn in turns
+        _write_case_artifact(
+            artifact_dir,
+            case["id"],
+            _case_output(
+                case=case,
+                thread_id=thread_id,
+                run_mode=run_mode,
+                strict_quality=strict_quality,
+                real_clickhouse=real_clickhouse,
+                turns=turns,
+                status="running",
+            ),
+        )
+    output = _case_output(
+        case=case,
+        thread_id=thread_id,
+        run_mode=run_mode,
+        strict_quality=strict_quality,
+        real_clickhouse=real_clickhouse,
+        turns=turns,
     )
-    real_clickhouse_review = _aggregate_real_clickhouse_review(turns, real_clickhouse)
-    output = {
-        "case_id": case["id"],
-        "thread_id": thread_id,
-        "run_mode": run_mode,
-        "status": (
-            "failed"
-            if expectation_failed or strict_quality_failed or real_clickhouse_failed
-            else "passed"
-        ),
-        "strict_quality": strict_quality,
-        "strict_quality_failed": strict_quality_failed,
-        "real_clickhouse_review": real_clickhouse_review,
-        "real_clickhouse_verified": real_clickhouse_review["real_clickhouse_verified"],
-        "clickhouse_result_refs": real_clickhouse_review["clickhouse_result_refs"],
-        "final_turn_status": final_result.get("status"),
-        "run_id": final_result.get("run_id"),
-        "topic_id": final_result.get("topic_id"),
-        "answer_package": final_result.get("answer_package"),
-        "context_manifest": final_result.get("context_manifest"),
-        "accepted_graph": final_result.get("accepted_graph") or [],
-        "llm_calls": final_result.get("llm_calls", []),
-        "quality_review": final_result.get("quality_review"),
-        "turns": turns,
-    }
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    (artifact_dir / f"{case['id']}.json").write_text(
-        json.dumps(output, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _write_case_artifact(artifact_dir, case["id"], output)
     return output
 
 

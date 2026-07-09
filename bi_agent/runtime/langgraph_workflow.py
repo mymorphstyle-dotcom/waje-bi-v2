@@ -2348,7 +2348,19 @@ def _final_business_summary(state: WorkflowState) -> WorkflowState:
         "checkpoint_summary": _checkpoint_summary(state),
         "business_threads": _business_threads(state),
     }
-    output = _invoke_llm(state, "final_business_summary", summary_payload)
+    try:
+        output = _invoke_llm(state, "final_business_summary", summary_payload)
+    except WorkflowFailure as exc:
+        if not _is_timeout_failure(exc) or not state.get("answer_text"):
+            raise
+        state["final_business_summary"] = _normalize_visible_business_text(
+            _weaken_unsupported_causal_wording(state["answer_text"]),
+            state,
+        )
+        state["final_summary_display_warnings"] = sorted(
+            {*state.get("final_summary_display_warnings", []), "final_summary_timeout"}
+        )
+        return state
     state["final_business_summary"] = _weaken_unsupported_causal_wording(
         output.get("summary_text", "")
     )
@@ -2682,6 +2694,10 @@ def _retry_context(failed_node: str, failure_type: str, reason: Any) -> dict[str
 def _compact_failure_reason(reason: Any) -> str:
     text = json.dumps(to_jsonable(reason), ensure_ascii=False, sort_keys=True)
     return text[:2000]
+
+
+def _is_timeout_failure(exc: Exception) -> bool:
+    return "timeout" in str(exc).lower()
 
 
 def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
