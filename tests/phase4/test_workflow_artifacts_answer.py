@@ -499,7 +499,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertEqual(result.status, "draft")
         self.assertIsNotNone(result.answer_package)
         self.assertIn(
-            "unsupported_wording",
+            "unsupported_material_claim",
             result.answer_package["quality_gate"]["final_summary_display_warnings"],
         )
 

@@ -21,6 +21,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _execute_joint_attribution,
     _final_business_summary_fallback,
     _final_summary_has_unsupported_wording,
+    _final_summary_has_unsupported_material_claim,
     _final_summary_needs_display_repair,
     _local_coverage_answerable_reason,
     _infer_question_families_from_requested_nodes,
@@ -3425,6 +3426,54 @@ class LLMWorkflowTest(unittest.TestCase):
             ],
         )
 
+    def test_answer_synthesis_context_includes_claim_slots_and_bounded_insight(self):
+        state = {
+            "intent": {
+                "question_family": "custom_baseline_comparison",
+                "pattern_family": "custom_baseline",
+                "target_metric": "paid_amount",
+                "scope": "full_sample",
+                "time_window": "2026-01-01..2026-06-30",
+                "target_claim": "Q2 相比 Q1 为什么变化",
+                "baseline": {"label": "Q1"},
+                "target": {"label": "Q2"},
+            },
+            "request": {"question": "Q2 相比 Q1 为什么变化？"},
+            "evidence_brief": {"limitations": ["weak_direction"]},
+            "causal_evidence_dossier": {},
+            "causal_audit": {},
+            "draft_claims": [
+                {
+                    "text": "Q2 相比 Q1 的付费金额提升 20.0%，当前只支持窗口对比结论。",
+                    "numbers": {"change_pct": 0.2},
+                    "scope": "full_sample",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "claim_strength": "observed",
+                    "evidence_refs": ["compare_periods:inline"],
+                }
+            ],
+            "verifier": {"errors": []},
+            "evidence": [
+                {
+                    "evidence_ref": "compare_periods:inline",
+                    "capability_id": "compare_periods",
+                    "strength": "medium",
+                    "wording_limit": "contextual",
+                    "typed_payload": {"median_uplift": 0.2},
+                    "limitations": ["weak_direction"],
+                }
+            ],
+        }
+
+        context = _answer_synthesis_context(state)
+
+        self.assertEqual(
+            context["verified_claim_slots"][0]["business_claim"],
+            "Q2 相比 Q1 的付费金额提升 20.0%，当前只支持窗口对比结论。",
+        )
+        self.assertIn("排查方向", context["bounded_insight_guidance"]["insight_prompt"])
+        self.assertIn("方向一致性不足", context["bounded_insight_guidance"]["evidence_limits"])
+
     def test_route_normalization_adds_driver_decomposition_for_explicit_volume_vs_unit_value_question(self):
         nodes = _normalize_route_requested_nodes(
             ("data_quality_profile", "compare_periods", "answer_verify"),
@@ -4988,10 +5037,36 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertFalse(_final_summary_has_unsupported_wording(summary, state))
         self.assertTrue(
-            _final_summary_has_unsupported_wording(
+            _final_summary_has_unsupported_material_claim(
                 summary.replace("不能把活动写成已证明原因", "活动导致了付费金额变化"),
                 state,
             )
+        )
+
+    def test_final_summary_records_material_claim_not_generic_wording_warning(self):
+        state = {
+            "intent": {"pattern_family": "custom_baseline"},
+            "evidence": [
+                {
+                    "evidence_ref": "event_evidence:inline",
+                    "evidence_type": "insufficient_evidence",
+                    "typed_payload": {},
+                }
+            ],
+            "draft_claims": [
+                {
+                    "text": "活动窗口证据只能作为候选机制检查。",
+                    "evidence_refs": ["event_evidence:inline"],
+                    "numbers": {},
+                }
+            ],
+        }
+
+        self.assertTrue(
+            _final_summary_has_unsupported_material_claim("最终结论：活动导致了付费金额变化。", state)
+        )
+        self.assertFalse(
+            _final_summary_has_unsupported_wording("最终结论：活动导致了付费金额变化。", state)
         )
 
     def _run_q2_q1_joint_attribution_workflow(self):
@@ -5134,6 +5209,30 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertFalse(quality["has_verified_claims"])
         self.assertFalse(quality["verified_claim_preserved"])
         self.assertIn("missing_verified_claim", quality["issues"])
+
+    def test_quality_gate_accepts_business_paraphrase_with_claim_numbers(self):
+        quality = evaluate_answer_quality(
+            user_question="Q2 相比 Q1 付费金额为什么变了？",
+            verified_claims=[
+                {
+                    "text": "Q2 相比 Q1 的付费金额提升 20.0%，当前只支持窗口对比结论。",
+                    "numbers": {"change_pct": 0.2},
+                    "claim_strength": "observed",
+                }
+            ],
+            final_answer=(
+                "最终结论：从当前窗口对比看，付费金额比基线高 20.0%，"
+                "这能作为观察结论使用，不能直接写成原因定论。"
+            ),
+            follow_up_questions=[
+                "要看渠道贡献吗？",
+                "要复核异常日期吗？",
+                "要换成日均口径吗？",
+            ],
+        )
+
+        self.assertTrue(quality["verified_claim_preserved"])
+        self.assertNotIn("missing_verified_claim", quality["issues"])
 
 
 if __name__ == "__main__":

@@ -43,7 +43,11 @@ class FinalAnswerAuditTest(unittest.TestCase):
             {
                 "display_status": "hard_blocked",
                 "hard_blockers": ["totally_unknown_blocker"],
-                "repairable_warnings": ["missing_business_interpretation", "unknown_warning"],
+                "repairable_warnings": [
+                    "missing_business_interpretation",
+                    "unsupported_wording",
+                    "unknown_warning",
+                ],
                 "retry_instruction": "补一句业务排查方向。",
                 "business_audit_summary": "有一条不受支持的审计码。",
             }
@@ -53,6 +57,19 @@ class FinalAnswerAuditTest(unittest.TestCase):
         self.assertFalse(audit["blocks_display"])
         self.assertEqual(audit["hard_blockers"], [])
         self.assertEqual(audit["repairable_warnings"], ["missing_business_interpretation"])
+
+    def test_unsupported_material_claim_is_the_only_supported_wording_warning(self):
+        audit = normalize_final_answer_audit(
+            {
+                "display_status": "ready_with_warnings",
+                "hard_blockers": [],
+                "repairable_warnings": ["unsupported_wording", "unsupported_material_claim"],
+                "retry_instruction": "把无证据的确定性结论改成候选判断。",
+                "business_audit_summary": "主结论里有一处证据边界过强。",
+            }
+        )
+
+        self.assertEqual(audit["repairable_warnings"], ["unsupported_material_claim"])
 
     def test_local_hard_blockers_override_llm_ready_audit(self):
         class ReadyAuditLLM:

@@ -3571,7 +3571,17 @@ def evaluate_answer_quality(
 
     business_insight_present = any(
         marker in answer
-        for marker in ("当前证据能把排查方向收敛到", "排查方向", "下一步最值得", "洞察")
+        for marker in (
+            "当前证据能把排查方向收敛到",
+            "排查方向",
+            "下一步最值得",
+            "洞察",
+            "能把",
+            "能定位",
+            "能排除",
+            "下一步最小",
+            "优先检查",
+        )
     )
     if not business_insight_present:
         issues.append("missing_business_insight")
@@ -3706,7 +3716,7 @@ def normalize_final_answer_audit(output: Mapping[str, Any]) -> dict[str, Any]:
         "missing_wording_anchor",
         "missing_required_summary_markers",
         "internal_visible_token",
-        "unsupported_wording",
+        "unsupported_material_claim",
         "missing_pattern_evidence",
         "missing_driver_claim",
         "missing_primary_claim",
@@ -3759,6 +3769,8 @@ def _final_business_summary_payload(
         "evidence_interpretation": state.get("evidence_interpretation", {}),
         "answer_text": state.get("answer_text", ""),
         "claims": state.get("draft_claims", []),
+        "verified_claim_slots": _verified_claim_slots(state),
+        "bounded_insight_guidance": _bounded_insight_guidance(state),
         "semantic_audit": state.get("semantic_audit", {}),
         "verifier": state.get("verifier", {}),
         "final_explanation": state.get("final_explanation", {}),
@@ -4265,6 +4277,8 @@ def _answer_synthesis_context(state: WorkflowState) -> dict[str, Any]:
         },
         "evidence_boundary": _attention_sentence(state),
         "capability_business_findings": _capability_business_findings(state),
+        "verified_claim_slots": _verified_claim_slots(state),
+        "bounded_insight_guidance": _bounded_insight_guidance(state),
         "causal_evidence_dossier": state.get("causal_evidence_dossier", {}),
         "causal_audit": state.get("causal_audit", {}),
         "required_answer_shape": [
@@ -4274,6 +4288,48 @@ def _answer_synthesis_context(state: WorkflowState) -> dict[str, Any]:
             "结论",
             "需要注意",
         ],
+    }
+
+
+def _verified_claim_slots(state: WorkflowState) -> list[dict[str, Any]]:
+    slots = []
+    for index, claim in enumerate(_verified_claims(state)):
+        slots.append(
+            {
+                "claim_ref": f"verified_claim:{index}",
+                "business_claim": str(claim.get("text") or ""),
+                "numbers": dict(claim.get("numbers") or {}),
+                "scope": str(claim.get("scope") or state.get("intent", {}).get("scope") or ""),
+                "time_window": str(
+                    claim.get("time_window") or state.get("intent", {}).get("time_window") or ""
+                ),
+                "claim_strength": str(claim.get("claim_strength") or claim.get("strength") or ""),
+                "evidence_refs": list(claim.get("evidence_refs") or ()),
+                "preservation_guidance": "可以业务化转述，但要保留数字、方向、范围和证据边界。",
+            }
+        )
+    return slots
+
+
+def _bounded_insight_guidance(state: WorkflowState) -> dict[str, Any]:
+    limitations = tuple(state.get("evidence_brief", {}).get("limitations") or ())
+    limits = list(_business_limitation_reasons(limitations))
+    accepted = (
+        tuple(state.get("compiled_graph").mutations.accepted_graph)
+        if state.get("compiled_graph")
+        else tuple(
+            str(item.get("capability_id") or item.get("capability") or "")
+            for item in state.get("evidence", ())
+            if isinstance(item, Mapping)
+        )
+    )
+    focus = _capability_path_labels(accepted)
+    return {
+        "insight_prompt": (
+            f"给出有边界的业务洞察：当前证据能把排查方向收敛到{focus}；"
+            "可以说明已能观察到什么、能排除什么、下一步最小补充什么，不能写成唯一原因。"
+        ),
+        "evidence_limits": limits,
     }
 
 
@@ -4301,8 +4357,8 @@ def _final_summary_display_repair_reasons(text: Any, state: WorkflowState) -> li
         reasons.append("missing_required_summary_markers")
     if _has_internal_visible_token(value):
         reasons.append("internal_visible_token")
-    if _final_summary_has_unsupported_wording(value, state):
-        reasons.append("unsupported_wording")
+    if _final_summary_has_unsupported_material_claim(value, state):
+        reasons.append("unsupported_material_claim")
     claims = state.get("draft_claims") or []
     if not claims and _pattern_evidence(state):
         if not _final_summary_covers_pattern_evidence(value, state):
@@ -4393,6 +4449,10 @@ def _preferred_final_claim(claims: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _final_summary_has_unsupported_wording(text: str, state: WorkflowState) -> bool:
+    return False
+
+
+def _final_summary_has_unsupported_material_claim(text: str, state: WorkflowState) -> bool:
     if any(
         token in text
         for token in (
