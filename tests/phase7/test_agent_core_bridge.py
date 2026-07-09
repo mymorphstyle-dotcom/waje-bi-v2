@@ -971,6 +971,77 @@ class AgentCoreBridgeTest(unittest.TestCase):
             _strict_quality_failed({"quality_review": {**review, "blocks_display": True}})
         )
 
+    def test_strict_eval_treats_final_wording_anchor_as_warning(self):
+        from tools.phase7.run_live_conversation_system_test import _strict_quality_failed
+
+        turn = {
+            "expectation_review": {
+                "missing_required_capabilities": [],
+                "missing_final_answer_text": ["近 7 日均值"],
+                "claim_support_policy_passed": True,
+            },
+            "answer_package": {
+                "quality_gate": {
+                    "blocks_display": False,
+                    "issues": ["missing_business_interpretation"],
+                }
+            },
+        }
+
+        self.assertFalse(_strict_quality_failed(turn))
+
+    def test_expectation_review_keeps_wording_anchor_as_warning(self):
+        from tools.phase7.run_live_conversation_system_test import _expectation_review
+
+        review = _expectation_review(
+            {"expect": {"final_answer_contains": ["近 7 日均值"]}},
+            {"intent": "follow_up", "topic_relation": "inherit_current"},
+            {
+                "intent": "follow_up",
+                "topic_relation": "inherit_current",
+                "answer_package": {
+                    "sections": [
+                        {
+                            "payload": {
+                                "answer_text": "相比最近一周平均水平，昨天的付费金额明显偏高。",
+                                "claims": [
+                                    {
+                                        "text": "昨天的付费金额明显偏高。",
+                                        "evidence_refs": ["evidence:baseline-1"],
+                                        "context_manifest_ref": "context-1",
+                                        "reuse_decisions": [
+                                            {
+                                                "decision": "reuse",
+                                                "result_ref": "result:baseline-1",
+                                                "reason": "baseline_window_available",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                "context_manifest": {
+                    "manifest_id": "context-1",
+                    "can_support_claims": True,
+                    "items": [
+                        {
+                            "source_type": "evidence",
+                            "source_ref": "evidence:baseline-1",
+                            "can_support_claims": True,
+                            "claim_use": "evidence",
+                        }
+                    ],
+                },
+            },
+            [],
+        )
+
+        self.assertEqual(review["missing_final_answer_text"], ["近 7 日均值"])
+        self.assertTrue(review["claim_support_policy_passed"])
+        self.assertTrue(review["passed"])
+
     def test_live_harness_uses_fresh_thread_for_each_case_run(self):
         from tools.phase7.run_live_conversation_system_test import _case_thread_id
 

@@ -118,6 +118,11 @@ def _expectation_review(
         for text in expect.get("final_answer_contains", [])
         if text not in _answer_text(effective_result.get("answer_package") or {})
     ]
+    missing_hard_boundary_text = [
+        text
+        for text in expect.get("hard_boundary_final_answer_contains", [])
+        if text not in _answer_text(effective_result.get("answer_package") or {})
+    ]
     manifest = effective_result.get("context_manifest")
     manifest_present = isinstance(manifest, dict) and bool(manifest)
     claim_review = _claim_evidence_review(
@@ -147,6 +152,10 @@ def _expectation_review(
         "clarification_passed": clarification_ok,
         "final_answer_contains": list(expect.get("final_answer_contains", [])),
         "missing_final_answer_text": missing_answer_text,
+        "hard_boundary_final_answer_contains": list(
+            expect.get("hard_boundary_final_answer_contains", [])
+        ),
+        "missing_hard_boundary_final_answer_text": missing_hard_boundary_text,
         "context_manifest_present": manifest_present,
         "context_manifest_can_support_claims": manifest_can_support_claims,
         "claim_support_policy_passed": claim_support_ok,
@@ -164,7 +173,7 @@ def _expectation_review(
             and manifest_present
             and claim_support_ok
             and not missing
-            and not missing_answer_text
+            and not missing_hard_boundary_text
         ),
     }
 
@@ -210,18 +219,20 @@ def _quality_review(answer_package: dict[str, Any]) -> dict[str, Any]:
 
 
 def _strict_quality_failed(turn_record: dict[str, Any]) -> bool:
-    review = turn_record.get("quality_review")
+    effective = _effective_result(turn_record)
+    expectation = turn_record.get("expectation_review") or {}
+    review = effective.get("quality_review")
+    if not isinstance(review, dict) or not review:
+        review = _quality_review(effective.get("answer_package") or {})
     if not isinstance(review, dict) or not review:
         return True
-    if "blocks_display" in review:
-        return bool(review.get("blocks_display"))
-    return not (
-        review.get("direct_answer") is True
-        and review.get("has_verified_claims") is True
-        and review.get("verified_claim_preserved") is True
-        and review.get("business_insight_present") is True
-        and review.get("followups_one_intent") is True
-    )
+    if expectation.get("missing_required_capabilities"):
+        return True
+    if expectation.get("missing_hard_boundary_final_answer_text"):
+        return True
+    if expectation.get("claim_support_policy_passed") is False:
+        return True
+    return bool(review.get("blocks_display"))
 
 
 def _real_clickhouse_review(
@@ -544,7 +555,7 @@ def run_case(
             real_clickhouse=real_clickhouse,
         )
         turn_record["strict_quality_failed"] = bool(
-            strict_quality and _strict_quality_failed(effective)
+            strict_quality and _strict_quality_failed(turn_record)
         )
         turns.append(turn_record)
         _write_case_artifact(

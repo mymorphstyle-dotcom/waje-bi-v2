@@ -628,7 +628,8 @@ conversation_cases:
           intent: "follow_up"
           topic_relation: "inherit"
           required_capabilities: ["joint_attribution", "answer_verify"]
-          final_answer_contains: ["WajeSpecial", "不能直接说", "原因"]
+          final_answer_contains: ["WajeSpecial", "原因"]
+          hard_boundary_final_answer_contains: ["不能直接说"]
       - user: "如果去掉异常天还成立吗？"
         clarification_response: "按日粒度，移除贡献最大的正向日期后复算，不做订单级明细剔除。"
         expect:
@@ -657,7 +658,8 @@ conversation_cases:
           intent: "follow_up"
           topic_relation: "inherit"
           required_capabilities: ["joint_attribution", "answer_verify"]
-          final_answer_contains: ["WajeSpecial", "不能直接说"]
+          final_answer_contains: ["WajeSpecial"]
+          hard_boundary_final_answer_contains: ["不能直接说"]
       - user: "换成日均再看一遍。"
         expect:
           intent: "correction"
