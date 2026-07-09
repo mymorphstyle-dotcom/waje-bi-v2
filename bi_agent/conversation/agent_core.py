@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Mapping
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
@@ -41,6 +42,7 @@ class ConversationAgentCore:
         role: str = "analyst",
         artifact_root: str = "artifacts/phase-7",
         clarification: dict[str, Any] | None = None,
+        prior_analysis_assets: tuple[Mapping[str, Any], ...] = (),
     ) -> dict[str, Any]:
         role = str((permission_context or {}).get("role") or role or "analyst")
         run_id = run_id or f"run-{uuid4().hex[:12]}"
@@ -57,7 +59,13 @@ class ConversationAgentCore:
         turn = ConversationRuntime(
             self.store,
             llm_client=self.conversation_llm_client,
-        ).handle_message(thread_id, user_message, role=role, run_id=run_id)
+        ).handle_message(
+            thread_id,
+            user_message,
+            role=role,
+            run_id=run_id,
+            prior_analysis_assets=tuple(prior_analysis_assets or ()),
+        )
         context_manifest = turn.context_manifest.to_dict()
         if turn.run_request and self.workflow_runner is _dry_run_workflow:
             context_manifest = _manifest_with_dry_run_source(context_manifest, run_id, role)
@@ -134,6 +142,7 @@ class ConversationAgentCore:
                 "permission_context": permission_context or {},
                 "artifact_root": artifact_root,
                 "clarification_answer": clarification,
+                "prior_analysis_assets": tuple(prior_analysis_assets or ()),
             }
         )
         if clarification_choice:

@@ -991,6 +991,7 @@ def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
         requested_nodes=intent["requested_nodes"],
         question_families=intent.get("question_families", ()),
         question_text=str(state["request"].get("question") or ""),
+        bound_context=_compiler_bound_context(state),
         prior_analysis_assets=tuple(state["request"].get("prior_analysis_assets") or ()),
     )
     state["compiled_graph"] = compiled
@@ -1603,8 +1604,29 @@ def _normalize_route_requested_nodes(
         requested_nodes=nodes,
         question_families=tuple(_intent_question_family_set(intent)),
         question_text=_intent_business_text(intent),
+        bound_context=dict(intent),
     )
     return compiled.mutations.accepted_graph
+
+
+def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
+    intent = dict(state.get("intent") or {})
+    analysis_route = state.get("analysis_route") or {}
+    request = state.get("request") or {}
+    context = {
+        key: intent.get(key)
+        for key in ("pattern_family", "pattern_params", "time_window", "baseline", "target")
+        if intent.get(key) not in ("", None, {}, [])
+    }
+    if isinstance(request.get("runtime_windows"), dict):
+        context["windows"] = dict(request["runtime_windows"])
+    elif isinstance(analysis_route.get("windows"), dict):
+        context["windows"] = dict(analysis_route["windows"])
+    if request.get("runtime_baselines"):
+        context["baselines"] = tuple(request["runtime_baselines"])
+    elif analysis_route.get("baselines"):
+        context["baselines"] = tuple(analysis_route["baselines"])
+    return context
 
 
 def _intent_business_text(intent: Mapping[str, Any]) -> str:

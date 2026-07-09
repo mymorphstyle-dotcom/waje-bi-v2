@@ -389,6 +389,31 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
             compiled.runtime_plan["baselines"],
         )
 
+    def test_compiler_uses_bound_runtime_context_before_question_text_fallback(self):
+        compiled = compile_graph(
+            question_family="custom_baseline_comparison",
+            target_metric="paid_amount",
+            pattern_family="custom_baseline",
+            requested_nodes=("compare_periods", "driver_decomposition", "answer_verify"),
+            question_text="昨天付费金额为什么变化？",
+            bound_context={
+                "pattern_family": "custom_baseline",
+                "time_window": "2026-04-01..2026-06-30",
+                "baseline": {"label": "2026Q1"},
+                "target": {"label": "2026Q2"},
+            },
+        )
+
+        self.assertEqual(
+            compiled.runtime_plan["windows"],
+            {
+                "target": "2026Q2",
+                "baseline": "2026Q1",
+                "time_window": "2026-04-01..2026-06-30",
+            },
+        )
+        self.assertEqual(compiled.runtime_plan["baselines"], ("custom_baseline",))
+
     def test_compiler_passes_prior_analysis_assets_into_runtime_plan(self):
         compiled = compile_graph(
             question_family="segment_or_factor_attribution",

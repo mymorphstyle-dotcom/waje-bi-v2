@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import re
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 from uuid import uuid4
 
 from bi_agent.conversation.models import (
@@ -75,6 +75,7 @@ class ConversationRuntime:
         contract_version: str = "contracts-v1",
         owner_scope: str = "org-default",
         run_id: str | None = None,
+        prior_analysis_assets: tuple[Mapping[str, Any], ...] = (),
     ) -> ConversationTurnResult:
         thread = self.store.get_thread(thread_id)
         open_clarification = self.store.get_open_clarification(thread_id)
@@ -192,6 +193,7 @@ class ConversationRuntime:
                 context_manifest=manifest.to_dict(),
                 permission_context={"role": role},
                 runtime_budget=_runtime_budget(user_message),
+                prior_analysis_assets=tuple(prior_analysis_assets or ()),
                 requested_nodes=_requested_nodes(user_message, intent_name),
             )
         audit_events = (

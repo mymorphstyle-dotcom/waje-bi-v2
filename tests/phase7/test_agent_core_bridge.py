@@ -288,6 +288,44 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertIs(captured["row_provider"], provider)
 
+    def test_agent_core_passes_prior_assets_to_workflow_request(self):
+        captured: dict[str, object] = {}
+
+        def workflow(request):
+            captured.update(request)
+            return fake_workflow(request)
+
+        store = InMemoryConversationStore()
+        store.create_thread("thread-prior-assets", owner_id="analyst-1")
+        core = ConversationAgentCore(store, workflow_runner=workflow)
+
+        result = core.run_message(
+            thread_id="thread-prior-assets",
+            run_id="run-prior-assets",
+            user_message="继续看哪个渠道影响最大",
+            prior_analysis_assets=(
+                {
+                    "asset_type": "dimension_scan",
+                    "dimension": "channel",
+                    "status": "usable",
+                    "query_ref": "query:channel-scan",
+                },
+            ),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(
+            captured["prior_analysis_assets"],
+            (
+                {
+                    "asset_type": "dimension_scan",
+                    "dimension": "channel",
+                    "status": "usable",
+                    "query_ref": "query:channel-scan",
+                },
+            ),
+        )
+
     def test_agent_core_persists_json_safe_request_when_row_provider_is_object(self):
         captured: dict[str, object] = {}
         provider = object()

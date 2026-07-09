@@ -277,6 +277,7 @@ class ConversationRunRequest:
     context_manifest: Mapping[str, Any]
     permission_context: Mapping[str, Any]
     runtime_budget: Mapping[str, Any]
+    prior_analysis_assets: tuple[Mapping[str, Any], ...] = ()
     requested_nodes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:

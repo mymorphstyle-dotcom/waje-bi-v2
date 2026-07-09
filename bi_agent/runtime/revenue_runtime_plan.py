@@ -20,6 +20,9 @@ CONTRACT_GAP_DESCRIPTORS = {
     "high_value_user_contract_missing": {
         "required_fields": ("user_id", "paid_amount_ngn"),
     },
+    "package_name_contract_missing": {
+        "fields": ("package_name", "package_id", "bundle_id"),
+    },
     "gameplay_contract_missing": {
         "fields": ("gameplay_id", "gameplay", "play_mode"),
     },
@@ -41,22 +44,25 @@ def build_revenue_runtime_plan(
     accepted_graph: Iterable[str],
     diagnostic_axes: Iterable[str],
     question_text: str,
+    bound_context: Mapping[str, Any] | None = None,
     prior_assets: Iterable[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     graph = tuple(dict.fromkeys(str(node) for node in accepted_graph))
     axes = tuple(dict.fromkeys(str(axis) for axis in diagnostic_axes))
-    baselines = _baselines(axes, question_text)
+    normalized_context = dict(bound_context or {})
+    windows = _windows(normalized_context)
+    baselines = _baselines(normalized_context, axes, question_text)
     dimensions = _dimension_candidates(graph, axes)
-    row_shape = _row_shape(graph, axes)
+    row_shape = _row_shape(graph, axes, dimensions)
     asset_refs = _asset_refs(prior_assets)
     return {
         "target_metric": target_metric,
         "diagnostic_axes": axes,
-        "windows": {"target": "yesterday", "history_days": 36},
+        "windows": windows,
         "baselines": baselines,
         "dimension_candidates": dimensions,
         "measures": BASE_MEASURES,
-        "capability_params": _capability_params(graph, baselines, dimensions),
+        "capability_params": _capability_params(graph, baselines, dimensions, normalized_context),
         "query_intents": _query_intents(graph, axes, asset_refs),
         "row_shapes": (row_shape,),
         "contract_gaps": row_shape["contract_gaps"],
@@ -64,7 +70,49 @@ def build_revenue_runtime_plan(
     }
 
 
-def _baselines(axes: tuple[str, ...], question_text: str) -> tuple[str, ...]:
+def _windows(bound_context: Mapping[str, Any]) -> dict[str, Any]:
+    explicit = bound_context.get("windows")
+    if isinstance(explicit, Mapping):
+        normalized = {str(key): value for key, value in explicit.items() if value not in ("", None)}
+        if normalized:
+            return normalized
+
+    pattern_params = bound_context.get("pattern_params")
+    if isinstance(pattern_params, Mapping):
+        pattern_params = dict(pattern_params)
+    else:
+        pattern_params = {}
+    target = _label_from_bound_item(bound_context.get("target")) or pattern_params.get("target_window")
+    baseline = _label_from_bound_item(bound_context.get("baseline")) or pattern_params.get(
+        "baseline_window"
+    )
+    time_window = bound_context.get("time_window")
+    normalized = {
+        "target": target,
+        "baseline": baseline,
+        "time_window": time_window,
+    }
+    normalized = {key: value for key, value in normalized.items() if value not in ("", None)}
+    if normalized:
+        return normalized
+    return {"target": "yesterday", "history_days": 36}
+
+
+def _baselines(
+    bound_context: Mapping[str, Any],
+    axes: tuple[str, ...],
+    question_text: str,
+) -> tuple[str, ...]:
+    explicit = bound_context.get("baselines")
+    if isinstance(explicit, Iterable) and not isinstance(explicit, (str, bytes, Mapping)):
+        normalized = tuple(dict.fromkeys(str(item) for item in explicit if item))
+        if normalized:
+            return normalized
+    if str(bound_context.get("pattern_family") or "") == "custom_baseline":
+        if _label_from_bound_item(bound_context.get("baseline")) or _label_from_bound_item(
+            bound_context.get("target")
+        ):
+            return ("custom_baseline",)
     if "multi_baseline" in axes:
         return ("previous_day", "rolling_7_day_baseline", "same_weekday_last_week")
     if any(token in question_text for token in ("前一天", "昨天", "上涨", "下跌", "变化")):
@@ -83,7 +131,11 @@ def _dimension_candidates(
     return ()
 
 
-def _row_shape(graph: tuple[str, ...], axes: tuple[str, ...]) -> dict[str, Any]:
+def _row_shape(
+    graph: tuple[str, ...],
+    axes: tuple[str, ...],
+    dimensions: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
     graph_set = set(graph)
     optional_fields: list[str] = []
     contract_gaps: list[dict[str, Any]] = []
@@ -101,8 +153,14 @@ def _row_shape(graph: tuple[str, ...], axes: tuple[str, ...]) -> dict[str, Any]:
             ("high_value_amount", "high_value_paid_users", "value_percentile")
         )
         _append_contract_gap(contract_gaps, "high_value_user_contract_missing")
-    if "joint_attribution" in graph_set and "pattern_attribution" in axes:
-        _append_contract_gap(contract_gaps, "gameplay_contract_missing")
+    for field in (
+        item["field"]
+        for item in dimensions
+        if item["field"] not in dimension_keys
+    ):
+        gap_id = DIMENSION_CONTRACT_GAPS.get(field)
+        if gap_id:
+            _append_contract_gap(contract_gaps, gap_id)
     if "event_impact" in axes:
         _append_contract_gap(contract_gaps, "event_context_contract_missing")
     if "evidence_quality" in axes:
@@ -130,11 +188,17 @@ def _capability_params(
     graph: tuple[str, ...],
     baselines: tuple[str, ...],
     dimensions: tuple[dict[str, Any], ...],
+    bound_context: Mapping[str, Any],
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
+    pattern_params = bound_context.get("pattern_params")
+    if isinstance(pattern_params, Mapping):
+        pattern_params = dict(pattern_params)
+    else:
+        pattern_params = {}
     if "rolling_window_compare" in graph:
         params["rolling_window_compare"] = {
-            "window_days": 7,
+            "window_days": int(pattern_params.get("window_days") or 7),
             "baseline": "rolling_7_day_baseline",
         }
     if "segment_contribution" in graph:
@@ -175,3 +239,16 @@ def _query_intents(
     if "event_impact" in axes:
         intents.append("event_context_probe")
     return tuple(dict.fromkeys(intents))
+
+
+DIMENSION_CONTRACT_GAPS = {
+    "package_name": "package_name_contract_missing",
+    "gameplay_id": "gameplay_contract_missing",
+}
+
+
+def _label_from_bound_item(value: Any) -> str:
+    if isinstance(value, Mapping):
+        label = value.get("label") or value.get("name") or value.get("value")
+        return str(label or "")
+    return str(value or "")

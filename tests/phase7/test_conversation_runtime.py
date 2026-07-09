@@ -178,6 +178,37 @@ class ConversationRuntimeTest(unittest.TestCase):
             any(item.source_type == "clarification" for item in result.context_manifest.items)
         )
 
+    def test_runtime_carries_prior_assets_into_run_request(self):
+        store = InMemoryConversationStore()
+        runtime = ConversationRuntime(store)
+        store.create_thread("thread-prior-assets", owner_id="analyst-1")
+
+        result = runtime.handle_message(
+            "thread-prior-assets",
+            "继续看哪个渠道影响最大",
+            prior_analysis_assets=(
+                {
+                    "asset_type": "dimension_scan",
+                    "dimension": "channel",
+                    "status": "usable",
+                    "query_ref": "query:channel-scan",
+                },
+            ),
+        )
+
+        self.assertIsNotNone(result.run_request)
+        self.assertEqual(
+            result.run_request.prior_analysis_assets,
+            (
+                {
+                    "asset_type": "dimension_scan",
+                    "dimension": "channel",
+                    "status": "usable",
+                    "query_ref": "query:channel-scan",
+                },
+            ),
+        )
+
     def test_q_comparison_starts_new_topic_and_outlier_strategy_clarification_resumes_same_topic(self):
         store = InMemoryConversationStore()
         runtime = ConversationRuntime(store)

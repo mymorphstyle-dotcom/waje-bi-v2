@@ -163,6 +163,7 @@ def compile_graph(
     requested_nodes: Iterable[str] = (),
     question_families: Iterable[str] = (),
     question_text: str = "",
+    bound_context: Optional[Mapping[str, Any]] = None,
     prior_analysis_assets: Iterable[Mapping[str, Any]] = (),
     registry: Optional[Mapping[str, RecipeEntry]] = None,
 ) -> CompiledGraph:
@@ -259,6 +260,7 @@ def compile_graph(
             accepted_graph=accepted,
             diagnostic_axes=diagnostic_axes,
             question_text=question_text,
+            bound_context=bound_context,
             prior_assets=prior_analysis_assets,
         )
 
