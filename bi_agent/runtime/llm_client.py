@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 from openai import OpenAI
 
 
-DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_TIMEOUT_SECONDS: float | None = None
 DEFAULT_MAX_ATTEMPTS = 3
 
 
@@ -47,7 +47,7 @@ class OpenAICompatibleLLMClient:
         model: str,
         api_key: str,
         base_url: str = "",
-        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        timeout_seconds: float | None = DEFAULT_TIMEOUT_SECONDS,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     ):
         self.provider = provider
@@ -80,13 +80,7 @@ class OpenAICompatibleLLMClient:
             or ""
         ).strip()
         base_url = env.get("WAJE_LLM_BASE_URL", "").strip()
-        timeout_text = env.get("WAJE_LLM_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS))
-        try:
-            timeout_seconds = float(timeout_text)
-        except ValueError as exc:
-            raise LLMConfigurationError("invalid_llm_timeout") from exc
-        if timeout_seconds <= 0:
-            raise LLMConfigurationError("invalid_llm_timeout")
+        timeout_seconds = _parse_timeout_seconds(env.get("WAJE_LLM_TIMEOUT_SECONDS"))
 
         if provider not in {"openai", "openai_compatible"}:
             raise LLMConfigurationError("unsupported_llm_provider")
@@ -183,7 +177,7 @@ class OpenAICompatibleLLMClient:
 def _request_openai_json_in_subprocess(
     config: dict[str, Any],
     messages: Sequence[Mapping[str, str]],
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     *,
     request_worker: Callable[
         [dict[str, Any], Sequence[Mapping[str, str]]], dict[str, Any]
@@ -261,8 +255,8 @@ def _request_openai_json_once(
 
 
 @contextmanager
-def _wall_clock_timeout(seconds: float) -> Iterator[None]:
-    if threading.current_thread() is not threading.main_thread():
+def _wall_clock_timeout(seconds: float | None) -> Iterator[None]:
+    if seconds is None or threading.current_thread() is not threading.main_thread():
         yield
         return
 
@@ -280,6 +274,21 @@ def _wall_clock_timeout(seconds: float) -> Iterator[None]:
         signal.signal(signal.SIGALRM, previous_handler)
         if previous_timer[0] > 0:
             signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+
+
+def _parse_timeout_seconds(timeout_text: str | None) -> float | None:
+    if timeout_text is None:
+        return None
+    normalized = timeout_text.strip().lower()
+    if normalized in {"", "0", "none", "disabled", "off", "false", "no"}:
+        return None
+    try:
+        timeout_seconds = float(normalized)
+    except ValueError as exc:
+        raise LLMConfigurationError("invalid_llm_timeout") from exc
+    if timeout_seconds <= 0:
+        raise LLMConfigurationError("invalid_llm_timeout")
+    return timeout_seconds
 
 
 def _parse_json_object(content: str) -> dict[str, Any]:

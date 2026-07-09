@@ -1027,6 +1027,31 @@ class LLMWorkflowTest(unittest.TestCase):
         with self.assertRaisesRegex(LLMConfigurationError, "missing_llm_model"):
             OpenAICompatibleLLMClient.from_env({})
 
+    def test_llm_client_waits_indefinitely_by_default(self):
+        client = OpenAICompatibleLLMClient.from_env(
+            {
+                "WAJE_LLM_PROVIDER": "openai_compatible",
+                "WAJE_LLM_MODEL": "patient-model",
+                "WAJE_LLM_API_KEY": "test-key",
+            }
+        )
+
+        self.assertIsNone(client.timeout_seconds)
+
+    def test_llm_client_accepts_disabled_timeout_env(self):
+        for timeout_value in ("0", "none", "disabled", ""):
+            with self.subTest(timeout_value=timeout_value):
+                client = OpenAICompatibleLLMClient.from_env(
+                    {
+                        "WAJE_LLM_PROVIDER": "openai_compatible",
+                        "WAJE_LLM_MODEL": "patient-model",
+                        "WAJE_LLM_API_KEY": "test-key",
+                        "WAJE_LLM_TIMEOUT_SECONDS": timeout_value,
+                    }
+                )
+
+                self.assertIsNone(client.timeout_seconds)
+
     def test_llm_client_enforces_wall_clock_timeout(self):
         class SlowCompletions:
             def create(self, **kwargs):

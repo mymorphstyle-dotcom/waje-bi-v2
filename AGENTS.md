@@ -14,6 +14,12 @@
 - 当测试暴露问题时，先说明它代表的可复用失败类型；如果只能靠单例规则通过，应暂停并重新设计修复点。
 - 关键词、路由和澄清策略可以使用业务表达触发，但必须覆盖一类稳定业务意图，并保留合同、权限、证据和 verifier 的硬边界。
 
+## LLM Runtime Principle
+
+- 高价值 LLM 节点默认等待真实回答完成，不用短超时截断业务判断、洞察生成或最终总结。
+- LLM 子进程隔离用于保护主进程稳定性；只有显式配置正数 `WAJE_LLM_TIMEOUT_SECONDS` 时，才允许 kill 子进程并按统一 LLM client 重试策略重试。
+- timeout、retry、provider 熔断必须集中在 LLM provider 层，业务节点不写分散重试循环，也不使用本地模板补高价值回答。
+
 ## Clarification Principle
 
 - 把 ask question 当成可选的澄清分支，用来降低业务误判、证据误用和无效执行成本。
