@@ -143,7 +143,7 @@ class ConversationAgentCore:
                 "permission_context": permission_context or {},
                 "artifact_root": artifact_root,
                 "clarification_answer": clarification,
-                "prior_analysis_assets": tuple(prior_analysis_assets or ()),
+                "prior_analysis_assets": tuple(turn.run_request.prior_analysis_assets or ()),
             }
         )
         if clarification_choice:

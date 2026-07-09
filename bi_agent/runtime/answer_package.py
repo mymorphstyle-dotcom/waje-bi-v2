@@ -33,6 +33,7 @@ def build_answer_package(
     follow_up_questions: Sequence[str] = (),
     compiler_runtime_plan: Optional[Mapping[str, Any]] = None,
     contract_gap_diagnostics: Optional[Sequence[Mapping[str, Any]]] = None,
+    row_query_plan: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
     semantic_audit = {} if semantic_audit is None else semantic_audit
@@ -52,6 +53,7 @@ def build_answer_package(
     contract_gap_diagnostics = (
         () if contract_gap_diagnostics is None else contract_gap_diagnostics
     )
+    row_query_plan = {} if row_query_plan is None else row_query_plan
     visible_limitations = collect_visible_limitations(evidence)
     verifier = verify_answer_package(
         draft_claims=draft_claims,
@@ -79,6 +81,7 @@ def build_answer_package(
         "causal_evidence_dossier": to_jsonable(causal_evidence_dossier),
         "compiler_runtime_plan": to_jsonable(compiler_runtime_plan),
         "contract_gap_diagnostics": to_jsonable(contract_gap_diagnostics),
+        "row_query_plan": to_jsonable(row_query_plan),
     }
 
     return {

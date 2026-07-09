@@ -1100,6 +1100,8 @@ def _fetch_runtime_rows(state: WorkflowState) -> WorkflowState:
         "query_id": plan.query_id,
         "required_fields": list(plan.required_fields),
         "dimension_keys": list(plan.dimension_keys),
+        "query_intent": _row_query_intent(plan.query_id, plan.reason),
+        "reason": plan.reason,
         "compiler_runtime_plan": to_jsonable(
             state["request"].get("compiler_runtime_plan", {})
         ),
@@ -1126,6 +1128,8 @@ def _fetch_runtime_rows(state: WorkflowState) -> WorkflowState:
     state["request"]["runtime_rows_source"] = "clickhouse"
     state["request"]["joint_dimension_keys"] = tuple(plan.dimension_keys)
     state["request"]["result_refs"] = tuple(result.result_refs)
+    state["row_query_plan"]["query_hash"] = result.query_hash
+    state["row_query_plan"]["result_refs"] = list(result.result_refs)
     if result.query_hash:
         state["sql_hash"] = result.query_hash
     if state.get("schema") is not None:
@@ -2646,6 +2650,12 @@ def _compact_failure_reason(reason: Any) -> str:
     return text[:2000]
 
 
+def _row_query_intent(query_id: str, reason: str) -> str:
+    if query_id and ":" in query_id:
+        return str(query_id).rsplit(":", 1)[-1]
+    return str(reason or "")
+
+
 def _is_timeout_failure(exc: Exception) -> bool:
     return "timeout" in str(exc).lower()
 
@@ -2692,6 +2702,7 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         follow_up_questions=state.get("follow_up_questions", ()),
         compiler_runtime_plan=request.get("compiler_runtime_plan", {}),
         contract_gap_diagnostics=contract_gap_diagnostics,
+        row_query_plan=state.get("row_query_plan", {}),
     )
 
 

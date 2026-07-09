@@ -17,6 +17,7 @@ from bi_agent.conversation.models import (
     ThreadState,
     TopicState,
 )
+from bi_agent.runtime.analysis_assets import merge_analysis_assets
 
 
 class InMemoryConversationStore:
@@ -183,7 +184,10 @@ class InMemoryConversationStore:
         topic_id: str,
         assets: Sequence[Mapping[str, Any]],
     ) -> None:
-        self.analysis_assets[(thread_id, topic_id)].extend(dict(asset) for asset in assets)
+        key = (thread_id, topic_id)
+        self.analysis_assets[key] = list(
+            merge_analysis_assets(self.analysis_assets.get(key, ()), assets)
+        )
         self.add_audit_event(
             "analysis_assets_recorded",
             thread_id=thread_id,

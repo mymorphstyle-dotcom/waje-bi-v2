@@ -130,7 +130,7 @@ class RevenueRuntimePlanTest(unittest.TestCase):
             prior_assets=(
                 {
                     "asset_type": "dimension_scan",
-                    "dimension": "channel",
+                    "dimensions": ("channel",),
                     "status": "usable",
                     "query_ref": "query:channel-scan",
                 },
@@ -150,7 +150,7 @@ class RevenueRuntimePlanTest(unittest.TestCase):
             prior_assets=(
                 {
                     "asset_type": "dimension_scan",
-                    "dimension": "region",
+                    "dimensions": ("region",),
                     "status": "usable",
                     "query_ref": "query:region-scan",
                 },

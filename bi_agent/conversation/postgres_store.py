@@ -19,6 +19,7 @@ from bi_agent.conversation.models import (
     ThreadState,
     TopicState,
 )
+from bi_agent.runtime.analysis_assets import asset_dedup_key, merge_analysis_assets
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -404,9 +405,24 @@ class PostgresConversationStore:
         topic_id: str,
         assets: tuple[dict[str, Any], ...] | list[dict[str, Any]],
     ) -> None:
-        for asset in assets:
+        merged_assets = merge_analysis_assets(
+            self.list_analysis_assets(thread_id, topic_id),
+            assets,
+        )
+        self._execute(
+            """
+            DELETE FROM waje_runtime.analysis_assets
+            WHERE thread_id = %(thread_id)s
+              AND topic_id = %(topic_id)s
+            """,
+            {"thread_id": thread_id, "topic_id": topic_id},
+        )
+        for index, asset in enumerate(merged_assets):
             payload = dict(asset)
-            asset_id = str(payload.get("asset_id") or f"analysis-asset:{uuid4().hex[:12]}")
+            asset_id = str(
+                payload.get("asset_id")
+                or f"analysis-asset:{index:02d}:{asset_dedup_key(payload)[:16]}"
+            )
             self._execute(
                 """
                 INSERT INTO waje_runtime.analysis_assets(
@@ -435,7 +451,7 @@ class PostgresConversationStore:
             thread_id=thread_id,
             topic_id=topic_id,
             ref=topic_id,
-            payload={"count": len(assets)},
+            payload={"count": len(merged_assets)},
         )
 
     def list_analysis_assets(self, thread_id: str, topic_id: str) -> tuple[dict[str, Any], ...]:

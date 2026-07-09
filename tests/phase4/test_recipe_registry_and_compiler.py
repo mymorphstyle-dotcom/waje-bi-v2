@@ -423,7 +423,7 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
             prior_analysis_assets=(
                 {
                     "asset_type": "dimension_scan",
-                    "dimension": "channel",
+                    "dimensions": ("channel",),
                     "status": "usable",
                     "query_ref": "query:channel-scan",
                 },

@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from bi_agent.runtime.analysis_assets import asset_dimensions
+
 
 BASE_MEASURES = ("amount", "paid_users", "orders", "first_paid_users")
 REQUIRED_FIELDS = ("period", "group", *BASE_MEASURES)
@@ -227,10 +229,10 @@ def _reusable_assets(
     for asset in prior_assets:
         if not _is_reusable_dimension_scan_asset(asset):
             continue
-        dimension = str(asset.get("dimension") or "")
-        if dimension not in needed_dimensions:
+        dimensions = set(asset_dimensions(asset)).intersection(needed_dimensions)
+        if not dimensions:
             continue
-        covered.add(dimension)
+        covered.update(dimensions)
         refs.append(str(asset["query_ref"]))
     if not needed_dimensions.issubset(covered):
         return ()

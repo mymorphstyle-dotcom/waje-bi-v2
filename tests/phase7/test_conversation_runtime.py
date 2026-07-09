@@ -203,6 +203,7 @@ class ConversationRuntimeTest(unittest.TestCase):
                 {
                     "asset_type": "dimension_scan",
                     "dimension": "channel",
+                    "dimensions": ["channel"],
                     "status": "usable",
                     "query_ref": "query:channel-scan",
                 },
