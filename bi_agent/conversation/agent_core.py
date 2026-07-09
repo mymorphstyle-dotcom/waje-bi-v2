@@ -23,10 +23,12 @@ class ConversationAgentCore:
         *,
         workflow_runner: Optional[WorkflowRunner] = None,
         conversation_llm_client: Any = None,
+        row_provider: Any = None,
     ) -> None:
         self.store = store
         self.workflow_runner = workflow_runner or run_pattern_workflow
         self.conversation_llm_client = conversation_llm_client
+        self.row_provider = row_provider
 
     def run_message(
         self,
@@ -136,6 +138,8 @@ class ConversationAgentCore:
         )
         if clarification_choice:
             request["clarification_choice"] = clarification_choice
+        if self.row_provider is not None:
+            request["row_provider"] = self.row_provider
         self.store.upsert_run(
             run_id,
             thread_id=thread_id,
@@ -215,9 +219,15 @@ class ConversationAgentCore:
         real_clickhouse: bool = False,
     ) -> "ConversationAgentCore":
         if real_llm or real_clickhouse:
+            row_provider = None
+            if real_clickhouse:
+                from bi_agent.runtime.clickhouse_revenue_rows import ClickHouseRevenueRows
+
+                row_provider = ClickHouseRevenueRows.from_env()
             return cls(
                 PostgresConversationStore.from_env(),
                 conversation_llm_client=_conversation_llm_from_env() if real_llm else None,
+                row_provider=row_provider,
             )
         return cls(InMemoryConversationStore(), workflow_runner=_dry_run_workflow)
 

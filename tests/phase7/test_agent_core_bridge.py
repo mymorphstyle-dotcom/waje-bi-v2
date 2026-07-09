@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.runtime import ConversationRuntime
@@ -260,6 +261,42 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertIn("clarification_choice", captured)
         self.assertEqual(captured["clarification_choice"]["outlier_removal_strategy"], "daily_remove_top_positive_day")
         self.assertIn("answer_text", captured["clarification_choice"])
+
+    def test_agent_core_passes_row_provider_to_workflow_request(self):
+        captured: dict[str, object] = {}
+        provider = object()
+
+        def workflow(request):
+            captured.update(request)
+            return fake_workflow(request)
+
+        store = InMemoryConversationStore()
+        store.create_thread("thread-row-provider", owner_id="analyst-1")
+        core = ConversationAgentCore(
+            store,
+            workflow_runner=workflow,
+            row_provider=provider,
+        )
+
+        result = core.run_message(
+            thread_id="thread-row-provider",
+            run_id="run-row-provider",
+            user_message="昨天付费金额为什么上涨/下跌？",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIs(captured["row_provider"], provider)
+
+    def test_agent_core_from_environment_real_clickhouse_configures_row_provider(self):
+        from bi_agent.runtime.clickhouse_revenue_rows import ClickHouseRevenueRows
+
+        with patch(
+            "bi_agent.conversation.agent_core.PostgresConversationStore.from_env",
+            return_value=InMemoryConversationStore(),
+        ):
+            core = ConversationAgentCore.from_environment(real_clickhouse=True)
+
+        self.assertIsInstance(core.row_provider, ClickHouseRevenueRows)
 
     def test_follow_up_hints_route_user_mix_and_high_value_capabilities(self):
         store = InMemoryConversationStore()
