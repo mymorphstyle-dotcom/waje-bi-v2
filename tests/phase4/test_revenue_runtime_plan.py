@@ -197,6 +197,23 @@ class RevenueRuntimePlanTest(unittest.TestCase):
         self.assertIn("paid_frequency", driver_input["required_fields"])
         self.assertEqual(driver_input["gap_policy"], "degrade_to_available_components")
 
+    def test_weekly_pattern_compiles_time_bucket_scan_contract(self):
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=("pattern_scan", "answer_verify"),
+            diagnostic_axes=("time_pattern",),
+            question_text="最近付费金额是否存在固定规律，比如周末更高？",
+            bound_context={"pattern_family": "weekly"},
+            prior_assets=(),
+        )
+
+        self.assertIn("time_bucket_scan", plan["query_intents"])
+        bucket = plan["time_bucket_contracts"][0]
+        self.assertEqual(bucket["bucket_family"], "weekly")
+        self.assertEqual(bucket["required_fields"], ("week", "weekday", "amount"))
+        pattern_input = plan["capability_inputs"]["pattern_scan"]
+        self.assertEqual(pattern_input["preferred_query_intents"][0], "time_bucket_scan")
+
     def test_candidate_only_dimensions_require_contract_gap_descriptors(self):
         plan = build_revenue_runtime_plan(
             target_metric="paid_amount",

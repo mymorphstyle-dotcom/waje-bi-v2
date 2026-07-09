@@ -74,6 +74,10 @@ def build_revenue_runtime_plan(
     schema_fields = _schema_fields(normalized_context)
     dimensions = _dimension_candidates(graph, axes)
     row_shape = _row_shape(graph, axes, dimensions, schema_fields=schema_fields)
+    time_bucket_contracts = _time_bucket_contracts(
+        graph,
+        pattern_family=str(normalized_context.get("pattern_family") or ""),
+    )
     schema_fingerprint = _schema_fingerprint(
         normalized_context,
         row_shape=row_shape,
@@ -94,7 +98,13 @@ def build_revenue_runtime_plan(
         required_fields=tuple(row_shape["required_fields"]),
     )
     reusable_assets = tuple(item["query_ref"] for item in reusable_asset_rows)
-    query_intents = _query_intents(graph, axes, reusable_assets, row_shape)
+    query_intents = _query_intents(
+        graph,
+        axes,
+        reusable_assets,
+        row_shape,
+        time_bucket_contracts=time_bucket_contracts,
+    )
     reuse_contract = build_dimension_scan_reuse_contract(
         target_metric=target_metric,
         scope=scope,
@@ -123,8 +133,14 @@ def build_revenue_runtime_plan(
         "measures": BASE_MEASURES,
         "metric_component_contracts": _metric_component_contracts(row_shape),
         "capability_params": _capability_params(graph, baselines, dimensions, normalized_context),
-        "capability_inputs": _capability_inputs(graph, row_shape, query_intents),
+        "capability_inputs": _capability_inputs(
+            graph,
+            row_shape,
+            query_intents,
+            time_bucket_contracts=time_bucket_contracts,
+        ),
         "query_intents": query_intents,
+        "time_bucket_contracts": time_bucket_contracts,
         "row_shapes": (row_shape,),
         "contract_gaps": row_shape["contract_gaps"],
         "asset_inputs_used": reusable_assets,
@@ -344,8 +360,14 @@ def _query_intents(
     axes: tuple[str, ...],
     reusable_assets: tuple[str, ...],
     row_shape: Mapping[str, Any],
+    *,
+    time_bucket_contracts: tuple[dict[str, Any], ...] = (),
 ) -> tuple[str, ...]:
     intents = ["daily_metric_baselines"]
+    if "pattern_scan" in graph and any(
+        item.get("status") == "supported" for item in time_bucket_contracts
+    ):
+        intents.append("time_bucket_scan")
     if reusable_assets:
         intents.append("dimension_scan_reuse")
     if "segment_contribution" in graph and not reusable_assets:
@@ -369,6 +391,8 @@ def _capability_inputs(
     graph: tuple[str, ...],
     row_shape: Mapping[str, Any],
     query_intents: tuple[str, ...],
+    *,
+    time_bucket_contracts: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, dict[str, Any]]:
     inputs: dict[str, dict[str, Any]] = {}
     required_fields = tuple(row_shape.get("required_fields") or ())
@@ -426,6 +450,22 @@ def _capability_inputs(
                 "required_fields": required_fields,
                 "dimension_keys": (),
                 "gap_policy": "report_data_quality_limitations",
+            }
+        elif capability == "pattern_scan":
+            bucket_fields = tuple(
+                field
+                for contract in time_bucket_contracts
+                if contract.get("status") == "supported"
+                for field in contract.get("required_fields", ())
+            )
+            inputs[capability] = {
+                "preferred_query_intents": _available_intents(
+                    query_intents,
+                    ("time_bucket_scan", "daily_metric_baselines"),
+                ),
+                "required_fields": bucket_fields or required_fields,
+                "dimension_keys": (),
+                "gap_policy": "degrade_to_available_time_buckets",
             }
     return inputs
 
@@ -501,6 +541,43 @@ def _metric_component_contracts(row_shape: Mapping[str, Any]) -> tuple[dict[str,
         }
     )
     return tuple(contracts)
+
+
+def _time_bucket_contracts(
+    graph: tuple[str, ...],
+    *,
+    pattern_family: str,
+) -> tuple[dict[str, Any], ...]:
+    if "pattern_scan" not in graph:
+        return ()
+    if pattern_family == "weekly":
+        return (
+            {
+                "bucket_family": "weekly",
+                "required_fields": ("week", "weekday", "amount"),
+                "status": "supported",
+                "date_basis": "business_date_lagos",
+            },
+        )
+    if pattern_family == "intra_period":
+        return (
+            {
+                "bucket_family": "month_phase",
+                "required_fields": ("month", "phase", "amount"),
+                "status": "supported",
+                "date_basis": "business_date_lagos",
+            },
+        )
+    if pattern_family in {"hourly", "intra_day"}:
+        return (
+            {
+                "bucket_family": "hour",
+                "required_fields": ("day", "hour", "amount"),
+                "status": "missing_contract",
+                "gap_id": "hourly_time_contract_missing",
+            },
+        )
+    return ()
 
 
 DIMENSION_CONTRACT_GAPS = {

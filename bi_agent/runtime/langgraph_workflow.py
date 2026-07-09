@@ -1638,11 +1638,12 @@ def _capability_query_intents(capability_id: str) -> tuple[str, ...]:
         "rolling_window_compare",
         "outlier_scan",
         "outlier_contribution",
-        "pattern_scan",
     }:
         return ("daily_metric_baselines", "dimension_scan", "joint_candidate_scan", "clickhouse_revenue_rows")
     if capability_id == "driver_decomposition":
         return ("component_driver_scan", "daily_metric_baselines", "dimension_scan", "joint_candidate_scan", "clickhouse_revenue_rows")
+    if capability_id == "pattern_scan":
+        return ("time_bucket_scan", "daily_metric_baselines", "dimension_scan", "joint_candidate_scan", "clickhouse_revenue_rows")
     return ("clickhouse_revenue_rows", "daily_metric_baselines", "dimension_scan", "joint_candidate_scan")
 
 

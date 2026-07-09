@@ -16,6 +16,7 @@ EXECUTABLE_INTENTS = frozenset(
         "joint_candidate_scan",
         "high_value_scan",
         "component_driver_scan",
+        "time_bucket_scan",
         "data_quality_probe",
     )
 )
@@ -157,6 +158,13 @@ def build_clickhouse_query_specs(
                 claim_use="driver_component_diagnostics",
                 optional_fields=_string_tuple(row_shape.get("optional_fields")),
             )
+        elif intent == "time_bucket_scan":
+            spec = _time_bucket_query(
+                plan,
+                table=table,
+                run_id=run_id,
+                where_clause=where_clause,
+            )
         else:
             spec = _data_quality_probe(
                 table=table,
@@ -168,6 +176,73 @@ def build_clickhouse_query_specs(
         if spec:
             specs.append(spec)
     return tuple(specs)
+
+
+def _time_bucket_query(
+    plan: Mapping[str, Any],
+    *,
+    table: str,
+    run_id: str,
+    where_clause: str,
+) -> dict[str, Any]:
+    contract = _first_time_bucket_contract(plan)
+    if not contract:
+        return _blocked_spec(
+            run_id=run_id,
+            intent="time_bucket_scan",
+            required_fields=("amount",),
+            dimension_keys=(),
+            reason="missing_time_bucket_contract",
+        )
+    required_fields = _string_tuple(contract.get("required_fields")) or ("amount",)
+    if contract.get("status") != "supported":
+        return _blocked_spec(
+            run_id=run_id,
+            intent="time_bucket_scan",
+            required_fields=required_fields,
+            dimension_keys=(),
+            reason=str(contract.get("gap_id") or "time_bucket_contract_missing"),
+        )
+    bucket_family = str(contract.get("bucket_family") or "")
+    if bucket_family == "weekly":
+        bucket_sql = (
+            "toMonday(business_date_lagos) AS week",
+            "toDayOfWeek(business_date_lagos) AS weekday",
+        )
+        group_by = ("week", "weekday")
+    elif bucket_family == "month_phase":
+        bucket_sql = (
+            "toStartOfMonth(business_date_lagos) AS month",
+            "multiIf(toDayOfMonth(business_date_lagos) <= 10, 'start', "
+            "toDayOfMonth(business_date_lagos) <= 20, 'mid', 'end') AS phase",
+        )
+        group_by = ("month", "phase")
+    else:
+        return _blocked_spec(
+            run_id=run_id,
+            intent="time_bucket_scan",
+            required_fields=required_fields,
+            dimension_keys=(),
+            reason="unsupported_time_bucket_family",
+        )
+    return {
+        "query_id": f"{run_id}:time_bucket_scan",
+        "intent": "time_bucket_scan",
+        "sql_text": "\n".join(
+            (
+                "SELECT",
+                _indented((*bucket_sql, *_measure_sql(required_fields))),
+                f"FROM {table}",
+                where_clause,
+                f"GROUP BY {', '.join(group_by)}",
+                f"LIMIT {MAX_ROWS}",
+            )
+        ),
+        "required_fields": required_fields,
+        "dimension_keys": (),
+        "claim_use": "time_pattern_diagnostics",
+        "reason": "",
+    }
 
 
 def _grouped_metric_query(
@@ -524,6 +599,16 @@ def _first_row_shape(plan: Mapping[str, Any]) -> Mapping[str, Any]:
     for row_shape in row_shapes:
         if isinstance(row_shape, Mapping) and row_shape.get("source") in (None, "clickhouse"):
             return row_shape
+    return {}
+
+
+def _first_time_bucket_contract(plan: Mapping[str, Any]) -> Mapping[str, Any]:
+    contracts = plan.get("time_bucket_contracts") or ()
+    if not isinstance(contracts, Sequence) or isinstance(contracts, (str, bytes)):
+        return {}
+    for contract in contracts:
+        if isinstance(contract, Mapping):
+            return contract
     return {}
 
 

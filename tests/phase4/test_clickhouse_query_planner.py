@@ -102,6 +102,30 @@ class ClickHouseQueryPlannerTest(unittest.TestCase):
         self.assertIn("paid_frequency", specs[0]["required_fields"])
         self.assertIn("payment_success_rate", specs[0]["required_fields"])
 
+    def test_time_bucket_scan_builds_weekly_pattern_query(self):
+        specs = build_clickhouse_query_specs(
+            {
+                "windows": {"target": "yesterday", "history_days": 36},
+                "query_intents": ("time_bucket_scan",),
+                "time_bucket_contracts": (
+                    {
+                        "bucket_family": "weekly",
+                        "required_fields": ("week", "weekday", "amount"),
+                        "status": "supported",
+                    },
+                ),
+            },
+            table="paid_order_success_clean_20240101_20260704",
+            run_id="run-weekly",
+        )
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["intent"], "time_bucket_scan")
+        self.assertIn("toMonday(business_date_lagos) AS week", specs[0]["sql_text"])
+        self.assertIn("toDayOfWeek(business_date_lagos) AS weekday", specs[0]["sql_text"])
+        self.assertIn("GROUP BY week, weekday", specs[0]["sql_text"])
+        self.assertEqual(specs[0]["required_fields"], ("week", "weekday", "amount"))
+
     def test_unsafe_table_returns_no_specs(self):
         specs = build_clickhouse_query_specs(
             {
