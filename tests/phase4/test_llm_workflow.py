@@ -1,7 +1,9 @@
 import json
+import multiprocessing
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from bi_agent.runtime import llm_client as llm_client_module
 from bi_agent.runtime.compiler import compile_graph
@@ -56,6 +58,23 @@ def spawn_safe_stuck_llm_request(config, messages):
         "content": '{"ok": true}',
         "usage": {},
     }
+
+
+class SpawnTimeoutThenSuccessWorker:
+    def __init__(self):
+        self.attempts = multiprocessing.Value("i", 0)
+
+    def __call__(self, config, messages):
+        with self.attempts.get_lock():
+            self.attempts.value += 1
+            attempt = self.attempts.value
+        if attempt == 1:
+            time.sleep(2)
+        return {
+            "response_id": "subprocess-retry-success",
+            "content": '{"ok": true}',
+            "usage": {},
+        }
 
 
 def _llm_input_payload(answer_package, task):
@@ -989,6 +1008,20 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.audit["response_id"], "subprocess-response")
         self.assertEqual(result.audit["attempt_count"], 1)
 
+    def test_llm_client_does_not_fall_back_to_fork_context(self):
+        class ForkContext:
+            def get_start_method(self):
+                return "fork"
+
+        def fake_get_context(method=None):
+            if method == "spawn":
+                raise ValueError("spawn unavailable")
+            return ForkContext()
+
+        with patch.object(llm_client_module.multiprocessing, "get_context", fake_get_context):
+            with self.assertRaisesRegex(LLMConfigurationError, "spawn_start_method_unavailable"):
+                llm_client_module._process_context()
+
     def test_llm_client_kills_stuck_subprocess_without_workflow_retry(self):
         client = OpenAICompatibleLLMClient(
             provider="openai_compatible",
@@ -1005,6 +1038,29 @@ class LLMWorkflowTest(unittest.TestCase):
                 messages=[{"role": "user", "content": "{}"}],
                 required_keys=["ok"],
             )
+
+    def test_llm_client_retries_after_killing_timed_out_subprocess(self):
+        client = OpenAICompatibleLLMClient(
+            provider="openai_compatible",
+            model="subprocess-model",
+            api_key="test-key",
+            timeout_seconds=0.5,
+            max_attempts=2,
+        )
+        worker = SpawnTimeoutThenSuccessWorker()
+        client._request_worker = worker
+
+        result = client.invoke_json(
+            task="business_intent",
+            prompt_version="test",
+            messages=[{"role": "user", "content": "{}"}],
+            required_keys=["ok"],
+        )
+
+        self.assertEqual(result.output["ok"], True)
+        self.assertEqual(worker.attempts.value, 2)
+        self.assertEqual(result.audit["response_id"], "subprocess-retry-success")
+        self.assertEqual(result.audit["attempt_count"], 2)
 
     def test_llm_narrative_fallback_keeps_machine_tokens(self):
         output = _localize_narrative_fields(

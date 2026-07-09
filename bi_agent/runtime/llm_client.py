@@ -210,9 +210,12 @@ def _request_openai_json_in_subprocess(
 
 def _process_context():
     try:
-        return multiprocessing.get_context("spawn")
-    except ValueError:
-        return multiprocessing.get_context()
+        ctx = multiprocessing.get_context("spawn")
+    except ValueError as exc:
+        raise LLMConfigurationError("spawn_start_method_unavailable") from exc
+    if ctx.get_start_method() != "spawn":
+        raise LLMConfigurationError("spawn_start_method_unavailable")
+    return ctx
 
 
 def _openai_request_child(
