@@ -2956,6 +2956,99 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.answer_package["quality_gate"]["display_status"], "ready")
         self.assertIn("我对问题的理解是", result.answer_package["final_answer"])
 
+    def test_final_business_summary_accepts_section_keys_from_structured_output(self):
+        class SectionKeySummaryLLM(FakeLLMClient):
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                if task == "final_business_summary":
+                    self.calls.append(task)
+                    output = {
+                        "summary_text": "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。",
+                        "分析脉络：": "我检查了目标窗口、基线窗口和证据边界。",
+                        "关键发现：": "当前证据能把排查方向收敛到周期内付费金额模式。",
+                        "最终结论：": (
+                            "已验证结论是：2024-01..2026-05 的周期内付费金额模式中位提升 20.0%，"
+                            "方向一致比例 100.0%，覆盖 29 个可比周期。"
+                        ),
+                        "需要注意：": "机制证据暂不可用，还不能直接说这是唯一原因或已被因果证明。",
+                    }
+                    return FakeLLMResult(
+                        output,
+                        {
+                            "task": task,
+                            "provider": "fake",
+                            "model": "fake-model",
+                            "prompt_version": prompt_version,
+                            "response_id": f"fake-{task}",
+                            "messages": [dict(message) for message in messages],
+                            "required_keys": list(required_keys),
+                            "raw_response_content": "{}",
+                            "started_at": "2026-01-01T00:00:00+00:00",
+                            "finished_at": "2026-01-01T00:00:00+00:00",
+                            "duration_ms": 0.0,
+                            "input_hash": f"input-{task}",
+                            "output_hash": f"output-{task}",
+                            "usage": {},
+                            "structured_output": output,
+                        },
+                    )
+                if task == "final_answer_audit":
+                    self.calls.append(task)
+                    output = {
+                        "display_status": "ready",
+                        "hard_blockers": [],
+                        "repairable_warnings": [],
+                        "retry_instruction": "",
+                        "business_audit_summary": "答案满足展示边界。",
+                        "display_summary": "答案满足展示边界。",
+                    }
+                    return FakeLLMResult(
+                        output,
+                        {
+                            "task": task,
+                            "provider": "fake",
+                            "model": "fake-model",
+                            "prompt_version": prompt_version,
+                            "response_id": f"fake-{task}",
+                            "messages": [dict(message) for message in messages],
+                            "required_keys": list(required_keys),
+                            "raw_response_content": "{}",
+                            "started_at": "2026-01-01T00:00:00+00:00",
+                            "finished_at": "2026-01-01T00:00:00+00:00",
+                            "duration_ms": 0.0,
+                            "input_hash": f"input-{task}",
+                            "output_hash": f"output-{task}",
+                            "usage": {},
+                            "structured_output": output,
+                        },
+                    )
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
+
+        fake = SectionKeySummaryLLM()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "section-key-summary",
+                    "llm_client": fake,
+                    "question": "Q2 相比 Q1 付费金额为什么变了？",
+                }
+            )
+
+        final_answer = result.answer_package["final_answer"]
+        self.assertIn("分析脉络", final_answer)
+        self.assertIn("关键发现", final_answer)
+        self.assertIn("最终结论", final_answer)
+        self.assertIn("需要注意", final_answer)
+        self.assertNotIn(
+            "missing_required_summary_markers",
+            result.answer_package["quality_gate"]["final_summary_display_warnings"],
+        )
+
     def test_final_business_summary_timeout_keeps_answer_synthesis_with_audit_marker(self):
         class TimeoutOnFinalSummaryLLM(FakeLLMClient):
             def invoke_json(self, *, task, prompt_version, messages, required_keys):

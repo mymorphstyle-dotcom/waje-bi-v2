@@ -3880,7 +3880,7 @@ def _apply_final_business_summary_output(
     output: Mapping[str, Any],
 ) -> None:
     state["final_business_summary"] = _weaken_unsupported_causal_wording(
-        output.get("summary_text", "")
+        _final_business_summary_text(output)
     )
     state["final_business_summary"] = _normalize_visible_business_text(
         state["final_business_summary"],
@@ -3890,6 +3890,40 @@ def _apply_final_business_summary_output(
         state["final_business_summary"],
         state,
     )
+
+
+def _final_business_summary_text(output: Mapping[str, Any]) -> str:
+    text = str(output.get("summary_text") or "").strip()
+    sections = [
+        ("我对问题的理解是：", ("我对问题的理解是", "我对问题的理解是：")),
+        ("分析脉络：", ("分析脉络", "分析脉络：")),
+        ("关键发现：", ("关键发现", "关键发现：")),
+        ("最终结论：", ("最终结论", "最终结论：")),
+        ("需要注意：", ("需要注意", "需要注意：")),
+    ]
+    parts = [text] if text else []
+    for label, keys in sections:
+        if label.rstrip("：") in text:
+            continue
+        value = _first_section_value(output, keys)
+        if value:
+            parts.append(_format_summary_section(label, value))
+    return "\n".join(parts)
+
+
+def _first_section_value(output: Mapping[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = output.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _format_summary_section(label: str, value: str) -> str:
+    normalized_label = label.rstrip("：")
+    if value.startswith(normalized_label):
+        return value
+    return f"{label}{value}"
 
 
 def _final_answer_audit(state: WorkflowState) -> dict[str, Any]:
