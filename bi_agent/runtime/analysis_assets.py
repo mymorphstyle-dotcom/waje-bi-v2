@@ -11,6 +11,7 @@ from bi_agent.runtime.artifacts import to_jsonable
 MAX_TOPIC_ANALYSIS_ASSETS = 20
 REUSABLE_VERIFIER_STATUSES = frozenset(("passed", "verified"))
 REUSABLE_BUSINESS_TRUTH_WORDING_LIMITS = frozenset(("supported", "quantified", "stable_pattern"))
+NON_REUSABLE_METADATA_MARKERS = frozenset(("missing", "unknown"))
 CONTEXT_ONLY_EVIDENCE_TYPES = frozenset(
     (
         "candidate_mechanism",
@@ -55,24 +56,26 @@ def build_analysis_assets(answer_package: Mapping[str, Any]) -> tuple[dict[str, 
         evidence_refs = tuple(str(ref) for ref in claim.get("evidence_refs") or ())
         limitations = tuple(str(item) for item in claim.get("limitations") or ())
         verifier_status = str(claim.get("verifier_status") or "")
-        strength = str(claim.get("strength") or "")
-        evidence_type = str(claim.get("evidence_type") or "")
-        wording_limit = str(claim.get("wording_limit") or "")
-        evidence_types = _string_list(claim.get("evidence_types"))
-        strengths = _string_list(claim.get("strengths"))
-        wording_limits = _string_list(claim.get("wording_limits"))
-        effective_evidence_types = evidence_types or ((evidence_type,) if evidence_type else ())
-        effective_strengths = strengths or ((strength,) if strength else ())
-        effective_wording_limits = wording_limits or ((wording_limit,) if wording_limit else ())
+        strength = _metadata_value(claim.get("strength"))
+        evidence_type = _metadata_value(claim.get("evidence_type"))
+        wording_limit = _metadata_value(claim.get("wording_limit"))
+        evidence_types = _metadata_list(claim.get("evidence_types"))
+        strengths = _metadata_list(claim.get("strengths"))
+        wording_limits = _metadata_list(claim.get("wording_limits"))
+        effective_evidence_types = evidence_types or (evidence_type,)
+        effective_strengths = strengths or (strength,)
+        effective_wording_limits = wording_limits or (wording_limit,)
         can_support_business_truth = (
             verifier_status in REUSABLE_VERIFIER_STATUSES
             and bool(evidence_refs)
             and bool(effective_strengths)
             and all(item in {"high", "medium"} for item in effective_strengths)
+            and all(item not in NON_REUSABLE_METADATA_MARKERS for item in effective_evidence_types)
             and all(item not in CONTEXT_ONLY_EVIDENCE_TYPES for item in effective_evidence_types)
             and bool(effective_wording_limits)
             and all(
-                item in REUSABLE_BUSINESS_TRUTH_WORDING_LIMITS
+                item not in NON_REUSABLE_METADATA_MARKERS
+                and item in REUSABLE_BUSINESS_TRUTH_WORDING_LIMITS
                 and item not in CONTEXT_ONLY_WORDING_LIMITS
                 for item in effective_wording_limits
             )
@@ -132,6 +135,18 @@ def normalize_analysis_assets(
             break
     deduped.reverse()
     return tuple(deduped)
+
+
+def _metadata_value(value: Any) -> str:
+    text = str(value or "").strip()
+    return text or "missing"
+
+
+def _metadata_list(value: Any) -> tuple[str, ...]:
+    values = _string_list(value)
+    if values:
+        return tuple(item if item else "missing" for item in values)
+    return ()
 
 
 def asset_dedup_key(asset: Mapping[str, Any]) -> str:

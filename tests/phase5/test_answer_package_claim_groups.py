@@ -120,6 +120,54 @@ class AnswerPackageClaimGroupsTest(unittest.TestCase):
         self.assertEqual(claim_group["strengths"], ["high", "medium"])
         self.assertEqual(claim_group["wording_limits"], ["supported", "contextual"])
 
+    def test_claim_groups_preserve_missing_metadata_with_explicit_sentinels(self):
+        package = build_answer_package(
+            run_id="phase5-missing-claim-group",
+            draft_claims=[
+                {
+                    "text": "第二条证据缺少元数据时也要保留边界。",
+                    "evidence_refs": ["driver_decomposition:inline", "outlier_scan:inline"],
+                    "scope": "full_sample",
+                    "time_window": "2026-01-01..2026-06-30",
+                    "target_metric": "paid_amount",
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_ref": "driver_decomposition:inline",
+                    "capability_id": "driver_decomposition",
+                    "evidence_type": "accounting_contribution",
+                    "strength": "high",
+                    "wording_limit": "quantified",
+                    "limitations": [],
+                    "typed_payload": {},
+                },
+                {
+                    "evidence_ref": "outlier_scan:inline",
+                    "capability_id": "outlier_scan",
+                    "strength": "medium",
+                    "limitations": [],
+                    "typed_payload": {},
+                },
+            ],
+            checkpoint_events=[],
+            proposed_graph=[],
+            accepted_graph=["driver_decomposition", "outlier_scan", "answer_verify"],
+            rejected_or_degraded_mutations=[],
+            validator_results=[],
+            sql_text="SELECT 1",
+            sql_hash="hash",
+            artifact_audit={},
+        )
+
+        claim_group = package["sections"][0]["payload"]["claim_groups"][0]
+        self.assertEqual(
+            claim_group["evidence_types"],
+            ["accounting_contribution", "missing"],
+        )
+        self.assertEqual(claim_group["strengths"], ["high", "medium"])
+        self.assertEqual(claim_group["wording_limits"], ["quantified", "missing"])
+
     def test_answer_package_emits_visualization_plan_from_verified_claim_groups(self):
         package = build_answer_package(
             run_id="phase5-visual-plan",

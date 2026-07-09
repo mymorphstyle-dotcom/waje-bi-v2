@@ -159,6 +159,7 @@ class ConversationPersistenceTest(unittest.TestCase):
         executed_sql = "\n".join(statement for statement, _params in connection.statements)
         self.assertIn("waje_runtime.analysis_assets", executed_sql)
         self.assertGreaterEqual(executed_sql.count("waje_runtime.audit_events"), 1)
+        self.assertEqual(connection.commits, 1)
 
 
 class FakeConnection:

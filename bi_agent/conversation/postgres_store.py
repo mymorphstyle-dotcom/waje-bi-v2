@@ -416,6 +416,7 @@ class PostgresConversationStore:
               AND topic_id = %(topic_id)s
             """,
             {"thread_id": thread_id, "topic_id": topic_id},
+            commit=False,
         )
         for index, asset in enumerate(merged_assets):
             payload = dict(asset)
@@ -445,6 +446,7 @@ class PostgresConversationStore:
                     "status": str(payload.get("status") or "unknown"),
                     "payload": _json({**payload, "asset_id": asset_id}),
                 },
+                commit=False,
             )
         self._audit(
             "analysis_assets_recorded",
@@ -452,7 +454,9 @@ class PostgresConversationStore:
             topic_id=topic_id,
             ref=topic_id,
             payload={"count": len(merged_assets)},
+            commit=False,
         )
+        self.connection.commit()
 
     def list_analysis_assets(self, thread_id: str, topic_id: str) -> tuple[dict[str, Any], ...]:
         rows = self._fetchall(
@@ -748,9 +752,16 @@ class PostgresConversationStore:
         self._audit("memory_proposal_accepted", ref=proposal_id)
         return None
 
-    def _execute(self, statement: str, params: Optional[dict[str, Any]] = None) -> Any:
+    def _execute(
+        self,
+        statement: str,
+        params: Optional[dict[str, Any]] = None,
+        *,
+        commit: bool = True,
+    ) -> Any:
         result = self.connection.execute(statement, params or {})
-        self.connection.commit()
+        if commit:
+            self.connection.commit()
         return result
 
     def _fetchone(self, statement: str, params: Optional[dict[str, Any]] = None) -> Any:
@@ -769,6 +780,7 @@ class PostgresConversationStore:
         run_id: Optional[str] = None,
         ref: Optional[str] = None,
         payload: Optional[dict[str, Any]] = None,
+        commit: bool = True,
     ) -> None:
         self._execute(
             """
@@ -789,6 +801,7 @@ class PostgresConversationStore:
                 "ref": ref,
                 "payload": _json(payload or {}),
             },
+            commit=commit,
         )
 
 

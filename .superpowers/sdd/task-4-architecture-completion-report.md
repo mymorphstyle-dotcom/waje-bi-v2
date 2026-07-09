@@ -9,7 +9,7 @@ Completed on branch `codex/production-multiturn-agent-runtime`.
 - Added `bi_agent/runtime/analysis_assets.py` to derive reusable analysis assets from the Answer Package:
   - `compiler_runtime_plan`
   - `contract_gap_diagnostic`
-  - `verified_claim_slot`
+  - `claim_context_slot`
 - Extended `ContextManifest` with `analysis_assets` so later turns keep topic-level asset context in persisted manifests.
 - Added topic-level `save_analysis_assets(...)` / `list_analysis_assets(...)` support to:
   - `InMemoryConversationStore`
@@ -495,3 +495,171 @@ OK
 - `build_claim_groups(...)` now preserves per-ref `evidence_types`, `strengths`, and `wording_limits`, while retaining the old singular fields for existing readers.
 - `claim_context_slot.can_support_business_truth` now evaluates the aggregated evidence boundary, so any contextual or candidate component keeps the slot in `context_only`.
 - Added regressions for mixed-evidence claim groups and for analysis asset truth gating when the first ref is strong and a later ref is contextual.
+
+## Reviewer Fix Round 5
+
+### RED
+
+Pre-fix checks against baseline commit `e3014667`:
+
+```bash
+tmp_answer=/tmp/task4_answer_old_$$.py
+git show e3014667:bi_agent/runtime/answer_package.py > "$tmp_answer"
+PYTHONPATH=/Users/luka/.codex/worktrees/250d/waje-bi-v2 python3 - <<'PY' "$tmp_answer"
+import importlib.util
+import sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location('task4_answer_old', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+package = mod.build_answer_package(
+    run_id='old-missing-meta',
+    draft_claims=[{
+        'text': '第二条证据缺元数据。',
+        'evidence_refs': ['driver_decomposition:inline', 'outlier_scan:inline'],
+        'scope': 'full_sample',
+        'time_window': '2026-01-01..2026-06-30',
+        'target_metric': 'paid_amount',
+    }],
+    evidence=[
+        {
+            'evidence_ref': 'driver_decomposition:inline',
+            'evidence_type': 'accounting_contribution',
+            'strength': 'high',
+            'wording_limit': 'quantified',
+            'limitations': [],
+            'typed_payload': {},
+        },
+        {
+            'evidence_ref': 'outlier_scan:inline',
+            'strength': 'medium',
+            'limitations': [],
+            'typed_payload': {},
+        },
+    ],
+    checkpoint_events=[],
+    proposed_graph=[],
+    accepted_graph=['driver_decomposition', 'outlier_scan', 'answer_verify'],
+    rejected_or_degraded_mutations=[],
+    validator_results=[],
+    sql_text='SELECT 1',
+    sql_hash='hash',
+    artifact_audit={},
+)
+claim_group = package['sections'][0]['payload']['claim_groups'][0]
+assert claim_group['evidence_types'] == ['accounting_contribution', 'missing'], claim_group
+PY
+```
+
+Observed failure:
+
+```text
+AssertionError: {'text': '第二条证据缺元数据。', 'scope': 'full_sample', 'baseline': {}, 'target': {}, 'target_metric': 'paid_amount', 'time_window': '2026-01-01..2026-06-30', 'evidence_refs': ['driver_decomposition:inline', 'outlier_scan:inline'], 'evidence_type': 'accounting_contribution', 'evidence_types': ['accounting_contribution'], 'strength': 'high', 'strengths': ['high', 'medium'], 'wording_limit': 'quantified', 'wording_limits': ['quantified'], 'limitations': [], 'verifier_status': 'failed'}
+```
+
+```bash
+tmp_assets=/tmp/task4_assets_old_$$.py
+git show e3014667:bi_agent/runtime/analysis_assets.py > "$tmp_assets"
+PYTHONPATH=/Users/luka/.codex/worktrees/250d/waje-bi-v2 python3 - <<'PY' "$tmp_assets"
+import importlib.util
+import sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location('task4_assets_old', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assets = mod.build_analysis_assets(
+    {
+        'run_id': 'run-old-missing-meta',
+        'sections': [{
+            'section_id': 'summary',
+            'payload': {'claim_groups': [{
+                'text': '缺失元数据的证据组不能复用成业务真值。',
+                'evidence_refs': ['driver_decomposition:inline', 'outlier_scan:inline'],
+                'evidence_type': 'accounting_contribution',
+                'evidence_types': ['accounting_contribution'],
+                'strength': 'high',
+                'strengths': ['high', 'medium'],
+                'wording_limit': 'quantified',
+                'wording_limits': ['quantified'],
+                'verifier_status': 'passed',
+            }]}
+        }],
+    }
+)
+claim = next(asset for asset in assets if asset['asset_type'] == 'claim_context_slot')
+assert claim['can_support_business_truth'] is False, claim
+PY
+```
+
+Observed failure:
+
+```text
+AssertionError: {'asset_type': 'claim_context_slot', 'status': 'claim_supported', 'source_run_id': 'run-old-missing-meta', 'text': '缺失元数据的证据组不能复用成业务真值。', 'evidence_refs': ['driver_decomposition:inline', 'outlier_scan:inline'], 'strength': 'high', 'strengths': ['high', 'medium'], 'evidence_type': 'accounting_contribution', 'evidence_types': ['accounting_contribution'], 'limitations': [], 'verifier_status': 'passed', 'wording_limit': 'quantified', 'wording_limits': ['quantified'], 'can_support_business_truth': True, 'target_metric': '', 'scope': '', 'time_window': ''}
+```
+
+```bash
+tmp_root=$(mktemp -d /tmp/task4-pg-old-XXXXXX)
+mkdir -p "$tmp_root/bi_agent/conversation" "$tmp_root/tools/runtime"
+git show e3014667:bi_agent/conversation/postgres_store.py > "$tmp_root/bi_agent/conversation/postgres_store.py"
+cp tools/runtime/conversation-runtime.sql "$tmp_root/tools/runtime/conversation-runtime.sql"
+PYTHONPATH="/Users/luka/.codex/worktrees/250d/waje-bi-v2:$tmp_root" python3 - <<'PY' "$tmp_root"
+import importlib.util
+import pathlib
+import sys
+root = pathlib.Path(sys.argv[1])
+path = root / 'bi_agent' / 'conversation' / 'postgres_store.py'
+spec = importlib.util.spec_from_file_location('task4_pg_old', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+class FakeCursor:
+    def fetchone(self):
+        return None
+    def fetchall(self):
+        return []
+class FakeConnection:
+    def __init__(self):
+        self.statements = []
+        self.commits = 0
+    def execute(self, statement, params=None):
+        self.statements.append((statement, params or {}))
+        return FakeCursor()
+    def commit(self):
+        self.commits += 1
+store = mod.PostgresConversationStore(FakeConnection())
+store.save_analysis_assets(
+    'thread-pg',
+    'topic-pg',
+    [{'asset_type': 'compiler_runtime_plan', 'status': 'usable', 'payload': {'query_intents': ['dimension_scan_reuse']}}],
+)
+assert store.connection.commits == 1, store.connection.commits
+PY
+```
+
+Observed failure:
+
+```text
+AssertionError: 3
+```
+
+### GREEN
+
+Command:
+
+```bash
+python3 -m unittest tests.phase7.test_analysis_assets tests.phase7.test_conversation_persistence tests.phase4.test_workflow_artifacts_answer tests.phase5.test_answer_package_claim_groups
+```
+
+Result:
+
+```text
+Ran 51 tests in 0.549s
+
+OK
+```
+
+### Fix summary
+
+- `build_claim_groups(...)` now keeps one metadata slot per evidence ref and fills absent `evidence_type`, `strength`, or `wording_limit` with `missing`.
+- `claim_context_slot` truth reuse now stops on `missing` or `unknown` metadata, together with the existing candidate and contextual boundaries.
+- `save_analysis_assets(...)` in the Postgres store now commits once after delete, insert, and audit write, so the replacement path stays atomic on one connection transaction.
+- Added focused regressions for missing mixed-evidence metadata and the single-commit Postgres save path.

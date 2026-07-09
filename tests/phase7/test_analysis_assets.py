@@ -387,6 +387,85 @@ class AnalysisAssetsTest(unittest.TestCase):
             ("quantified", "contextual"),
         )
 
+    def test_claim_asset_missing_wording_limit_stays_context_only(self):
+        assets = build_analysis_assets(
+            {
+                "run_id": "run-missing-wording-limit",
+                "sections": [
+                    {
+                        "section_id": "summary",
+                        "payload": {
+                            "claim_groups": [
+                                {
+                                    "text": "第二条证据缺 wording_limit 时不能复用成业务真值。",
+                                    "evidence_refs": [
+                                        "driver_decomposition:inline",
+                                        "outlier_scan:inline",
+                                    ],
+                                    "evidence_type": "accounting_contribution",
+                                    "evidence_types": [
+                                        "accounting_contribution",
+                                        "contextual_evidence",
+                                    ],
+                                    "strength": "high",
+                                    "strengths": ["high", "medium"],
+                                    "wording_limit": "quantified",
+                                    "wording_limits": ["quantified", "missing"],
+                                    "verifier_status": "passed",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        )
+
+        claim_context = next(asset for asset in assets if asset["asset_type"] == "claim_context_slot")
+        self.assertEqual(claim_context["status"], "context_only")
+        self.assertFalse(claim_context["can_support_business_truth"])
+        self.assertEqual(tuple(claim_context["wording_limits"]), ("quantified", "missing"))
+
+    def test_claim_asset_missing_evidence_type_stays_context_only(self):
+        assets = build_analysis_assets(
+            {
+                "run_id": "run-missing-evidence-type",
+                "sections": [
+                    {
+                        "section_id": "summary",
+                        "payload": {
+                            "claim_groups": [
+                                {
+                                    "text": "第二条证据缺 evidence_type 时不能复用成业务真值。",
+                                    "evidence_refs": [
+                                        "driver_decomposition:inline",
+                                        "outlier_scan:inline",
+                                    ],
+                                    "evidence_type": "accounting_contribution",
+                                    "evidence_types": [
+                                        "accounting_contribution",
+                                        "missing",
+                                    ],
+                                    "strength": "high",
+                                    "strengths": ["high", "medium"],
+                                    "wording_limit": "quantified",
+                                    "wording_limits": ["quantified", "supported"],
+                                    "verifier_status": "passed",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        )
+
+        claim_context = next(asset for asset in assets if asset["asset_type"] == "claim_context_slot")
+        self.assertEqual(claim_context["status"], "context_only")
+        self.assertFalse(claim_context["can_support_business_truth"])
+        self.assertEqual(
+            tuple(claim_context["evidence_types"]),
+            ("accounting_contribution", "missing"),
+        )
+
     def test_claim_asset_metadata_only_changes_dedupe_to_latest_payload(self):
         assets = merge_analysis_assets(
             (
