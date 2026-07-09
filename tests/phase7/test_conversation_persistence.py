@@ -97,6 +97,7 @@ class ConversationPersistenceTest(unittest.TestCase):
             "result_refs",
             "evidence_refs",
             "answer_packages",
+            "analysis_assets",
             "investigation_artifacts",
             "memory_items",
             "memory_proposals",
@@ -144,6 +145,20 @@ class ConversationPersistenceTest(unittest.TestCase):
         self.assertIn("waje_runtime.memory_proposals", executed_sql)
         self.assertGreaterEqual(executed_sql.count("waje_runtime.audit_events"), 5)
         self.assertGreaterEqual(connection.commits, 5)
+
+    def test_postgres_store_records_analysis_assets(self):
+        connection = FakeConnection()
+        store = PostgresConversationStore(connection)
+
+        store.save_analysis_assets(
+            "thread-pg",
+            "topic-pg",
+            [{"asset_type": "compiler_runtime_plan", "status": "usable", "payload": {"query_intents": ["dimension_scan_reuse"]}}],
+        )
+
+        executed_sql = "\n".join(statement for statement, _params in connection.statements)
+        self.assertIn("waje_runtime.analysis_assets", executed_sql)
+        self.assertGreaterEqual(executed_sql.count("waje_runtime.audit_events"), 1)
 
 
 class FakeConnection:

@@ -398,6 +398,69 @@ class PostgresConversationStore:
             )
         self._audit("answer_package_recorded", run_id=run_id, ref=run_id)
 
+    def save_analysis_assets(
+        self,
+        thread_id: str,
+        topic_id: str,
+        assets: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+    ) -> None:
+        for asset in assets:
+            payload = dict(asset)
+            asset_id = str(payload.get("asset_id") or f"analysis-asset:{uuid4().hex[:12]}")
+            self._execute(
+                """
+                INSERT INTO waje_runtime.analysis_assets(
+                  asset_id, thread_id, topic_id, asset_type, status, payload
+                )
+                VALUES (
+                  %(asset_id)s, %(thread_id)s, %(topic_id)s, %(asset_type)s,
+                  %(status)s, %(payload)s::jsonb
+                )
+                ON CONFLICT (asset_id) DO UPDATE
+                SET asset_type = EXCLUDED.asset_type,
+                    status = EXCLUDED.status,
+                    payload = EXCLUDED.payload
+                """,
+                {
+                    "asset_id": asset_id,
+                    "thread_id": thread_id,
+                    "topic_id": topic_id,
+                    "asset_type": str(payload.get("asset_type") or "unknown"),
+                    "status": str(payload.get("status") or "unknown"),
+                    "payload": _json({**payload, "asset_id": asset_id}),
+                },
+            )
+        self._audit(
+            "analysis_assets_recorded",
+            thread_id=thread_id,
+            topic_id=topic_id,
+            ref=topic_id,
+            payload={"count": len(assets)},
+        )
+
+    def list_analysis_assets(self, thread_id: str, topic_id: str) -> tuple[dict[str, Any], ...]:
+        rows = self._fetchall(
+            """
+            SELECT payload
+            FROM waje_runtime.analysis_assets
+            WHERE thread_id = %(thread_id)s
+              AND topic_id = %(topic_id)s
+            ORDER BY created_at, asset_id
+            """,
+            {"thread_id": thread_id, "topic_id": topic_id},
+        )
+        assets: list[dict[str, Any]] = []
+        for row in rows:
+            payload = _field(row, "payload", 0)
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError:
+                    payload = None
+            if isinstance(payload, dict):
+                assets.append(payload)
+        return tuple(assets)
+
     def record_run_nodes(self, run_id: str, checkpoint_events: tuple[dict, ...]) -> None:
         for index, event in enumerate(checkpoint_events):
             node_name = str(event.get("node") or event.get("name") or f"node_{index}")
@@ -764,6 +827,7 @@ def _context_manifest_from_row(row: Any) -> ContextManifest:
         claim_use_policy=dict(payload.get("claim_use_policy") or {}),
         snapshot_version=payload.get("snapshot_version"),
         permission_context=dict(payload.get("permission_context") or {}),
+        analysis_assets=list(payload.get("analysis_assets") or []),
         created_at=payload.get("created_at"),
         can_support_claims=bool(payload.get("can_support_claims", _field(row, "can_support_claims", 3))),
     )

@@ -157,6 +157,8 @@ class ConversationRuntime:
             owner_scope,
             role,
         )
+        topic_assets = self._topic_analysis_assets(thread_id, topic)
+        combined_prior_assets = _merge_analysis_assets(topic_assets, prior_analysis_assets)
         for proposal in memory_proposals:
             self.store.add_memory_proposal(proposal)
         needs_clarification = intent_name != "clarification_answer" and (
@@ -193,7 +195,7 @@ class ConversationRuntime:
                 context_manifest=manifest.to_dict(),
                 permission_context={"role": role},
                 runtime_budget=_runtime_budget(user_message),
-                prior_analysis_assets=tuple(prior_analysis_assets or ()),
+                prior_analysis_assets=combined_prior_assets,
                 requested_nodes=_requested_nodes(user_message, intent_name),
             )
         audit_events = (
@@ -516,6 +518,7 @@ class ConversationRuntime:
             },
             snapshot_version=current_snapshot,
             permission_context={"role": role},
+            analysis_assets=list(self._topic_analysis_assets(thread_id, topic)),
             can_support_claims=has_claim_support and claim_safe and not artifact_context_blocked,
         )
 
@@ -541,6 +544,15 @@ class ConversationRuntime:
                 visibility=role,
             ),
         )
+
+    def _topic_analysis_assets(
+        self,
+        thread_id: str,
+        topic: Optional[TopicState],
+    ) -> tuple[dict[str, Any], ...]:
+        if not topic or not hasattr(self.store, "list_analysis_assets"):
+            return ()
+        return tuple(self.store.list_analysis_assets(thread_id, topic.topic_id))
 
 
 def evaluate_reuse_candidate(
@@ -582,6 +594,22 @@ def evaluate_reuse_candidate(
         can_support_claim=True,
         requires_rerun=False,
     )
+
+
+def _merge_analysis_assets(
+    topic_assets: tuple[Mapping[str, Any], ...],
+    request_assets: tuple[Mapping[str, Any], ...],
+) -> tuple[dict[str, Any], ...]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for asset in (*tuple(topic_assets or ()), *tuple(request_assets or ())):
+        payload = dict(asset)
+        key = repr(sorted(payload.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(payload)
+    return tuple(merged)
 
 
 def _local_orchestration(intent: str, topic_relation: str, message: str) -> dict[str, Any]:

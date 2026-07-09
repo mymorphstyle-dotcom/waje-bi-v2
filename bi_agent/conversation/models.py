@@ -52,6 +52,7 @@ class ContextManifest:
     claim_use_policy: dict[str, Any]
     snapshot_version: str | None
     permission_context: dict[str, Any]
+    analysis_assets: list[dict[str, Any]]
     created_at: str
     can_support_claims: bool
 
@@ -68,6 +69,7 @@ class ContextManifest:
         claim_use_policy: Mapping[str, Any] | None = None,
         snapshot_version: str | None = None,
         permission_context: Mapping[str, Any] | None = None,
+        analysis_assets: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         created_at: str | None = None,
     ) -> None:
         normalized_items = tuple(items or ())
@@ -102,6 +104,7 @@ class ContextManifest:
         )
         object.__setattr__(self, "snapshot_version", snapshot_version)
         object.__setattr__(self, "permission_context", dict(permission_context or {}))
+        object.__setattr__(self, "analysis_assets", [dict(item) for item in analysis_assets or ()])
         object.__setattr__(
             self,
             "created_at",
@@ -116,6 +119,7 @@ class ContextManifest:
         data = asdict(self)
         data["items"] = [item.to_dict() for item in self.items]
         data["sources"] = list(self.sources)
+        data["analysis_assets"] = [dict(item) for item in self.analysis_assets]
         return data
 
 

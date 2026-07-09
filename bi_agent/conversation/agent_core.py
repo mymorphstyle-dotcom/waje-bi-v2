@@ -10,6 +10,7 @@ from uuid import uuid4
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
+from bi_agent.runtime.analysis_assets import build_analysis_assets
 from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult, run_pattern_workflow
 
@@ -200,6 +201,12 @@ class ConversationAgentCore:
         self.store.record_context_manifest(context_manifest)
         self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
         self.store.record_answer_package(run_id, package)
+        if turn.topic_id and hasattr(self.store, "save_analysis_assets"):
+            self.store.save_analysis_assets(
+                thread_id,
+                turn.topic_id,
+                build_analysis_assets(package),
+            )
         self.store.upsert_run(
             run_id,
             thread_id=thread_id,

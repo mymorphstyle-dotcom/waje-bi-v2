@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Optional
+from collections.abc import Mapping, Sequence
+from typing import Any, Optional
 from uuid import uuid4
 
 from bi_agent.conversation.models import (
@@ -31,6 +32,7 @@ class InMemoryConversationStore:
         self.context_manifests: dict[str, dict] = {}
         self.reuse_decisions: dict[tuple[str, str], list[dict]] = defaultdict(list)
         self.answer_packages: dict[str, dict] = {}
+        self.analysis_assets: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         self.clarification_states: dict[str, ClarificationState] = {}
         self.audit_events: list[dict] = []
 
@@ -174,6 +176,24 @@ class InMemoryConversationStore:
                     permission_scope=package.get("permission_scope") or package.get("visibility") or "analyst",
                 )
         self.add_audit_event("answer_package_recorded", run_id=run_id, ref=run_id)
+
+    def save_analysis_assets(
+        self,
+        thread_id: str,
+        topic_id: str,
+        assets: Sequence[Mapping[str, Any]],
+    ) -> None:
+        self.analysis_assets[(thread_id, topic_id)].extend(dict(asset) for asset in assets)
+        self.add_audit_event(
+            "analysis_assets_recorded",
+            thread_id=thread_id,
+            topic_id=topic_id,
+            ref=topic_id,
+            payload={"count": len(assets)},
+        )
+
+    def list_analysis_assets(self, thread_id: str, topic_id: str) -> tuple[dict[str, Any], ...]:
+        return tuple(dict(asset) for asset in self.analysis_assets.get((thread_id, topic_id), ()))
 
     def record_run_nodes(self, run_id: str, checkpoint_events: tuple[dict, ...]) -> None:
         self.runs.setdefault(run_id, {})["checkpoint_events"] = list(checkpoint_events)
@@ -328,6 +348,7 @@ def _context_manifest_from_payload(payload: dict) -> ContextManifest:
         claim_use_policy=dict(payload.get("claim_use_policy") or {}),
         snapshot_version=payload.get("snapshot_version"),
         permission_context=dict(payload.get("permission_context") or {}),
+        analysis_assets=list(payload.get("analysis_assets") or []),
         created_at=payload.get("created_at"),
         can_support_claims=bool(payload.get("can_support_claims")),
     )
