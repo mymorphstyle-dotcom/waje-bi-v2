@@ -75,6 +75,41 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         self.assertEqual(plan.dimension_keys, ("channel", "payment_method", "region"))
         self.assertEqual(plan.required_fields, ("period", "group", "amount", "orders"))
 
+    def test_plan_uses_compiler_query_specs_before_graph_fallback(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-compiler-plan",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "yesterday", "history_days": 12},
+                    "baselines": ("previous_day",),
+                    "query_intents": ("dimension_scan",),
+                    "row_shapes": [
+                        {
+                            "dimension_keys": ("channel",),
+                            "required_fields": (
+                                "period",
+                                "group",
+                                "amount",
+                                "paid_users",
+                                "orders",
+                            ),
+                        }
+                    ],
+                },
+            },
+            {"time_window": "yesterday"},
+            ("compare_periods",),
+        )
+
+        self.assertEqual(plan.query_id, "run-compiler-plan:dimension_scan")
+        self.assertEqual(plan.dimension_keys, ("channel",))
+        self.assertIn("GROUP BY period, group, channel", plan.sql_text)
+        self.assertIn("- 12", plan.sql_text)
+
     def test_fetch_returns_bounded_aggregate_rows_and_query_ref(self):
         runtime = FakeRuntime(
             rows=({"period": "2026-07-08", "group": "target", "amount": 120.0},)

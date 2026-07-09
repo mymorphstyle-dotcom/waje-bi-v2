@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from typing import Any, Mapping, Optional, Sequence
 
+from bi_agent.runtime.clickhouse_query_planner import build_clickhouse_query_specs
 from bi_agent.runtime.clickhouse_runtime import ClickHouseRuntime, IDENTIFIER_PATTERN
 from bi_agent.runtime.sql_safety import validate_select_only
 
@@ -57,6 +58,25 @@ class ClickHouseRevenueRows:
         intent: Mapping[str, Any],
         accepted_graph: Sequence[str],
     ) -> RevenueRowPlan:
+        compiler_runtime_plan = request.get("compiler_runtime_plan")
+        if (
+            isinstance(compiler_runtime_plan, Mapping)
+            and compiler_runtime_plan.get("query_intents")
+        ):
+            specs = build_clickhouse_query_specs(
+                compiler_runtime_plan,
+                table=self.table,
+                run_id=str(request.get("run_id", "run")),
+            )
+            if specs:
+                first = specs[0]
+                return RevenueRowPlan(
+                    sql_text=str(first["sql_text"]),
+                    query_id=str(first["query_id"]),
+                    required_fields=tuple(str(field) for field in first["required_fields"]),
+                    dimension_keys=tuple(str(key) for key in first["dimension_keys"]),
+                )
+
         dimensions = _dimension_keys(accepted_graph, request)
         required_fields = _required_fields(request)
         query_id = f"{request.get('run_id', 'run')}:clickhouse_revenue_rows"
