@@ -139,6 +139,33 @@ class RevenueRuntimePlanTest(unittest.TestCase):
 
         self.assertIn("query:channel-scan", plan["asset_inputs_used"])
         self.assertIn("dimension_scan_reuse", plan["query_intents"])
+        self.assertNotIn("dimension_scan", plan["query_intents"])
+
+    def test_non_matching_prior_assets_do_not_suppress_needed_scan(self):
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=("segment_contribution", "answer_verify"),
+            diagnostic_axes=("factor_topk",),
+            question_text="继续看哪个渠道影响最大",
+            prior_assets=(
+                {
+                    "asset_type": "dimension_scan",
+                    "dimension": "region",
+                    "status": "usable",
+                    "query_ref": "query:region-scan",
+                },
+                {
+                    "asset_type": "segment_contribution",
+                    "dimension": "channel",
+                    "status": "usable",
+                    "query_ref": "query:channel-contribution",
+                },
+            ),
+        )
+
+        self.assertEqual(plan["asset_inputs_used"], ())
+        self.assertNotIn("dimension_scan_reuse", plan["query_intents"])
+        self.assertIn("dimension_scan", plan["query_intents"])
 
 
 if __name__ == "__main__":

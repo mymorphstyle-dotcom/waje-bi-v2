@@ -1,6 +1,7 @@
 import unittest
 import json
 from pathlib import Path
+from io import StringIO
 from unittest.mock import patch
 
 from bi_agent.conversation.agent_core import ConversationAgentCore
@@ -314,6 +315,65 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "completed")
+        self.assertEqual(
+            captured["prior_analysis_assets"],
+            (
+                {
+                    "asset_type": "dimension_scan",
+                    "dimension": "channel",
+                    "status": "usable",
+                    "query_ref": "query:channel-scan",
+                },
+            ),
+        )
+
+    def test_main_accepts_prior_analysis_assets_argument(self):
+        captured: dict[str, object] = {}
+
+        def fake_run_message(self, **kwargs):
+            captured.update(kwargs)
+            return {"status": "completed"}
+
+        store = InMemoryConversationStore()
+        output = StringIO()
+        argv = [
+            "--thread-id",
+            "thread-cli-prior-assets",
+            "--run-id",
+            "run-cli-prior-assets",
+            "--message",
+            "继续看哪个渠道影响最大",
+            "--prior-analysis-assets",
+            json.dumps(
+                [
+                    {
+                        "asset_type": "dimension_scan",
+                        "dimension": "channel",
+                        "status": "usable",
+                        "query_ref": "query:channel-scan",
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+        ]
+
+        with patch(
+            "bi_agent.conversation.agent_core.PostgresConversationStore.from_env",
+            return_value=store,
+        ), patch(
+            "bi_agent.conversation.agent_core._conversation_llm_from_env",
+            return_value=None,
+        ), patch.object(
+            ConversationAgentCore,
+            "run_message",
+            fake_run_message,
+        ), patch(
+            "sys.stdout",
+            output,
+        ):
+            exit_code = __import__("bi_agent.conversation.agent_core", fromlist=["main"]).main(argv)
+
+        self.assertEqual(exit_code, 0)
         self.assertEqual(
             captured["prior_analysis_assets"],
             (

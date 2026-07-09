@@ -586,8 +586,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--role", default="analyst")
     parser.add_argument("--artifact-root", default="artifacts/phase-7")
     parser.add_argument("--clarification")
+    parser.add_argument("--prior-analysis-assets")
     args = parser.parse_args(argv)
     clarification = json.loads(args.clarification) if args.clarification else None
+    prior_analysis_assets = _parse_prior_analysis_assets(args.prior_analysis_assets)
 
     store = PostgresConversationStore.from_env()
     core = ConversationAgentCore(store, conversation_llm_client=_conversation_llm_from_env())
@@ -598,6 +600,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         role=args.role,
         artifact_root=args.artifact_root,
         clarification=clarification,
+        prior_analysis_assets=prior_analysis_assets,
     )
     json.dump(result, sys.stdout, ensure_ascii=False, sort_keys=True)
     sys.stdout.write("\n")
@@ -606,6 +609,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         "completed_without_workflow",
         "waiting_for_clarification",
     } else 1
+
+
+def _parse_prior_analysis_assets(raw: str | None) -> tuple[Mapping[str, Any], ...]:
+    if not raw:
+        return ()
+    data = json.loads(raw)
+    if isinstance(data, Mapping):
+        return (dict(data),)
+    if isinstance(data, list):
+        return tuple(dict(item) for item in data if isinstance(item, Mapping))
+    return ()
 
 
 if __name__ == "__main__":

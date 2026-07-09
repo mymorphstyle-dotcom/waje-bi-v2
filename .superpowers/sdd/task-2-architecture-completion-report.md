@@ -198,3 +198,52 @@ Ran 79 tests in 0.561s
 
 OK
 ```
+
+## Re-review Important Findings Fix
+
+### RED
+
+Command:
+
+```bash
+python3 -m unittest tests.phase4.test_revenue_runtime_plan tests.phase7.test_agent_core_bridge
+```
+
+Observed failure:
+
+```text
+FAIL: test_non_matching_prior_assets_do_not_suppress_needed_scan
+AssertionError: Tuples differ: ('query:region-scan', 'query:channel-contribution') != ()
+
+FAIL: test_prior_assets_reduce_repeated_scans
+AssertionError: 'dimension_scan' unexpectedly found in ('daily_metric_baselines', 'dimension_scan_reuse', 'dimension_scan')
+
+ERROR: test_main_accepts_prior_analysis_assets_argument
+SystemExit: 2
+python3 -m unittest: error: unrecognized arguments: --prior-analysis-assets [...]
+```
+
+### GREEN
+
+Commands:
+
+```bash
+python3 -m unittest tests.phase4.test_revenue_runtime_plan tests.phase7.test_agent_core_bridge
+python3 -m unittest tests.phase4.test_revenue_runtime_plan tests.phase7.test_agent_core_bridge tests.phase4.test_recipe_registry_and_compiler tests.phase7.test_conversation_runtime
+```
+
+Observed result:
+
+```text
+Ran 38 tests in 0.355s
+OK
+
+Ran 81 tests in 0.565s
+OK
+```
+
+### Fix Summary
+
+- Tightened prior asset reuse in `bi_agent/runtime/revenue_runtime_plan.py` so reuse only counts usable `dimension_scan` assets whose dimension covers the required scan surface for the current runtime plan.
+- Suppressed duplicate `dimension_scan` when reusable prior assets already cover the required dimensions; non-matching assets now leave the scan in place and are excluded from `asset_inputs_used`.
+- Added `--prior-analysis-assets` support in `bi_agent/conversation/agent_core.py` so the executable CLI path can pass serialized prior assets into `run_message(...)`.

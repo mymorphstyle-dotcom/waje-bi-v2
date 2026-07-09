@@ -54,7 +54,7 @@ def build_revenue_runtime_plan(
     baselines = _baselines(normalized_context, axes, question_text)
     dimensions = _dimension_candidates(graph, axes)
     row_shape = _row_shape(graph, axes, dimensions)
-    asset_refs = _asset_refs(prior_assets)
+    reusable_assets = _reusable_assets(graph, prior_assets)
     return {
         "target_metric": target_metric,
         "diagnostic_axes": axes,
@@ -63,10 +63,10 @@ def build_revenue_runtime_plan(
         "dimension_candidates": dimensions,
         "measures": BASE_MEASURES,
         "capability_params": _capability_params(graph, baselines, dimensions, normalized_context),
-        "query_intents": _query_intents(graph, axes, asset_refs),
+        "query_intents": _query_intents(graph, axes, reusable_assets),
         "row_shapes": (row_shape,),
         "contract_gaps": row_shape["contract_gaps"],
-        "asset_inputs_used": asset_refs,
+        "asset_inputs_used": reusable_assets,
     }
 
 
@@ -214,23 +214,59 @@ def _capability_params(
     return params
 
 
-def _asset_refs(prior_assets: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
-    refs = []
+def _reusable_assets(
+    graph: tuple[str, ...],
+    prior_assets: Iterable[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    needed_dimensions = _required_dimension_scan_dimensions(graph)
+    if not needed_dimensions:
+        return ()
+
+    covered: set[str] = set()
+    refs: list[str] = []
     for asset in prior_assets:
-        if asset.get("status") == "usable" and asset.get("query_ref"):
-            refs.append(str(asset["query_ref"]))
+        if not _is_reusable_dimension_scan_asset(asset):
+            continue
+        dimension = str(asset.get("dimension") or "")
+        if dimension not in needed_dimensions:
+            continue
+        covered.add(dimension)
+        refs.append(str(asset["query_ref"]))
+    if not needed_dimensions.issubset(covered):
+        return ()
     return tuple(dict.fromkeys(refs))
+
+
+def _required_dimension_scan_dimensions(graph: tuple[str, ...]) -> frozenset[str]:
+    if "segment_contribution" in graph or "segment_bridge" in graph:
+        return frozenset(("channel",))
+    return frozenset()
+
+
+def _is_reusable_dimension_scan_asset(asset: Mapping[str, Any]) -> bool:
+    if asset.get("status") != "usable" or not asset.get("query_ref"):
+        return False
+    if str(asset.get("asset_type") or "") != "dimension_scan":
+        return False
+    applicable = asset.get("applicable_scans") or asset.get("applicable_scan") or "dimension_scan"
+    if isinstance(applicable, str):
+        applicable_scans = {applicable}
+    elif isinstance(applicable, Iterable) and not isinstance(applicable, (bytes, str, Mapping)):
+        applicable_scans = {str(item) for item in applicable if item}
+    else:
+        applicable_scans = set()
+    return "dimension_scan" in applicable_scans
 
 
 def _query_intents(
     graph: tuple[str, ...],
     axes: tuple[str, ...],
-    asset_refs: tuple[str, ...],
+    reusable_assets: tuple[str, ...],
 ) -> tuple[str, ...]:
     intents = ["daily_metric_baselines"]
-    if asset_refs:
+    if reusable_assets:
         intents.append("dimension_scan_reuse")
-    if "segment_contribution" in graph:
+    if "segment_contribution" in graph and not reusable_assets:
         intents.append("dimension_scan")
     if "joint_attribution" in graph:
         intents.append("joint_candidate_scan")
