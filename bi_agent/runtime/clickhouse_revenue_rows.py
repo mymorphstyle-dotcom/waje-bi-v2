@@ -69,12 +69,13 @@ class ClickHouseRevenueRows:
                 run_id=str(request.get("run_id", "run")),
             )
             if specs:
-                first = specs[0]
+                first = _select_query_spec(specs, accepted_graph)
                 return RevenueRowPlan(
                     sql_text=str(first["sql_text"]),
                     query_id=str(first["query_id"]),
                     required_fields=tuple(str(field) for field in first["required_fields"]),
                     dimension_keys=tuple(str(key) for key in first["dimension_keys"]),
+                    reason=str(first.get("reason") or ""),
                 )
 
         dimensions = _dimension_keys(accepted_graph, request)
@@ -212,3 +213,49 @@ def _safe_rows(
             return None
         safe_rows.append({key: row[key] for key in allowed if key in row})
     return tuple(safe_rows)
+
+
+def _select_query_spec(
+    specs: Sequence[Mapping[str, Any]],
+    accepted_graph: Sequence[str],
+) -> Mapping[str, Any]:
+    graph = set(accepted_graph)
+    preferred_intents = _preferred_intents(graph)
+    for intent in preferred_intents:
+        matching = [spec for spec in specs if str(spec.get("intent") or "") == intent]
+        if matching:
+            return max(
+                matching,
+                key=lambda spec: (
+                    1 if spec.get("sql_text") and not spec.get("reason") else 0,
+                    len(tuple(spec.get("dimension_keys") or ())),
+                ),
+            )
+    return max(specs, key=lambda spec: _fallback_spec_score(spec, graph))
+
+
+def _preferred_intents(graph: set[str]) -> tuple[str, ...]:
+    if "joint_attribution" in graph:
+        return ("joint_candidate_scan", "dimension_scan", "dimension_scan_reuse")
+    if "segment_contribution" in graph or "segment_bridge" in graph:
+        return ("dimension_scan_reuse", "dimension_scan", "joint_candidate_scan")
+    if "event_evidence" in graph:
+        return ("event_context_probe",)
+    if "data_quality_profile" in graph:
+        return ("data_quality_probe",)
+    if "compare_periods" in graph or "rolling_window_compare" in graph:
+        return ("daily_metric_baselines",)
+    return ()
+
+
+def _fallback_spec_score(spec: Mapping[str, Any], graph: set[str]) -> tuple[int, int, int]:
+    intent = str(spec.get("intent") or "")
+    executable = 1 if spec.get("sql_text") and not spec.get("reason") else 0
+    dimension_count = len(tuple(spec.get("dimension_keys") or ()))
+    if intent == "daily_metric_baselines":
+        intent_score = 3 if ("compare_periods" in graph or "rolling_window_compare" in graph) else 1
+    elif intent == "data_quality_probe":
+        intent_score = 2 if "data_quality_profile" in graph else 0
+    else:
+        intent_score = 1 if dimension_count else 0
+    return intent_score, executable, dimension_count

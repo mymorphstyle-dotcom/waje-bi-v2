@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import re
 from typing import Any
 
 from bi_agent.runtime.clickhouse_runtime import IDENTIFIER_PATTERN
@@ -8,7 +9,7 @@ from bi_agent.runtime.clickhouse_runtime import IDENTIFIER_PATTERN
 
 MAX_ROWS = 5000
 DEFAULT_HISTORY_DAYS = 36
-SUPPORTED_INTENTS = frozenset(
+EXECUTABLE_INTENTS = frozenset(
     (
         "daily_metric_baselines",
         "dimension_scan",
@@ -16,12 +17,18 @@ SUPPORTED_INTENTS = frozenset(
         "data_quality_probe",
     )
 )
+NON_EXECUTABLE_INTENT_REASONS = {
+    "dimension_scan_reuse": "dimension_scan_reuse",
+    "event_context_probe": "event_context_probe_unbound",
+}
 MEASURE_SQL = {
     "amount": "sum(paid_amount_ngn) AS amount",
     "paid_users": "uniqExact(user_id) AS paid_users",
     "orders": "count() AS orders",
     "first_paid_users": "countIf(is_first_payment = '1') AS first_paid_users",
 }
+DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+DATE_RANGE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$")
 
 
 def build_clickhouse_query_specs(
@@ -38,14 +45,48 @@ def build_clickhouse_query_specs(
         "group",
         "amount",
     )
-    query_intents = tuple(
-        intent
-        for intent in _string_tuple(plan.get("query_intents"))
-        if intent in SUPPORTED_INTENTS
-    ) or ("daily_metric_baselines",)
+    query_intents = _string_tuple(plan.get("query_intents")) or ("daily_metric_baselines",)
     history_days = _history_days(plan)
+    group_expression, where_clause, reason = _query_window_context(
+        plan,
+        baselines=_string_tuple(plan.get("baselines")),
+        history_days=history_days,
+    )
     specs: list[dict[str, Any]] = []
     for intent in query_intents:
+        if intent in NON_EXECUTABLE_INTENT_REASONS:
+            specs.append(
+                _blocked_spec(
+                    run_id=run_id,
+                    intent=intent,
+                    required_fields=required_fields,
+                    dimension_keys=_intent_dimension_keys(intent, plan, row_shape),
+                    reason=NON_EXECUTABLE_INTENT_REASONS[intent],
+                )
+            )
+            continue
+        if intent not in EXECUTABLE_INTENTS:
+            specs.append(
+                _blocked_spec(
+                    run_id=run_id,
+                    intent=intent,
+                    required_fields=required_fields,
+                    dimension_keys=_intent_dimension_keys(intent, plan, row_shape),
+                    reason="unsupported_query_intent",
+                )
+            )
+            continue
+        if reason:
+            specs.append(
+                _blocked_spec(
+                    run_id=run_id,
+                    intent=intent,
+                    required_fields=required_fields,
+                    dimension_keys=_intent_dimension_keys(intent, plan, row_shape),
+                    reason=reason,
+                )
+            )
+            continue
         if intent == "daily_metric_baselines":
             spec = _grouped_metric_query(
                 table=table,
@@ -53,8 +94,8 @@ def build_clickhouse_query_specs(
                 intent=intent,
                 required_fields=required_fields,
                 dimension_keys=(),
-                history_days=history_days,
-                baselines=_string_tuple(plan.get("baselines")),
+                group_expression=group_expression,
+                where_clause=where_clause,
                 claim_use="baseline_metric",
             )
         elif intent == "dimension_scan":
@@ -64,8 +105,8 @@ def build_clickhouse_query_specs(
                 intent=intent,
                 required_fields=required_fields,
                 dimension_keys=_dimension_keys(plan, row_shape),
-                history_days=history_days,
-                baselines=_string_tuple(plan.get("baselines")),
+                group_expression=group_expression,
+                where_clause=where_clause,
                 claim_use="segment_or_factor_attribution",
             )
         elif intent == "joint_candidate_scan":
@@ -75,15 +116,16 @@ def build_clickhouse_query_specs(
                 intent=intent,
                 required_fields=required_fields,
                 dimension_keys=_joint_dimension_keys(plan, row_shape),
-                history_days=history_days,
-                baselines=_string_tuple(plan.get("baselines")),
+                group_expression=group_expression,
+                where_clause=where_clause,
                 claim_use="joint_attribution_candidates",
             )
         else:
             spec = _data_quality_probe(
                 table=table,
                 run_id=run_id,
-                history_days=history_days,
+                group_expression=group_expression,
+                where_clause=where_clause,
             )
         if spec:
             specs.append(spec)
@@ -97,8 +139,8 @@ def _grouped_metric_query(
     intent: str,
     required_fields: tuple[str, ...],
     dimension_keys: tuple[str, ...],
-    history_days: int,
-    baselines: tuple[str, ...],
+    group_expression: str,
+    where_clause: str,
     claim_use: str,
 ) -> dict[str, Any] | None:
     safe_dimensions = tuple(key for key in dimension_keys if _safe_identifier(key))
@@ -107,7 +149,7 @@ def _grouped_metric_query(
 
     select_parts = [
         "business_date_lagos AS period",
-        _group_expression(baselines),
+        group_expression,
     ]
     select_parts.extend(safe_dimensions)
     select_parts.extend(_measure_sql(required_fields))
@@ -120,7 +162,7 @@ def _grouped_metric_query(
                 "SELECT",
                 _indented(select_parts),
                 f"FROM {table}",
-                _where_clause(history_days),
+                where_clause,
                 f"GROUP BY {', '.join(group_by_parts)}",
                 f"LIMIT {MAX_ROWS}",
             )
@@ -128,6 +170,7 @@ def _grouped_metric_query(
         "required_fields": required_fields,
         "dimension_keys": safe_dimensions,
         "claim_use": claim_use,
+        "reason": "",
     }
 
 
@@ -135,7 +178,8 @@ def _data_quality_probe(
     *,
     table: str,
     run_id: str,
-    history_days: int,
+    group_expression: str,
+    where_clause: str,
 ) -> dict[str, Any]:
     return {
         "query_id": f"{run_id}:data_quality_probe",
@@ -145,8 +189,8 @@ def _data_quality_probe(
                 "SELECT",
                 _indented(
                     (
-                        "toDate(0) AS period",
-                        "'history' AS group",
+                        "business_date_lagos AS period",
+                        group_expression,
                         "min(business_date_lagos) AS min_period",
                         "max(business_date_lagos) AS max_period",
                         "uniqExact(user_id) AS paid_users",
@@ -154,7 +198,7 @@ def _data_quality_probe(
                     )
                 ),
                 f"FROM {table}",
-                _where_clause(history_days),
+                where_clause,
                 "GROUP BY period, group",
                 "LIMIT 1",
             )
@@ -162,6 +206,7 @@ def _data_quality_probe(
         "required_fields": ("period", "group", "orders", "paid_users", "min_period", "max_period"),
         "dimension_keys": (),
         "claim_use": "data_quality_context",
+        "reason": "",
     }
 
 
@@ -174,6 +219,56 @@ def _measure_sql(required_fields: Sequence[str]) -> tuple[str, ...]:
     if fields:
         return tuple(fields)
     return (MEASURE_SQL["amount"],)
+
+
+def _blocked_spec(
+    *,
+    run_id: str,
+    intent: str,
+    required_fields: tuple[str, ...],
+    dimension_keys: tuple[str, ...],
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "query_id": f"{run_id}:{intent}",
+        "intent": intent,
+        "sql_text": "",
+        "required_fields": required_fields,
+        "dimension_keys": tuple(key for key in dimension_keys if _safe_identifier(key)),
+        "claim_use": "",
+        "reason": reason,
+    }
+
+
+def _query_window_context(
+    plan: Mapping[str, Any],
+    *,
+    baselines: tuple[str, ...],
+    history_days: int,
+) -> tuple[str, str, str]:
+    if "custom_baseline" not in set(baselines):
+        return _group_expression(baselines), _where_clause(history_days), ""
+    target_range = _window_date_range(plan, "target")
+    baseline_range = _window_date_range(plan, "baseline")
+    if not target_range or not baseline_range:
+        return "", "", "custom_baseline_window_unbound"
+    target_predicate = _date_range_predicate(*target_range)
+    baseline_predicate = _date_range_predicate(*baseline_range)
+    return (
+        "multiIf(\n"
+        + _indented(
+            (
+                f"{target_predicate}, 'target'",
+                f"{baseline_predicate}, 'baseline'",
+                "'history'",
+            )
+        )
+        + "\n) AS group",
+        "WHERE (\n"
+        + _indented((target_predicate, f"OR {baseline_predicate}"))
+        + "\n)",
+        "",
+    )
 
 
 def _group_expression(baselines: Sequence[str]) -> str:
@@ -203,6 +298,45 @@ def _where_clause(history_days: int) -> str:
     )
 
 
+def _window_date_range(
+    plan: Mapping[str, Any],
+    prefix: str,
+) -> tuple[str, str] | None:
+    windows = plan.get("windows")
+    if not isinstance(windows, Mapping):
+        return None
+    start = _date_literal(windows.get(f"{prefix}_start"))
+    end = _date_literal(windows.get(f"{prefix}_end"))
+    if start and end:
+        return start, end
+    value = windows.get(prefix)
+    if isinstance(value, Mapping):
+        start = _date_literal(value.get("start"))
+        end = _date_literal(value.get("end"))
+        if start and end:
+            return start, end
+        return None
+    if not isinstance(value, str):
+        return None
+    match = DATE_RANGE_PATTERN.match(value.strip())
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _date_literal(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    stripped = value.strip()
+    if DATE_PATTERN.match(stripped) is None:
+        return ""
+    return stripped
+
+
+def _date_range_predicate(start: str, end: str) -> str:
+    return f"business_date_lagos BETWEEN toDate('{start}') AND toDate('{end}')"
+
+
 def _dimension_keys(plan: Mapping[str, Any], row_shape: Mapping[str, Any]) -> tuple[str, ...]:
     dimensions = _string_tuple(row_shape.get("dimension_keys"))
     if dimensions:
@@ -227,6 +361,18 @@ def _joint_dimension_keys(plan: Mapping[str, Any], row_shape: Mapping[str, Any])
             if isinstance(raw_count, int) and raw_count > 0:
                 max_dimension_count = raw_count
     return _dimension_keys(plan, row_shape)[:max_dimension_count]
+
+
+def _intent_dimension_keys(
+    intent: str,
+    plan: Mapping[str, Any],
+    row_shape: Mapping[str, Any],
+) -> tuple[str, ...]:
+    if intent == "joint_candidate_scan":
+        return _joint_dimension_keys(plan, row_shape)
+    if intent in ("dimension_scan", "dimension_scan_reuse"):
+        return _dimension_keys(plan, row_shape)
+    return ()
 
 
 def _history_days(plan: Mapping[str, Any]) -> int:

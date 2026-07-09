@@ -110,6 +110,117 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         self.assertIn("GROUP BY period, group, channel", plan.sql_text)
         self.assertIn("- 12", plan.sql_text)
 
+    def test_plan_prefers_joint_scan_when_multi_intent_graph_needs_dimensions(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-multi-intent",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "yesterday", "history_days": 12},
+                    "baselines": ("previous_day",),
+                    "query_intents": ("daily_metric_baselines", "joint_candidate_scan"),
+                    "capability_params": {"joint_attribution": {"max_dimension_count": 2}},
+                    "row_shapes": [
+                        {
+                            "dimension_keys": ("channel", "payment_method", "region"),
+                            "required_fields": (
+                                "period",
+                                "group",
+                                "amount",
+                                "orders",
+                            ),
+                        }
+                    ],
+                },
+            },
+            {"time_window": "yesterday"},
+            ("compare_periods", "joint_attribution"),
+        )
+
+        self.assertEqual(plan.query_id, "run-multi-intent:joint_candidate_scan")
+        self.assertEqual(plan.dimension_keys, ("channel", "payment_method"))
+        self.assertIn("GROUP BY period, group, channel, payment_method", plan.sql_text)
+
+    def test_plan_blocks_unbound_custom_baseline_windows(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-custom-baseline",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "Q2", "baseline": "Q1"},
+                    "baselines": ("custom_baseline",),
+                    "query_intents": ("daily_metric_baselines",),
+                },
+            },
+            {"time_window": "2026-01-01..2026-06-30"},
+            ("compare_periods",),
+        )
+
+        self.assertEqual(plan.sql_text, "")
+        self.assertEqual(plan.reason, "custom_baseline_window_unbound")
+        self.assertEqual(plan.query_id, "run-custom-baseline:daily_metric_baselines")
+
+    def test_plan_keeps_dimension_scan_reuse_non_executable(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-reuse",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "yesterday", "history_days": 12},
+                    "baselines": ("previous_day",),
+                    "query_intents": ("daily_metric_baselines", "dimension_scan_reuse"),
+                    "row_shapes": [
+                        {
+                            "dimension_keys": ("channel",),
+                            "required_fields": (
+                                "period",
+                                "group",
+                                "amount",
+                                "orders",
+                            ),
+                        }
+                    ],
+                },
+            },
+            {"time_window": "yesterday"},
+            ("segment_contribution",),
+        )
+
+        self.assertEqual(plan.sql_text, "")
+        self.assertEqual(plan.reason, "dimension_scan_reuse")
+        self.assertEqual(plan.query_id, "run-reuse:dimension_scan_reuse")
+
+    def test_plan_keeps_event_probe_non_executable_without_binding(self):
+        provider = ClickHouseRevenueRows(
+            runtime=FakeRuntime(),
+            table="paid_order_success_clean_20240101_20260704",
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-event",
+                "compiler_runtime_plan": {
+                    "windows": {"target": "yesterday", "history_days": 12},
+                    "baselines": ("previous_day",),
+                    "query_intents": ("daily_metric_baselines", "event_context_probe"),
+                },
+            },
+            {"time_window": "yesterday"},
+            ("compare_periods", "event_evidence"),
+        )
+
+        self.assertEqual(plan.sql_text, "")
+        self.assertEqual(plan.reason, "event_context_probe_unbound")
+        self.assertEqual(plan.query_id, "run-event:event_context_probe")
+
     def test_fetch_returns_bounded_aggregate_rows_and_query_ref(self):
         runtime = FakeRuntime(
             rows=({"period": "2026-07-08", "group": "target", "amount": 120.0},)

@@ -144,3 +144,77 @@ The older fallback path stays in place for requests that only carry row-shape hi
 ## Concerns
 
 - The current planner supports the relative daily baseline intents already expressed in runtime plans. Explicit custom-period labels such as quarter names, plus `event_context_probe`, still need a later contract for deterministic date binding before they can become executable SQL without guessing.
+
+## Reviewer Follow-up Fixes
+
+This section supersedes the earlier note that `ClickHouseRevenueRows.plan(...)` returns the first emitted compiler spec. It now selects the spec that matches the accepted graph, and it preserves blocked/non-executable reasons when the runtime plan does not carry enough deterministic metadata.
+
+### RED
+
+Command:
+
+```bash
+python3 -m unittest tests.phase4.test_clickhouse_query_planner tests.phase4.test_clickhouse_revenue_rows
+```
+
+Observed failures before the fix:
+
+```text
+ERROR: test_custom_baseline_with_explicit_ranges_builds_deterministic_query
+KeyError: 'reason'
+
+FAIL: test_custom_baseline_without_bound_dates_returns_blocked_reason
+AssertionError: expected blocked spec, got relative yesterday/history SQL
+
+FAIL: test_plan_prefers_joint_scan_when_multi_intent_graph_needs_dimensions
+AssertionError: 'run-multi-intent:daily_metric_baselines' != 'run-multi-intent:joint_candidate_scan'
+
+FAIL: test_plan_blocks_unbound_custom_baseline_windows
+AssertionError: expected empty sql_text, got relative baseline SQL
+
+FAIL: test_plan_keeps_dimension_scan_reuse_non_executable
+AssertionError: expected empty sql_text, got baseline SQL
+
+FAIL: test_plan_keeps_event_probe_non_executable_without_binding
+AssertionError: expected empty sql_text, got baseline SQL
+```
+
+### GREEN
+
+Commands:
+
+```bash
+python3 -m unittest tests.phase4.test_clickhouse_query_planner tests.phase4.test_clickhouse_revenue_rows
+python3 -m unittest tests.phase4.test_clickhouse_query_planner tests.phase4.test_clickhouse_revenue_rows tests.phase4.test_revenue_runtime_plan tests.phase4.test_recipe_registry_and_compiler
+python3 -m unittest tests.phase7.test_agent_core_bridge
+python3 -m unittest tests.phase4.test_llm_workflow
+```
+
+Observed result:
+
+```text
+Ran 14 tests in 0.003s
+OK
+
+Ran 41 tests in 0.011s
+OK
+
+Ran 32 tests in 0.367s
+OK
+
+Ran 150 tests in 5.811s
+OK
+```
+
+### What Changed In This Follow-up
+
+- `build_clickhouse_query_specs(...)` now keeps explicit non-executable specs with `reason` for `dimension_scan_reuse`, `event_context_probe`, and unbound custom-baseline windows.
+- Custom-baseline SQL only compiles when runtime metadata carries deterministic date ranges through `windows.target` / `windows.baseline` range strings or explicit `target_start` / `target_end` and `baseline_start` / `baseline_end`.
+- `ClickHouseRevenueRows.plan(...)` no longer consumes `specs[0]`; it selects the spec that fits the accepted graph, so joint or segment plans keep dimension-bearing scans instead of dropping to baseline rows.
+- When the accepted graph requires reuse-only or unbound event/custom-baseline behavior, the row plan now returns `sql_text=""` plus the planner reason, which prevents unrelated fresh SQL from running.
+- Added regression coverage for multi-intent spec selection, deterministic custom-baseline compilation, blocked custom baselines, reuse-only plans, and event-probe plans.
+
+### Follow-up Concerns
+
+- Custom-baseline execution is deterministic only when runtime plan metadata includes concrete date ranges. Label-only windows such as `Q1` / `Q2` remain intentionally blocked with `custom_baseline_window_unbound`.
+- `event_context_probe` remains non-executable until the runtime plan carries an explicit event-binding contract. That is deliberate; this patch avoids fabricating SQL from incomplete metadata.

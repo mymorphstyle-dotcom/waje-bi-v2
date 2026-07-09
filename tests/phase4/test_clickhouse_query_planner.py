@@ -46,6 +46,48 @@ class ClickHouseQueryPlannerTest(unittest.TestCase):
 
         self.assertEqual(specs, ())
 
+    def test_custom_baseline_with_explicit_ranges_builds_deterministic_query(self):
+        specs = build_clickhouse_query_specs(
+            {
+                "windows": {
+                    "target": "2026-04-01..2026-06-30",
+                    "baseline": "2026-01-01..2026-03-31",
+                },
+                "baselines": ("custom_baseline",),
+                "query_intents": ("daily_metric_baselines",),
+                "row_shapes": (
+                    {
+                        "required_fields": ("period", "group", "amount"),
+                    },
+                ),
+            },
+            table="paid_order_success_clean_20240101_20260704",
+            run_id="run-custom",
+        )
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["reason"], "")
+        self.assertIn("toDate('2026-04-01')", specs[0]["sql_text"])
+        self.assertIn("toDate('2026-06-30')", specs[0]["sql_text"])
+        self.assertIn("toDate('2026-01-01')", specs[0]["sql_text"])
+        self.assertIn("toDate('2026-03-31')", specs[0]["sql_text"])
+        self.assertNotIn("now('Africa/Lagos')", specs[0]["sql_text"])
+
+    def test_custom_baseline_without_bound_dates_returns_blocked_reason(self):
+        specs = build_clickhouse_query_specs(
+            {
+                "windows": {"target": "Q2", "baseline": "Q1"},
+                "baselines": ("custom_baseline",),
+                "query_intents": ("daily_metric_baselines",),
+            },
+            table="paid_order_success_clean_20240101_20260704",
+            run_id="run-custom",
+        )
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["sql_text"], "")
+        self.assertEqual(specs[0]["reason"], "custom_baseline_window_unbound")
+
 
 if __name__ == "__main__":
     unittest.main()
