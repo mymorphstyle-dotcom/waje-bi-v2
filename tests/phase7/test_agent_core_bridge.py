@@ -661,6 +661,83 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(review["claim_evidence_review"]["missing_context_manifest_ref"], [0])
         self.assertEqual(review["claim_evidence_review"]["missing_reuse_decision_indexes"], [0])
 
+    def test_live_harness_marks_real_clickhouse_unverified_without_clickhouse_refs(self):
+        from tools.phase7.run_live_conversation_system_test import _real_clickhouse_review
+
+        review = _real_clickhouse_review(
+            {
+                "answer_package": {
+                    "sections": [
+                        {
+                            "section_id": "evidence",
+                            "payload": {
+                                "evidence": [{"result_refs": ["fixture-hash"]}]
+                            },
+                        }
+                    ]
+                }
+            },
+            real_clickhouse=True,
+        )
+
+        self.assertFalse(review["real_clickhouse_verified"])
+        self.assertIn("missing_clickhouse_result_refs", review["issues"])
+
+    def test_live_harness_verifies_real_clickhouse_with_validator_and_refs(self):
+        from tools.phase7.run_live_conversation_system_test import _real_clickhouse_review
+
+        review = _real_clickhouse_review(
+            {
+                "answer_package": {
+                    "sections": [
+                        {
+                            "section_id": "evidence",
+                            "payload": {
+                                "evidence": [{"result_refs": ["hash-real"]}]
+                            },
+                        }
+                    ],
+                    "admin_audit": {
+                        "validator_results": [
+                            {
+                                "validator": "clickhouse_runtime",
+                                "ok": True,
+                                "reason": "provider_rows_loaded",
+                            }
+                        ]
+                    },
+                }
+            },
+            real_clickhouse=True,
+        )
+
+        self.assertTrue(review["real_clickhouse_verified"])
+        self.assertEqual(review["clickhouse_result_refs"], ["hash-real"])
+
+    def test_live_harness_fails_real_clickhouse_case_without_verified_refs(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import run_case
+
+        store = InMemoryConversationStore()
+        core = ConversationAgentCore(store, workflow_runner=fake_workflow)
+        case = {
+            "id": "real_clickhouse_requires_refs",
+            "turns": [{"user": "Q2 比 Q1 付费金额为什么变了？", "expect": {}}],
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            result = run_case(
+                core,
+                case,
+                Path(tmpdir),
+                real_clickhouse=True,
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["real_clickhouse_review"]["real_clickhouse_verified"])
+        self.assertFalse(result["turns"][0]["real_clickhouse_review"]["real_clickhouse_verified"])
+
     def test_live_harness_loads_local_env_without_overriding_shell(self):
         import os
         from tempfile import TemporaryDirectory

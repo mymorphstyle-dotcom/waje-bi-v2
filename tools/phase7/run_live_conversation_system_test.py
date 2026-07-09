@@ -219,6 +219,74 @@ def _strict_quality_failed(turn_record: dict[str, Any]) -> bool:
     )
 
 
+def _real_clickhouse_review(
+    result: dict[str, Any],
+    *,
+    real_clickhouse: bool,
+) -> dict[str, Any]:
+    package = result.get("answer_package") or {}
+    refs = _clickhouse_result_refs(package)
+    verified_refs = [ref for ref in refs if _looks_like_clickhouse_result_ref(ref)]
+    validator_ok = _clickhouse_runtime_validator_passed(package)
+    if not real_clickhouse:
+        return {
+            "required": False,
+            "real_clickhouse_verified": True,
+            "clickhouse_result_refs": sorted(set(refs)),
+            "issues": [],
+        }
+
+    issues: list[str] = []
+    if not verified_refs:
+        issues.append("missing_clickhouse_result_refs")
+    if not validator_ok:
+        issues.append("missing_clickhouse_runtime_validator")
+    return {
+        "required": True,
+        "real_clickhouse_verified": not issues,
+        "clickhouse_result_refs": sorted(set(verified_refs)),
+        "issues": issues,
+    }
+
+
+def _clickhouse_result_refs(answer_package: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+    if not isinstance(answer_package, dict):
+        return refs
+    for section in answer_package.get("sections", []):
+        payload = section.get("payload", {}) if isinstance(section, dict) else {}
+        evidence = payload.get("evidence")
+        if not isinstance(evidence, list):
+            continue
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            refs.extend(str(ref) for ref in item.get("result_refs", []) if ref)
+    return refs
+
+
+def _looks_like_clickhouse_result_ref(ref: str) -> bool:
+    return bool(ref) and ref != "fixture-hash" and not ref.startswith("phase4-draft")
+
+
+def _clickhouse_runtime_validator_passed(answer_package: dict[str, Any]) -> bool:
+    if not isinstance(answer_package, dict):
+        return False
+    admin = answer_package.get("admin_audit") or {}
+    if not isinstance(admin, dict):
+        return False
+    for item in admin.get("validator_results", []):
+        if not isinstance(item, dict):
+            continue
+        if (
+            item.get("validator") == "clickhouse_runtime"
+            and item.get("ok") is True
+            and item.get("reason") == "provider_rows_loaded"
+        ):
+            return True
+    return False
+
+
 def _claim_evidence_review(
     answer_package: dict[str, Any],
     context_manifest: dict[str, Any],
@@ -337,12 +405,37 @@ def _default_artifact_dir(*, real_llm: bool, real_clickhouse: bool) -> Path:
     return Path(f"artifacts/phase7/live-conversation-{suffix}")
 
 
+def _aggregate_real_clickhouse_review(
+    turns: list[dict[str, Any]],
+    real_clickhouse: bool,
+) -> dict[str, Any]:
+    refs: list[str] = []
+    issues: list[str] = []
+    verified = True
+    for turn in turns:
+        review = turn.get("real_clickhouse_review") or {}
+        refs.extend(str(ref) for ref in review.get("clickhouse_result_refs", []) if ref)
+        issues.extend(str(issue) for issue in review.get("issues", []) if issue)
+        if review.get("real_clickhouse_verified") is not True:
+            verified = False
+    if not real_clickhouse:
+        verified = True
+        issues = []
+    return {
+        "required": bool(real_clickhouse),
+        "real_clickhouse_verified": verified,
+        "clickhouse_result_refs": sorted(set(refs)),
+        "issues": sorted(set(issues)),
+    }
+
+
 def run_case(
     core: ConversationAgentCore,
     case: dict[str, Any],
     artifact_dir: Path,
     *,
     strict_quality: bool = False,
+    real_clickhouse: bool = False,
     run_mode: str = "dry_run",
 ) -> dict[str, Any]:
     thread_id = _case_thread_id(case)
@@ -384,6 +477,10 @@ def run_case(
             turn_record["resumed_quality_review"] = _quality_review(resumed_answer_package)
         turn_record["expectation_review"] = _review_expectations(turn, turn_record)
         effective = _effective_result(turn_record)
+        turn_record["real_clickhouse_review"] = _real_clickhouse_review(
+            effective,
+            real_clickhouse=real_clickhouse,
+        )
         turn_record["strict_quality_failed"] = bool(
             strict_quality and _strict_quality_failed(effective)
         )
@@ -391,13 +488,25 @@ def run_case(
     final_result = _effective_result(turns[-1]) if turns else {}
     expectation_failed = any(not turn["expectation_review"]["passed"] for turn in turns)
     strict_quality_failed = any(turn.get("strict_quality_failed") for turn in turns)
+    real_clickhouse_failed = any(
+        not turn.get("real_clickhouse_review", {}).get("real_clickhouse_verified", True)
+        for turn in turns
+    )
+    real_clickhouse_review = _aggregate_real_clickhouse_review(turns, real_clickhouse)
     output = {
         "case_id": case["id"],
         "thread_id": thread_id,
         "run_mode": run_mode,
-        "status": "failed" if expectation_failed or strict_quality_failed else "passed",
+        "status": (
+            "failed"
+            if expectation_failed or strict_quality_failed or real_clickhouse_failed
+            else "passed"
+        ),
         "strict_quality": strict_quality,
         "strict_quality_failed": strict_quality_failed,
+        "real_clickhouse_review": real_clickhouse_review,
+        "real_clickhouse_verified": real_clickhouse_review["real_clickhouse_verified"],
+        "clickhouse_result_refs": real_clickhouse_review["clickhouse_result_refs"],
         "final_turn_status": final_result.get("status"),
         "run_id": final_result.get("run_id"),
         "topic_id": final_result.get("topic_id"),
@@ -444,6 +553,7 @@ def main() -> None:
                 case,
                 artifact_dir,
                 strict_quality=args.strict_quality,
+                real_clickhouse=args.real_clickhouse,
                 run_mode=run_mode,
             )
             for case in selected
