@@ -36,6 +36,7 @@ class ConversationAgentCore:
         rows_loader: Any = None,
         evidence_writer: Any = None,
         runtime_registry: RuntimeContractRegistry | None = None,
+        release_resolver: Any = None,
     ) -> None:
         self.store = store
         self.workflow_runner = workflow_runner or run_pattern_workflow
@@ -45,6 +46,7 @@ class ConversationAgentCore:
         self.rows_loader = rows_loader
         self.evidence_writer = evidence_writer
         self.runtime_registry = runtime_registry
+        self.release_resolver = release_resolver
 
     def run_message(
         self,
@@ -172,6 +174,8 @@ class ConversationAgentCore:
             request["evidence_writer"] = self.evidence_writer
         if self.runtime_registry is not None:
             request["runtime_registry"] = self.runtime_registry
+        if self.release_resolver is not None:
+            request["release_resolver"] = self.release_resolver
         self.store.upsert_run(
             run_id,
             thread_id=thread_id,
@@ -217,6 +221,7 @@ class ConversationAgentCore:
             evidence_resolver=self.evidence_resolver,
             rows_loader=self.rows_loader,
             runtime_registry=self.runtime_registry,
+            release_resolver=self.release_resolver,
             internal_verifier_audit=internal_verifier_audit,
         )
         self.store.add_audit_event(
@@ -247,6 +252,7 @@ class ConversationAgentCore:
                     evidence_resolver=self.evidence_resolver,
                     rows_loader=self.rows_loader,
                     runtime_registry=self.runtime_registry,
+                    release_resolver=self.release_resolver,
                 ),
             )
         self.store.upsert_run(
@@ -288,20 +294,36 @@ class ConversationAgentCore:
             "runtime_registry": registry,
         }
         if real_llm or real_clickhouse:
+            store = PostgresConversationStore.from_env()
             row_provider = None
             if real_clickhouse:
-                from bi_agent.runtime.clickhouse_revenue_rows import ClickHouseRevenueRows
+                from bi_agent.runtime.clickhouse_revenue_rows import (
+                    ClickHouseRevenueRows,
+                    trusted_active_dataset_snapshots,
+                )
 
-                row_provider = ClickHouseRevenueRows.from_env()
+                row_provider = ClickHouseRevenueRows.from_env(
+                    snapshot_loader=lambda *, purpose: trusted_active_dataset_snapshots(
+                        store,
+                        purpose=purpose,
+                    ),
+                    release_resolver=store,
+                    evidence_resolver=authority,
+                    evidence_writer=authority._runtime_writer(),
+                    rows_loader=authority.rows_loader,
+                )
             return cls(
-                PostgresConversationStore.from_env(),
+                store,
                 conversation_llm_client=_conversation_llm_from_env() if real_llm else None,
                 row_provider=row_provider,
+                release_resolver=store,
                 **authority_kwargs,
             )
+        store = InMemoryConversationStore()
         return cls(
-            InMemoryConversationStore(),
+            store,
             workflow_runner=_dry_run_workflow,
+            release_resolver=store,
             **authority_kwargs,
         )
 
@@ -324,6 +346,7 @@ def _persistable_request(request: dict[str, Any]) -> dict[str, Any]:
         "rows_loader",
         "evidence_writer",
         "runtime_registry",
+        "release_resolver",
     ):
         if key in safe:
             safe[key] = _runtime_object_descriptor(safe[key])
@@ -337,6 +360,7 @@ def _persistable_request(request: dict[str, Any]) -> dict[str, Any]:
             "rows_loader",
             "evidence_writer",
             "runtime_registry",
+            "release_resolver",
         ):
             if key in safe_runtime:
                 safe_runtime[key] = _runtime_object_descriptor(safe_runtime[key])

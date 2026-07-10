@@ -19,6 +19,14 @@ from bi_agent.conversation.models import (
     TopicState,
 )
 from bi_agent.runtime.analysis_assets import merge_analysis_assets
+from bi_agent.runtime.dataset_catalog import (
+    DatasetReleaseAuthorityRecord,
+    build_dataset_release_authority_record,
+    canonical_dataset_requires_release,
+    dataset_release_authority_record_from_mapping,
+    immutable_dataset_snapshot_projection,
+    validate_dataset_snapshot_release_payloads,
+)
 
 
 class InMemoryConversationStore:
@@ -36,6 +44,7 @@ class InMemoryConversationStore:
         self.answer_packages: dict[str, dict] = {}
         self.analysis_assets: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         self.dataset_snapshots: dict[str, dict[str, Any]] = {}
+        self.dataset_snapshot_releases: dict[str, dict[str, Any]] = {}
         self.clarification_states: dict[str, ClarificationState] = {}
         self._audit_events: list[dict] = []
 
@@ -206,6 +215,18 @@ class InMemoryConversationStore:
         return tuple(dict(asset) for asset in self.analysis_assets.get((thread_id, topic_id), ()))
 
     def save_dataset_snapshot(self, payload: dict[str, Any]) -> None:
+        dataset_id = str(payload.get("dataset_id") or "")
+        snapshot_ref = str(payload.get("snapshot_ref") or "")
+        if any(
+            snapshot_ref in tuple(release.get("snapshot_refs") or ())
+            for release in self.dataset_snapshot_releases.values()
+        ):
+            raise ValueError("dataset_snapshot_published_immutable")
+        if (
+            canonical_dataset_requires_release(dataset_id)
+            and payload.get("status") == "active"
+        ):
+            raise ValueError("dataset_snapshot_release_required")
         snapshot = deepcopy(payload)
         self.dataset_snapshots[snapshot["snapshot_ref"]] = snapshot
         self.add_audit_event(
@@ -215,11 +236,105 @@ class InMemoryConversationStore:
         )
 
     def list_dataset_snapshots(self, dataset_id: str = "") -> tuple[dict[str, Any], ...]:
-        return tuple(
-            deepcopy(payload)
-            for payload in self.dataset_snapshots.values()
-            if not dataset_id or payload.get("dataset_id") == dataset_id
+        snapshots = []
+        for payload in self.dataset_snapshots.values():
+            if dataset_id and payload.get("dataset_id") != dataset_id:
+                continue
+            snapshots.append(deepcopy(payload))
+        return tuple(snapshots)
+
+    def publish_dataset_snapshot_release(
+        self,
+        *,
+        release_ref: str,
+        logical_snapshot_id: str,
+        payloads: tuple[dict[str, Any], ...],
+        fail_after_writes: int = 0,
+    ) -> None:
+        normalized, validated_logical_id, _, validated_release_ref = (
+            validate_dataset_snapshot_release_payloads(payloads)
         )
+        if logical_snapshot_id != validated_logical_id:
+            raise ValueError("dataset_snapshot_release_logical_snapshot")
+        if release_ref != validated_release_ref:
+            raise ValueError("dataset_snapshot_release_ref")
+        authority = build_dataset_release_authority_record(normalized)
+        if authority.integrity_errors:
+            raise ValueError("dataset_release_authority_integrity")
+        payloads = tuple(
+            {
+                **payload,
+                "authority_record_ref": authority.authority_record_ref,
+            }
+            for payload in normalized
+        )
+        for payload in payloads:
+            existing = self.dataset_snapshots.get(str(payload["snapshot_ref"]))
+            if existing is None:
+                continue
+            if (
+                existing.get("status") != payload.get("status")
+                or immutable_dataset_snapshot_projection(existing)
+                != immutable_dataset_snapshot_projection(payload)
+            ):
+                raise ValueError("dataset_snapshot_published_immutable")
+        snapshots_before = deepcopy(self.dataset_snapshots)
+        releases_before = deepcopy(self.dataset_snapshot_releases)
+        audit_before = deepcopy(self._audit_events)
+        writes = 0
+        try:
+            new_refs = {str(payload["snapshot_ref"]) for payload in payloads}
+            for ref, existing in tuple(self.dataset_snapshots.items()):
+                if (
+                    existing.get("logical_snapshot_id") == logical_snapshot_id
+                    and existing.get("status") == "active"
+                    and ref not in new_refs
+                ):
+                    self.dataset_snapshots[ref] = {
+                        **existing,
+                        "status": "superseded",
+                        "superseded_by_release": release_ref,
+                    }
+            for payload in payloads:
+                self.dataset_snapshots[str(payload["snapshot_ref"])] = deepcopy(payload)
+                writes += 1
+                if fail_after_writes and writes >= fail_after_writes:
+                    raise RuntimeError("injected_release_failure")
+            release = authority.to_dict()
+            self.dataset_snapshot_releases[release_ref] = release
+            self.add_audit_event(
+                "dataset_snapshot_release_published",
+                ref=release_ref,
+                payload=release,
+            )
+        except Exception:
+            self.dataset_snapshots = snapshots_before
+            self.dataset_snapshot_releases = releases_before
+            self._audit_events = audit_before
+            raise
+
+    def resolve_dataset_release(
+        self,
+        release_ref: str,
+    ) -> DatasetReleaseAuthorityRecord:
+        release = self.dataset_snapshot_releases.get(release_ref)
+        if not release:
+            raise KeyError(f"dataset_release_unavailable:{release_ref}")
+        snapshot_refs = tuple(release.get("snapshot_refs") or ())
+        if len(snapshot_refs) != 2 or any(
+            ref not in self.dataset_snapshots for ref in snapshot_refs
+        ):
+            raise ValueError("dataset_release_authority_membership")
+        stored = dataset_release_authority_record_from_mapping(release)
+        if stored.integrity_errors or stored.release_ref != release_ref:
+            raise ValueError("dataset_release_authority_record_mismatch")
+        current = tuple(
+            immutable_dataset_snapshot_projection(self.dataset_snapshots[ref])
+            for ref in snapshot_refs
+        )
+        if current != stored.member_projections:
+            raise ValueError("dataset_release_authority_record_mismatch")
+        return stored
 
     def record_run_nodes(self, run_id: str, checkpoint_events: tuple[dict, ...]) -> None:
         self.runs.setdefault(run_id, {})["checkpoint_events"] = list(checkpoint_events)

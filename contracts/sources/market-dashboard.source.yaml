@@ -76,6 +76,101 @@ field_mapping:
   aggregate_marketing_cost: 投放成本
   profit: 利润
 
+field_contracts:
+  business_date:
+    source_field: 日期
+    logical_type: date
+    clickhouse_type: Date
+    precision: null
+    scale: null
+    nullable: false
+    missing_tokens: []
+    duplicate_aggregation: key
+    value_semantics: date
+    display_format: iso_date
+    rounding_mode: not_applicable
+    loss_policy: reject_invalid
+    canonicalization_version: market-dashboard-decimal-v1
+  game:
+    source_field: 游戏
+    logical_type: string
+    clickhouse_type: String
+    precision: null
+    scale: null
+    nullable: false
+    missing_tokens: []
+    duplicate_aggregation: key
+    value_semantics: dimension
+    display_format: text
+    rounding_mode: not_applicable
+    loss_policy: reject_invalid
+    canonicalization_version: market-dashboard-decimal-v1
+    allowed_values: [Waje Special]
+  active_users: {source_field: 日活, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  new_users: {source_field: 新增, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  revenue: {source_field: 营收, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  active_user_arpu: {source_field: 日活arpu, logical_type: decimal_average, clickhouse_type: "Decimal(38, 18)", precision: 38, scale: 18, nullable: true, missing_tokens: ["", "NULL", "nan"], duplicate_aggregation: single_nonzero_signal, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  registrations: {source_field: 注册人数, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  new_devices: {source_field: 新增设备, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  login_accounts: {source_field: 登录账户数, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  registration_rate: {source_field: 注册率, logical_type: decimal_ratio, clickhouse_type: "Decimal(38, 18)", precision: 38, scale: 18, nullable: true, missing_tokens: ["", "NULL", "nan"], duplicate_aggregation: single_nonzero_signal, value_semantics: scalar_ratio, display_format: percent, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  zero_round_user_share: {source_field: 0局用户占比, logical_type: decimal_ratio, clickhouse_type: "Decimal(38, 18)", precision: 38, scale: 18, nullable: true, missing_tokens: ["", "NULL", "nan"], duplicate_aggregation: single_nonzero_signal, value_semantics: scalar_ratio, display_format: percent, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  gameplay_users: {source_field: 游戏人数, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  gameplay_rounds: {source_field: 游戏局数, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  app_avg_online_time: {source_field: app在线人均时长, logical_type: decimal_average, clickhouse_type: "Decimal(38, 18)", precision: 38, scale: 18, nullable: true, missing_tokens: ["", "NULL", "nan"], duplicate_aggregation: single_nonzero_signal, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  effective_user_app_avg_online_time: {source_field: 有效用户app在线人均时长, logical_type: decimal_average, clickhouse_type: "Decimal(38, 18)", precision: 38, scale: 18, nullable: true, missing_tokens: ["", "NULL", "nan"], duplicate_aggregation: single_nonzero_signal, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  historical_paid_active_users: {source_field: 日活历史付费人数, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  first_paid_amount: {source_field: 首充用户金额, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  new_paid_amount: {source_field: 新增付费金额, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  login_user_avg_recharge: {source_field: 登陆用户人均充值, logical_type: decimal_average, clickhouse_type: "Decimal(38, 18)", precision: 38, scale: 18, nullable: true, missing_tokens: ["", "NULL", "nan"], duplicate_aggregation: single_nonzero_signal, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  avg_first_paid_amount: {source_field: 平均首充金额, logical_type: decimal_average, clickhouse_type: "Decimal(38, 18)", precision: 38, scale: 18, nullable: true, missing_tokens: ["", "NULL", "nan"], duplicate_aggregation: single_nonzero_signal, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  first_paid_rate: {source_field: 首充率, logical_type: decimal_ratio, clickhouse_type: "Decimal(38, 18)", precision: 38, scale: 18, nullable: true, missing_tokens: ["", "NULL", "nan"], duplicate_aggregation: single_nonzero_signal, value_semantics: scalar_ratio, display_format: percent, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  first_paid_users: {source_field: 首充人数, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  new_paid_rate: {source_field: 新增付费率, logical_type: decimal_ratio, clickhouse_type: "Decimal(38, 18)", precision: 38, scale: 18, nullable: true, missing_tokens: ["", "NULL", "nan"], duplicate_aggregation: single_nonzero_signal, value_semantics: scalar_ratio, display_format: percent, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  new_paid_users: {source_field: 新增付费人数, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  paid_users: {source_field: 付费人数, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  paid_amount: {source_field: 付费金额, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  recharge_channel_fee: {source_field: 充值渠道手续费, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  withdraw_request_amount: {source_field: 申请提现金额, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  withdraw_arrived_users: {source_field: 提现到账人数, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  withdraw_arrived_amount: {source_field: 提现到账金额, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  withdraw_to_recharge_ratio: {source_field: 提充比, logical_type: decimal_ratio, clickhouse_type: "Decimal(38, 18)", precision: 38, scale: 18, nullable: true, missing_tokens: ["", "NULL", "nan"], duplicate_aggregation: single_nonzero_signal, value_semantics: scalar_ratio, display_format: percent, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  withdraw_request_users: {source_field: 申请提现人数, logical_type: decimal_count, clickhouse_type: "Decimal(38, 0)", precision: 38, scale: 0, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  withdraw_fee: {source_field: 提现手续费, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  withdraw_user_fee: {source_field: 提现用户手续费, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  aggregate_marketing_cost: {source_field: 投放成本, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+  profit: {source_field: 利润, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
+
+runtime_binding:
+  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@1
+  snapshot_column: snapshot_id
+  load_revision_column: load_revision
+  overall:
+    dataset_id: market_dashboard
+    physical_table_prefix: market_dashboard_daily__
+    grain: [snapshot_id, load_revision, business_date, game]
+    unique_key: [snapshot_id, load_revision, business_date, game]
+  channel:
+    dataset_id: market_dashboard_channel
+    physical_table_prefix: market_dashboard_channel_daily__
+    grain: [snapshot_id, load_revision, business_date, game, channel]
+    unique_key: [snapshot_id, load_revision, business_date, game, channel]
+  source_load_manifest:
+    identity: content_addressed
+    checksum: sha256
+    empty_channel_partition_status: no_data
+    empty_channel_partition_ref: "<literal-channel>@<start-date>:<end-date>"
+    row_content_hash: sha256_canonical_json
+  duplicate_grain_policy:
+    source: field_contracts.duplicate_aggregation
+    conflicting_non_additive_values: fail_load
+  canonicalization_version: market-dashboard-decimal-v1
+  reconciliation:
+    metric: paid_amount
+    grain: [business_date, game]
+    tolerance: 0.01
+    status_values: [matched, mismatch, incomplete, not_comparable]
+
 coverage:
   covered_metrics:
     - 日活

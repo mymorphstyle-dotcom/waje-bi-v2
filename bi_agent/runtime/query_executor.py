@@ -13,7 +13,7 @@ from bi_agent.runtime.analysis_contracts import (
 )
 from bi_agent.runtime.clickhouse_query_compiler import compile_clickhouse_query
 from bi_agent.runtime.clickhouse_runtime import ClickHouseRuntime, audit_query_hash
-from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.dataset_catalog import DatasetReleaseResolver, DatasetSnapshot
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     RowsPayloadLoader,
@@ -65,6 +65,7 @@ class ClickHouseQueryExecutor:
         evidence_resolver: RuntimeEvidenceResolver | None = None,
         evidence_writer: RuntimeEvidenceWriter | None = None,
         rows_loader: RowsPayloadLoader | None = None,
+        release_resolver: DatasetReleaseResolver | None = None,
     ) -> None:
         self.runtime = runtime
         self.rows_store = rows_store or AggregateRowsStore()
@@ -81,6 +82,7 @@ class ClickHouseQueryExecutor:
         self.rows_loader = rows_loader or (
             authority.rows_loader if authority is not None else None
         )
+        self.release_resolver = release_resolver
         if self.evidence_writer is None:
             raise ValueError("runtime_evidence_writer_missing")
 
@@ -90,6 +92,7 @@ class ClickHouseQueryExecutor:
         snapshots: Mapping[str, DatasetSnapshot],
         *,
         execution_attempt_ref: str = "",
+        release_resolver: DatasetReleaseResolver | None = None,
     ) -> QueryResultEnvelope:
         def finish(envelope: QueryResultEnvelope) -> QueryResultEnvelope:
             if (
@@ -133,7 +136,11 @@ class ClickHouseQueryExecutor:
             f"clickhouse:{contract.query_contract_id}:blocked:{attempt_identity}"
         )
         try:
-            compiled = compile_clickhouse_query(contract, snapshots)
+            compiled = compile_clickhouse_query(
+                contract,
+                snapshots,
+                release_resolver=release_resolver or self.release_resolver,
+            )
         except (KeyError, PermissionError, TypeError, ValueError) as exc:
             return finish(_failed_envelope(
                 contract,

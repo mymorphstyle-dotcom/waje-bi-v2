@@ -20,7 +20,11 @@ from bi_agent.runtime.analysis_contracts import (
     query_contract_signature,
     stable_contract_signature,
 )
-from bi_agent.runtime.dataset_catalog import DatasetCatalog, DatasetSnapshot
+from bi_agent.runtime.dataset_catalog import (
+    DatasetCatalog,
+    DatasetReleaseResolver,
+    DatasetSnapshot,
+)
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from bi_agent.runtime.window_resolver import WindowResolution, resolve_revenue_windows
 
@@ -40,6 +44,9 @@ class _DependencyIndex:
     metric_owners: Mapping[str, tuple[str, ...]]
     dimension_owners: Mapping[str, tuple[str, ...]]
     dataset_owners: Mapping[str, tuple[str, ...]]
+    metric_dataset_ids: Mapping[str, tuple[str, ...]]
+    dimension_dataset_ids: Mapping[str, tuple[str, ...]]
+    source_selection_gaps: tuple[ContractGap, ...]
 
 
 def compile_analysis_contract(
@@ -51,6 +58,7 @@ def compile_analysis_contract(
     registry: RuntimeContractRegistry,
     as_of: datetime,
     permission_scope: str,
+    release_resolver: DatasetReleaseResolver | None = None,
 ) -> AnalysisCompileOutcome:
     capabilities = _dedupe(accepted_capabilities)
     dependencies = _build_dependency_index(proposal, capabilities, registry)
@@ -68,17 +76,24 @@ def compile_analysis_contract(
         as_of,
         permission_scope,
         dependencies.dataset_owners,
+        release_resolver,
     )
     snapshots, dataset_schema_gaps = _validate_snapshot_schemas(
         snapshots,
         registry,
         dependencies.dataset_owners,
     )
+    snapshot_evidence_gaps = _snapshot_evidence_gaps(
+        snapshots,
+        dependencies.dataset_owners,
+        registry,
+    )
     metric_bindings, metric_gaps = _bind_metrics(
         dependencies.metric_ids,
         registry,
         snapshots,
         dependencies.metric_owners,
+        dependencies.metric_dataset_ids,
     )
     dimension_bindings, dimension_gaps = _bind_dimensions(
         dependencies.dimension_ids,
@@ -87,6 +102,7 @@ def compile_analysis_contract(
         permission_scope,
         snapshots,
         dependencies.dimension_owners,
+        dependencies.dimension_dataset_ids,
     )
     accepted_claim_intents, claim_intent_gaps = _bind_claim_intents(
         proposal,
@@ -141,6 +157,8 @@ def compile_analysis_contract(
             *dataset_contract_gaps,
             *source_gaps,
             *dataset_schema_gaps,
+            *snapshot_evidence_gaps,
+            *dependencies.source_selection_gaps,
             *metric_gaps,
             *dimension_gaps,
             *capability_input_gaps,
@@ -148,12 +166,14 @@ def compile_analysis_contract(
         affected_capabilities=affected_capabilities,
         affected_claim_types=accepted_claim_intents,
     )
-    gaps = (
-        *scoped_gaps,
-        *claim_intent_gaps,
-        *resolution.gaps,
+    gaps = _merge_contract_gaps(
+        (
+            *scoped_gaps,
+            *claim_intent_gaps,
+            *resolution.gaps,
+        )
     )
-    target_metrics = set(_values(proposal, "target_metrics"))
+    target_metrics = _values(proposal, "target_metrics")
     analysis = AnalysisContract(
         analysis_contract_id=analysis_contract_id,
         contract_version=registry.contract_version,
@@ -210,7 +230,8 @@ def _build_dependency_index(
     explicit_metrics = set(
         (*_values(proposal, "target_metrics"), *_values(proposal, "requested_components"))
     )
-    target_metrics = set(_values(proposal, "target_metrics"))
+    target_metrics = _values(proposal, "target_metrics")
+    capability_metric_gaps: list[ContractGap] = []
 
     metric_owners: dict[str, list[str]] = {metric_id: [] for metric_id in metric_ids}
     for metric_id in target_metrics:
@@ -219,6 +240,26 @@ def _build_dependency_index(
         contract = _registry_entry(registry.capability_inputs, capability_id)
         if contract is None:
             continue
+        if str(contract.get("metric_mode") or "") == "requested":
+            allowed_metrics = set(_mapping_values(contract, "allowed_metrics"))
+            for metric_id in target_metrics:
+                if metric_id in allowed_metrics and metric_id in metric_owners:
+                    _append_owner(metric_owners, metric_id, capability_id)
+                elif metric_id not in allowed_metrics:
+                    capability_metric_gaps.append(
+                        _contract_gap(
+                            gap_type="capability_metric_unsupported",
+                            gap_id=(
+                                f"metric:{metric_id}:"
+                                "capability_metric_family_unsupported"
+                            ),
+                            affected_capabilities=(capability_id,),
+                            repair_options=(
+                                "choose_reviewed_metric",
+                                "change_capability",
+                            ),
+                        )
+                    )
         for metric_id in _mapping_values(contract, "required_metrics"):
             if metric_id in metric_owners:
                 _append_owner(metric_owners, metric_id, capability_id)
@@ -261,16 +302,60 @@ def _build_dependency_index(
             _append_owner(source_owners, dataset_id, "analysis_contract")
 
     dataset_owners: dict[str, list[str]] = {}
+    metric_overrides = _source_overrides(proposal, "metric_dataset_overrides")
+    dimension_overrides = _source_overrides(proposal, "dimension_dataset_overrides")
+    requested_datasets = _values(proposal, "dataset_requirements")
+    source_selection_gaps: list[ContractGap] = list(capability_metric_gaps)
+    metric_dataset_ids: dict[str, tuple[str, ...]] = {}
+    dimension_dataset_ids: dict[str, tuple[str, ...]] = {}
     for metric_id in metric_ids:
-        contract = _registry_entry(registry.metric, metric_id)
-        if contract is not None and contract.get("dataset_id"):
-            dataset_id = str(contract["dataset_id"])
+        try:
+            sources = registry.metric_sources(metric_id)
+            selected, gap = _select_source_datasets(
+                item_kind="metric",
+                item_id=metric_id,
+                sources=tuple(sources),
+                override=metric_overrides.get(metric_id, ""),
+                requested_datasets=requested_datasets,
+                owners=metric_owners[metric_id],
+                registry=registry,
+            )
+        except (KeyError, TypeError, ValueError):
+            selected, gap = (), _contract_gap(
+                gap_type="contract_absent",
+                gap_id=f"metric:{metric_id}:contract_absent",
+                affected_capabilities=tuple(metric_owners[metric_id]),
+                repair_options=("register_metric_contract",),
+            )
+        metric_dataset_ids[metric_id] = selected
+        if gap is not None:
+            source_selection_gaps.append(gap)
+        for dataset_id in selected:
             for owner in metric_owners[metric_id]:
                 _append_owner(dataset_owners, dataset_id, owner)
     for dimension_id in dimension_ids:
-        contract = _registry_entry(registry.dimension, dimension_id)
-        if contract is not None and contract.get("dataset_id"):
-            dataset_id = str(contract["dataset_id"])
+        try:
+            sources = registry.dimension_sources(dimension_id)
+            selected, gap = _select_source_datasets(
+                item_kind="dimension",
+                item_id=dimension_id,
+                sources=tuple(sources),
+                override=dimension_overrides.get(dimension_id, ""),
+                requested_datasets=requested_datasets,
+                owners=dimension_owners[dimension_id],
+                registry=registry,
+            )
+        except (KeyError, TypeError, ValueError):
+            selected, gap = (), _contract_gap(
+                gap_type="contract_absent",
+                gap_id=f"dimension:{dimension_id}:contract_absent",
+                affected_capabilities=tuple(dimension_owners[dimension_id]),
+                repair_options=("register_dimension_contract",),
+            )
+        dimension_dataset_ids[dimension_id] = selected
+        if gap is not None:
+            source_selection_gaps.append(gap)
+        for dataset_id in selected:
             for owner in dimension_owners[dimension_id]:
                 _append_owner(dataset_owners, dataset_id, owner)
     for dataset_id, owners in source_owners.items():
@@ -284,6 +369,9 @@ def _build_dependency_index(
         metric_owners={key: tuple(value) for key, value in metric_owners.items()},
         dimension_owners={key: tuple(value) for key, value in dimension_owners.items()},
         dataset_owners={key: tuple(value) for key, value in dataset_owners.items()},
+        metric_dataset_ids=metric_dataset_ids,
+        dimension_dataset_ids=dimension_dataset_ids,
+        source_selection_gaps=tuple(source_selection_gaps),
     )
 
 
@@ -363,6 +451,7 @@ def _resolve_snapshots(
     as_of: datetime,
     permission_scope: str,
     dataset_owners: Mapping[str, tuple[str, ...]],
+    release_resolver: DatasetReleaseResolver | None,
 ) -> tuple[tuple[DatasetSnapshot, ...], tuple[ContractGap, ...]]:
     snapshots = []
     gaps = []
@@ -388,10 +477,17 @@ def _resolve_snapshots(
                     dataset_id,
                     as_of=as_of,
                     permission_scope=permission_scope,
+                    evidence_states=("claim_ready", "context_only"),
+                    release_resolver=release_resolver,
                 )
             )
         except KeyError:
-            eligible_candidates = catalog.as_of_candidates(dataset_id, as_of=as_of)
+            eligible_candidates = catalog.as_of_candidates(
+                dataset_id,
+                as_of=as_of,
+                evidence_states=("claim_ready", "context_only"),
+                release_resolver=release_resolver,
+            )
             permission_blocked = bool(eligible_candidates) and not any(
                 permission_scope in item.permission_scopes
                 for _, item in eligible_candidates
@@ -453,134 +549,193 @@ def _validate_snapshot_schemas(
     return tuple(accepted), tuple(gaps)
 
 
+def _snapshot_evidence_gaps(
+    snapshots: tuple[DatasetSnapshot, ...],
+    dataset_owners: Mapping[str, tuple[str, ...]],
+    registry: RuntimeContractRegistry,
+) -> tuple[ContractGap, ...]:
+    gaps = []
+    for snapshot in snapshots:
+        for capability_id in dataset_owners.get(snapshot.dataset_id, ()):
+            if capability_id == "analysis_contract":
+                continue
+            capability = _registry_entry(registry.capability_inputs, capability_id)
+            if capability is None:
+                continue
+            unsupported = tuple(
+                query_family
+                for query_family in _mapping_values(capability, "query_families")
+                if not _snapshot_supports_query(
+                    snapshot,
+                    query_family,
+                    has_dimensions=(
+                        str(capability.get("dimension_mode") or "") == "requested"
+                    ),
+                )
+            )
+            if unsupported:
+                gaps.append(
+                    _contract_gap(
+                        gap_type="contract_partial",
+                        gap_id=(
+                            f"dataset:{snapshot.dataset_id}:evidence_state:"
+                            f"{snapshot.evidence_state}:capability:{capability_id}"
+                        ),
+                        dataset_id=snapshot.dataset_id,
+                        affected_capabilities=(capability_id,),
+                        owner="data_owner",
+                        repair_options=(
+                            "use_context_only_query",
+                            "publish_claim_ready_release",
+                            "resolve_reconciliation",
+                        ),
+                    )
+                )
+    return tuple(gaps)
+
+
+def _snapshot_supports_query(
+    snapshot: DatasetSnapshot,
+    query_family: str,
+    *,
+    has_dimensions: bool,
+) -> bool:
+    context_families = {
+        "data_quality_probe",
+        "event_context_probe",
+        "channel_context_probe",
+        "source_reconciliation_probe",
+    }
+    if query_family in context_families:
+        return snapshot.evidence_state in {"claim_ready", "context_only"}
+    if snapshot.evidence_state != "claim_ready":
+        return False
+    if (
+        has_dimensions
+        and snapshot.reconciliation_ref
+        and snapshot.reconciliation_status != "matched"
+    ):
+        return False
+    return True
+
+
 def _bind_metrics(
     metric_ids: tuple[str, ...],
     registry: RuntimeContractRegistry,
     snapshots: tuple[DatasetSnapshot, ...],
     metric_owners: Mapping[str, tuple[str, ...]],
+    metric_dataset_ids: Mapping[str, tuple[str, ...]],
 ) -> tuple[tuple[MetricBinding, ...], tuple[ContractGap, ...]]:
     snapshots_by_dataset = {item.dataset_id: item for item in snapshots}
     bindings = []
     gaps = []
     for metric_id in metric_ids:
         affected_capabilities = metric_owners.get(metric_id, ("analysis_contract",))
-        contract = _registry_entry(registry.metric, metric_id)
-        if contract is None:
-            gaps.append(
-                _contract_gap(
-                    gap_type="contract_absent",
-                    gap_id=f"metric:{metric_id}:contract_absent",
-                    affected_capabilities=affected_capabilities,
-                    repair_options=("register_metric_contract", "remove_metric_path"),
-                )
-            )
-            continue
-        required_keys = (
-            "contract_ref",
-            "dataset_id",
-            "expression",
-            "aggregation",
-            "required_fields",
-            "grain",
-            "value_semantics",
-            "display_format",
-        )
-        missing = tuple(key for key in required_keys if key not in contract)
-        if missing:
-            gaps.append(
-                _contract_gap(
-                    gap_type="contract_partial",
-                    gap_id=f"metric:{metric_id}:missing:{','.join(missing)}",
-                    dataset_id=str(contract.get("dataset_id") or ""),
-                    affected_capabilities=affected_capabilities,
-                    repair_options=("complete_metric_contract", "remove_metric_path"),
-                )
-            )
-            continue
-        dataset_id = str(contract["dataset_id"])
-        snapshot = snapshots_by_dataset.get(dataset_id)
-        required_fields = _mapping_values(contract, "required_fields")
-        missing_fields = (
-            tuple(field for field in required_fields if field not in snapshot.schema_fields)
-            if snapshot is not None
-            else ()
-        )
-        if missing_fields:
-            gaps.append(
-                _contract_gap(
-                    gap_type="contract_partial",
-                    gap_id=(
-                        f"metric:{metric_id}:schema_missing:"
-                        f"{','.join(missing_fields)}"
-                    ),
-                    dataset_id=dataset_id,
-                    affected_capabilities=affected_capabilities,
-                    owner="data_owner",
-                    repair_options=("refresh_snapshot_schema", "repair_metric_binding"),
-                )
-            )
-            continue
-        reconciliation_tolerance = _reconciliation_tolerance(contract)
-        if reconciliation_tolerance is None:
-            gaps.append(
-                _contract_gap(
-                    gap_type="contract_partial",
-                    gap_id=f"metric:{metric_id}:invalid:reconciliation_tolerance",
-                    dataset_id=dataset_id,
-                    affected_capabilities=affected_capabilities,
-                    repair_options=("repair_metric_binding",),
-                )
-            )
-            continue
-        reconciliation_strategy = _reconciliation_strategy(
-            contract,
-            reconciliation_tolerance,
-        )
-        if reconciliation_strategy is None:
-            gaps.append(
-                _contract_gap(
-                    gap_type="contract_partial",
-                    gap_id=f"metric:{metric_id}:invalid:reconciliation_strategy",
-                    dataset_id=dataset_id,
-                    affected_capabilities=affected_capabilities,
-                    repair_options=("repair_metric_binding",),
-                )
-            )
-            continue
-        display_policy = _metric_display_policy(contract)
-        if display_policy is None:
-            gaps.append(
-                _contract_gap(
-                    gap_type="contract_partial",
-                    gap_id=f"metric:{metric_id}:invalid:display_policy",
-                    dataset_id=dataset_id,
-                    affected_capabilities=affected_capabilities,
-                    repair_options=("repair_metric_binding",),
-                )
-            )
-            continue
-        bindings.append(
-            MetricBinding(
+        for dataset_id in metric_dataset_ids.get(metric_id, ()):
+            contract = registry.metric(metric_id, dataset_id=dataset_id)
+            binding, gap = _bind_metric_source(
                 metric_id=metric_id,
-                contract_ref=str(contract["contract_ref"]),
                 dataset_id=dataset_id,
-                expression=str(contract["expression"]),
-                aggregation=str(contract["aggregation"]),
-                required_fields=required_fields,
-                grain=_mapping_values(contract, "grain"),
-                numerator_metric=str(contract.get("numerator_metric") or ""),
-                denominator_metric=str(contract.get("denominator_metric") or ""),
-                zero_denominator_policy=str(
-                    contract.get("zero_denominator_policy") or "null"
-                ),
-                claim_types=_mapping_values(contract, "claim_types"),
-                reconciliation_tolerance=reconciliation_tolerance,
-                reconciliation_strategy=reconciliation_strategy,
-                value_semantics=display_policy[0],
-                display_format=display_policy[1],
+                contract=contract,
+                snapshot=snapshots_by_dataset.get(dataset_id),
+                affected_capabilities=affected_capabilities,
             )
-        )
+            if binding is not None:
+                bindings.append(binding)
+            if gap is not None:
+                gaps.append(gap)
     return tuple(bindings), tuple(gaps)
+
+
+def _bind_metric_source(
+    *,
+    metric_id: str,
+    dataset_id: str,
+    contract: Mapping[str, Any],
+    snapshot: DatasetSnapshot | None,
+    affected_capabilities: tuple[str, ...],
+) -> tuple[MetricBinding | None, ContractGap | None]:
+    required_keys = (
+        "contract_ref",
+        "dataset_id",
+        "expression",
+        "aggregation",
+        "required_fields",
+        "grain",
+        "value_semantics",
+        "display_format",
+    )
+    missing = tuple(key for key in required_keys if key not in contract)
+    if missing:
+        return None, _contract_gap(
+            gap_type="contract_partial",
+            gap_id=f"metric:{metric_id}:missing:{','.join(missing)}",
+            dataset_id=str(contract.get("dataset_id") or ""),
+            affected_capabilities=affected_capabilities,
+            repair_options=("complete_metric_contract", "remove_metric_path"),
+        )
+    required_fields = _mapping_values(contract, "required_fields")
+    missing_fields = (
+        tuple(field for field in required_fields if field not in snapshot.schema_fields)
+        if snapshot is not None
+        else ()
+    )
+    if missing_fields:
+        return None, _contract_gap(
+            gap_type="contract_partial",
+            gap_id=f"metric:{metric_id}:schema_missing:{','.join(missing_fields)}",
+            dataset_id=dataset_id,
+            affected_capabilities=affected_capabilities,
+            owner="data_owner",
+            repair_options=("refresh_snapshot_schema", "repair_metric_binding"),
+        )
+    reconciliation_tolerance = _reconciliation_tolerance(contract)
+    if reconciliation_tolerance is None:
+        return None, _contract_gap(
+            gap_type="contract_partial",
+            gap_id=f"metric:{metric_id}:invalid:reconciliation_tolerance",
+            dataset_id=dataset_id,
+            affected_capabilities=affected_capabilities,
+            repair_options=("repair_metric_binding",),
+        )
+    reconciliation_strategy = _reconciliation_strategy(
+        contract,
+        reconciliation_tolerance,
+    )
+    if reconciliation_strategy is None:
+        return None, _contract_gap(
+            gap_type="contract_partial",
+            gap_id=f"metric:{metric_id}:invalid:reconciliation_strategy",
+            dataset_id=dataset_id,
+            affected_capabilities=affected_capabilities,
+            repair_options=("repair_metric_binding",),
+        )
+    display_policy = _metric_display_policy(contract)
+    if display_policy is None:
+        return None, _contract_gap(
+            gap_type="contract_partial",
+            gap_id=f"metric:{metric_id}:invalid:display_policy",
+            dataset_id=dataset_id,
+            affected_capabilities=affected_capabilities,
+            repair_options=("repair_metric_binding",),
+        )
+    return MetricBinding(
+        metric_id=metric_id,
+        contract_ref=str(contract["contract_ref"]),
+        dataset_id=dataset_id,
+        expression=str(contract["expression"]),
+        aggregation=str(contract["aggregation"]),
+        required_fields=required_fields,
+        grain=_mapping_values(contract, "grain"),
+        numerator_metric=str(contract.get("numerator_metric") or ""),
+        denominator_metric=str(contract.get("denominator_metric") or ""),
+        zero_denominator_policy=str(contract.get("zero_denominator_policy") or "null"),
+        claim_types=_mapping_values(contract, "claim_types"),
+        reconciliation_tolerance=reconciliation_tolerance,
+        reconciliation_strategy=reconciliation_strategy,
+        value_semantics=display_policy[0],
+        display_format=display_policy[1],
+    ), None
 
 
 def _metric_display_policy(
@@ -638,6 +793,7 @@ def _bind_dimensions(
     permission_scope: str,
     snapshots: tuple[DatasetSnapshot, ...],
     dimension_owners: Mapping[str, tuple[str, ...]],
+    dimension_dataset_ids: Mapping[str, tuple[str, ...]],
 ) -> tuple[tuple[DimensionBinding, ...], tuple[ContractGap, ...]]:
     snapshots_by_dataset = {item.dataset_id: item for item in snapshots}
     bindings = []
@@ -648,77 +804,73 @@ def _bind_dimensions(
             dimension_id,
             ("analysis_contract",),
         )
-        contract = _registry_entry(registry.dimension, dimension_id)
-        if contract is None:
-            gaps.append(
-                _contract_gap(
-                    gap_type="contract_absent",
-                    gap_id=f"dimension:{dimension_id}:contract_absent",
-                    affected_capabilities=affected_capabilities,
-                    repair_options=("register_dimension_contract", "remove_dimension_path"),
-                )
-            )
-            continue
-        required_keys = (
-            "contract_ref",
-            "dataset_id",
-            "source_field",
-            "allowed_grains",
-        )
-        missing = tuple(key for key in required_keys if key not in contract)
-        if missing:
-            gaps.append(
-                _contract_gap(
-                    gap_type="contract_partial",
-                    gap_id=f"dimension:{dimension_id}:missing:{','.join(missing)}",
-                    dataset_id=str(contract.get("dataset_id") or ""),
-                    affected_capabilities=affected_capabilities,
-                    repair_options=("complete_dimension_contract", "remove_dimension_path"),
-                )
-            )
-            continue
-        allowed_grains = _mapping_values(contract, "allowed_grains")
-        dataset_id = str(contract["dataset_id"])
-        source_field = str(contract["source_field"])
-        snapshot = snapshots_by_dataset.get(dataset_id)
-        if snapshot is not None and source_field not in snapshot.schema_fields:
-            gaps.append(
-                _contract_gap(
-                    gap_type="contract_partial",
-                    gap_id=f"dimension:{dimension_id}:schema_missing:{source_field}",
-                    dataset_id=dataset_id,
-                    affected_capabilities=affected_capabilities,
-                    owner="data_owner",
-                    repair_options=(
-                        "refresh_snapshot_schema",
-                        "repair_dimension_binding",
-                    ),
-                )
-            )
-            continue
-        if requested_grain not in allowed_grains:
-            gaps.append(
-                _contract_gap(
-                    gap_type="unsupported_grain",
-                    gap_id=f"dimension:{dimension_id}:grain:{requested_grain}",
-                    dataset_id=dataset_id,
-                    affected_capabilities=affected_capabilities,
-                    repair_options=("use_supported_grain", "remove_dimension_path"),
-                    requires_clarification=True,
-                )
-            )
-        bindings.append(
-            DimensionBinding(
+        for dataset_id in dimension_dataset_ids.get(dimension_id, ()):
+            contract = registry.dimension(dimension_id, dataset_id=dataset_id)
+            binding, gap = _bind_dimension_source(
                 dimension_id=dimension_id,
-                contract_ref=str(contract["contract_ref"]),
                 dataset_id=dataset_id,
-                source_field=source_field,
-                allowed_grains=allowed_grains,
-                null_bucket=str(contract.get("null_bucket") or "Unknown"),
+                contract=contract,
+                requested_grain=requested_grain,
                 permission_scope=permission_scope,
+                snapshot=snapshots_by_dataset.get(dataset_id),
+                affected_capabilities=affected_capabilities,
             )
-        )
+            if binding is not None:
+                bindings.append(binding)
+            if gap is not None:
+                gaps.append(gap)
     return tuple(bindings), tuple(gaps)
+
+
+def _bind_dimension_source(
+    *,
+    dimension_id: str,
+    dataset_id: str,
+    contract: Mapping[str, Any],
+    requested_grain: str,
+    permission_scope: str,
+    snapshot: DatasetSnapshot | None,
+    affected_capabilities: tuple[str, ...],
+) -> tuple[DimensionBinding | None, ContractGap | None]:
+    required_keys = ("contract_ref", "dataset_id", "source_field", "allowed_grains")
+    missing = tuple(key for key in required_keys if key not in contract)
+    if missing:
+        return None, _contract_gap(
+            gap_type="contract_partial",
+            gap_id=f"dimension:{dimension_id}:missing:{','.join(missing)}",
+            dataset_id=str(contract.get("dataset_id") or ""),
+            affected_capabilities=affected_capabilities,
+            repair_options=("complete_dimension_contract", "remove_dimension_path"),
+        )
+    allowed_grains = _mapping_values(contract, "allowed_grains")
+    source_field = str(contract["source_field"])
+    if snapshot is not None and source_field not in snapshot.schema_fields:
+        return None, _contract_gap(
+            gap_type="contract_partial",
+            gap_id=f"dimension:{dimension_id}:schema_missing:{source_field}",
+            dataset_id=dataset_id,
+            affected_capabilities=affected_capabilities,
+            owner="data_owner",
+            repair_options=("refresh_snapshot_schema", "repair_dimension_binding"),
+        )
+    if requested_grain not in allowed_grains:
+        return None, _contract_gap(
+            gap_type="unsupported_grain",
+            gap_id=f"dimension:{dimension_id}:grain:{requested_grain}",
+            dataset_id=dataset_id,
+            affected_capabilities=affected_capabilities,
+            repair_options=("use_supported_grain", "remove_dimension_path"),
+            requires_clarification=True,
+        )
+    return DimensionBinding(
+        dimension_id=dimension_id,
+        contract_ref=str(contract["contract_ref"]),
+        dataset_id=dataset_id,
+        source_field=source_field,
+        allowed_grains=allowed_grains,
+        null_bucket=str(contract.get("null_bucket") or "Unknown"),
+        permission_scope=permission_scope,
+    ), None
 
 
 def _bind_claim_intents(
@@ -927,7 +1079,7 @@ def _build_query_contracts(
             capability_id: () for capability_id in accepted_capabilities
         }
     snapshot_by_dataset = {item.dataset_id: item for item in snapshots}
-    metric_by_id = {item.metric_id: item for item in metric_bindings}
+    metric_ids_available = {item.metric_id for item in metric_bindings}
     filters = _filters(proposal)
     window_refs = tuple(item.window_id for item in windows)
     logical_queries: list[dict[str, Any]] = []
@@ -957,21 +1109,37 @@ def _build_query_contracts(
             if query_shape is None:
                 continue
             configured_metrics = family_metrics.get(query_family)
-            if configured_metrics is None:
+            if str(capability.get("metric_mode") or "") == "requested":
+                allowed_metrics = set(
+                    _mapping_values(capability, "allowed_metrics")
+                )
+                metric_ids = tuple(
+                    metric_id
+                    for metric_id in _values(proposal, "target_metrics")
+                    if metric_id in allowed_metrics
+                )
+            elif configured_metrics is None:
                 metric_ids = (
                     *_mapping_values(capability, "required_metrics"),
                     *(
                         metric_id
                         for metric_id in optional_metrics
-                        if metric_id in metric_by_id
+                        if metric_id in metric_ids_available
                     ),
                 )
             else:
                 metric_ids = _sequence_values(configured_metrics)
             selected_metrics = tuple(
-                metric_by_id[metric_id]
+                binding
                 for metric_id in _dedupe(metric_ids)
-                if metric_id in metric_by_id
+                for binding in metric_bindings
+                if binding.metric_id == metric_id
+                and (
+                    str(capability.get("metric_mode") or "") != "requested"
+                    or not _mapping_values(capability, "allowed_datasets")
+                    or binding.dataset_id
+                    in _mapping_values(capability, "allowed_datasets")
+                )
             )
             by_dataset: dict[str, list[MetricBinding]] = {}
             for binding in selected_metrics:
@@ -986,10 +1154,16 @@ def _build_query_contracts(
                 snapshot = snapshot_by_dataset.get(dataset_id)
                 if snapshot is None:
                     continue
+                include_dimensions = str(capability.get("dimension_mode") or "") == "requested"
+                if not _snapshot_supports_query(
+                    snapshot,
+                    query_family,
+                    has_dimensions=include_dimensions,
+                ):
+                    continue
                 normalized_metrics = tuple(
                     sorted(dataset_metrics, key=lambda item: item.metric_id)
                 )
-                include_dimensions = str(capability.get("dimension_mode") or "") == "requested"
                 requested_dimensions = tuple(
                     sorted(
                         (
@@ -1046,7 +1220,10 @@ def _build_query_contracts(
                         "reconciliation_binding": None,
                         "join_expectation": _join_expectation(query_shape),
                     }
-                    if query_dimensions:
+                    if query_dimensions and query_family not in {
+                        "channel_context_probe",
+                        "data_quality_probe",
+                    }:
                         companion_shape_contract = _registry_entry(
                             registry.query_shape,
                             "daily_metric_baselines",
@@ -1391,6 +1568,45 @@ def _scope_gaps(
     )
 
 
+def _merge_contract_gaps(
+    gaps: Iterable[ContractGap],
+) -> tuple[ContractGap, ...]:
+    merged: dict[tuple[Any, ...], ContractGap] = {}
+    for gap in gaps:
+        identity = (
+            gap.gap_type,
+            gap.gap_id,
+            gap.dataset_id,
+            gap.owner,
+            gap.requires_clarification,
+        )
+        existing = merged.get(identity)
+        if existing is None:
+            merged[identity] = gap
+            continue
+        merged[identity] = replace(
+            existing,
+            affected_capabilities=tuple(
+                sorted(
+                    set(existing.affected_capabilities).union(
+                        gap.affected_capabilities
+                    )
+                )
+            ),
+            affected_claim_types=tuple(
+                sorted(
+                    set(existing.affected_claim_types).union(
+                        gap.affected_claim_types
+                    )
+                )
+            ),
+            repair_options=tuple(
+                sorted(set(existing.repair_options).union(gap.repair_options))
+            ),
+        )
+    return tuple(merged.values())
+
+
 def _contract_gap(
     *,
     gap_type: str,
@@ -1447,6 +1663,129 @@ def _ordered_values(proposal: Mapping[str, Any], key: str) -> tuple[str, ...]:
 
 def _mapping_values(mapping: Mapping[str, Any], key: str) -> tuple[str, ...]:
     return _sequence_values(mapping.get(key) or ())
+
+
+def _source_overrides(proposal: Mapping[str, Any], key: str) -> dict[str, str]:
+    value = proposal.get(key)
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{key}_must_be_mapping")
+    result = {}
+    for item_id, dataset_id in value.items():
+        if (
+            not isinstance(item_id, str)
+            or not item_id.strip()
+            or not isinstance(dataset_id, str)
+            or not dataset_id.strip()
+        ):
+            raise ValueError(f"{key}_entries_must_be_non_empty_strings")
+        result[item_id.strip()] = dataset_id.strip()
+    return result
+
+
+def _select_source_datasets(
+    *,
+    item_kind: str,
+    item_id: str,
+    sources: tuple[str, ...],
+    override: str,
+    requested_datasets: tuple[str, ...],
+    owners: list[str],
+    registry: RuntimeContractRegistry,
+) -> tuple[tuple[str, ...], ContractGap | None]:
+    candidates = tuple(dict.fromkeys(sources))
+    affected = tuple(owners) or ("analysis_contract",)
+    if override:
+        if override in candidates:
+            return (override,), None
+        return (), _contract_gap(
+            gap_type="contract_absent",
+            gap_id=f"{item_kind}:{item_id}:source_unavailable:{override}",
+            affected_capabilities=affected,
+            repair_options=("select_registered_source", "register_source_adapter"),
+        )
+
+    owner_contracts = tuple(
+        contract
+        for owner in owners
+        if owner != "analysis_contract"
+        for contract in (_registry_entry(registry.capability_inputs, owner),)
+        if contract is not None
+    )
+    reviewed_metric_families = tuple(
+        _mapping_values(contract, "allowed_metrics")
+        for contract in owner_contracts
+        if "allowed_metrics" in contract
+    )
+    if (
+        item_kind == "metric"
+        and reviewed_metric_families
+        and not any(item_id in family for family in reviewed_metric_families)
+    ):
+        return (), _contract_gap(
+            gap_type="contract_partial",
+            gap_id=f"metric:{item_id}:capability_metric_family_unsupported",
+            affected_capabilities=affected,
+            repair_options=("choose_reviewed_metric", "change_capability"),
+            requires_clarification=True,
+        )
+    all_required = any(
+        str(contract.get("source_selection") or "") == "all_required_datasets"
+        for contract in owner_contracts
+    )
+    selected = tuple(
+        dataset_id for dataset_id in candidates if dataset_id in requested_datasets
+    )
+    if selected:
+        if all_required or len(selected) == 1:
+            return selected, None
+        return (), _source_ambiguity_gap(item_kind, item_id, selected, affected)
+
+    allowed = {
+        dataset_id
+        for contract in owner_contracts
+        for dataset_id in _mapping_values(contract, "allowed_datasets")
+    }
+    if allowed:
+        constrained = tuple(
+            dataset_id for dataset_id in candidates if dataset_id in allowed
+        )
+        if all_required and constrained:
+            return constrained, None
+        if len(constrained) == 1:
+            return constrained, None
+        if len(constrained) > 1:
+            return (), _source_ambiguity_gap(
+                item_kind, item_id, constrained, affected
+            )
+    if len(candidates) == 1:
+        return candidates, None
+    if candidates:
+        return (), _source_ambiguity_gap(item_kind, item_id, candidates, affected)
+    return (), _contract_gap(
+        gap_type="contract_absent",
+        gap_id=f"{item_kind}:{item_id}:contract_absent",
+        affected_capabilities=affected,
+        repair_options=(f"register_{item_kind}_contract",),
+    )
+
+
+def _source_ambiguity_gap(
+    item_kind: str,
+    item_id: str,
+    datasets: tuple[str, ...],
+    affected: tuple[str, ...],
+) -> ContractGap:
+    return _contract_gap(
+        gap_type="contract_partial",
+        gap_id=(
+            f"{item_kind}:{item_id}:source_ambiguous:{','.join(datasets)}"
+        ),
+        affected_capabilities=affected,
+        repair_options=("select_dataset_requirement", "clarify_source_scope"),
+        requires_clarification=True,
+    )
 
 
 def _sequence_values(value: Any) -> tuple[str, ...]:

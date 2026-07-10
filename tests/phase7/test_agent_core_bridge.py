@@ -1,5 +1,6 @@
 import unittest
 import json
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from io import StringIO
@@ -1480,6 +1481,115 @@ class AgentCoreBridgeTest(unittest.TestCase):
             core = ConversationAgentCore.from_environment(real_clickhouse=True)
 
         self.assertIsInstance(core.row_provider, ClickHouseRevenueRows)
+
+    def test_real_clickhouse_core_refreshes_trusted_release_snapshots_per_plan(self):
+        from bi_agent.runtime.analysis_contracts import query_contract_signature
+        from bi_agent.runtime.clickhouse_revenue_rows import ClickHouseRevenueRows
+        from tests.phase4.test_clickhouse_query_compiler import contract
+        from tests.phase7.test_conversation_persistence import (
+            _release_ref,
+            _release_snapshot_payload,
+        )
+
+        store = InMemoryConversationStore()
+        with patch(
+            "bi_agent.conversation.agent_core.PostgresConversationStore.from_env",
+            return_value=store,
+        ):
+            core = ConversationAgentCore.from_environment(real_clickhouse=True)
+
+        self.assertIsInstance(core.row_provider, ClickHouseRevenueRows)
+        self.assertIs(core.row_provider.release_resolver, store)
+        self.assertIs(core.row_provider.executor.release_resolver, store)
+        self.assertIs(
+            core.row_provider.executor.evidence_resolver,
+            core.evidence_resolver,
+        )
+        self.assertIs(core.row_provider.executor.rows_loader, core.rows_loader)
+        self.assertTrue(callable(core.row_provider.snapshot_loader))
+
+        seen_refs = []
+        for revision in ("load:dynamic-v1", "load:dynamic-v2"):
+            payloads = (
+                _release_snapshot_payload(
+                    f"snapshot:dynamic-overall:{revision}",
+                    "market_dashboard",
+                    revision=revision,
+                ),
+                _release_snapshot_payload(
+                    f"snapshot:dynamic-channel:{revision}",
+                    "market_dashboard_channel",
+                    revision=revision,
+                ),
+            )
+            release_ref = _release_ref(payloads)
+            for payload in payloads:
+                payload["release_ref"] = release_ref
+            store.publish_dataset_snapshot_release(
+                release_ref=release_ref,
+                logical_snapshot_id="dashboard-logical",
+                payloads=payloads,
+            )
+            snapshot_ref = payloads[0]["snapshot_ref"]
+            selected_contract = replace(
+                contract(),
+                dataset_snapshot_refs=(snapshot_ref,),
+                contract_signature="",
+            )
+            selected_contract = replace(
+                selected_contract,
+                contract_signature=query_contract_signature(selected_contract),
+            )
+            plan = core.row_provider.plan(
+                {
+                    "run_id": f"run-{revision}",
+                    "compiler_runtime_plan": {
+                        "query_contracts": (selected_contract.to_dict(),),
+                    },
+                    "dataset_snapshots": (
+                        {
+                            "snapshot_ref": snapshot_ref,
+                            "dataset_id": "market_dashboard",
+                        },
+                    ),
+                },
+                {"time_window": "yesterday"},
+                ("market_health_compare",),
+            )
+            self.assertNotIn("dataset_snapshot_provider_missing", plan.reason)
+            self.assertEqual(tuple(plan.snapshots), (snapshot_ref,))
+            seen_refs.append(snapshot_ref)
+
+        self.assertNotEqual(*seen_refs)
+        channel_ref = payloads[1]["snapshot_ref"]
+        context_contract = replace(
+            contract(),
+            query_intent="source_reconciliation_probe",
+            dataset_snapshot_refs=(channel_ref,),
+            contract_signature="",
+        )
+        context_contract = replace(
+            context_contract,
+            contract_signature=query_contract_signature(context_contract),
+        )
+        context_plan = core.row_provider.plan(
+            {
+                "run_id": "run-context-snapshot-refresh",
+                "compiler_runtime_plan": {
+                    "query_contracts": (context_contract.to_dict(),),
+                },
+                "dataset_snapshots": (
+                    {
+                        "snapshot_ref": channel_ref,
+                        "dataset_id": "market_dashboard_channel",
+                    },
+                ),
+            },
+            {"time_window": "yesterday"},
+            ("source_reconciliation",),
+        )
+        self.assertNotIn("dataset_snapshot_provider_missing", context_plan.reason)
+        self.assertIn(channel_ref, context_plan.snapshots)
 
     def test_follow_up_hints_route_user_mix_and_high_value_capabilities(self):
         store = InMemoryConversationStore()

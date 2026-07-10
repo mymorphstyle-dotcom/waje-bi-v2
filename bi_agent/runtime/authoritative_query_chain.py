@@ -25,6 +25,7 @@ from bi_agent.runtime.query_completeness import (
     validate_query_result,
     validate_query_set,
 )
+from bi_agent.runtime.dataset_catalog import DatasetReleaseResolver
 from bi_agent.runtime.runtime_contract_registry import (
     RuntimeContractRegistry,
     runtime_registry_integrity_error,
@@ -60,6 +61,7 @@ def validate_authoritative_query_chain(
     resolver: RuntimeEvidenceResolver,
     rows_loader: RowsPayloadLoader,
     runtime_registry: RuntimeContractRegistry,
+    release_resolver: DatasetReleaseResolver | None = None,
 ) -> ValidatedAuthoritativeQueryChain:
     registry_error = runtime_registry_integrity_error(runtime_registry)
     if registry_error:
@@ -79,6 +81,7 @@ def validate_authoritative_query_chain(
         resolver=resolver,
         rows_loader=rows_loader,
         runtime_registry=runtime_registry,
+        release_resolver=release_resolver,
     )
     validation = _resolve_group(
         _binding_group(binding, validation=True),
@@ -86,6 +89,7 @@ def validate_authoritative_query_chain(
         resolver=resolver,
         rows_loader=rows_loader,
         runtime_registry=runtime_registry,
+        release_resolver=release_resolver,
     )
     items = (*primary, *validation)
     by_query_ref = {
@@ -104,6 +108,7 @@ def validate_authoritative_query_chain(
             item.query_record.contract,
             item.result,
             _resolved_snapshots(item.query_record, resolver),
+            release_resolver=release_resolver,
         )
         for item in ordered
     )
@@ -177,6 +182,7 @@ def _resolve_group(
     resolver: RuntimeEvidenceResolver,
     rows_loader: RowsPayloadLoader,
     runtime_registry: RuntimeContractRegistry,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> tuple[_ResolvedItem, ...]:
     resolved = []
     observed_snapshot_refs: set[str] = set()
@@ -246,6 +252,7 @@ def _resolve_group(
                 query.contract,
                 snapshots,
                 registry=runtime_registry,
+                release_resolver=release_resolver,
             )
         except (PermissionError, TypeError, ValueError) as exc:
             raise AuthoritativeQueryChainError(
@@ -533,7 +540,11 @@ def _validate_capability_slots(
             actual_metrics = tuple(
                 metric.metric_id for metric in contract.metric_bindings
             )
-            if actual_metrics != expected_metrics:
+            if not _capability_metrics_match(
+                capability,
+                actual_metrics,
+                expected_metrics=expected_metrics,
+            ):
                 raise AuthoritativeQueryChainError(
                     f"capability_contract_slot_metrics_mismatch:{family}"
                 )
@@ -581,6 +592,27 @@ def _validate_capability_slots(
             raise AuthoritativeQueryChainError(
                 f"capability_contract_slot_validation_dependency_mismatch:{family}"
             )
+
+
+def _capability_metrics_match(
+    capability: Mapping[str, Any],
+    actual_metrics: tuple[str, ...],
+    *,
+    expected_metrics: tuple[str, ...],
+) -> bool:
+    if str(capability.get("metric_mode") or "") != "requested":
+        return actual_metrics == expected_metrics
+    allowed_metrics = tuple(
+        str(metric_id)
+        for metric_id in capability.get("allowed_metrics") or ()
+        if metric_id
+    )
+    return (
+        bool(actual_metrics)
+        and len(set(actual_metrics)) == len(actual_metrics)
+        and bool(allowed_metrics)
+        and set(actual_metrics).issubset(allowed_metrics)
+    )
 
 
 def _slot_query_family(slot: Mapping[str, Any]) -> str:

@@ -34,11 +34,11 @@ class DatasetCatalogTest(unittest.TestCase):
         catalog = DatasetCatalog(
             (
                 DatasetSnapshot("s1", "paid_order_success", "paid", "2026-07-04", "a", (), "c1", ("analyst",), "2026-07-05T00:00:00Z", "active"),
-                DatasetSnapshot("s2", "market_dashboard", "dashboard", "2026-06-02", "b", (), "c2", ("analyst",), "2026-06-03T00:00:00Z", "active"),
+                DatasetSnapshot("s2", "payment_attempt", "attempt", "2026-06-02", "b", (), "c2", ("analyst",), "2026-06-03T00:00:00Z", "active"),
             )
         )
         self.assertEqual(
-            catalog.common_watermark(("paid_order_success", "market_dashboard")),
+            catalog.common_watermark(("paid_order_success", "payment_attempt")),
             date(2026, 6, 2),
         )
 
@@ -101,6 +101,50 @@ class DatasetCatalogTest(unittest.TestCase):
 
         self.assertEqual(snapshot.snapshot_ref, "eligible-latest")
 
+    def test_claim_resolution_rejects_context_only_snapshot_by_default(self):
+        context = _snapshot(
+            "context-only",
+            loaded_at="2026-07-05T00:00:00Z",
+            evidence_state="context_only",
+            reconciliation_status="mismatch",
+        )
+        catalog = DatasetCatalog((context,))
+
+        with self.assertRaisesRegex(KeyError, "dataset_snapshot_unavailable"):
+            catalog.resolve(
+                "paid_order_success",
+                as_of=datetime.fromisoformat("2026-07-10T00:00:00+00:00"),
+                permission_scope="analyst",
+            )
+
+        self.assertEqual(
+            catalog.resolve(
+                "paid_order_success",
+                as_of=datetime.fromisoformat("2026-07-10T00:00:00+00:00"),
+                permission_scope="analyst",
+                evidence_states=("context_only",),
+            ).snapshot_ref,
+            "context-only",
+        )
+
+    def test_claim_ready_snapshot_exposes_physical_load_revision(self):
+        snapshot = _snapshot(
+            "release-1",
+            loaded_at="2026-07-05T00:00:00Z",
+            logical_snapshot_id="dashboard-logical",
+            load_revision="load:sha256:abc",
+        )
+        catalog = DatasetCatalog((snapshot,))
+
+        selected = catalog.resolve(
+            "paid_order_success",
+            as_of=datetime.fromisoformat("2026-07-10T00:00:00+00:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertEqual(selected.logical_snapshot_id, "dashboard-logical")
+        self.assertEqual(selected.load_revision, "load:sha256:abc")
+
 
 def _snapshot(
     snapshot_ref,
@@ -108,6 +152,10 @@ def _snapshot(
     loaded_at,
     status="active",
     permission_scopes=("analyst",),
+    evidence_state="claim_ready",
+    reconciliation_status="matched",
+    logical_snapshot_id="",
+    load_revision="",
 ):
     return DatasetSnapshot(
         snapshot_ref=snapshot_ref,
@@ -120,6 +168,11 @@ def _snapshot(
         permission_scopes=permission_scopes,
         loaded_at=loaded_at,
         status=status,
+        evidence_state=evidence_state,
+        reconciliation_status=reconciliation_status,
+        reconciliation_ref="reconciliation:test",
+        logical_snapshot_id=logical_snapshot_id,
+        load_revision=load_revision,
     )
 
 

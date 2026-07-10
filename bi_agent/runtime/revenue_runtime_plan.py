@@ -425,6 +425,7 @@ def _reusable_asset_rows(
     binding_manifest_ref: str,
     binding_manifest_digest: str,
     evidence_resolver: Any,
+    release_resolver: Any,
     rows_loader: Any,
     runtime_registry: Any,
 ) -> tuple[dict[str, Any], ...]:
@@ -461,6 +462,7 @@ def _reusable_asset_rows(
         binding_manifest_ref=binding_manifest_ref,
         binding_manifest_digest=binding_manifest_digest,
         evidence_resolver=evidence_resolver,
+        release_resolver=release_resolver,
         rows_loader=rows_loader,
         runtime_registry=runtime_registry,
     )
@@ -575,6 +577,7 @@ def _reuse_signature_context(
             bound_context.get("binding_manifest_digest") or ""
         ),
         "evidence_resolver": bound_context.get("evidence_resolver"),
+        "release_resolver": bound_context.get("release_resolver"),
         "rows_loader": bound_context.get("rows_loader"),
         "runtime_registry": bound_context.get("runtime_registry"),
     }

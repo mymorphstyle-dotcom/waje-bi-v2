@@ -22,6 +22,7 @@ from bi_agent.runtime.runtime_contract_registry import (
     RuntimeContractRegistry,
     runtime_registry_integrity_error,
 )
+from bi_agent.runtime.dataset_catalog import DatasetReleaseResolver
 
 
 MAX_TOPIC_ANALYSIS_ASSETS = 20
@@ -49,6 +50,7 @@ def build_analysis_assets(
     evidence_resolver: RuntimeEvidenceResolver | None = None,
     rows_loader: RowsPayloadLoader | None = None,
     runtime_registry: RuntimeContractRegistry | None = None,
+    release_resolver: DatasetReleaseResolver | None = None,
 ) -> tuple[dict[str, Any], ...]:
     admin = _admin_audit(answer_package)
     assets: list[dict[str, Any]] = []
@@ -70,6 +72,7 @@ def build_analysis_assets(
         evidence_resolver=evidence_resolver,
         rows_loader=rows_loader,
         runtime_registry=runtime_registry,
+        release_resolver=release_resolver,
     )
     if scan_asset:
         assets.append(scan_asset)
@@ -230,6 +233,7 @@ def _dimension_scan_asset(
     evidence_resolver: RuntimeEvidenceResolver | None,
     rows_loader: RowsPayloadLoader | None,
     runtime_registry: RuntimeContractRegistry | None,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> dict[str, Any] | None:
     plan = admin.get("compiler_runtime_plan")
     if not isinstance(plan, Mapping):
@@ -330,6 +334,7 @@ def _dimension_scan_asset(
         evidence_resolver=evidence_resolver,
         rows_loader=rows_loader,
         runtime_registry=runtime_registry,
+        release_resolver=release_resolver,
     )
     reusable = (
         _dimension_scan_rows_complete(row_payload)
@@ -541,6 +546,7 @@ def build_dimension_scan_reuse_contract(
     evidence_resolver: RuntimeEvidenceResolver | None = None,
     rows_loader: RowsPayloadLoader | None = None,
     runtime_registry: RuntimeContractRegistry | None = None,
+    release_resolver: DatasetReleaseResolver | None = None,
 ) -> dict[str, Any]:
     normalized_reports = tuple(
         normalized
@@ -577,6 +583,7 @@ def build_dimension_scan_reuse_contract(
                 resolver=evidence_resolver,
                 rows_loader=rows_loader,
                 runtime_registry=runtime_registry,
+                release_resolver=release_resolver,
             )
         except Exception:
             binding_record = None
@@ -703,6 +710,7 @@ def reusable_dimension_scan_inputs(
     evidence_resolver: RuntimeEvidenceResolver | None = None,
     rows_loader: RowsPayloadLoader | None = None,
     runtime_registry: RuntimeContractRegistry | None = None,
+    release_resolver: DatasetReleaseResolver | None = None,
 ) -> tuple[dict[str, Any], ...]:
     expected_contract = build_dimension_scan_reuse_contract(
         target_metric=target_metric,
@@ -734,6 +742,7 @@ def reusable_dimension_scan_inputs(
         evidence_resolver=evidence_resolver,
         rows_loader=rows_loader,
         runtime_registry=runtime_registry,
+        release_resolver=release_resolver,
     )
     required = set(str(item) for item in required_dimensions if item)
     covered: set[str] = set()
@@ -748,6 +757,7 @@ def reusable_dimension_scan_inputs(
             evidence_resolver=evidence_resolver,
             rows_loader=rows_loader,
             runtime_registry=runtime_registry,
+            release_resolver=release_resolver,
         )
         dimensions = set(asset_dimensions(asset))
         overlap = dimensions.intersection(required)
@@ -857,6 +867,7 @@ def evaluate_dimension_scan_reuse(
     evidence_resolver: RuntimeEvidenceResolver | None = None,
     rows_loader: RowsPayloadLoader | None = None,
     runtime_registry: RuntimeContractRegistry | None = None,
+    release_resolver: DatasetReleaseResolver | None = None,
 ) -> dict[str, Any]:
     source_ref = str(asset.get("query_ref") or asset.get("asset_id") or "")
     result_refs = tuple(str(ref) for ref in asset.get("result_refs") or () if ref)
@@ -905,6 +916,7 @@ def evaluate_dimension_scan_reuse(
             evidence_resolver,
             rows_loader,
             runtime_registry,
+            release_resolver,
         )
     except Exception:
         authority_reason = "runtime_evidence_resolution_failed"
@@ -1251,6 +1263,7 @@ def _asset_authority_validation(
     resolver: RuntimeEvidenceResolver | None,
     rows_loader: RowsPayloadLoader | None,
     runtime_registry: RuntimeContractRegistry | None,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> str:
     if resolver is None:
         return "runtime_evidence_resolver_missing"
@@ -1269,6 +1282,7 @@ def _asset_authority_validation(
             resolver=resolver,
             rows_loader=rows_loader,
             runtime_registry=runtime_registry,
+            release_resolver=release_resolver,
         )
     except AuthoritativeQueryChainError as exc:
         return f"authoritative_query_chain_invalid:{exc}"

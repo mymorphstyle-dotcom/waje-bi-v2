@@ -121,11 +121,17 @@ class RuntimeContractRegistry:
             == _runtime_contract_payload_digest(source_payload)
         )
 
-    def metric(self, metric_id: str) -> dict[str, Any]:
-        return self._entry("metrics", metric_id, "metric")
+    def metric(self, metric_id: str, *, dataset_id: str = "") -> dict[str, Any]:
+        return self._source_entry("metrics", metric_id, "metric", dataset_id)
 
-    def dimension(self, dimension_id: str) -> dict[str, Any]:
-        return self._entry("dimensions", dimension_id, "dimension")
+    def dimension(self, dimension_id: str, *, dataset_id: str = "") -> dict[str, Any]:
+        return self._source_entry("dimensions", dimension_id, "dimension", dataset_id)
+
+    def metric_sources(self, metric_id: str) -> dict[str, dict[str, Any]]:
+        return self._source_entries("metrics", metric_id, "metric")
+
+    def dimension_sources(self, dimension_id: str) -> dict[str, dict[str, Any]]:
+        return self._source_entries("dimensions", dimension_id, "dimension")
 
     def capability_inputs(self, capability_id: str) -> dict[str, Any]:
         return self._entry("capability_inputs", capability_id, "capability")
@@ -177,6 +183,52 @@ class RuntimeContractRegistry:
         except KeyError as exc:
             raise KeyError(f"unknown_{kind}:{item_id}") from exc
         return deepcopy(dict(item))
+
+    def _source_entry(
+        self,
+        section: str,
+        item_id: str,
+        kind: str,
+        dataset_id: str,
+    ) -> dict[str, Any]:
+        base = self._entry(section, item_id, kind)
+        adapters = base.pop("source_adapters", {})
+        if not dataset_id or dataset_id == str(base.get("dataset_id") or ""):
+            return base
+        if not isinstance(adapters, Mapping) or dataset_id not in adapters:
+            raise KeyError(f"unknown_{kind}_source_adapter:{item_id}:{dataset_id}")
+        adapter = adapters[dataset_id]
+        if not isinstance(adapter, Mapping):
+            raise ValueError(
+                f"runtime_contract_source_adapter_invalid:{kind}:{item_id}:{dataset_id}"
+            )
+        return {**base, **deepcopy(dict(adapter)), "dataset_id": dataset_id}
+
+    def _source_entries(
+        self,
+        section: str,
+        item_id: str,
+        kind: str,
+    ) -> dict[str, dict[str, Any]]:
+        base = self._entry(section, item_id, kind)
+        adapters = base.pop("source_adapters", {})
+        dataset_id = str(base.get("dataset_id") or "")
+        if not dataset_id:
+            raise ValueError(f"runtime_contract_source_dataset_missing:{kind}:{item_id}")
+        entries = {dataset_id: base}
+        if not isinstance(adapters, Mapping):
+            raise ValueError(f"runtime_contract_source_adapters_invalid:{kind}:{item_id}")
+        for adapter_dataset, adapter in adapters.items():
+            if not isinstance(adapter, Mapping):
+                raise ValueError(
+                    f"runtime_contract_source_adapter_invalid:{kind}:{item_id}:{adapter_dataset}"
+                )
+            entries[str(adapter_dataset)] = {
+                **base,
+                **deepcopy(dict(adapter)),
+                "dataset_id": str(adapter_dataset),
+            }
+        return entries
 
 
 def _reject_duplicate_ids(path: Path) -> None:

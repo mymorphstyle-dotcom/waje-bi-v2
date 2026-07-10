@@ -1594,6 +1594,7 @@ def _capability_authority_inputs(
     return {
         "bound_input": bound_input,
         "evidence_resolver": request.get("evidence_resolver"),
+        "release_resolver": request.get("release_resolver"),
     }
 
 
@@ -2215,6 +2216,14 @@ def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
         context["baselines"] = tuple(request["runtime_baselines"])
     elif analysis_route.get("baselines"):
         context["baselines"] = tuple(analysis_route["baselines"])
+    for authority_key in (
+        "evidence_resolver",
+        "release_resolver",
+        "rows_loader",
+        "runtime_registry",
+    ):
+        if request.get(authority_key) is not None:
+            context[authority_key] = request[authority_key]
     return context
 
 
@@ -3567,6 +3576,7 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         evidence_resolver=request.get("evidence_resolver"),
         rows_loader=request.get("rows_loader"),
         runtime_registry=request.get("runtime_registry"),
+        release_resolver=request.get("release_resolver"),
         checkpoint_events=state["checkpoint_events"],
         proposed_graph=proposed_graph,
         accepted_graph=accepted_graph,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
@@ -20,6 +21,14 @@ from bi_agent.conversation.models import (
     TopicState,
 )
 from bi_agent.runtime.analysis_assets import asset_dedup_key, merge_analysis_assets
+from bi_agent.runtime.dataset_catalog import (
+    DatasetReleaseAuthorityRecord,
+    build_dataset_release_authority_record,
+    canonical_dataset_requires_release,
+    dataset_release_authority_record_from_mapping,
+    immutable_dataset_snapshot_projection,
+    validate_dataset_snapshot_release_payloads,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -482,16 +491,41 @@ class PostgresConversationStore:
         return tuple(assets)
 
     def save_dataset_snapshot(self, payload: dict[str, Any]) -> None:
+        dataset_id = str(payload.get("dataset_id") or "")
+        snapshot_ref = str(payload.get("snapshot_ref") or "")
+        requires_release = canonical_dataset_requires_release(dataset_id)
         try:
+            self._execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%(lock_key)s, 0))",
+                {"lock_key": f"dataset_snapshot_member:{snapshot_ref}"},
+                commit=False,
+            )
+            published = self._fetchone(
+                """
+                SELECT 1
+                FROM waje_runtime.dataset_snapshot_releases r
+                WHERE r.snapshot_refs @> to_jsonb(ARRAY[%(snapshot_ref)s::text])
+                LIMIT 1
+                """,
+                {"snapshot_ref": snapshot_ref},
+            )
+            if published:
+                raise ValueError("dataset_snapshot_published_immutable")
+            if requires_release and payload.get("status") == "active":
+                raise ValueError("dataset_snapshot_release_required")
             self._execute(
                 """
                 INSERT INTO waje_runtime.dataset_snapshots(
                   snapshot_ref, dataset_id, physical_table, watermark, schema_fingerprint,
-                  schema_fields, contract_ref, permission_scopes, loaded_at, status, payload
+                  schema_fields, contract_ref, permission_scopes, loaded_at, status,
+                  logical_snapshot_id, load_revision, evidence_state,
+                  reconciliation_status, reconciliation_ref, payload
                 ) VALUES (
                   %(snapshot_ref)s, %(dataset_id)s, %(physical_table)s, %(watermark)s,
                   %(schema_fingerprint)s, %(schema_fields)s::jsonb, %(contract_ref)s,
-                  %(permission_scopes)s::jsonb, %(loaded_at)s, %(status)s, %(payload)s::jsonb
+                  %(permission_scopes)s::jsonb, %(loaded_at)s, %(status)s,
+                  %(logical_snapshot_id)s, %(load_revision)s, %(evidence_state)s,
+                  %(reconciliation_status)s, %(reconciliation_ref)s, %(payload)s::jsonb
                 )
                 ON CONFLICT (snapshot_ref) DO UPDATE SET
                   dataset_id = EXCLUDED.dataset_id,
@@ -503,10 +537,22 @@ class PostgresConversationStore:
                   permission_scopes = EXCLUDED.permission_scopes,
                   loaded_at = EXCLUDED.loaded_at,
                   status = EXCLUDED.status,
+                  logical_snapshot_id = EXCLUDED.logical_snapshot_id,
+                  load_revision = EXCLUDED.load_revision,
+                  evidence_state = EXCLUDED.evidence_state,
+                  reconciliation_status = EXCLUDED.reconciliation_status,
+                  reconciliation_ref = EXCLUDED.reconciliation_ref,
                   payload = EXCLUDED.payload
                 """,
                 {
                     **payload,
+                    "logical_snapshot_id": payload.get("logical_snapshot_id", ""),
+                    "load_revision": payload.get("load_revision", ""),
+                    "evidence_state": payload.get("evidence_state", "claim_ready"),
+                    "reconciliation_status": payload.get(
+                        "reconciliation_status", "not_applicable"
+                    ),
+                    "reconciliation_ref": payload.get("reconciliation_ref", ""),
                     "schema_fields": _json(payload.get("schema_fields", [])),
                     "permission_scopes": _json(payload.get("permission_scopes", [])),
                     "payload": _json(payload),
@@ -524,13 +570,216 @@ class PostgresConversationStore:
             self.connection.rollback()
             raise
 
+    @contextmanager
+    def dataset_snapshot_release_lock(self, logical_snapshot_id: str):
+        lock_key = f"dataset_snapshot_release:{logical_snapshot_id}"
+        self._execute(
+            "SELECT pg_advisory_lock(hashtextextended(%(lock_key)s, 0))",
+            {"lock_key": lock_key},
+            commit=False,
+        )
+        try:
+            yield
+        finally:
+            self._execute(
+                "SELECT pg_advisory_unlock(hashtextextended(%(lock_key)s, 0))",
+                {"lock_key": lock_key},
+                commit=False,
+            )
+            self.connection.commit()
+
+    def publish_dataset_snapshot_release(
+        self,
+        *,
+        release_ref: str,
+        logical_snapshot_id: str,
+        payloads: tuple[dict[str, Any], ...],
+    ) -> None:
+        normalized, validated_logical_id, _, validated_release_ref = (
+            validate_dataset_snapshot_release_payloads(payloads)
+        )
+        if logical_snapshot_id != validated_logical_id:
+            raise ValueError("dataset_snapshot_release_logical_snapshot")
+        if release_ref != validated_release_ref:
+            raise ValueError("dataset_snapshot_release_ref")
+        authority = build_dataset_release_authority_record(normalized)
+        if authority.integrity_errors:
+            raise ValueError("dataset_release_authority_integrity")
+        payloads = tuple(
+            {
+                **payload,
+                "authority_record_ref": authority.authority_record_ref,
+            }
+            for payload in normalized
+        )
+        snapshot_refs = tuple(sorted(str(item["snapshot_ref"]) for item in payloads))
+        try:
+            for snapshot_ref in snapshot_refs:
+                self._execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%(lock_key)s, 0))",
+                    {"lock_key": f"dataset_snapshot_member:{snapshot_ref}"},
+                    commit=False,
+                )
+            self._execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%(lock_key)s, 0))",
+                {"lock_key": f"dataset_snapshot_release:{logical_snapshot_id}"},
+                commit=False,
+            )
+            for payload in payloads:
+                self._upsert_dataset_snapshot_in_transaction(payload)
+            self._execute(
+                """
+                UPDATE waje_runtime.dataset_snapshots
+                SET status = 'superseded',
+                    payload = jsonb_set(
+                      jsonb_set(payload, '{status}', '"superseded"'::jsonb),
+                      '{superseded_by_release}', to_jsonb(%(release_ref)s::text)
+                    )
+                WHERE (
+                    logical_snapshot_id = %(logical_snapshot_id)s
+                    OR payload->>'snapshot_id' = %(logical_snapshot_id)s
+                  )
+                  AND status = 'active'
+                  AND NOT (snapshot_ref = ANY(%(snapshot_refs)s))
+                """,
+                {
+                    "logical_snapshot_id": logical_snapshot_id,
+                    "release_ref": release_ref,
+                    "snapshot_refs": list(snapshot_refs),
+                },
+                commit=False,
+            )
+            release_payload = authority.to_dict()
+            self._execute(
+                """
+                INSERT INTO waje_runtime.dataset_snapshot_releases(
+                  release_ref, logical_snapshot_id, load_revision, snapshot_refs, payload
+                ) VALUES (
+                  %(release_ref)s, %(logical_snapshot_id)s, %(load_revision)s,
+                  %(snapshot_refs)s::jsonb, %(payload)s::jsonb
+                )
+                ON CONFLICT (release_ref) DO UPDATE
+                SET payload = EXCLUDED.payload
+                """,
+                {
+                    **release_payload,
+                    "snapshot_refs": _json(snapshot_refs),
+                    "payload": _json(release_payload),
+                },
+                commit=False,
+            )
+            self._audit(
+                "dataset_snapshot_release_published",
+                ref=release_ref,
+                payload=release_payload,
+                commit=False,
+            )
+            validation = self._fetchone(
+                """
+                WITH expected AS (
+                  SELECT value AS payload
+                  FROM jsonb_array_elements(%(expected_payloads)s::jsonb)
+                )
+                SELECT count(*) AS validated_count
+                FROM expected e
+                JOIN waje_runtime.dataset_snapshots s
+                  ON s.snapshot_ref = e.payload->>'snapshot_ref'
+                 AND s.dataset_id = e.payload->>'dataset_id'
+                 AND s.physical_table = e.payload->>'physical_table'
+                 AND s.watermark = (e.payload->>'watermark')::date
+                 AND s.schema_fingerprint = e.payload->>'schema_fingerprint'
+                 AND s.schema_fields = e.payload->'schema_fields'
+                 AND s.contract_ref = e.payload->>'contract_ref'
+                 AND s.permission_scopes = e.payload->'permission_scopes'
+                 AND s.loaded_at = (e.payload->>'loaded_at')::timestamptz
+                 AND s.status = e.payload->>'status'
+                 AND s.logical_snapshot_id = e.payload->>'logical_snapshot_id'
+                 AND s.load_revision = e.payload->>'load_revision'
+                 AND s.evidence_state = e.payload->>'evidence_state'
+                 AND s.reconciliation_status = e.payload->>'reconciliation_status'
+                 AND s.reconciliation_ref = e.payload->>'reconciliation_ref'
+                 AND s.payload = e.payload
+                JOIN waje_runtime.dataset_snapshot_releases r
+                  ON r.release_ref = e.payload->>'release_ref'
+                 AND r.logical_snapshot_id = e.payload->>'logical_snapshot_id'
+                 AND r.load_revision = e.payload->>'load_revision'
+                 AND r.snapshot_refs = %(snapshot_refs)s::jsonb
+                """,
+                {
+                    "expected_payloads": _json(payloads),
+                    "snapshot_refs": _json(snapshot_refs),
+                },
+            )
+            if int(_field(validation, "validated_count", 0) or 0) != len(payloads):
+                raise RuntimeError("dataset_snapshot_release_validation_failed")
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def _upsert_dataset_snapshot_in_transaction(self, payload: dict[str, Any]) -> None:
+        params = {
+            **payload,
+            "logical_snapshot_id": payload.get("logical_snapshot_id", ""),
+            "load_revision": payload.get("load_revision", ""),
+            "evidence_state": payload.get("evidence_state", "claim_ready"),
+            "reconciliation_status": payload.get(
+                "reconciliation_status", "not_applicable"
+            ),
+            "reconciliation_ref": payload.get("reconciliation_ref", ""),
+            "schema_fields": _json(payload.get("schema_fields", [])),
+            "permission_scopes": _json(payload.get("permission_scopes", [])),
+            "payload": _json(payload),
+        }
+        self._execute(
+            """
+            INSERT INTO waje_runtime.dataset_snapshots(
+              snapshot_ref, dataset_id, physical_table, watermark, schema_fingerprint,
+              schema_fields, contract_ref, permission_scopes, loaded_at, status,
+              logical_snapshot_id, load_revision, evidence_state,
+              reconciliation_status, reconciliation_ref, payload
+            ) VALUES (
+              %(snapshot_ref)s, %(dataset_id)s, %(physical_table)s, %(watermark)s,
+              %(schema_fingerprint)s, %(schema_fields)s::jsonb, %(contract_ref)s,
+              %(permission_scopes)s::jsonb, %(loaded_at)s, %(status)s,
+              %(logical_snapshot_id)s, %(load_revision)s, %(evidence_state)s,
+              %(reconciliation_status)s, %(reconciliation_ref)s, %(payload)s::jsonb
+            )
+            ON CONFLICT (snapshot_ref) DO UPDATE SET
+              payload = EXCLUDED.payload
+            WHERE waje_runtime.dataset_snapshots.dataset_id = EXCLUDED.dataset_id
+              AND waje_runtime.dataset_snapshots.physical_table = EXCLUDED.physical_table
+              AND waje_runtime.dataset_snapshots.watermark = EXCLUDED.watermark
+              AND waje_runtime.dataset_snapshots.schema_fingerprint = EXCLUDED.schema_fingerprint
+              AND waje_runtime.dataset_snapshots.schema_fields = EXCLUDED.schema_fields
+              AND waje_runtime.dataset_snapshots.contract_ref = EXCLUDED.contract_ref
+              AND waje_runtime.dataset_snapshots.permission_scopes = EXCLUDED.permission_scopes
+              AND waje_runtime.dataset_snapshots.loaded_at = EXCLUDED.loaded_at
+              AND waje_runtime.dataset_snapshots.status = EXCLUDED.status
+              AND waje_runtime.dataset_snapshots.logical_snapshot_id = EXCLUDED.logical_snapshot_id
+              AND waje_runtime.dataset_snapshots.load_revision = EXCLUDED.load_revision
+              AND waje_runtime.dataset_snapshots.evidence_state = EXCLUDED.evidence_state
+              AND waje_runtime.dataset_snapshots.reconciliation_status = EXCLUDED.reconciliation_status
+              AND waje_runtime.dataset_snapshots.reconciliation_ref = EXCLUDED.reconciliation_ref
+              AND (
+                waje_runtime.dataset_snapshots.payload - 'authority_record_ref'
+                  - 'status' - 'superseded_by_release'
+              ) = (
+                EXCLUDED.payload - 'authority_record_ref'
+                  - 'status' - 'superseded_by_release'
+              )
+            """,
+            params,
+            commit=False,
+        )
+
     def list_dataset_snapshots(self, dataset_id: str = "") -> tuple[dict[str, Any], ...]:
         rows = self._fetchall(
             """
-            SELECT payload
-            FROM waje_runtime.dataset_snapshots
-            WHERE (%(dataset_id)s = '' OR dataset_id = %(dataset_id)s)
-            ORDER BY loaded_at, snapshot_ref
+            SELECT s.payload
+            FROM waje_runtime.dataset_snapshots s
+            WHERE (%(dataset_id)s = '' OR s.dataset_id = %(dataset_id)s)
+            ORDER BY s.loaded_at, s.snapshot_ref
             """,
             {"dataset_id": dataset_id},
         )
@@ -543,8 +792,91 @@ class PostgresConversationStore:
                 except json.JSONDecodeError:
                     payload = None
             if isinstance(payload, dict):
+                payload = dict(payload)
                 snapshots.append(payload)
         return tuple(snapshots)
+
+    def resolve_dataset_release(
+        self,
+        release_ref: str,
+    ) -> DatasetReleaseAuthorityRecord:
+        row = self._fetchone(
+            """
+            SELECT r.payload AS release_payload,
+                   r.logical_snapshot_id,
+                   r.load_revision,
+                   r.snapshot_refs,
+                   count(s.snapshot_ref) AS member_count,
+                   jsonb_agg(s.payload ORDER BY s.snapshot_ref) AS member_payloads,
+                   jsonb_agg(
+                     jsonb_build_object(
+                       'snapshot_ref', s.snapshot_ref,
+                       'dataset_id', s.dataset_id,
+                       'physical_table', s.physical_table,
+                       'watermark', to_char(s.watermark, 'YYYY-MM-DD'),
+                       'schema_fingerprint', s.schema_fingerprint,
+                       'schema_fields', s.schema_fields,
+                       'contract_ref', s.contract_ref,
+                       'permission_scopes', s.permission_scopes,
+                       'loaded_at', to_char(s.loaded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'),
+                       'evidence_state', s.evidence_state,
+                       'reconciliation_status', s.reconciliation_status,
+                       'reconciliation_ref', s.reconciliation_ref,
+                       'logical_snapshot_id', s.logical_snapshot_id,
+                       'load_revision', s.load_revision
+                     ) ORDER BY s.snapshot_ref
+                   ) AS member_columns
+            FROM waje_runtime.dataset_snapshot_releases r
+            LEFT JOIN waje_runtime.dataset_snapshots s
+              ON r.snapshot_refs @> to_jsonb(ARRAY[s.snapshot_ref])
+            WHERE r.release_ref = %(release_ref)s
+            GROUP BY r.release_ref, r.payload, r.logical_snapshot_id,
+                     r.load_revision, r.snapshot_refs
+            """,
+            {"release_ref": release_ref},
+        )
+        if not row:
+            raise KeyError(f"dataset_release_unavailable:{release_ref}")
+        release_payload = _json_value(_field(row, "release_payload", 0))
+        logical_snapshot_id = str(_field(row, "logical_snapshot_id", 1) or "")
+        load_revision = str(_field(row, "load_revision", 2) or "")
+        snapshot_refs = _json_value(_field(row, "snapshot_refs", 3))
+        member_count = int(_field(row, "member_count", 4) or 0)
+        member_payloads = _json_value(_field(row, "member_payloads", 5))
+        member_columns = _json_value(_field(row, "member_columns", 6))
+        if (
+            not isinstance(release_payload, dict)
+            or not isinstance(snapshot_refs, list)
+            or not isinstance(member_payloads, list)
+            or not isinstance(member_columns, list)
+            or member_count != 2
+            or len(snapshot_refs) != 2
+            or len(member_payloads) != 2
+            or len(member_columns) != 2
+            or tuple(str(item.get("snapshot_ref") or "") for item in member_payloads)
+            != tuple(str(ref) for ref in snapshot_refs)
+        ):
+            raise ValueError("dataset_release_authority_membership")
+        stored = dataset_release_authority_record_from_mapping(release_payload)
+        payload_projections = tuple(
+            immutable_dataset_snapshot_projection(item)
+            for item in member_payloads
+        )
+        mirrored_projections = tuple(
+            immutable_dataset_snapshot_projection({**payload, **columns})
+            for payload, columns in zip(member_payloads, member_columns)
+        )
+        if (
+            stored.integrity_errors
+            or stored.release_ref != release_ref
+            or stored.logical_snapshot_id != logical_snapshot_id
+            or stored.load_revision != load_revision
+            or stored.snapshot_refs != tuple(str(ref) for ref in snapshot_refs)
+            or payload_projections != stored.member_projections
+            or mirrored_projections != stored.member_projections
+        ):
+            raise ValueError("dataset_release_authority_record_mismatch")
+        return stored
 
     def record_run_nodes(self, run_id: str, checkpoint_events: tuple[dict, ...]) -> None:
         for index, event in enumerate(checkpoint_events):
@@ -872,6 +1204,15 @@ class PostgresConversationStore:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return value
 
 
 def _field(row: Any, key: str, index: int) -> Any:

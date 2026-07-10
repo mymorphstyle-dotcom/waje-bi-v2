@@ -79,6 +79,7 @@ class CapabilityRequest:
     params: Mapping[str, Any]
     bound_input: Any = None
     evidence_resolver: Any = None
+    release_resolver: Any = None
     fixture_input_mode: str = ""
     run_mode: str = "production"
 

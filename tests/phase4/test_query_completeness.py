@@ -743,6 +743,29 @@ class QueryCompletenessTest(unittest.TestCase):
             report.failure_reasons,
         )
 
+    def test_physical_revision_without_verified_release_is_invalid(self):
+        contract = baseline_contract()
+        snapshot = replace(
+            paid_snapshot(),
+            logical_snapshot_id="dashboard-logical",
+            load_revision="dashboard-load:sha256:unverified",
+            release_ref="dataset-release:sha256:missing",
+            authority_record_ref="",
+            rows_content_hash="a" * 64,
+        )
+
+        report = validate_query_result(
+            contract,
+            successful_result(contract, rows=complete_rows()),
+            snapshot,
+        )
+
+        self.assertEqual(report.completeness_status, "invalid")
+        self.assertIn(
+            "snapshot_release_unverified:snapshot:paid:1",
+            report.failure_reasons,
+        )
+
     def test_unreviewed_output_fields_are_invalid_and_blocked(self):
         contract = baseline_contract()
         rows = tuple(

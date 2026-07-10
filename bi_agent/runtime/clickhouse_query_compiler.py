@@ -19,7 +19,12 @@ from bi_agent.runtime.analysis_contracts import (
     ResultShape,
     query_contract_signature,
 )
-from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.dataset_catalog import (
+    DatasetReleaseResolver,
+    DatasetSnapshot,
+    dataset_release_authority_integrity_errors,
+    snapshot_matches_release_authority,
+)
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
 
@@ -99,11 +104,14 @@ class CompiledQuery:
 def compile_clickhouse_query(
     contract: QueryContract,
     snapshots: Mapping[str, DatasetSnapshot],
+    *,
+    release_resolver: DatasetReleaseResolver | None = None,
 ) -> CompiledQuery:
     return _compile_clickhouse_query_with_registry(
         contract,
         snapshots,
         registry=_runtime_registry(),
+        release_resolver=release_resolver,
     )
 
 
@@ -112,12 +120,14 @@ def validate_clickhouse_query_contract(
     snapshots: Mapping[str, DatasetSnapshot],
     *,
     registry: RuntimeContractRegistry,
+    release_resolver: DatasetReleaseResolver | None = None,
 ) -> None:
     """Validate one persisted query against an explicitly trusted registry."""
     _compile_clickhouse_query_with_registry(
         contract,
         snapshots,
         registry=registry,
+        release_resolver=release_resolver,
     )
 
 
@@ -126,17 +136,26 @@ def _compile_clickhouse_query_with_registry(
     snapshots: Mapping[str, DatasetSnapshot],
     *,
     registry: RuntimeContractRegistry,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> CompiledQuery:
     _validate_runtime_types(contract, snapshots)
     _verify_contract_signature(contract)
     _verify_window_consistency(contract)
     _verify_reviewed_query_shape(contract, registry)
     snapshot = _single_snapshot(contract, snapshots)
+    _verify_dataset_snapshot_binding(
+        snapshot,
+        registry=registry,
+        release_resolver=release_resolver,
+    )
     date_expression = _date_expression(snapshot, registry=registry)
     _verify_reviewed_bindings(contract, snapshot, registry=registry)
     parameters = _window_parameters(contract.resolved_windows)
     filter_sql, filter_parameters = _compile_filters(contract.filters, snapshot)
     parameters.update(filter_parameters)
+    physical_filters, physical_parameters = _physical_snapshot_filters(snapshot)
+    filter_sql = (*filter_sql, *physical_filters)
+    parameters.update(physical_parameters)
 
     if contract.query_intent == "high_value_scan":
         _verify_high_value_semantics(contract)
@@ -602,11 +621,26 @@ def _validate_snapshot_types(snapshot: DatasetSnapshot) -> None:
         "contract_ref",
         "loaded_at",
         "status",
+        "evidence_state",
+        "reconciliation_status",
+        "reconciliation_ref",
+        "logical_snapshot_id",
+        "load_revision",
+        "release_ref",
+        "authority_record_ref",
+        "rows_content_hash",
     ):
         value = getattr(snapshot, field_name)
         if not isinstance(value, str):
             raise TypeError("invalid_snapshot_runtime_type")
-        if not value.strip():
+        if not value.strip() and field_name not in {
+            "reconciliation_ref",
+            "logical_snapshot_id",
+            "load_revision",
+            "release_ref",
+            "authority_record_ref",
+            "rows_content_hash",
+        }:
             raise ValueError(f"invalid_snapshot_metadata:{field_name}")
     for value in (snapshot.schema_fields, snapshot.permission_scopes):
         if not isinstance(value, tuple) or any(
@@ -625,8 +659,18 @@ def _validate_snapshot_types(snapshot: DatasetSnapshot) -> None:
         raise ValueError("invalid_snapshot_metadata:loaded_at") from exc
     if loaded_at.tzinfo is None or loaded_at.utcoffset() is None:
         raise ValueError("invalid_snapshot_metadata:loaded_at")
-
-
+    if snapshot.evidence_state not in {"claim_ready", "context_only", "blocked"}:
+        raise ValueError("invalid_snapshot_metadata:evidence_state")
+    if snapshot.reconciliation_status not in {
+        "matched",
+        "mismatch",
+        "incomplete",
+        "not_comparable",
+        "not_applicable",
+    }:
+        raise ValueError("invalid_snapshot_metadata:reconciliation_status")
+    if bool(snapshot.logical_snapshot_id) != bool(snapshot.load_revision):
+        raise ValueError("invalid_snapshot_metadata:physical_revision")
 def _require_runtime_instances(
     value: Any,
     item_type: type,
@@ -696,6 +740,29 @@ def _single_snapshot(
         raise ValueError(f"dataset_snapshot_missing:{snapshot_ref}")
     if snapshot.status != "active":
         raise ValueError(f"dataset_snapshot_inactive:{snapshot_ref}")
+    if snapshot.evidence_state != "claim_ready" and contract.query_intent not in {
+        "data_quality_probe",
+        "event_context_probe",
+        "channel_context_probe",
+        "source_reconciliation_probe",
+    }:
+        raise ValueError(
+            f"dataset_evidence_state_not_claim_ready:{snapshot_ref}:{snapshot.evidence_state}"
+        )
+    if (
+        contract.dimension_bindings
+        and contract.query_intent not in {
+            "data_quality_probe",
+            "channel_context_probe",
+            "source_reconciliation_probe",
+        }
+        and snapshot.reconciliation_ref
+        and snapshot.reconciliation_status != "matched"
+    ):
+        raise ValueError(
+            "dataset_reconciliation_not_matched:"
+            f"{snapshot_ref}:{snapshot.reconciliation_status}"
+        )
     if contract.permission_scope not in snapshot.permission_scopes:
         raise PermissionError(f"dataset_snapshot_permission_denied:{snapshot_ref}")
     for binding in (*contract.metric_bindings, *contract.dimension_bindings):
@@ -705,6 +772,51 @@ def _single_snapshot(
             )
     _quote_physical_table(snapshot.physical_table)
     return snapshot
+
+
+def _verify_dataset_snapshot_binding(
+    snapshot: DatasetSnapshot,
+    *,
+    registry: RuntimeContractRegistry,
+    release_resolver: DatasetReleaseResolver | None,
+) -> None:
+    dataset = registry.dataset(snapshot.dataset_id)
+    if dataset.get("requires_physical_revision"):
+        if not snapshot.logical_snapshot_id or not snapshot.load_revision:
+            raise ValueError(
+                f"dataset_physical_revision_required:{snapshot.dataset_id}"
+            )
+        if not {"snapshot_id", "load_revision"}.issubset(snapshot.schema_fields):
+            raise ValueError("dataset_physical_revision_fields_missing")
+    if dataset.get("requires_release"):
+        if not snapshot.release_ref or not snapshot.authority_record_ref:
+            raise ValueError(f"dataset_release_required:{snapshot.dataset_id}")
+        if not snapshot.rows_content_hash:
+            raise ValueError(f"dataset_rows_content_hash_required:{snapshot.dataset_id}")
+        if release_resolver is None:
+            raise ValueError(f"dataset_release_resolver_required:{snapshot.dataset_id}")
+        try:
+            authority = release_resolver.resolve_dataset_release(snapshot.release_ref)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"dataset_release_authority_unavailable:{snapshot.dataset_id}"
+            ) from exc
+        if dataset_release_authority_integrity_errors(authority):
+            raise ValueError(
+                f"dataset_release_authority_integrity:{snapshot.dataset_id}"
+            )
+        if not snapshot_matches_release_authority(snapshot, authority):
+            raise ValueError(
+                f"dataset_release_authority_member_mismatch:{snapshot.dataset_id}"
+            )
+    prefix = str(dataset.get("physical_table_prefix") or "")
+    legacy = tuple(str(item) for item in dataset.get("legacy_physical_tables") or ())
+    if prefix:
+        expected = f"{prefix}{snapshot.schema_fingerprint[:16]}"
+        if snapshot.physical_table not in {*legacy, expected}:
+            raise ValueError(
+                f"dataset_physical_table_unreviewed:{snapshot.physical_table}"
+            )
 
 
 def _date_expression(
@@ -850,6 +962,26 @@ def _compile_filters(
     return tuple(clauses), parameters
 
 
+def _physical_snapshot_filters(
+    snapshot: DatasetSnapshot,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    if not snapshot.load_revision:
+        return (), {}
+    required = {"snapshot_id", "load_revision"}
+    if not required.issubset(snapshot.schema_fields):
+        raise ValueError("dataset_physical_revision_fields_missing")
+    return (
+        (
+            "`snapshot_id` = %(physical_snapshot_id)s",
+            "`load_revision` = %(load_revision)s",
+        ),
+        {
+            "physical_snapshot_id": snapshot.logical_snapshot_id,
+            "load_revision": snapshot.load_revision,
+        },
+    )
+
+
 def _filter_scalar(value: Any, *, operator: str) -> Any:
     if value is None or isinstance(value, (Mapping, list, tuple, set)):
         raise ValueError(f"invalid_filter_value:{operator}")
@@ -962,7 +1094,10 @@ def _verify_reviewed_bindings(
 ) -> None:
     for binding in contract.metric_bindings:
         try:
-            reviewed = registry.metric(binding.metric_id)
+            reviewed = registry.metric(
+                binding.metric_id,
+                dataset_id=snapshot.dataset_id,
+            )
         except KeyError as exc:
             raise ValueError(
                 f"reviewed_metric_binding_mismatch:{binding.metric_id}"
@@ -1009,7 +1144,10 @@ def _verify_reviewed_bindings(
 
     for binding in contract.dimension_bindings:
         try:
-            reviewed = registry.dimension(binding.dimension_id)
+            reviewed = registry.dimension(
+                binding.dimension_id,
+                dataset_id=snapshot.dataset_id,
+            )
         except KeyError as exc:
             raise ValueError(
                 f"reviewed_dimension_binding_mismatch:{binding.dimension_id}"

@@ -25,6 +25,7 @@ from bi_agent.runtime.runtime_contract_registry import (
     RuntimeContractRegistry,
     runtime_registry_integrity_error,
 )
+from bi_agent.runtime.dataset_catalog import DatasetReleaseResolver
 from bi_agent.runtime.wording import wording_warnings
 
 
@@ -36,6 +37,7 @@ def build_answer_package(
     evidence_resolver: Optional[RuntimeEvidenceResolver] = None,
     rows_loader: Optional[RowsPayloadLoader] = None,
     runtime_registry: Optional[RuntimeContractRegistry] = None,
+    release_resolver: DatasetReleaseResolver | None = None,
     checkpoint_events: Sequence[Mapping[str, Any]],
     proposed_graph: Sequence[str],
     accepted_graph: Sequence[str],
@@ -90,6 +92,7 @@ def build_answer_package(
         evidence_resolver=evidence_resolver,
         rows_loader=rows_loader,
         runtime_registry=runtime_registry,
+        release_resolver=release_resolver,
         delivery_text={
             "answer_text": answer_text,
             "final_business_summary": final_business_summary,
@@ -290,6 +293,7 @@ def reverify_answer_package_for_delivery(
     evidence_resolver: RuntimeEvidenceResolver | None,
     rows_loader: RowsPayloadLoader | None,
     runtime_registry: RuntimeContractRegistry | None,
+    release_resolver: DatasetReleaseResolver | None = None,
     internal_verifier_audit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Recompute delivery authority from persisted records at the Core boundary."""
@@ -313,6 +317,7 @@ def reverify_answer_package_for_delivery(
         evidence_resolver=evidence_resolver,
         rows_loader=rows_loader,
         runtime_registry=runtime_registry,
+        release_resolver=release_resolver,
         delivery_text={
             "final_answer": candidate.get("final_answer"),
             "answer_text": summary.get("answer_text"),
@@ -346,6 +351,7 @@ def reverify_answer_package_for_delivery(
             evidence_resolver=evidence_resolver,
             rows_loader=rows_loader,
             runtime_registry=runtime_registry,
+            release_resolver=release_resolver,
         )
         if projection_errors:
             rejected = tuple(
@@ -433,6 +439,7 @@ def _authority_bound_claim_projections(
     evidence_resolver: RuntimeEvidenceResolver | None,
     rows_loader: RowsPayloadLoader | None,
     runtime_registry: RuntimeContractRegistry | None,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> tuple[tuple[dict[str, Any], ...], list[dict[str, Any]]]:
     evidence_by_ref = {
         str(item.get("evidence_ref") or ""): item
@@ -459,6 +466,7 @@ def _authority_bound_claim_projections(
                 evidence_resolver=evidence_resolver,
                 rows_loader=rows_loader,
                 runtime_registry=runtime_registry,
+                release_resolver=release_resolver,
             )
             claim_projection = _project_claim_from_authority(claim, facts)
             if claim_projection.get("fact_refs"):
@@ -553,6 +561,7 @@ def _claim_authority_facts(
     evidence_resolver: RuntimeEvidenceResolver | None,
     rows_loader: RowsPayloadLoader | None,
     runtime_registry: RuntimeContractRegistry | None,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> dict[str, Any]:
     if evidence_resolver is None or rows_loader is None or runtime_registry is None:
         raise ValueError("authority_projection_dependencies_missing")
@@ -578,6 +587,7 @@ def _claim_authority_facts(
             resolver=evidence_resolver,
             rows_loader=rows_loader,
             runtime_registry=runtime_registry,
+            release_resolver=release_resolver,
         )
         if str(claim.get("claim_type") or "") not in binding.supported_claim_types:
             raise ValueError("authority_claim_type_mismatch")
@@ -1653,6 +1663,7 @@ def verify_answer_package(
     evidence_resolver: RuntimeEvidenceResolver | None = None,
     rows_loader: RowsPayloadLoader | None = None,
     runtime_registry: RuntimeContractRegistry | None = None,
+    release_resolver: DatasetReleaseResolver | None = None,
     delivery_text: Any = None,
 ) -> dict[str, Any]:
     evidence_by_ref = {item.get("evidence_ref"): item for item in evidence}
@@ -1730,6 +1741,7 @@ def verify_answer_package(
                 evidence_resolver,
                 rows_loader,
                 runtime_registry,
+                release_resolver,
             )
             if ref_errors:
                 provenance_errors.extend(ref_errors)
@@ -1875,6 +1887,7 @@ def _claim_authority_errors(
     resolver: RuntimeEvidenceResolver | None,
     rows_loader: RowsPayloadLoader | None,
     registry: RuntimeContractRegistry | None,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> tuple[str, ...]:
     if not evidence_items:
         return ("evidence",)
@@ -1918,6 +1931,7 @@ def _claim_authority_errors(
                 claim_type,
                 str(claim.get("claim_strength") or ""),
                 registry,
+                release_resolver,
             )
         )
     return tuple(dict.fromkeys(missing))
@@ -1930,6 +1944,7 @@ def _authority_record_errors(
     claim_type: str,
     claim_strength: str,
     registry: RuntimeContractRegistry | None,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> tuple[str, ...]:
     missing = []
     if resolver is None:
@@ -1949,6 +1964,7 @@ def _authority_record_errors(
             claim_type,
             claim_strength,
             registry,
+            release_resolver,
         )
     except Exception:
         return ("runtime_evidence_resolution_failed",)
@@ -1961,6 +1977,7 @@ def _resolved_authority_record_errors(
     claim_type: str,
     claim_strength: str,
     registry: RuntimeContractRegistry,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> tuple[str, ...]:
     binding_ref = str(evidence.get("binding_manifest_ref") or "")
     binding = resolver.resolve_capability_binding(binding_ref)
@@ -1975,6 +1992,7 @@ def _resolved_authority_record_errors(
             resolver=resolver,
             rows_loader=rows_loader,
             runtime_registry=registry,
+            release_resolver=release_resolver,
         )
     except AuthoritativeQueryChainError as exc:
         errors.append(f"authoritative_query_chain_invalid:{exc}")
@@ -2227,6 +2245,7 @@ def _resolved_authority_record_errors(
                         query.contract,
                         resolved_snapshots,
                         registry=registry,
+                        release_resolver=release_resolver,
                     )
                 except (PermissionError, TypeError, ValueError):
                     errors.append("query_contract_runtime_policy")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import os
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from bi_agent.runtime.analysis_contracts import (
     DimensionBinding,
@@ -17,7 +17,7 @@ from bi_agent.runtime.analysis_contracts import (
 )
 from bi_agent.runtime.clickhouse_query_planner import build_clickhouse_query_specs
 from bi_agent.runtime.clickhouse_runtime import ClickHouseRuntime, IDENTIFIER_PATTERN
-from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.dataset_catalog import DatasetReleaseResolver, DatasetSnapshot
 from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
 from bi_agent.runtime.sql_safety import validate_select_only
 
@@ -27,6 +27,13 @@ MAX_ROWS = 5000
 BASE_FIELDS = ("period", "group", "amount", "paid_users", "orders", "first_paid_users")
 JOINT_DIMENSIONS = ("channel", "payment_method", "region", "device_brand")
 SEGMENT_DIMENSIONS = ("channel",)
+CONTEXT_SNAPSHOT_QUERY_INTENTS = frozenset(
+    (
+        "channel_context_probe",
+        "source_reconciliation_probe",
+        "data_quality_probe",
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -75,17 +82,44 @@ class ClickHouseRevenueRows:
         table: Optional[str] = None,
         *,
         snapshots: Mapping[str, DatasetSnapshot] | None = None,
+        snapshot_loader: Callable[..., Mapping[str, DatasetSnapshot]] | None = None,
         executor: ClickHouseQueryExecutor | None = None,
+        release_resolver: DatasetReleaseResolver | None = None,
     ) -> None:
         self.runtime = runtime or ClickHouseRuntime.from_env()
         self.table = table or os.environ.get("WAJE_CLICKHOUSE_PAYMENT_TABLE", DEFAULT_TABLE)
         self.snapshots = dict(snapshots or {})
-        self.executor = executor or ClickHouseQueryExecutor(self.runtime)
+        self.snapshot_loader = snapshot_loader
+        self.release_resolver = release_resolver
+        self.executor = executor or ClickHouseQueryExecutor(
+            self.runtime,
+            release_resolver=release_resolver,
+        )
         self._schema_fields: tuple[str, ...] | None = None
 
     @classmethod
-    def from_env(cls) -> "ClickHouseRevenueRows":
-        return cls(ClickHouseRuntime.from_env())
+    def from_env(
+        cls,
+        *,
+        snapshot_loader: Callable[..., Mapping[str, DatasetSnapshot]] | None = None,
+        release_resolver: DatasetReleaseResolver | None = None,
+        evidence_resolver: Any = None,
+        evidence_writer: Any = None,
+        rows_loader: Any = None,
+    ) -> "ClickHouseRevenueRows":
+        runtime = ClickHouseRuntime.from_env()
+        return cls(
+            runtime,
+            snapshot_loader=snapshot_loader,
+            executor=ClickHouseQueryExecutor(
+                runtime,
+                evidence_resolver=evidence_resolver,
+                evidence_writer=evidence_writer,
+                rows_loader=rows_loader,
+                release_resolver=release_resolver,
+            ),
+            release_resolver=release_resolver,
+        )
 
     def configured(self) -> bool:
         return self.runtime.configured()
@@ -235,13 +269,34 @@ LIMIT {MAX_ROWS}
                 reason="typed_query_contracts_missing",
                 contract_mode="typed",
             )
-        snapshots = dict(self.snapshots)
+        try:
+            snapshots = self._trusted_snapshots(query_contracts)
+        except Exception as exc:
+            first = query_contracts[0]
+            return RevenueRowPlan(
+                sql_text="",
+                query_id=first.query_contract_id,
+                required_fields=first.result_shape.required_fields,
+                dimension_keys=tuple(
+                    item.dimension_id for item in first.dimension_bindings
+                ),
+                reason=f"dataset_snapshot_provider_refresh_failed:{exc}",
+                contract_mode="typed",
+                query_contracts=query_contracts,
+            )
         try:
             for source in (
                 compiler_runtime_plan.get("dataset_snapshots"),
                 request.get("dataset_snapshots"),
             ):
-                snapshots.update(_dataset_snapshots(source or ()))
+                selected = _request_dataset_snapshots(source or (), snapshots)
+                for snapshot_ref, snapshot in selected.items():
+                    existing = snapshots.get(snapshot_ref)
+                    if existing is not None and existing != snapshot:
+                        raise ValueError(
+                            f"dataset_snapshot_provider_request_conflict:{snapshot_ref}"
+                        )
+                    snapshots[snapshot_ref] = snapshot
         except (KeyError, TypeError, ValueError) as exc:
             first = query_contracts[0]
             return RevenueRowPlan(
@@ -280,6 +335,23 @@ LIMIT {MAX_ROWS}
             query_contracts=query_contracts,
             snapshots=snapshots,
         )
+
+    def _trusted_snapshots(
+        self,
+        query_contracts: Sequence[QueryContract],
+    ) -> dict[str, DatasetSnapshot]:
+        if self.snapshot_loader is None:
+            return dict(self.snapshots)
+        purpose = (
+            "context"
+            if any(
+                contract.query_intent in CONTEXT_SNAPSHOT_QUERY_INTENTS
+                for contract in query_contracts
+            )
+            else "claim"
+        )
+        loaded = self.snapshot_loader(purpose=purpose)
+        return _dataset_snapshots(loaded)
 
     def fetch(self, plan: RevenueRowPlan) -> RevenueRowsResult:
         if plan.contract_mode == "typed":
@@ -424,7 +496,11 @@ LIMIT {MAX_ROWS}
         result_refs: list[str] = []
         failure_reasons: list[str] = []
         for contract in plan.query_contracts:
-            envelope = self.executor.execute(contract, plan.snapshots)
+            envelope = self.executor.execute(
+                contract,
+                plan.snapshots,
+                release_resolver=self.release_resolver,
+            )
             envelopes.append(envelope)
             query_results.append(
                 {
@@ -1009,13 +1085,81 @@ def _dataset_snapshots(value: Any) -> dict[str, DatasetSnapshot]:
     return snapshots
 
 
+def trusted_active_dataset_snapshots(
+    store: Any,
+    *,
+    dataset_id: str = "",
+    purpose: str = "claim",
+) -> dict[str, DatasetSnapshot]:
+    allowed_evidence = {
+        "claim": {"claim_ready"},
+        "context": {"claim_ready", "context_only"},
+    }
+    if purpose not in allowed_evidence:
+        raise ValueError(f"dataset_snapshot_purpose_invalid:{purpose}")
+    listed = store.list_dataset_snapshots(dataset_id)
+    fields = frozenset(DatasetSnapshot.__dataclass_fields__)
+    projected = []
+    for item in listed:
+        if not isinstance(item, Mapping):
+            raise ValueError("trusted_dataset_snapshot_mapping_required")
+        if item.get("status") != "active":
+            continue
+        if str(item.get("evidence_state") or "claim_ready") not in allowed_evidence[purpose]:
+            continue
+        projected.append(
+            {
+                key: value
+                for key, value in item.items()
+                if key in fields
+            }
+        )
+    return _dataset_snapshots(tuple(projected))
+
+
 def _dataset_snapshot_from_mapping(
     value: Mapping[str, Any],
     *,
     path: str,
 ) -> DatasetSnapshot:
     fields = tuple(DatasetSnapshot.__dataclass_fields__)
-    _require_keys(value, fields, path=path)
+    required_fields = fields[:10]
+    allowed_fields = (
+        *fields,
+        "snapshot_id",
+        "requires_release",
+        "source_load_manifest_ref",
+        "runtime_binding_ref",
+        "source_checksums",
+        "no_data_partitions",
+        "no_data_partition_windows",
+        "reconciliation",
+        "row_count",
+        "date_range",
+    )
+    _require_keys(value, required_fields, path=path, allowed=allowed_fields)
+    for field_name in (
+        "snapshot_id",
+        "source_load_manifest_ref",
+        "runtime_binding_ref",
+    ):
+        if field_name in value:
+            _strict_string(value[field_name], path=f"{path}.{field_name}")
+    for field_name in ("source_checksums", "reconciliation"):
+        if field_name in value:
+            _strict_mapping(value[field_name], path=f"{path}.{field_name}")
+    for field_name in ("no_data_partitions", "no_data_partition_windows", "date_range"):
+        if field_name in value:
+            _strict_string_sequence(value[field_name], path=f"{path}.{field_name}")
+    if "row_count" in value and (
+        isinstance(value["row_count"], bool)
+        or not isinstance(value["row_count"], int)
+        or value["row_count"] < 0
+    ):
+        raise ValueError(f"{path}.row_count:non_negative_integer_required")
+    for field_name in ("requires_release",):
+        if field_name in value and not isinstance(value[field_name], bool):
+            raise ValueError(f"{path}.{field_name}:boolean_required")
     return DatasetSnapshot(
         snapshot_ref=_strict_string(
             value["snapshot_ref"], path=f"{path}.snapshot_ref"
@@ -1039,7 +1183,119 @@ def _dataset_snapshot_from_mapping(
         ),
         loaded_at=_strict_string(value["loaded_at"], path=f"{path}.loaded_at"),
         status=_strict_string(value["status"], path=f"{path}.status"),
+        evidence_state=_strict_string(
+            value.get("evidence_state", "claim_ready"),
+            path=f"{path}.evidence_state",
+        ),
+        reconciliation_status=_strict_string(
+            value.get("reconciliation_status", "not_applicable"),
+            path=f"{path}.reconciliation_status",
+        ),
+        reconciliation_ref=_strict_string(
+            value.get("reconciliation_ref", ""),
+            path=f"{path}.reconciliation_ref",
+            allow_empty=True,
+        ),
+        logical_snapshot_id=_strict_string(
+            value.get("logical_snapshot_id", ""),
+            path=f"{path}.logical_snapshot_id",
+            allow_empty=True,
+        ),
+        load_revision=_strict_string(
+            value.get("load_revision", ""),
+            path=f"{path}.load_revision",
+            allow_empty=True,
+        ),
+        release_ref=_strict_string(
+            value.get("release_ref", ""),
+            path=f"{path}.release_ref",
+            allow_empty=True,
+        ),
+        authority_record_ref=_strict_string(
+            value.get("authority_record_ref", ""),
+            path=f"{path}.authority_record_ref",
+            allow_empty=True,
+        ),
+        rows_content_hash=_strict_string(
+            value.get("rows_content_hash", ""),
+            path=f"{path}.rows_content_hash",
+            allow_empty=True,
+        ),
+        snapshot_id=_strict_string(
+            value.get("snapshot_id", ""),
+            path=f"{path}.snapshot_id",
+            allow_empty=True,
+        ),
+        source_load_manifest_ref=_strict_string(
+            value.get("source_load_manifest_ref", ""),
+            path=f"{path}.source_load_manifest_ref",
+            allow_empty=True,
+        ),
+        runtime_binding_ref=_strict_string(
+            value.get("runtime_binding_ref", ""),
+            path=f"{path}.runtime_binding_ref",
+            allow_empty=True,
+        ),
+        source_checksums=tuple(
+            sorted(
+                (str(key), str(checksum))
+                for key, checksum in (value.get("source_checksums") or {}).items()
+            )
+        ),
+        row_count=value.get("row_count", -1),
+        date_range=_strict_string_sequence(
+            value.get("date_range", ()),
+            path=f"{path}.date_range",
+        ),
+        no_data_partitions=_strict_string_sequence(
+            value.get("no_data_partitions", ()),
+            path=f"{path}.no_data_partitions",
+        ),
+        no_data_partition_windows=_strict_string_sequence(
+            value.get("no_data_partition_windows", ()),
+            path=f"{path}.no_data_partition_windows",
+        ),
     )
+
+
+def _request_dataset_snapshots(
+    value: Any,
+    trusted_snapshots: Mapping[str, DatasetSnapshot],
+) -> dict[str, DatasetSnapshot]:
+    if value in ((), [], {}, None):
+        return {}
+    if isinstance(value, Mapping):
+        items = value.items()
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        items = (("", item) for item in value)
+    else:
+        raise ValueError("dataset_snapshots:mapping_or_sequence_required")
+    selected: dict[str, DatasetSnapshot] = {}
+    allowed = {"snapshot_ref", "dataset_id"}
+    for index, (key, item) in enumerate(items):
+        path = f"dataset_snapshots[{index}]"
+        if not isinstance(item, Mapping):
+            raise ValueError(f"{path}:request_selector_mapping_required")
+        unexpected = tuple(str(field) for field in item if field not in allowed)
+        if unexpected:
+            raise ValueError(
+                f"untrusted_dataset_snapshot_authority_fields:{','.join(unexpected)}"
+            )
+        snapshot_ref = _strict_string(
+            item.get("snapshot_ref"),
+            path=f"{path}.snapshot_ref",
+        )
+        mapping_key = str(key or snapshot_ref)
+        if mapping_key != snapshot_ref:
+            raise ValueError(f"{path}:snapshot_ref_key_mismatch")
+        snapshot = trusted_snapshots.get(snapshot_ref)
+        if snapshot is None:
+            raise ValueError(f"dataset_snapshot_provider_missing:{snapshot_ref}")
+        dataset_id = str(item.get("dataset_id") or snapshot.dataset_id)
+        if dataset_id != snapshot.dataset_id:
+            raise ValueError(f"dataset_snapshot_provider_request_conflict:{snapshot_ref}")
+        selected[snapshot_ref] = snapshot
+    return selected
 
 
 def _row_query_intent(query_id: str, reason: str = "") -> str:

@@ -32,7 +32,26 @@ datasets:
     required_fields: [支付发起时间]
   market_dashboard:
     date_field: business_date
+    physical_table_prefix: market_dashboard_daily__
+    legacy_physical_tables: [market_dashboard_daily]
+    requires_physical_revision: true
+    requires_release: true
+    snapshot_field: snapshot_id
     required_fields: [business_date]
+    schema_fields: [snapshot_id, load_revision, business_date, game, active_users, new_users, revenue, active_user_arpu, registrations, new_devices, login_accounts, registration_rate, zero_round_user_share, gameplay_users, gameplay_rounds, app_avg_online_time, effective_user_app_avg_online_time, historical_paid_active_users, first_paid_amount, new_paid_amount, login_user_avg_recharge, avg_first_paid_amount, first_paid_rate, first_paid_users, new_paid_rate, new_paid_users, paid_users, paid_amount, recharge_channel_fee, withdraw_request_amount, withdraw_arrived_users, withdraw_arrived_amount, withdraw_to_recharge_ratio, withdraw_request_users, withdraw_fee, withdraw_user_fee, aggregate_marketing_cost, profit]
+    grain: [snapshot_id, load_revision, business_date, game]
+    unique_key: [snapshot_id, load_revision, business_date, game]
+  market_dashboard_channel:
+    date_field: business_date
+    physical_table_prefix: market_dashboard_channel_daily__
+    legacy_physical_tables: [market_dashboard_channel_daily]
+    requires_physical_revision: true
+    requires_release: true
+    snapshot_field: snapshot_id
+    required_fields: [business_date]
+    schema_fields: [snapshot_id, load_revision, business_date, game, channel, active_users, new_users, revenue, active_user_arpu, registrations, new_devices, login_accounts, registration_rate, zero_round_user_share, gameplay_users, gameplay_rounds, app_avg_online_time, effective_user_app_avg_online_time, historical_paid_active_users, first_paid_amount, new_paid_amount, login_user_avg_recharge, avg_first_paid_amount, first_paid_rate, first_paid_users, new_paid_rate, new_paid_users, paid_users, paid_amount, recharge_channel_fee, withdraw_request_amount, withdraw_arrived_users, withdraw_arrived_amount, withdraw_to_recharge_ratio, withdraw_request_users, withdraw_fee, withdraw_user_fee, aggregate_marketing_cost, profit]
+    grain: [snapshot_id, load_revision, business_date, game, channel]
+    unique_key: [snapshot_id, load_revision, business_date, game, channel]
   gameplay:
     date_field: business_date
     required_fields: [business_date]
@@ -56,6 +75,31 @@ metrics:
     reconciliation_tolerance: 0.01
     reconciliation_strategy: additive_sum
     claim_types: [comparative_change, formula_component_contribution, segment_contribution_or_mix_shift]
+    source_adapters:
+      market_dashboard:
+        contract_ref: contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.paid_amount
+        expression: sum(paid_amount)
+        aggregation: sum
+        required_fields: [paid_amount]
+        grain: [window_id]
+        claim_types: [comparative_change, source_reconciliation]
+        reconciliation_tolerance: 0.01
+        reconciliation_strategy: additive_sum
+        value_semantics: raw_scalar
+        display_format: number
+        maximum_claim_strength: observed
+      market_dashboard_channel:
+        contract_ref: contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.paid_amount
+        expression: sum(paid_amount)
+        aggregation: sum
+        required_fields: [paid_amount]
+        grain: [window_id]
+        claim_types: [comparative_change, source_reconciliation]
+        reconciliation_tolerance: 0.01
+        reconciliation_strategy: additive_sum
+        value_semantics: raw_scalar
+        display_format: number
+        maximum_claim_strength: observed
   paid_users:
     contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
     dataset_id: paid_order_success
@@ -66,6 +110,18 @@ metrics:
     value_semantics: raw_scalar
     display_format: number
     reconciliation_strategy: unsupported_non_additive
+    source_adapters:
+      market_dashboard:
+        contract_ref: contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.paid_users
+        expression: sum(paid_users)
+        aggregation: sum
+        required_fields: [paid_users]
+        grain: [window_id]
+        claim_types: [comparative_change]
+        reconciliation_tolerance: 0.0
+        reconciliation_strategy: exact_additive_count
+        value_semantics: raw_scalar
+        display_format: number
   paid_orders:
     contract_ref: contracts/sources/paid-order-detail.source.yaml@0.2
     dataset_id: paid_order_success
@@ -86,6 +142,18 @@ metrics:
     value_semantics: raw_scalar
     display_format: number
     reconciliation_strategy: unsupported_non_additive
+    source_adapters:
+      market_dashboard:
+        contract_ref: contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.first_paid_users
+        expression: sum(first_paid_users)
+        aggregation: sum
+        required_fields: [first_paid_users]
+        grain: [window_id]
+        claim_types: [comparative_change]
+        reconciliation_tolerance: 0.0
+        reconciliation_strategy: exact_additive_count
+        value_semantics: raw_scalar
+        display_format: number
   paid_frequency:
     contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
     dataset_id: paid_order_success
@@ -120,9 +188,80 @@ metrics:
     value_semantics: scalar_ratio
     display_format: percent
     reconciliation_strategy: unsupported_non_additive
+  active_users:
+    contract_ref: contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.active_users
+    dataset_id: market_dashboard
+    expression: sum(active_users)
+    aggregation: sum
+    required_fields: [active_users]
+    grain: [window_id]
+    claim_types: [comparative_change, source_reconciliation]
+    reconciliation_tolerance: 0.0
+    reconciliation_strategy: exact_additive_count
+    value_semantics: raw_scalar
+    display_format: number
+  new_users:
+    contract_ref: contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.new_users
+    dataset_id: market_dashboard
+    expression: sum(new_users)
+    aggregation: sum
+    required_fields: [new_users]
+    grain: [window_id]
+    claim_types: [comparative_change, source_reconciliation]
+    reconciliation_tolerance: 0.0
+    reconciliation_strategy: exact_additive_count
+    value_semantics: raw_scalar
+    display_format: number
+  registrations:
+    contract_ref: contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.registrations
+    dataset_id: market_dashboard
+    expression: sum(registrations)
+    aggregation: sum
+    required_fields: [registrations]
+    grain: [window_id]
+    claim_types: [comparative_change, source_reconciliation]
+    reconciliation_tolerance: 0.0
+    reconciliation_strategy: exact_additive_count
+    value_semantics: raw_scalar
+    display_format: number
+  aggregate_marketing_cost:
+    contract_ref: contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.aggregate_marketing_cost
+    dataset_id: market_dashboard
+    expression: sum(aggregate_marketing_cost)
+    aggregation: sum
+    required_fields: [aggregate_marketing_cost]
+    grain: [window_id]
+    claim_types: [comparative_change, source_reconciliation]
+    reconciliation_tolerance: 0.01
+    reconciliation_strategy: additive_sum
+    value_semantics: raw_scalar
+    display_format: number
+  profit:
+    contract_ref: contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.profit
+    dataset_id: market_dashboard
+    expression: sum(profit)
+    aggregation: sum
+    required_fields: [profit]
+    grain: [window_id]
+    claim_types: [comparative_change, source_reconciliation]
+    reconciliation_tolerance: 0.01
+    reconciliation_strategy: additive_sum
+    value_semantics: raw_scalar
+    display_format: number
 
 dimensions:
-  channel: {contract_ref: contracts/dimensions/dimensions.yaml#channel, dataset_id: paid_order_success, source_field: channel, allowed_grains: [day, window_id]}
+  channel:
+    contract_ref: contracts/dimensions/dimensions.yaml#channel
+    dataset_id: paid_order_success
+    source_field: channel
+    allowed_grains: [day, window_id]
+    source_adapters:
+      market_dashboard_channel:
+        contract_ref: contracts/sources/market-dashboard.source.yaml@0.1#runtime_binding.channel
+        source_field: channel
+        allowed_grains: [day, window_id]
+        null_bucket: Unknown
+        permission_scope: analyst
   payment_method: {contract_ref: contracts/dimensions/dimensions.yaml#payment_method, dataset_id: paid_order_success, source_field: payment_method, allowed_grains: [day, window_id]}
   region: {contract_ref: contracts/dimensions/dimensions.yaml#region, dataset_id: paid_order_success, source_field: region, allowed_grains: [day, window_id]}
   device_brand: {contract_ref: contracts/dimensions/dimensions.yaml#device_brand, dataset_id: paid_order_success, source_field: device_brand, allowed_grains: [day, window_id]}
@@ -137,6 +276,8 @@ query_shapes:
   time_bucket_scan: {required_fields: [window_id, window_role, observation_key, calendar_week, weekday, month_phase], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
   data_quality_probe: {required_fields: [window_id, window_role, observation_key, source_row_count], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
   event_context_probe: {required_fields: [window_id, window_role, observation_key, event_count], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  channel_context_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key, channel], grain: [window_id, observation_key, channel], dimension_topology: joint}
+  source_reconciliation_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
   high_value_scan:
     required_fields: [window_id, window_role, observation_key, high_value_threshold, high_value_amount, high_value_paid_users]
     unique_key: [window_id, observation_key]
@@ -152,9 +293,42 @@ query_shapes:
       max_unmatched_rows: 0
 
 capability_inputs:
+  market_health_compare:
+    query_families: [daily_metric_baselines]
+    metric_mode: requested
+    allowed_metrics: [active_users, new_users, registrations, aggregate_marketing_cost, profit, paid_amount]
+    allowed_datasets: [market_dashboard]
+    supported_claim_types: [comparative_change]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: directional
+  market_channel_context:
+    query_families: [channel_context_probe]
+    metric_mode: requested
+    allowed_metrics: [active_users, new_users, registrations, aggregate_marketing_cost, profit, paid_amount]
+    allowed_datasets: [market_dashboard_channel]
+    dimension_mode: requested
+    supported_claim_types: [contract_coverage_and_trust_boundary]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
+    degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: context_only}
+    supported_evidence_types: [insufficient]
+    maximum_claim_strength: trust_boundary
+  source_reconciliation:
+    query_families: [source_reconciliation_probe]
+    metric_mode: requested
+    allowed_metrics: [paid_amount]
+    allowed_datasets: [market_dashboard, market_dashboard_channel]
+    source_selection: all_required_datasets
+    supported_claim_types: [source_reconciliation]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
+    degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: context_only}
+    supported_evidence_types: [insufficient]
+    maximum_claim_strength: trust_boundary
   compare_periods:
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     required_windows: [target_day]
     supported_claim_types: [comparative_change]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
@@ -164,6 +338,7 @@ capability_inputs:
   rolling_window_compare:
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     required_windows: [target_day, rolling_7_day_baseline]
     supported_claim_types: [baseline_stability, comparative_change]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
@@ -177,6 +352,7 @@ capability_inputs:
       component_driver_scan: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
       payment_success_scan: [payment_success_rate]
     required_metrics: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     optional_metrics: [payment_success_rate]
     supported_claim_types: [formula_component_contribution]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
@@ -186,6 +362,7 @@ capability_inputs:
   segment_contribution:
     query_families: [dimension_contribution_scan]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     dimension_mode: requested
     supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
@@ -195,6 +372,7 @@ capability_inputs:
   joint_attribution:
     query_families: [joint_candidate_scan]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     dimension_mode: requested
     supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
@@ -204,6 +382,7 @@ capability_inputs:
   pattern_scan:
     query_families: [time_bucket_scan]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [recurring_pattern_existence]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
@@ -212,6 +391,7 @@ capability_inputs:
   data_quality_profile:
     query_families: [data_quality_probe]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [contract_coverage_and_trust_boundary]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
     degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: report_limitation}
@@ -229,6 +409,7 @@ capability_inputs:
   high_value_user_contribution:
     query_families: [high_value_scan]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [candidate_driver, concentration]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
@@ -245,6 +426,7 @@ capability_inputs:
   data_quality_check:
     query_families: [data_quality_probe]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [contract_coverage_and_trust_boundary]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
     degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: report_limitation}
@@ -253,6 +435,7 @@ capability_inputs:
   formula_decompose:
     query_families: [component_driver_scan]
     required_metrics: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [formula_component_contribution]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
@@ -261,6 +444,7 @@ capability_inputs:
   outlier_contribution:
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [external_shock_candidate_or_anomaly, comparative_change]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
@@ -269,6 +453,7 @@ capability_inputs:
   outlier_scan:
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [external_shock_candidate_or_anomaly]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
@@ -277,6 +462,7 @@ capability_inputs:
   segment_bridge:
     query_families: [dimension_contribution_scan]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     dimension_mode: requested
     supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
@@ -286,6 +472,7 @@ capability_inputs:
   user_mix_contribution:
     query_families: [dimension_contribution_scan]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     dimension_mode: requested
     supported_claim_types: [candidate_driver, mix_shift, contribution]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
@@ -295,6 +482,7 @@ capability_inputs:
   metric_coverage_profile:
     query_families: [data_quality_probe]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [contract_coverage_and_trust_boundary]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
     degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: report_limitation}
@@ -303,6 +491,7 @@ capability_inputs:
   metric_timeseries:
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [comparative_change, recurring_pattern_existence]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
@@ -311,6 +500,7 @@ capability_inputs:
   compare_period_phases:
     query_families: [time_bucket_scan]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [recurring_pattern_existence]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
@@ -319,6 +509,7 @@ capability_inputs:
   weekday_calendar_compare:
     query_families: [time_bucket_scan]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [recurring_pattern_existence]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
@@ -336,6 +527,7 @@ capability_inputs:
   component_contribution:
     query_families: [component_driver_scan]
     required_metrics: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [formula_component_contribution]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
@@ -344,6 +536,7 @@ capability_inputs:
   segment_breakdown:
     query_families: [dimension_contribution_scan]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     dimension_mode: requested
     supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
@@ -353,6 +546,7 @@ capability_inputs:
   segment_shift_compare:
     query_families: [dimension_contribution_scan]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     dimension_mode: requested
     supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
@@ -362,6 +556,7 @@ capability_inputs:
   candidate_dimension_screen:
     query_families: [joint_candidate_scan]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     dimension_mode: requested
     supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
@@ -371,6 +566,7 @@ capability_inputs:
   change_point_scan:
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [external_shock_candidate_or_anomaly, comparative_change]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}

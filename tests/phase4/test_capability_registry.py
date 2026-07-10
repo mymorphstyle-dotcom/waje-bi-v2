@@ -99,6 +99,9 @@ class CapabilityModelTest(unittest.TestCase):
 class CapabilityRegistryTest(unittest.TestCase):
     def test_registry_contains_general_catalog(self):
         expected = {
+            "market_health_compare",
+            "market_channel_context",
+            "source_reconciliation",
             "metric_coverage_profile",
             "metric_timeseries",
             "data_quality_profile",

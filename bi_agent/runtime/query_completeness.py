@@ -11,7 +11,13 @@ from bi_agent.runtime.analysis_contracts import (
     QueryContract,
     QueryResultEnvelope,
 )
-from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.dataset_catalog import (
+    DatasetReleaseResolver,
+    DatasetSnapshot,
+    canonical_dataset_requires_release,
+    dataset_release_authority_integrity_errors,
+    snapshot_matches_release_authority,
+)
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     RuntimeEvidenceAuthority,
@@ -53,13 +59,18 @@ def validate_query_result(
     *,
     evidence_authority: RuntimeEvidenceAuthority | None = None,
     evidence_writer: RuntimeEvidenceWriter | None = None,
+    release_resolver: DatasetReleaseResolver | None = None,
 ) -> CompletenessReport:
     snapshots = _normalize_snapshots(snapshot)
     rows = tuple(result.rows)
     execution_succeeded = result.execution_status == "succeeded"
     core_assertions = (
         _execution_assertion(contract, result, rows),
-        _watermark_assertion(contract, snapshots),
+        _watermark_assertion(
+            contract,
+            snapshots,
+            release_resolver=release_resolver,
+        ),
         _required_fields_assertion(contract, result, rows),
         (
             _required_windows_assertion(contract, rows)
@@ -309,6 +320,8 @@ def _execution_assertion(
 def _watermark_assertion(
     contract: QueryContract,
     snapshots: Sequence[DatasetSnapshot],
+    *,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> Mapping[str, Any]:
     reasons = []
     actual_refs = tuple(item.snapshot_ref for item in snapshots)
@@ -346,6 +359,52 @@ def _watermark_assertion(
             reasons.append(
                 f"snapshot_status_invalid:{snapshot.snapshot_ref}:{snapshot.status}"
             )
+        if snapshot.evidence_state != "claim_ready" and contract.query_intent not in {
+            "data_quality_probe",
+            "event_context_probe",
+            "channel_context_probe",
+            "source_reconciliation_probe",
+        }:
+            reasons.append(
+                "snapshot_evidence_state_invalid:"
+                f"{snapshot.snapshot_ref}:{snapshot.evidence_state}"
+            )
+        if (
+            contract.dimension_bindings
+            and contract.query_intent not in {
+                "data_quality_probe",
+                "channel_context_probe",
+                "source_reconciliation_probe",
+            }
+            and snapshot.reconciliation_ref
+            and snapshot.reconciliation_status != "matched"
+        ):
+            reasons.append(
+                "snapshot_reconciliation_status_invalid:"
+                f"{snapshot.snapshot_ref}:{snapshot.reconciliation_status}"
+            )
+        if canonical_dataset_requires_release(snapshot.dataset_id) or snapshot.release_ref:
+            authority_valid = False
+            if (
+                release_resolver is not None
+                and snapshot.release_ref
+                and snapshot.authority_record_ref
+                and snapshot.rows_content_hash
+            ):
+                try:
+                    authority = release_resolver.resolve_dataset_release(
+                        snapshot.release_ref
+                    )
+                    authority_valid = (
+                        not dataset_release_authority_integrity_errors(authority)
+                        and snapshot_matches_release_authority(snapshot, authority)
+                    )
+                except (KeyError, TypeError, ValueError):
+                    authority_valid = False
+            if not authority_valid:
+                reasons.append(
+                    f"snapshot_release_unverified:{snapshot.snapshot_ref}"
+                )
         if not snapshot.schema_fingerprint:
             reasons.append(f"snapshot_schema_missing:{snapshot.snapshot_ref}")
         required_source_fields = {
@@ -1142,6 +1201,7 @@ def _statuses(
         "missing_rows_ref",
         "missing_completeness_report_ref",
         "snapshot_permission_scope_mismatch:",
+        "snapshot_release_unverified:",
         "unreviewed_output_field:",
         "invalid_type:",
         "invalid_reconciliation_",

@@ -33,6 +33,10 @@ from bi_agent.runtime.runtime_contract_registry import (
     RuntimeContractRegistry,
     runtime_registry_integrity_error,
 )
+from bi_agent.runtime.dataset_catalog import (
+    DatasetReleaseResolver,
+    canonical_dataset_requires_release,
+)
 
 
 _BOUND_CONSTRUCTION_TOKEN = object()
@@ -105,6 +109,7 @@ def bind_capability_inputs(
     rows_loader: RowsPayloadLoader | None = None,
     evidence_writer: RuntimeEvidenceWriter | None = None,
     runtime_registry: RuntimeContractRegistry | None = None,
+    release_resolver: DatasetReleaseResolver | None = None,
     run_mode: str = "production",
 ) -> BoundCapabilityInput:
     if evidence_authority is not None:
@@ -159,6 +164,7 @@ def bind_capability_inputs(
                 evidence_resolver,
                 rows_loader,
                 evidence_writer,
+                release_resolver,
             )
         except Exception as exc:
             return _blocked_bound(
@@ -354,6 +360,7 @@ def bind_capability_inputs(
             evidence_resolver=evidence_resolver,
             rows_loader=rows_loader,
             runtime_registry=runtime_registry,
+            release_resolver=release_resolver,
         )
     except Exception as exc:
         return _blocked_bound(
@@ -369,6 +376,7 @@ def _resolve_authoritative_inputs(
     resolver: RuntimeEvidenceResolver,
     rows_loader: RowsPayloadLoader,
     writer: RuntimeEvidenceWriter,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> tuple[
     Mapping[str, QueryResultEnvelope],
     Mapping[str, CompletenessReport],
@@ -441,6 +449,20 @@ def _resolve_authoritative_inputs(
             != record.source_snapshot_record_digests
         ):
             raise EvidenceIntegrityError(f"snapshot_record_binding:{query_ref}")
+        if release_resolver is None:
+            release_required = next(
+                (
+                    item.snapshot.dataset_id
+                    for item in snapshot_records
+                    if item is not None
+                    and canonical_dataset_requires_release(item.snapshot.dataset_id)
+                ),
+                "",
+            )
+            if release_required:
+                raise EvidenceIntegrityError(
+                    f"dataset_release_resolver_required:{release_required}"
+                )
         if report_selector.report_ref != record.completeness_report_ref:
             raise EvidenceIntegrityError(f"completeness_ref_mismatch:{query_ref}")
         selected.append(
@@ -456,7 +478,12 @@ def _resolve_authoritative_inputs(
     contracts = tuple(item[1] for item in selected)
     results = tuple(item[2] for item in selected)
     base_reports = tuple(
-        validate_query_result(item[1], item[2], item[3])
+        validate_query_result(
+            item[1],
+            item[2],
+            item[3],
+            release_resolver=release_resolver,
+        )
         for item in selected
     )
     final_reports = (
@@ -934,6 +961,7 @@ def _create_bound_capability_input(
     evidence_resolver: RuntimeEvidenceResolver | None = None,
     rows_loader: RowsPayloadLoader | None = None,
     runtime_registry: RuntimeContractRegistry | None = None,
+    release_resolver: DatasetReleaseResolver | None = None,
 ) -> BoundCapabilityInput:
     frozen_values = {
         key: _deep_freeze(value)
@@ -969,6 +997,7 @@ def _create_bound_capability_input(
             resolver=evidence_resolver,
             rows_loader=rows_loader,
             runtime_registry=runtime_registry,
+            release_resolver=release_resolver,
         )
     instance = object.__new__(BoundCapabilityInput)
     for field_name, value in frozen_values.items():

@@ -2110,7 +2110,7 @@ git commit -m "feat: bind capabilities to complete query inputs"
 - Produces `SourceLoadManifest` JSON and PostgreSQL `DatasetSnapshot` payloads.
 - Consumed by: market health, user growth, channel, cost-context, and reconciliation queries.
 
-- [ ] **Step 1: 写 parser、empty-file 和 manifest 失败测试**
+- [x] **Step 1: 写 parser、empty-file 和 manifest 失败测试**
 
 Create `tests/phase4/test_market_dashboard_ingestion.py` using `TemporaryDirectory` and UTF-8-SIG CSV fixtures:
 
@@ -2136,7 +2136,7 @@ def test_empty_channel_file_is_no_data_not_zero_observation(self):
     self.assertIn("Empty", manifest.no_data_partitions)
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```bash
 python3 -m unittest tests.phase4.test_market_dashboard_ingestion -v
@@ -2144,7 +2144,7 @@ python3 -m unittest tests.phase4.test_market_dashboard_ingestion -v
 
 Expected: FAIL on missing loader module.
 
-- [ ] **Step 3: 实现公共 loader 和 ClickHouse DDL**
+- [x] **Step 3: 实现公共 loader 和 ClickHouse DDL**
 
 `source_loader_common.py` defines:
 
@@ -2169,7 +2169,7 @@ def insert_json_each_row(client, table: str, rows: Sequence[Mapping[str, Any]]) 
 
 `clickhouse-analysis-sources.sql` creates snapshot-aware MergeTree tables. The dashboard tables include `snapshot_id`, `business_date`, `game`, optional `channel`, and nullable numeric fields from the reviewed source contract. Primary ordering is `(snapshot_id, business_date, game[, channel])`.
 
-- [ ] **Step 4: 实现幂等 dashboard loader**
+- [x] **Step 4: 实现幂等 dashboard loader**
 
 The loader:
 
@@ -2183,7 +2183,7 @@ The loader:
 
 Add `runtime_binding` to the source contract with logical dataset ids and table names. Keep review status unchanged until the real load and owner review complete.
 
-- [ ] **Step 5: 运行 tests and local real load**
+- [x] **Step 5: 运行 tests and local real load**
 
 ```bash
 python3 -m unittest tests.phase4.test_market_dashboard_ingestion -v
@@ -2196,7 +2196,85 @@ python3 tools/data/load_market_dashboard_clickhouse.py \
 
 Expected: test PASS; loader reports overall/channel row counts, watermark `2026-06-02`, reconciliation status, and manifest path. If source paths are absent, record them as missing inputs owned by the data owner and do not mark the source loaded.
 
-- [ ] **Step 6: 提交 Task 7**
+Task 7 review correction: the original in-place `DELETE` plus `INSERT` release
+sequence could expose a partial logical snapshot, and row-count/date-range checks
+could accept persisted value corruption. The corrected release contract uses a
+content-addressed `load_revision` under the stable logical snapshot id, stages and
+fully re-reads both ClickHouse tables, compares exact Decimal rows and canonical
+row hashes, then publishes both PostgreSQL `DatasetSnapshot` records and one
+release marker in a single transaction under a shared advisory lock. Existing
+active revisions stay queryable until that transaction commits; an invalid active
+revision fails closed, while an unreferenced partial revision can be repaired.
+
+The source parser now derives every numeric rule from the reviewed field contract:
+logical type, Decimal precision and scale, field-specific missing tokens,
+nullability, duplicate aggregation, and game scope. Extra cells, reversed filename
+date windows, undeclared missing values, blank or unknown games, and ClickHouse DDL
+drift are typed failures. Schema preparation validates the full ordered
+name/type/nullability set plus engine and sorting key. Each field explicitly
+declares rounding, loss, and canonicalization policy; short CSV rows remain
+structural failures even when the absent tail field is nullable.
+
+Runtime bindings now expose reviewed source adapters for dashboard metrics and the
+channel dimension. `AnalysisProposal` can bind a metric or dimension to a concrete
+dashboard dataset, and compiled SQL pins both logical snapshot id and physical
+load revision. Snapshot evidence state and reconciliation status are typed runtime
+inputs: overall observations remain `claim_ready`; the 224-date overall/channel
+reconciliation mismatch keeps the channel snapshot `context_only`, so dimension
+claims remain blocked until the data owner resolves or reviews the mismatch.
+
+Task 7 second-review correction: dashboard datasets now declare
+`requires_physical_revision` and `requires_release`. Physical table names are
+immutable schema versions derived from a safe reviewed prefix plus the schema
+fingerprint. `--rebuild-schema` only creates and validates the required version;
+it never drops an active or legacy table. The schema fingerprint is part of the
+load revision identity, so a policy or DDL change stages a new table and a new
+release before PostgreSQL changes the active snapshot. The real migration kept
+the prior unversioned tables readable while switching to the versioned pair.
+
+Release publication accepts exactly the reviewed overall/channel dataset pair.
+Both payloads must have unique refs and identical logical id, load revision, and
+content-addressed release ref. PostgreSQL inserts immutable snapshot rows and the
+release marker, supersedes the previous logical release, writes the audit event,
+then verifies complete JOIN membership and every mirrored field before commit.
+Runtime snapshot deserialization accepts the complete loader payload schema,
+rejects unknown keys, and gets `release_verified` only from that release JOIN.
+
+Task 7 third-review correction removes the boolean release shortcut entirely.
+Release authority is a typed, content-addressed record built from the exact two
+PostgreSQL release members and their immutable dataset id, physical table, row
+hash, schema fingerprint, evidence state, and reconciliation facts. Runtime
+snapshots carry only the release and authority-record refs. Dataset catalog,
+analysis compiler, ClickHouse compiler, completeness validation, query executor,
+and revenue provider require a read-only release resolver for datasets whose
+canonical binding declares `requires_release`. Request mappings may select a
+trusted provider snapshot by ref and dataset id; physical or authority fields in
+the request are rejected, and provider/request conflicts fail closed. Single-row
+save policy derives from the canonical dataset registry even when payload markers
+are omitted. Only the explicit batch transaction may publish or idempotently add
+the derived authority ref after verifying every immutable snapshot field.
+
+Source selection is capability-driven. Unique adapters select automatically;
+multiple adapters require a capability dataset constraint or explicit
+`dataset_requirements`, and malformed overrides fail closed. Reviewed market
+health, channel-context, and source-reconciliation capabilities bind requested
+metrics without test-only overrides. Planning retains `context_only` snapshots
+for quality and reconciliation probes while omitting stronger comparison or
+contribution queries and recording an evidence-state contract gap.
+
+Task 7 fourth- and fifth-review corrections bind every immutable release-time
+snapshot fact into one canonical authority projection while keeping lifecycle
+visibility outside its digest. PostgreSQL single and batch writers share sorted
+member locks, and resolvers compare the stored projection with current payloads
+and mirrored columns. `ConversationAgentCore.from_environment` now creates the
+store before the real ClickHouse provider, injects the same release resolver and
+runtime evidence authority into its executor, and refreshes claim/context-eligible
+snapshots from the trusted store on every typed plan. Runtime requests remain
+selectors only. Requested-metric capabilities independently intersect requested
+metrics with their reviewed allowlist; excluded metrics produce capability-scoped
+gaps and cannot enter another capability through shared dependency ownership.
+
+- [x] **Step 6: 提交 Task 7**
 
 ```bash
 git add tools/data/source_loader_common.py tools/data/load_market_dashboard_clickhouse.py tools/data/clickhouse-analysis-sources.sql tests/phase4/test_market_dashboard_ingestion.py contracts/sources/market-dashboard.source.yaml contracts/runtime/clickhouse-analysis-bindings.yaml

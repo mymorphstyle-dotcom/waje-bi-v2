@@ -176,7 +176,47 @@ CREATE TABLE IF NOT EXISTS waje_runtime.dataset_snapshots (
   permission_scopes jsonb NOT NULL DEFAULT '[]'::jsonb,
   loaded_at timestamptz NOT NULL,
   status text NOT NULL,
+  logical_snapshot_id text NOT NULL DEFAULT '',
+  load_revision text NOT NULL DEFAULT '',
+  evidence_state text NOT NULL DEFAULT 'claim_ready',
+  reconciliation_status text NOT NULL DEFAULT 'not_applicable',
+  reconciliation_ref text NOT NULL DEFAULT '',
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE waje_runtime.dataset_snapshots
+  ADD COLUMN IF NOT EXISTS logical_snapshot_id text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS load_revision text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS evidence_state text NOT NULL DEFAULT 'claim_ready',
+  ADD COLUMN IF NOT EXISTS reconciliation_status text NOT NULL DEFAULT 'not_applicable',
+  ADD COLUMN IF NOT EXISTS reconciliation_ref text NOT NULL DEFAULT '';
+
+UPDATE waje_runtime.dataset_snapshots
+SET logical_snapshot_id = COALESCE(
+      NULLIF(payload->>'logical_snapshot_id', ''),
+      NULLIF(payload->>'snapshot_id', ''),
+      logical_snapshot_id
+    ),
+    load_revision = COALESCE(NULLIF(payload->>'load_revision', ''), load_revision),
+    evidence_state = COALESCE(NULLIF(payload->>'evidence_state', ''), evidence_state),
+    reconciliation_status = COALESCE(
+      NULLIF(payload->>'reconciliation_status', ''),
+      NULLIF(payload#>>'{reconciliation,status}', ''),
+      reconciliation_status
+    ),
+    reconciliation_ref = COALESCE(
+      NULLIF(payload->>'reconciliation_ref', ''),
+      reconciliation_ref
+    )
+WHERE logical_snapshot_id = '' OR load_revision = '';
+
+CREATE TABLE IF NOT EXISTS waje_runtime.dataset_snapshot_releases (
+  release_ref text PRIMARY KEY,
+  logical_snapshot_id text NOT NULL,
+  load_revision text NOT NULL,
+  snapshot_refs jsonb NOT NULL,
+  payload jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -189,3 +229,5 @@ CREATE INDEX IF NOT EXISTS idx_investigation_artifacts_topic ON waje_runtime.inv
 CREATE INDEX IF NOT EXISTS idx_audit_events_thread ON waje_runtime.audit_events(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_lookup
   ON waje_runtime.dataset_snapshots(dataset_id, status, loaded_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dataset_snapshot_releases_identity
+  ON waje_runtime.dataset_snapshot_releases(logical_snapshot_id, load_revision);

@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 import unittest
 
@@ -6,12 +7,202 @@ from bi_agent.conversation.models import ContextManifest, MemoryProposal
 from bi_agent.conversation.postgres_store import CONVERSATION_SCHEMA_SQL, PostgresConversationStore
 from bi_agent.conversation.runtime import evaluate_reuse_candidate
 from bi_agent.conversation.store import InMemoryConversationStore
+from bi_agent.runtime.dataset_catalog import build_dataset_release_authority_record
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 class ConversationPersistenceTest(unittest.TestCase):
+    def test_in_memory_single_save_checks_release_membership_before_dataset_policy(self):
+        store = InMemoryConversationStore()
+        payloads = (
+            _release_snapshot_payload("snapshot:published-overall", "market_dashboard"),
+            _release_snapshot_payload(
+                "snapshot:published-channel", "market_dashboard_channel"
+            ),
+        )
+        release_ref = _release_ref(payloads)
+        for payload in payloads:
+            payload["release_ref"] = release_ref
+        store.publish_dataset_snapshot_release(
+            release_ref=release_ref,
+            logical_snapshot_id="dashboard-logical",
+            payloads=payloads,
+        )
+
+        for dataset_id in ("market_dashboard", "paid_order_success"):
+            with self.subTest(dataset_id=dataset_id):
+                changed = {**payloads[0], "dataset_id": dataset_id}
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "dataset_snapshot_published_immutable",
+                ):
+                    store.save_dataset_snapshot(changed)
+
+    def test_postgres_single_save_rejects_published_ref_with_spoofed_dataset(self):
+        connection = FakeConnection(rows=[{"published": 1}])
+        payload = _dataset_snapshot_payload(
+            "snapshot:published-dashboard",
+            "paid_order_success",
+        )
+
+        with self.assertRaisesRegex(ValueError, "dataset_snapshot_published_immutable"):
+            PostgresConversationStore(connection).save_dataset_snapshot(payload)
+
+        sql = "\n".join(statement for statement, _ in connection.statements)
+        self.assertIn("pg_advisory_xact_lock", sql)
+        self.assertIn("dataset_snapshot_releases", sql)
+        self.assertLess(sql.index("pg_advisory_xact_lock"), sql.index("dataset_snapshot_releases"))
+        self.assertNotIn("INSERT INTO waje_runtime.dataset_snapshots", sql)
+
+    def test_postgres_batch_locks_sorted_members_before_logical_release(self):
+        connection = FakeConnection()
+        payloads = (
+            _release_snapshot_payload("snapshot:z-overall", "market_dashboard"),
+            _release_snapshot_payload("snapshot:a-channel", "market_dashboard_channel"),
+        )
+        release_ref = _release_ref(payloads)
+        for payload in payloads:
+            payload["release_ref"] = release_ref
+
+        PostgresConversationStore(connection).publish_dataset_snapshot_release(
+            release_ref=release_ref,
+            logical_snapshot_id="dashboard-logical",
+            payloads=payloads,
+        )
+
+        lock_params = [
+            params["lock_key"]
+            for statement, params in connection.statements
+            if "pg_advisory_xact_lock" in statement
+        ]
+        self.assertEqual(
+            lock_params,
+            [
+                "dataset_snapshot_member:snapshot:a-channel",
+                "dataset_snapshot_member:snapshot:z-overall",
+                "dataset_snapshot_release:dashboard-logical",
+            ],
+        )
+
+    def test_release_required_snapshot_cannot_be_published_by_single_save(self):
+        connection = FakeConnection()
+        payload = _dataset_snapshot_payload("snapshot:dashboard", "market_dashboard")
+
+        with self.assertRaisesRegex(ValueError, "dataset_snapshot_release_required"):
+            PostgresConversationStore(connection).save_dataset_snapshot(payload)
+
+        sql = "\n".join(statement for statement, _ in connection.statements)
+        self.assertIn("pg_advisory_xact_lock", sql)
+        self.assertIn("dataset_snapshot_releases", sql)
+        self.assertNotIn("INSERT INTO waje_runtime.dataset_snapshots", sql)
+
+    def test_postgres_resolver_builds_authority_only_from_exact_join_membership(self):
+        payloads = (
+            _release_snapshot_payload("snapshot:overall:v2", "market_dashboard"),
+            _release_snapshot_payload("snapshot:channel:v2", "market_dashboard_channel"),
+        )
+        release_ref = _release_ref(payloads)
+        for payload in payloads:
+            payload["release_ref"] = release_ref
+        authority = build_dataset_release_authority_record(payloads)
+        member_payloads = sorted(
+            (
+                {**payload, "authority_record_ref": authority.authority_record_ref}
+                for payload in payloads
+            ),
+            key=lambda item: item["snapshot_ref"],
+        )
+        connection = FakeConnection(rows=[{
+            "release_payload": json.dumps(authority.to_dict()),
+            "logical_snapshot_id": authority.logical_snapshot_id,
+            "load_revision": authority.load_revision,
+            "snapshot_refs": json.dumps(list(authority.snapshot_refs)),
+            "member_count": 2,
+            "member_payloads": json.dumps(member_payloads),
+            "member_columns": json.dumps(member_payloads),
+        }])
+
+        resolved = PostgresConversationStore(connection).resolve_dataset_release(
+            release_ref
+        )
+
+        self.assertEqual(resolved, authority)
+        sql = "\n".join(statement for statement, _ in connection.statements)
+        self.assertIn("dataset_snapshot_releases", sql)
+        self.assertIn("jsonb_agg(s.payload ORDER BY s.snapshot_ref)", sql)
+        self.assertIn("count(s.snapshot_ref)", sql)
+
+    def test_postgres_resolver_rejects_release_column_drift(self):
+        payloads = (
+            _release_snapshot_payload("snapshot:overall:v2", "market_dashboard"),
+            _release_snapshot_payload("snapshot:channel:v2", "market_dashboard_channel"),
+        )
+        release_ref = _release_ref(payloads)
+        for payload in payloads:
+            payload["release_ref"] = release_ref
+        authority = build_dataset_release_authority_record(payloads)
+        member_payloads = sorted(
+            (
+                {**payload, "authority_record_ref": authority.authority_record_ref}
+                for payload in payloads
+            ),
+            key=lambda item: item["snapshot_ref"],
+        )
+        connection = FakeConnection(rows=[{
+            "release_payload": json.dumps(authority.to_dict()),
+            "logical_snapshot_id": authority.logical_snapshot_id,
+            "load_revision": "dashboard-load:sha256:drifted",
+            "snapshot_refs": json.dumps(list(reversed(authority.snapshot_refs))),
+            "member_count": 2,
+            "member_payloads": json.dumps(member_payloads),
+            "member_columns": json.dumps(member_payloads),
+        }])
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "dataset_release_authority_(membership|record_mismatch)",
+        ):
+            PostgresConversationStore(connection).resolve_dataset_release(release_ref)
+
+    def test_postgres_batch_requires_exact_two_sided_release(self):
+        connection = FakeConnection()
+        payload = _release_snapshot_payload(
+            "snapshot:overall:v2", "market_dashboard"
+        )
+
+        with self.assertRaisesRegex(ValueError, "dataset_snapshot_release_dataset_set"):
+            PostgresConversationStore(connection).publish_dataset_snapshot_release(
+                release_ref=_release_ref((payload,)),
+                logical_snapshot_id="dashboard-logical",
+                payloads=(payload,),
+            )
+
+        self.assertEqual(connection.statements, [])
+
+    def test_postgres_release_membership_validation_failure_rolls_back(self):
+        payloads = (
+            _release_snapshot_payload("snapshot:overall:v2", "market_dashboard"),
+            _release_snapshot_payload(
+                "snapshot:channel:v2", "market_dashboard_channel"
+            ),
+        )
+        release_ref = _release_ref(payloads)
+        for payload in payloads:
+            payload["release_ref"] = release_ref
+        connection = FakeConnection(rows=[{"validated_count": 0}])
+
+        with self.assertRaisesRegex(RuntimeError, "dataset_snapshot_release_validation_failed"):
+            PostgresConversationStore(connection).publish_dataset_snapshot_release(
+                release_ref=release_ref,
+                logical_snapshot_id="dashboard-logical",
+                payloads=payloads,
+            )
+
+        self.assertEqual(connection.commits, 0)
+        self.assertEqual(connection.rollbacks, 1)
+
     def test_context_manifest_records_claim_usable_sources(self):
         store = InMemoryConversationStore()
         manifest = ContextManifest(
@@ -110,6 +301,10 @@ class ConversationPersistenceTest(unittest.TestCase):
                 self.assertIn(f"waje_runtime.{table}", CONVERSATION_SCHEMA_SQL)
         self.assertIn("refresh_rule", CONVERSATION_SCHEMA_SQL)
         self.assertIn("revocation_path", CONVERSATION_SCHEMA_SQL)
+        self.assertIn(
+            "idx_dataset_snapshot_releases_identity",
+            CONVERSATION_SCHEMA_SQL,
+        )
 
     def test_schema_and_store_persist_dataset_snapshots(self):
         self.assertIn("waje_runtime.dataset_snapshots", CONVERSATION_SCHEMA_SQL)
@@ -137,7 +332,7 @@ class ConversationPersistenceTest(unittest.TestCase):
     def test_in_memory_store_lists_dataset_snapshots_by_dataset(self):
         store = InMemoryConversationStore()
         first = _dataset_snapshot_payload("snapshot:paid_order:1", "paid_order_success")
-        second = _dataset_snapshot_payload("snapshot:dashboard:1", "market_dashboard")
+        second = _dataset_snapshot_payload("snapshot:attempt:1", "payment_attempt")
 
         store.save_dataset_snapshot(first)
         store.save_dataset_snapshot(second)
@@ -258,6 +453,125 @@ class ConversationPersistenceTest(unittest.TestCase):
         self.assertEqual(store.list_dataset_snapshots(), (replacement,))
         self.assertEqual(store.list_dataset_snapshots("legacy_paid_order"), ())
 
+    def test_postgres_batch_publishes_snapshot_release_in_one_transaction(self):
+        connection = FakeConnection()
+        store = PostgresConversationStore(connection)
+        overall = _release_snapshot_payload("snapshot:dashboard:overall:v2", "market_dashboard")
+        channel = _release_snapshot_payload(
+            "snapshot:dashboard:channel:v2", "market_dashboard_channel"
+        )
+        release_ref = _release_ref((overall, channel))
+        for payload in (overall, channel):
+            payload["release_ref"] = release_ref
+
+        store.publish_dataset_snapshot_release(
+            release_ref=release_ref,
+            logical_snapshot_id="dashboard-logical",
+            payloads=(overall, channel),
+        )
+
+        sql = "\n".join(statement for statement, _ in connection.statements)
+        self.assertIn("pg_advisory_xact_lock", sql)
+        self.assertIn("dataset_snapshot_releases", sql)
+        self.assertIn("ON CONFLICT (snapshot_ref) DO UPDATE", sql)
+        self.assertIn("payload - 'authority_record_ref'", sql)
+        self.assertIn("validated_count", sql)
+        release_params = next(
+            params
+            for statement, params in connection.statements
+            if "INSERT INTO waje_runtime.dataset_snapshot_releases" in statement
+        )
+        self.assertEqual(
+            json.loads(release_params["snapshot_refs"]),
+            sorted((overall["snapshot_ref"], channel["snapshot_ref"])),
+        )
+        self.assertTrue(
+            any(
+                params.get("event_type") == "dataset_snapshot_release_published"
+                for _, params in connection.statements
+            )
+        )
+        self.assertIn("evidence_state", sql)
+        self.assertEqual(connection.commits, 1)
+        self.assertEqual(connection.rollbacks, 0)
+
+    def test_postgres_release_session_lock_wraps_clickhouse_publish_window(self):
+        connection = FakeConnection()
+        store = PostgresConversationStore(connection)
+
+        with store.dataset_snapshot_release_lock("dashboard-logical"):
+            sql_inside = "\n".join(statement for statement, _ in connection.statements)
+            self.assertIn("pg_advisory_lock", sql_inside)
+            self.assertNotIn("pg_advisory_unlock", sql_inside)
+
+        sql = "\n".join(statement for statement, _ in connection.statements)
+        self.assertIn("pg_advisory_unlock", sql)
+        self.assertEqual(connection.commits, 1)
+
+    def test_postgres_batch_release_failure_rolls_back_and_never_commits(self):
+        connection = FakeConnection(fail_execute_at=3)
+        store = PostgresConversationStore(connection)
+        payloads = (
+            _release_snapshot_payload("snapshot:overall:v2", "market_dashboard"),
+            _release_snapshot_payload("snapshot:channel:v2", "market_dashboard_channel"),
+        )
+        release_ref = _release_ref(payloads)
+        for payload in payloads:
+            payload["release_ref"] = release_ref
+
+        with self.assertRaisesRegex(RuntimeError, "execute failed"):
+            store.publish_dataset_snapshot_release(
+                release_ref=release_ref,
+                logical_snapshot_id="dashboard-logical",
+                payloads=payloads,
+            )
+
+        self.assertEqual(connection.commits, 0)
+        self.assertEqual(connection.rollbacks, 1)
+
+    def test_in_memory_batch_release_is_atomic_on_injected_failure(self):
+        store = InMemoryConversationStore()
+        old_payloads = (
+            _release_snapshot_payload(
+                "snapshot:old:overall", "market_dashboard", revision="load:old"
+            ),
+            _release_snapshot_payload(
+                "snapshot:old:channel", "market_dashboard_channel", revision="load:old"
+            ),
+        )
+        old_release_ref = _release_ref(old_payloads)
+        for payload in old_payloads:
+            payload["release_ref"] = old_release_ref
+        store.publish_dataset_snapshot_release(
+            release_ref=old_release_ref,
+            logical_snapshot_id="dashboard-logical",
+            payloads=old_payloads,
+        )
+        new_payloads = (
+            _release_snapshot_payload(
+                "snapshot:new:overall", "market_dashboard", revision="load:new"
+            ),
+            _release_snapshot_payload(
+                "snapshot:new:channel", "market_dashboard_channel", revision="load:new"
+            ),
+        )
+        new_release_ref = _release_ref(new_payloads)
+        for payload in new_payloads:
+            payload["release_ref"] = new_release_ref
+
+        with self.assertRaisesRegex(RuntimeError, "injected_release_failure"):
+            store.publish_dataset_snapshot_release(
+                release_ref=new_release_ref,
+                logical_snapshot_id="dashboard-logical",
+                payloads=new_payloads,
+                fail_after_writes=1,
+            )
+
+        self.assertEqual(
+            {item["snapshot_ref"] for item in store.list_dataset_snapshots()},
+            {item["snapshot_ref"] for item in old_payloads},
+        )
+
     def test_in_memory_snapshot_payloads_are_isolated_at_every_boundary(self):
         store = InMemoryConversationStore()
         payload = _dataset_snapshot_payload("snapshot:paid_order:1", "paid_order_success")
@@ -341,7 +655,7 @@ class FakeConnection:
         self.statements = []
         self.commits = 0
         self.rollbacks = 0
-        self.rows = rows or []
+        self.rows = rows
         self.fail_execute_at = fail_execute_at
         self.fail_commit = fail_commit
 
@@ -349,7 +663,11 @@ class FakeConnection:
         self.statements.append((statement, params or {}))
         if len(self.statements) == self.fail_execute_at:
             raise RuntimeError("execute failed")
-        return FakeCursor(self.rows)
+        rows = self.rows
+        if rows is None and "validated_count" in statement:
+            expected = json.loads((params or {})["expected_payloads"])
+            rows = [{"validated_count": len(expected)}]
+        return FakeCursor(rows or [])
 
     def commit(self):
         if self.fail_commit:
@@ -384,6 +702,41 @@ def _dataset_snapshot_payload(snapshot_ref, dataset_id):
         "loaded_at": "2026-07-05T00:00:00+00:00",
         "status": "active",
     }
+
+
+def _release_snapshot_payload(snapshot_ref, dataset_id, *, revision="dashboard-load:sha256:v2"):
+    payload = _dataset_snapshot_payload(snapshot_ref, dataset_id)
+    payload.update(
+        {
+            "logical_snapshot_id": "dashboard-logical",
+            "load_revision": revision,
+            "evidence_state": (
+                "claim_ready" if dataset_id == "market_dashboard" else "context_only"
+            ),
+            "reconciliation_status": "mismatch",
+            "reconciliation_ref": "dashboard-reconciliation:sha256:v2",
+            "requires_release": True,
+            "rows_content_hash": "a" * 64,
+        }
+    )
+    return payload
+
+
+def _release_ref(payloads):
+    logical_ids = {payload["logical_snapshot_id"] for payload in payloads}
+    revisions = {payload["load_revision"] for payload in payloads}
+    if len(logical_ids) != 1 or len(revisions) != 1:
+        raise ValueError("test_release_payload_mismatch")
+    canonical = json.dumps(
+        {
+            "logical_snapshot_id": next(iter(logical_ids)),
+            "load_revision": next(iter(revisions)),
+            "snapshot_refs": sorted(payload["snapshot_ref"] for payload in payloads),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "dataset-release:sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
 if __name__ == "__main__":

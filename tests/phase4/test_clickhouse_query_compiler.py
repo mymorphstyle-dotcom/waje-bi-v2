@@ -11,10 +11,89 @@ from bi_agent.runtime.analysis_contracts import (
     ResultShape,
     query_contract_signature,
 )
-from bi_agent.runtime.clickhouse_query_compiler import compile_clickhouse_query
-from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.clickhouse_query_compiler import (
+    compile_clickhouse_query as _compile_clickhouse_query,
+)
+from bi_agent.runtime.dataset_catalog import (
+    DatasetSnapshot,
+    build_dataset_release_authority_record,
+    dataset_snapshot_release_ref,
+)
 from bi_agent.runtime.contracts import load_contract
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+
+class _ReleaseResolver:
+    def __init__(self, record):
+        self.record = record
+
+    def resolve_dataset_release(self, release_ref):
+        if release_ref != self.record.release_ref:
+            raise KeyError(release_ref)
+        return self.record
+
+
+_RELEASE_RESOLVERS = {}
+
+
+def compile_clickhouse_query(contract, snapshots, **kwargs):
+    resolver = kwargs.pop("release_resolver", None)
+    snapshots = dict(snapshots)
+    first = next(iter(snapshots.values()), None)
+    if (
+        resolver is None
+        and isinstance(first, DatasetSnapshot)
+        and first.dataset_id in {"market_dashboard", "market_dashboard_channel"}
+        and first.logical_snapshot_id
+        and first.load_revision
+        and first.release_ref
+    ):
+        peer_dataset_id = (
+            "market_dashboard_channel"
+            if first.dataset_id == "market_dashboard"
+            else "market_dashboard"
+        )
+        peer = replace(
+            first,
+            snapshot_ref=f"snapshot:{peer_dataset_id}:compile-peer",
+            dataset_id=peer_dataset_id,
+            physical_table=(
+                "market_dashboard_channel_daily__compilepeer"
+                if peer_dataset_id == "market_dashboard_channel"
+                else "market_dashboard_daily__compilepeer"
+            ),
+            schema_fingerprint="compile-peer-schema",
+            evidence_state=(
+                "context_only"
+                if peer_dataset_id == "market_dashboard_channel"
+                else "claim_ready"
+            ),
+            reconciliation_status=(
+                "mismatch"
+                if peer_dataset_id == "market_dashboard_channel"
+                else "matched"
+            ),
+            rows_content_hash="b" * 64,
+        )
+        release_ref = dataset_snapshot_release_ref(
+            first.logical_snapshot_id,
+            first.load_revision,
+            (first.snapshot_ref, peer.snapshot_ref),
+        )
+        first = replace(first, release_ref=release_ref)
+        peer = replace(peer, release_ref=release_ref, authority_record_ref="")
+        record = build_dataset_release_authority_record(
+            tuple({**item.to_dict(), "requires_release": True} for item in (first, peer))
+        )
+        first = replace(first, authority_record_ref=record.authority_record_ref)
+        snapshots[first.snapshot_ref] = first
+        resolver = _ReleaseResolver(record)
+    return _compile_clickhouse_query(
+        contract,
+        snapshots,
+        release_resolver=resolver,
+        **kwargs,
+    )
 
 
 def windows():
@@ -115,16 +194,53 @@ def dimension(dimension_id="channel"):
     )
 
 
+def dashboard_metric(metric_id="paid_amount", dataset_id="market_dashboard"):
+    field = metric_id
+    exact_count = metric_id in {"active_users", "new_users", "registrations"}
+    return MetricBinding(
+        metric_id=metric_id,
+        contract_ref=(
+            f"contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.{field}"
+        ),
+        dataset_id=dataset_id,
+        expression=f"sum({field})",
+        aggregation="sum",
+        required_fields=(field,),
+        grain=("window_id",),
+        claim_types=("comparative_change", "source_reconciliation"),
+        reconciliation_tolerance=0.0 if exact_count else 0.01,
+        reconciliation_strategy=(
+            "exact_additive_count" if exact_count else "additive_sum"
+        ),
+        value_semantics="raw_scalar",
+        display_format="number",
+    )
+
+
+def dashboard_channel_dimension():
+    return DimensionBinding(
+        "channel",
+        "contracts/sources/market-dashboard.source.yaml@0.1#runtime_binding.channel",
+        "market_dashboard_channel",
+        "channel",
+        ("day", "window_id"),
+    )
+
+
 def snapshot(dataset_id="paid_order_success", *, fields=(), table="analytics.paid_success"):
+    if table == "analytics.paid_success" and dataset_id == "market_dashboard":
+        table = "market_dashboard_daily"
+    if table == "analytics.paid_success" and dataset_id == "market_dashboard_channel":
+        table = "market_dashboard_channel_daily"
     default_fields = {
         "paid_order_success": ("business_date_lagos", "paid_amount_ngn", "user_id", "channel"),
         "payment_attempt": ("支付发起时间", "订单id", "支付状态"),
-        "market_dashboard": ("business_date", "paid_amount_ngn"),
+        "market_dashboard": ("snapshot_id", "load_revision", "business_date", "paid_amount"),
         "gameplay": ("business_date", "paid_amount_ngn", "gameplay"),
         "external_event": ("event_start_date",),
         "internal_operation_event": ("event_start_date",),
     }
-    return DatasetSnapshot(
+    selected = DatasetSnapshot(
         f"snapshot:{dataset_id}:1",
         dataset_id,
         table,
@@ -136,6 +252,58 @@ def snapshot(dataset_id="paid_order_success", *, fields=(), table="analytics.pai
         "2026-07-05T00:00:00Z",
         "active",
     )
+    if dataset_id in {"market_dashboard", "market_dashboard_channel"}:
+        peer_dataset_id = (
+            "market_dashboard_channel"
+            if dataset_id == "market_dashboard"
+            else "market_dashboard"
+        )
+        peer = replace(
+            selected,
+            snapshot_ref=f"snapshot:{peer_dataset_id}:peer",
+            dataset_id=peer_dataset_id,
+            physical_table=(
+                "market_dashboard_channel_daily__peer"
+                if peer_dataset_id == "market_dashboard_channel"
+                else "market_dashboard_daily__peer"
+            ),
+            schema_fingerprint="peer-schema",
+            evidence_state=(
+                "context_only"
+                if peer_dataset_id == "market_dashboard_channel"
+                else "claim_ready"
+            ),
+            reconciliation_status=(
+                "mismatch"
+                if peer_dataset_id == "market_dashboard_channel"
+                else "matched"
+            ),
+            rows_content_hash="b" * 64,
+        )
+        release_ref = dataset_snapshot_release_ref(
+            "dashboard-logical",
+            "dashboard-load:sha256:reviewed",
+            (selected.snapshot_ref, peer.snapshot_ref),
+        )
+        selected = replace(
+            selected,
+            logical_snapshot_id="dashboard-logical",
+            load_revision="dashboard-load:sha256:reviewed",
+            release_ref=release_ref,
+            rows_content_hash="a" * 64,
+        )
+        peer = replace(
+            peer,
+            logical_snapshot_id=selected.logical_snapshot_id,
+            load_revision=selected.load_revision,
+            release_ref=release_ref,
+        )
+        record = build_dataset_release_authority_record(
+            tuple({**item.to_dict(), "requires_release": True} for item in (selected, peer))
+        )
+        selected = replace(selected, authority_record_ref=record.authority_record_ref)
+        _RELEASE_RESOLVERS[release_ref] = _ReleaseResolver(record)
+    return selected
 
 
 def contract(
@@ -235,6 +403,133 @@ def resigned(base, **changes):
 
 
 class ClickHouseQueryCompilerTest(unittest.TestCase):
+    def test_dashboard_bindings_require_verified_release_and_physical_revision(self):
+        selected = snapshot(
+            "market_dashboard",
+            fields=("business_date", "paid_amount"),
+            table="market_dashboard_daily",
+        )
+        selected = replace(
+            selected,
+            logical_snapshot_id="",
+            load_revision="",
+            release_ref="",
+            authority_record_ref="",
+            rows_content_hash="",
+        )
+        query = contract(
+            dataset_id="market_dashboard",
+            metrics=(dashboard_metric(),),
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "dataset_(physical_revision|release)_required",
+        ):
+            compile_clickhouse_query(query, {selected.snapshot_ref: selected})
+
+    def test_dashboard_release_authority_fields_are_typed_snapshot_contract(self):
+        self.assertTrue(
+            {"release_ref", "authority_record_ref", "rows_content_hash"}.issubset(
+                DatasetSnapshot.__dataclass_fields__
+            )
+        )
+
+    def test_dashboard_source_adapters_compile_business_metrics_and_revision_filter(self):
+        fields = (
+            "snapshot_id",
+            "load_revision",
+            "business_date",
+            "game",
+            "paid_amount",
+            "active_users",
+            "new_users",
+            "aggregate_marketing_cost",
+            "profit",
+        )
+        selected = snapshot(
+            "market_dashboard",
+            fields=fields,
+            table="market_dashboard_daily",
+        )
+        selected = replace(
+            selected,
+            logical_snapshot_id="dashboard-logical",
+            load_revision="load:sha256:reviewed",
+            evidence_state="claim_ready",
+            reconciliation_status="mismatch",
+            reconciliation_ref="reconciliation:dashboard",
+        )
+        for metric_id in (
+            "paid_amount",
+            "active_users",
+            "new_users",
+            "aggregate_marketing_cost",
+            "profit",
+        ):
+            with self.subTest(metric_id=metric_id):
+                compiled = compile_clickhouse_query(
+                    contract(
+                        dataset_id="market_dashboard",
+                        metrics=(dashboard_metric(metric_id),),
+                    ),
+                    {selected.snapshot_ref: selected},
+                )
+                self.assertIn(f"sum({metric_id})", compiled.sql_text)
+                self.assertIn("`snapshot_id` = %(physical_snapshot_id)s", compiled.sql_text)
+                self.assertIn("`load_revision` = %(load_revision)s", compiled.sql_text)
+                self.assertEqual(compiled.parameters["physical_snapshot_id"], "dashboard-logical")
+                self.assertEqual(compiled.parameters["load_revision"], "load:sha256:reviewed")
+
+    def test_dashboard_channel_adapter_requires_matched_claim_ready_release(self):
+        selected = snapshot(
+            "market_dashboard_channel",
+            fields=(
+                "snapshot_id",
+                "load_revision",
+                "business_date",
+                "game",
+                "channel",
+                "paid_amount",
+            ),
+            table="market_dashboard_channel_daily",
+        )
+        selected = replace(
+            selected,
+            logical_snapshot_id="dashboard-logical",
+            load_revision="load:sha256:reviewed",
+            evidence_state="claim_ready",
+            reconciliation_status="matched",
+            reconciliation_ref="reconciliation:matched",
+        )
+        query = contract(
+            dataset_id="market_dashboard_channel",
+            query_intent="dimension_contribution_scan",
+            metrics=(dashboard_metric("paid_amount", "market_dashboard_channel"),),
+            dimensions=(dashboard_channel_dimension(),),
+        )
+
+        compiled = compile_clickhouse_query(query, {selected.snapshot_ref: selected})
+        self.assertIn("`channel` AS `channel`", compiled.sql_text)
+
+        mismatched = replace(
+            selected,
+            evidence_state="context_only",
+            reconciliation_status="mismatch",
+        )
+        with self.assertRaisesRegex(ValueError, "dataset_evidence_state_not_claim_ready"):
+            compile_clickhouse_query(query, {mismatched.snapshot_ref: mismatched})
+
+        context_probe = contract(
+            dataset_id="market_dashboard_channel",
+            query_intent="data_quality_probe",
+            metrics=(),
+        )
+        compiled_context = compile_clickhouse_query(
+            context_probe,
+            {mismatched.snapshot_ref: mismatched},
+        )
+        self.assertIn("count() AS `source_row_count`", compiled_context.sql_text)
     def test_event_context_keeps_reviewed_count_with_metric_projection(self):
         compiled = compile_clickhouse_query(
             contract(query_intent="event_context_probe"),
@@ -721,7 +1016,12 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                 )
                 self.assertIn(expected_date_sql, compiled.sql_text)
                 self.assertNotIn("now(", compiled.sql_text.casefold())
-                self.assertIn("FROM `analytics`.`paid_success`", compiled.sql_text)
+                expected_table = (
+                    "FROM `market_dashboard_daily`"
+                    if dataset_id == "market_dashboard"
+                    else "FROM `analytics`.`paid_success`"
+                )
+                self.assertIn(expected_table, compiled.sql_text)
 
     def test_compiles_contract_filters_with_parameters(self):
         compiled = compile_clickhouse_query(

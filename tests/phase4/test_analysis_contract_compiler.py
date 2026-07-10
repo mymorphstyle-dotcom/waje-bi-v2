@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime
 import unittest
 
@@ -6,7 +7,12 @@ from bi_agent.runtime.analysis_contracts import query_contract_signature
 from bi_agent.runtime.capability_registry import public_capability_ids
 from bi_agent.runtime.compiler import SUPPORTED_CAPABILITIES, compile_graph
 from bi_agent.runtime.contracts import load_contract
-from bi_agent.runtime.dataset_catalog import DatasetCatalog, DatasetSnapshot
+from bi_agent.runtime.dataset_catalog import (
+    DatasetCatalog,
+    DatasetSnapshot,
+    build_dataset_release_authority_record,
+    dataset_snapshot_release_ref,
+)
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
 
@@ -34,7 +40,587 @@ def snapshot(dataset_id, table, watermark):
     )
 
 
+class _ReleaseResolver:
+    def __init__(self, record):
+        self.record = record
+
+    def resolve_dataset_release(self, release_ref):
+        if release_ref != self.record.release_ref:
+            raise KeyError(release_ref)
+        return self.record
+
+
+def released_catalog(*snapshots):
+    selected = list(snapshots)
+    logical_id = selected[0].logical_snapshot_id
+    revision = selected[0].load_revision
+    existing_ids = {item.dataset_id for item in selected}
+    if "market_dashboard" not in existing_ids:
+        selected.append(
+            replace(
+                selected[0],
+                snapshot_ref="snapshot:synthetic:market_dashboard",
+                dataset_id="market_dashboard",
+                physical_table="market_dashboard_daily__synthetic",
+                evidence_state="claim_ready",
+                reconciliation_status="matched",
+            )
+        )
+    if "market_dashboard_channel" not in existing_ids:
+        selected.append(
+            replace(
+                selected[0],
+                snapshot_ref="snapshot:synthetic:market_dashboard_channel",
+                dataset_id="market_dashboard_channel",
+                physical_table="market_dashboard_channel_daily__synthetic",
+                evidence_state="context_only",
+                reconciliation_status="mismatch",
+            )
+        )
+    release_ref = dataset_snapshot_release_ref(
+        logical_id,
+        revision,
+        (item.snapshot_ref for item in selected),
+    )
+    released = tuple(
+        replace(
+            item,
+            release_ref=release_ref,
+            rows_content_hash=item.rows_content_hash or (
+                "a" * 64 if item.dataset_id == "market_dashboard" else "b" * 64
+            ),
+        )
+        for item in selected
+    )
+    payloads = tuple(
+        {
+            **item.to_dict(),
+            "requires_release": True,
+        }
+        for item in released
+    )
+    record = build_dataset_release_authority_record(payloads)
+    authorized = tuple(
+        replace(item, authority_record_ref=record.authority_record_ref)
+        for item in released
+    )
+    requested_refs = {item.snapshot_ref for item in snapshots}
+    return DatasetCatalog(
+        tuple(item for item in authorized if item.snapshot_ref in requested_refs),
+        release_resolver=_ReleaseResolver(record),
+    )
+
+
+def _market_dashboard_snapshots():
+    common = {
+        "watermark": "2026-06-02",
+        "schema_fingerprint": "schema1234567890abcdef",
+        "contract_ref": "contract:market-dashboard@1",
+        "permission_scopes": ("analyst",),
+        "loaded_at": "2026-06-03T00:00:00+00:00",
+        "status": "active",
+        "logical_snapshot_id": "dashboard-logical",
+        "load_revision": "dashboard-load:sha256:capability-local",
+    }
+    dashboard = DatasetSnapshot(
+        snapshot_ref="snapshot:market:capability-local",
+        dataset_id="market_dashboard",
+        physical_table="market_dashboard_daily__schema1234567890",
+        schema_fields=(
+            "snapshot_id",
+            "load_revision",
+            "business_date",
+            "game",
+            "active_users",
+            "paid_amount",
+        ),
+        evidence_state="claim_ready",
+        reconciliation_status="matched",
+        rows_content_hash="a" * 64,
+        **common,
+    )
+    channel = DatasetSnapshot(
+        snapshot_ref="snapshot:channel:capability-local",
+        dataset_id="market_dashboard_channel",
+        physical_table="market_dashboard_channel_daily__schema1234567890",
+        schema_fields=(
+            "snapshot_id",
+            "load_revision",
+            "business_date",
+            "game",
+            "channel",
+            "active_users",
+            "paid_amount",
+        ),
+        evidence_state="context_only",
+        reconciliation_status="mismatch",
+        reconciliation_ref="reconciliation:capability-local:mismatch",
+        rows_content_hash="b" * 64,
+        **common,
+    )
+    return dashboard, channel
+
+
 class AnalysisContractCompilerTest(unittest.TestCase):
+    def test_capability_metric_gaps_merge_ownership_by_stable_semantic_identity(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        capability_orders = (
+            (
+                "market_health_compare",
+                "market_channel_context",
+                "source_reconciliation",
+            ),
+            (
+                "source_reconciliation",
+                "market_health_compare",
+                "market_channel_context",
+            ),
+        )
+        merged_payloads = []
+        for capabilities in capability_orders:
+            outcome = compile_analysis_contract(
+                run_id="run-gap-identity-" + capabilities[0],
+                proposal={
+                    "target_metrics": ("paid_users", "paid_orders"),
+                    "claim_intents": ("comparative_change",),
+                },
+                accepted_capabilities=capabilities,
+                catalog=DatasetCatalog(()),
+                registry=registry,
+                as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+                permission_scope="analyst",
+            )
+            unsupported = tuple(
+                gap
+                for gap in outcome.analysis_contract.contract_gaps
+                if gap.gap_type == "capability_metric_unsupported"
+            )
+            paid_users = tuple(
+                gap for gap in unsupported if "metric:paid_users:" in gap.gap_id
+            )
+            paid_orders = tuple(
+                gap for gap in unsupported if "metric:paid_orders:" in gap.gap_id
+            )
+            self.assertEqual(len(paid_users), 1)
+            self.assertEqual(len(paid_orders), 1)
+            self.assertEqual(
+                paid_users[0].affected_capabilities,
+                tuple(sorted(capabilities)),
+            )
+            self.assertTrue(
+                any(
+                    gap.gap_type != "capability_metric_unsupported"
+                    and "metric:paid_users:" in gap.gap_id
+                    for gap in outcome.analysis_contract.contract_gaps
+                )
+            )
+            merged_payloads.append(paid_users[0].to_dict())
+
+        self.assertEqual(merged_payloads[0], merged_payloads[1])
+
+    def test_requested_metrics_are_scoped_to_each_capability(self):
+        dashboard, channel = _market_dashboard_snapshots()
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+
+        cases = (
+            (
+                ("active_users",),
+                {"market_health_compare": ("active_users",), "source_reconciliation": ()},
+            ),
+            (
+                ("paid_amount",),
+                {
+                    "market_health_compare": ("paid_amount",),
+                    "source_reconciliation": ("paid_amount", "paid_amount"),
+                },
+            ),
+            (
+                ("paid_amount", "active_users"),
+                {
+                    "market_health_compare": ("active_users", "paid_amount"),
+                    "source_reconciliation": ("paid_amount", "paid_amount"),
+                },
+            ),
+        )
+        for target_metrics, expected in cases:
+            with self.subTest(target_metrics=target_metrics):
+                outcome = compile_analysis_contract(
+                    run_id="run-capability-local-metrics-" + "-".join(target_metrics),
+                    proposal={
+                        "target_metrics": target_metrics,
+                        "claim_intents": (
+                            "comparative_change",
+                            "source_reconciliation",
+                        ),
+                    },
+                    accepted_capabilities=(
+                        "market_health_compare",
+                        "source_reconciliation",
+                    ),
+                    catalog=released_catalog(dashboard, channel),
+                    registry=registry,
+                    as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+                    permission_scope="analyst",
+                )
+                queries = {item.query_contract_id: item for item in outcome.query_contracts}
+                plans = {item.capability_id: item for item in outcome.capability_plans}
+                actual = {
+                    capability_id: tuple(
+                        metric.metric_id
+                        for slot in plans[capability_id].required_input_slots
+                        for query_ref in slot.query_contract_refs
+                        for metric in queries[query_ref].metric_bindings
+                    )
+                    for capability_id in expected
+                }
+                self.assertEqual(actual, expected)
+                unsupported = tuple(
+                    gap
+                    for gap in outcome.analysis_contract.contract_gaps
+                    if gap.gap_type == "capability_metric_unsupported"
+                )
+                if "active_users" in target_metrics:
+                    self.assertTrue(
+                        any(
+                            gap.affected_capabilities == ("source_reconciliation",)
+                            and "active_users" in gap.gap_id
+                            for gap in unsupported
+                        ),
+                        unsupported,
+                    )
+                else:
+                    self.assertFalse(unsupported)
+
+    def test_market_health_capability_selects_unique_dashboard_sources_without_override(self):
+        dashboard = DatasetSnapshot(
+            "snapshot:market:verified",
+            "market_dashboard",
+            "market_dashboard_daily__schema1234567890",
+            "2026-06-02",
+            "schema1234567890abcdef",
+            (
+                "snapshot_id", "load_revision", "business_date", "game",
+                "active_users", "new_users", "aggregate_marketing_cost", "profit",
+                "paid_amount",
+            ),
+            "contract:market-dashboard@1",
+            ("analyst",),
+            "2026-06-03T00:00:00Z",
+            "active",
+            logical_snapshot_id="dashboard-logical",
+            load_revision="dashboard-load:sha256:verified",
+        )
+        object.__setattr__(dashboard, "release_ref", "dataset-release:sha256:verified")
+        object.__setattr__(dashboard, "rows_content_hash", "a" * 64)
+
+        outcome = compile_analysis_contract(
+            run_id="run-market-health",
+            proposal={
+                "target_metrics": [
+                    "active_users", "new_users", "aggregate_marketing_cost",
+                    "profit", "paid_amount",
+                ],
+                "claim_intents": ["comparative_change"],
+            },
+            accepted_capabilities=("market_health_compare",),
+            catalog=released_catalog(dashboard),
+            registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertEqual(outcome.analysis_contract.dataset_requirements, ("market_dashboard",))
+        self.assertEqual(
+            {binding.metric_id for binding in outcome.analysis_contract.metric_bindings},
+            {
+                "active_users", "new_users", "aggregate_marketing_cost",
+                "profit", "paid_amount",
+            },
+        )
+        self.assertEqual(len(outcome.query_contracts), 1)
+
+    def test_capability_metric_family_blocks_unreviewed_dashboard_metric(self):
+        dashboard = DatasetSnapshot(
+            "snapshot:market:verified", "market_dashboard",
+            "market_dashboard_daily__schema1234567890", "2026-06-02",
+            "schema1234567890abcdef",
+            ("snapshot_id", "load_revision", "business_date", "game", "paid_users"),
+            "contract:market-dashboard@1", ("analyst",),
+            "2026-06-03T00:00:00Z", "active",
+            logical_snapshot_id="dashboard-logical",
+            load_revision="dashboard-load:sha256:verified",
+        )
+        object.__setattr__(dashboard, "release_ref", "dataset-release:sha256:verified")
+        object.__setattr__(dashboard, "rows_content_hash", "a" * 64)
+
+        outcome = compile_analysis_contract(
+            run_id="run-market-health-unreviewed-metric",
+            proposal={"target_metrics": ["paid_users"]},
+            accepted_capabilities=("market_health_compare",),
+            catalog=released_catalog(dashboard),
+            registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertFalse(outcome.query_contracts)
+        self.assertIn(
+            "metric:paid_users:capability_metric_family_unsupported",
+            {gap.gap_id for gap in outcome.analysis_contract.contract_gaps},
+        )
+
+    def test_channel_context_capability_keeps_dimension_query_context_only(self):
+        channel = DatasetSnapshot(
+            "snapshot:channel:context", "market_dashboard_channel",
+            "market_dashboard_channel_daily__schema1234567890", "2026-06-02",
+            "schema1234567890abcdef",
+            ("snapshot_id", "load_revision", "business_date", "game", "channel", "paid_amount"),
+            "contract:market-dashboard@1", ("analyst",),
+            "2026-06-03T00:00:00Z", "active", evidence_state="context_only",
+            reconciliation_status="mismatch", reconciliation_ref="reconciliation:mismatch",
+            logical_snapshot_id="dashboard-logical", load_revision="dashboard-load:sha256:verified",
+        )
+        object.__setattr__(channel, "release_ref", "dataset-release:sha256:verified")
+        object.__setattr__(channel, "rows_content_hash", "b" * 64)
+
+        outcome = compile_analysis_contract(
+            run_id="run-channel-context",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "requested_dimensions": ["channel"],
+                "claim_intents": ["contract_coverage_and_trust_boundary"],
+            },
+            accepted_capabilities=("market_channel_context",),
+            catalog=released_catalog(channel),
+            registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertEqual(len(outcome.query_contracts), 1)
+        self.assertEqual(outcome.query_contracts[0].query_intent, "channel_context_probe")
+        self.assertEqual(outcome.query_contracts[0].dimension_bindings[0].dimension_id, "channel")
+
+    def test_malformed_source_override_is_a_hard_contract_error(self):
+        with self.assertRaisesRegex(ValueError, "metric_dataset_overrides.*mapping"):
+            compile_analysis_contract(
+                run_id="run-malformed-source-override",
+                proposal={
+                    "target_metrics": ["paid_amount"],
+                    "metric_dataset_overrides": "market_dashboard",
+                },
+                accepted_capabilities=("compare_periods",),
+                catalog=DatasetCatalog(
+                    (snapshot("paid_order_success", "paid", "2026-07-04"),)
+                ),
+                registry=RuntimeContractRegistry.from_path(
+                    "contracts/runtime/clickhouse-analysis-bindings.yaml"
+                ),
+                as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+                permission_scope="analyst",
+            )
+
+    def test_context_only_snapshot_keeps_quality_query_and_blocks_strong_path(self):
+        channel = DatasetSnapshot(
+            "snapshot:channel:context",
+            "market_dashboard_channel",
+            "market_dashboard_channel_daily__schema1234567890",
+            "2026-06-02",
+            "schema1234567890abcdef",
+            ("snapshot_id", "load_revision", "business_date", "game", "channel", "paid_amount"),
+            "contract:market-dashboard@1",
+            ("analyst",),
+            "2026-06-03T00:00:00Z",
+            "active",
+            evidence_state="context_only",
+            reconciliation_status="mismatch",
+            reconciliation_ref="reconciliation:mismatch",
+            logical_snapshot_id="dashboard-logical",
+            load_revision="dashboard-load:sha256:verified",
+        )
+        object.__setattr__(channel, "release_ref", "dataset-release:sha256:verified")
+        object.__setattr__(channel, "rows_content_hash", "b" * 64)
+
+        outcome = compile_analysis_contract(
+            run_id="run-mixed-evidence-purpose",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "dataset_requirements": ["market_dashboard_channel"],
+                "requested_dimensions": ["channel"],
+                "claim_intents": [
+                    "contract_coverage_and_trust_boundary",
+                    "segment_contribution_or_mix_shift",
+                ],
+            },
+            accepted_capabilities=("data_quality_check", "segment_contribution"),
+            catalog=released_catalog(channel),
+            registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertEqual(
+            {query.query_intent for query in outcome.query_contracts},
+            {"data_quality_probe"},
+        )
+        gap_ids = {gap.gap_id for gap in outcome.analysis_contract.contract_gaps}
+        self.assertTrue(any("evidence_state" in gap_id for gap_id in gap_ids))
+        self.assertFalse(any("source_unbound" in gap_id for gap_id in gap_ids))
+
+    def test_source_reconciliation_capability_plans_both_reviewed_sources(self):
+        fields = ("snapshot_id", "load_revision", "business_date", "game", "paid_amount")
+        overall = DatasetSnapshot(
+            "snapshot:overall:verified", "market_dashboard",
+            "market_dashboard_daily__schema1234567890", "2026-06-02",
+            "schema1234567890abcdef", fields, "contract:dashboard@1", ("analyst",),
+            "2026-06-03T00:00:00Z", "active", reconciliation_status="mismatch",
+            reconciliation_ref="reconciliation:mismatch", logical_snapshot_id="dashboard-logical",
+            load_revision="dashboard-load:sha256:verified",
+        )
+        channel = DatasetSnapshot(
+            "snapshot:channel:verified", "market_dashboard_channel",
+            "market_dashboard_channel_daily__schema1234567890", "2026-06-02",
+            "schema1234567890abcdef", (*fields[:4], "channel", *fields[4:]),
+            "contract:dashboard@1", ("analyst",), "2026-06-03T00:00:00Z", "active",
+            evidence_state="context_only", reconciliation_status="mismatch",
+            reconciliation_ref="reconciliation:mismatch", logical_snapshot_id="dashboard-logical",
+            load_revision="dashboard-load:sha256:verified",
+        )
+        for item in (overall, channel):
+            object.__setattr__(item, "release_ref", "dataset-release:sha256:verified")
+            object.__setattr__(item, "rows_content_hash", "c" * 64)
+
+        outcome = compile_analysis_contract(
+            run_id="run-source-reconciliation",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "dataset_requirements": ["market_dashboard", "market_dashboard_channel"],
+                "claim_intents": ["source_reconciliation"],
+            },
+            accepted_capabilities=("source_reconciliation",),
+            catalog=released_catalog(overall, channel),
+            registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertEqual(
+            {binding.dataset_id for binding in outcome.analysis_contract.metric_bindings},
+            {"market_dashboard", "market_dashboard_channel"},
+        )
+        self.assertEqual(
+            {query.query_intent for query in outcome.query_contracts},
+            {"source_reconciliation_probe"},
+        )
+        self.assertEqual(len(outcome.query_contracts), 2)
+
+    def test_explicit_metric_dataset_override_binds_dashboard_source_adapter(self):
+        dashboard_snapshot = DatasetSnapshot(
+            "snapshot:market-dashboard:20260602:revision-a",
+            "market_dashboard",
+            "market_dashboard_daily",
+            "2026-06-02",
+            "schema:market-dashboard:1",
+            ("business_date", "load_revision", "paid_amount"),
+            "contract:market-dashboard@1",
+            ("analyst",),
+            "2026-06-03T00:00:00Z",
+            "active",
+            logical_snapshot_id="market-dashboard:20260602",
+            load_revision="sha256:revision-a",
+        )
+
+        outcome = compile_analysis_contract(
+            run_id="run-dashboard-source-adapter",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "metric_dataset_overrides": {"paid_amount": "market_dashboard"},
+                "claim_intents": ["comparative_change"],
+            },
+            accepted_capabilities=("compare_periods",),
+            catalog=released_catalog(dashboard_snapshot),
+            registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertEqual(outcome.analysis_contract.dataset_requirements, ("market_dashboard",))
+        self.assertEqual(len(outcome.analysis_contract.metric_bindings), 1)
+        binding = outcome.analysis_contract.metric_bindings[0]
+        self.assertEqual(binding.dataset_id, "market_dashboard")
+        self.assertEqual(binding.expression, "sum(paid_amount)")
+        self.assertEqual(
+            outcome.query_contracts[0].dataset_snapshot_refs,
+            (dashboard_snapshot.snapshot_ref,),
+        )
+
+    def test_explicit_dimension_dataset_override_binds_dashboard_channel_adapter(self):
+        channel_snapshot = DatasetSnapshot(
+            "snapshot:market-dashboard-channel:20260602:revision-a",
+            "market_dashboard_channel",
+            "market_dashboard_channel_daily",
+            "2026-06-02",
+            "schema:market-dashboard-channel:1",
+            ("business_date", "load_revision", "paid_amount", "channel"),
+            "contract:market-dashboard-channel@1",
+            ("analyst",),
+            "2026-06-03T00:00:00Z",
+            "active",
+            reconciliation_status="matched",
+            reconciliation_ref="reconciliation:market-dashboard:revision-a",
+            logical_snapshot_id="market-dashboard-channel:20260602",
+            load_revision="sha256:revision-a",
+        )
+
+        outcome = compile_analysis_contract(
+            run_id="run-dashboard-dimension-adapter",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "metric_dataset_overrides": {
+                    "paid_amount": "market_dashboard_channel"
+                },
+                "requested_dimensions": ["channel"],
+                "dimension_dataset_overrides": {
+                    "channel": "market_dashboard_channel"
+                },
+                "claim_intents": ["segment_contribution_or_mix_shift"],
+            },
+            accepted_capabilities=("segment_contribution",),
+            catalog=released_catalog(channel_snapshot),
+            registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertEqual(
+            outcome.analysis_contract.dataset_requirements,
+            ("market_dashboard_channel",),
+        )
+        self.assertEqual(outcome.analysis_contract.metric_bindings[0].dataset_id,
+                         "market_dashboard_channel")
+        self.assertEqual(outcome.analysis_contract.dimension_bindings[0].dataset_id,
+                         "market_dashboard_channel")
+        self.assertEqual(outcome.analysis_contract.dimension_bindings[0].source_field,
+                         "channel")
+
     def test_claim_strength_taxonomy_is_ranked_and_part_of_capability_signature(self):
         payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
         registry = RuntimeContractRegistry(payload)
@@ -638,6 +1224,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         common = {
             "query_families": ["workload_scan"],
             "required_metrics": ["paid_amount"],
+            "allowed_datasets": ["paid_order_success"],
             "minimum_readiness": {"accepted_completeness": ["complete"]},
             "degradation_policy": {"missing_required_input": "block_claim"},
             "supported_evidence_types": ["statistical_association"],
@@ -744,11 +1331,11 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         )
 
         gap = next(
-            gap
-            for gap in outcome.analysis_contract.contract_gaps
-            if gap.gap_id == "dataset:paid_order_success:source_unbound"
+            gap for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_id.startswith("metric:paid_amount:source_ambiguous:")
         )
         self.assertEqual(gap.affected_capabilities, ("analysis_contract",))
+        self.assertTrue(gap.requires_clarification)
 
     def test_future_permission_mismatch_is_source_unbound(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
@@ -873,6 +1460,13 @@ class AnalysisContractCompilerTest(unittest.TestCase):
     def test_registry_covers_canonical_revenue_capabilities(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         self.assertTrue(set(public_capability_ids()).issubset(SUPPORTED_CAPABILITIES))
+        self.assertTrue(
+            {
+                "market_health_compare",
+                "market_channel_context",
+                "source_reconciliation",
+            }.issubset(public_capability_ids())
+        )
 
         for capability_id in sorted(SUPPORTED_CAPABILITIES):
             with self.subTest(capability_id=capability_id):
@@ -953,6 +1547,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
         common = {
             "query_families": ["shared_metric_scan"],
+            "allowed_datasets": ["paid_order_success"],
             "minimum_readiness": {"accepted_completeness": ["complete"]},
             "degradation_policy": {"missing_required_input": "block_claim"},
             "supported_evidence_types": ["statistical_association"],
@@ -1012,6 +1607,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
         common = {
             "query_families": ["ordered_metric_scan"],
+            "allowed_datasets": ["paid_order_success"],
             "minimum_readiness": {"accepted_completeness": ["complete"]},
             "degradation_policy": {"missing_required_input": "block_claim"},
             "supported_evidence_types": ["statistical_association"],
