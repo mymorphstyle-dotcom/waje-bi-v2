@@ -190,6 +190,14 @@ class SqlSafetyAndBindingTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "limit_required")
 
+    def test_union_branch_limit_does_not_satisfy_global_bound(self):
+        result = validate_select_only(
+            "SELECT event_id FROM events "
+            "UNION ALL SELECT event_id FROM sentinels LIMIT 5001"
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "global_limit_required")
+
     def test_aggregate_marker_does_not_allow_unbounded_detail_select(self):
         result = validate_select_only("SELECT * FROM paid_success", aggregate=True)
         self.assertFalse(result.ok)

@@ -22,6 +22,7 @@ from bi_agent.runtime.analysis_assets import merge_analysis_assets
 from bi_agent.runtime.dataset_catalog import (
     DatasetReleaseAuthorityRecord,
     build_dataset_release_authority_record,
+    canonical_dataset_release_members,
     canonical_dataset_requires_release,
     dataset_release_authority_record_from_mapping,
     immutable_dataset_snapshot_projection,
@@ -321,7 +322,15 @@ class InMemoryConversationStore:
         if not release:
             raise KeyError(f"dataset_release_unavailable:{release_ref}")
         snapshot_refs = tuple(release.get("snapshot_refs") or ())
-        if len(snapshot_refs) != 2 or any(
+        try:
+            expected_count = len(
+                canonical_dataset_release_members(
+                    str(release.get("member_projections", [{}])[0].get("dataset_id") or "")
+                )
+            )
+        except (IndexError, KeyError, TypeError, ValueError) as exc:
+            raise ValueError("dataset_release_authority_membership") from exc
+        if len(snapshot_refs) != expected_count or any(
             ref not in self.dataset_snapshots for ref in snapshot_refs
         ):
             raise ValueError("dataset_release_authority_membership")

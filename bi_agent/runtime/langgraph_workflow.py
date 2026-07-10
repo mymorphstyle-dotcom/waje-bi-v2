@@ -22,7 +22,6 @@ from langgraph.graph import END, StateGraph
 
 from bi_agent.capabilities.data_quality_check import data_quality_check
 from bi_agent.capabilities.driver_decomposition import driver_decomposition
-from bi_agent.capabilities.event_evidence import event_evidence
 from bi_agent.capabilities.formula_decompose import formula_decompose
 from bi_agent.capabilities.high_value_user_contribution import high_value_user_contribution
 from bi_agent.capabilities.joint_attribution import joint_attribution
@@ -1524,12 +1523,71 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
         )
     if "event_evidence" in capabilities:
         evidence.append(
-            event_evidence(
-                state["request"].get("events", ()),
-                result_refs=_capability_result_refs_for(state, "event_evidence"),
-                **_event_evidence_params(state),
+            execute_capability(
+                CapabilityRequest(
+                    run_id=state["run_id"],
+                    accepted_graph_id=f"{state['run_id']}:accepted_graph",
+                    graph_version=1,
+                    capability_id="event_evidence",
+                    question_family=state["intent"]["question_family"],
+                    target_claim="candidate_mechanism",
+                    claim_type="candidate_mechanism",
+                    metric="",
+                    scope=state["intent"]["scope"],
+                    time_window=state["intent"]["time_window"],
+                    baseline=state["intent"].get("baseline", {}),
+                    target=state["intent"].get("target", {}),
+                    grain="event_interval",
+                    filters={},
+                    dimensions=(),
+                    contract_versions={},
+                    role=state["request"].get("role", "analyst"),
+                    budget_state=budget,
+                    llm_business_reason="检查分析窗口内经过合同绑定的事件上下文。",
+                    params={
+                        "rows": _capability_rows_for(state, "event_evidence"),
+                        "result_refs": _capability_result_refs_for(state, "event_evidence"),
+                    },
+                    **_capability_authority_inputs(state, "event_evidence"),
+                    **_capability_compatibility_mode(state),
+                )
             )
         )
+        budget = record_capability_call(budget)
+    if "gameplay_activity_context" in capabilities:
+        evidence.append(
+            execute_capability(
+                CapabilityRequest(
+                    run_id=state["run_id"],
+                    accepted_graph_id=f"{state['run_id']}:accepted_graph",
+                    graph_version=1,
+                    capability_id="gameplay_activity_context",
+                    question_family=state["intent"]["question_family"],
+                    target_claim="observed_activity",
+                    claim_type="observed_activity",
+                    metric="player_bet_amount",
+                    scope=state["intent"]["scope"],
+                    time_window=state["intent"]["time_window"],
+                    baseline=state["intent"].get("baseline", {}),
+                    target=state["intent"].get("target", {}),
+                    grain="gameplay_window",
+                    filters={},
+                    dimensions=("gameplay",),
+                    contract_versions={},
+                    role=state["request"].get("role", "analyst"),
+                    budget_state=budget,
+                    llm_business_reason="读取合同绑定的玩法活动聚合上下文。",
+                    params={
+                        "rows": _capability_rows_for(state, "gameplay_activity_context"),
+                        "result_refs": _capability_result_refs_for(state, "gameplay_activity_context"),
+                    },
+                    **_capability_authority_inputs(state, "gameplay_activity_context"),
+                    **_capability_compatibility_mode(state),
+                )
+            )
+        )
+        budget = record_capability_call(budget)
+    state["budget_state"] = budget
     if "segment_bridge" in capabilities:
         segment = segment_bridge(
             state["request"].get(
@@ -1685,7 +1743,9 @@ def _capability_query_intents(capability_id: str) -> tuple[str, ...]:
     if capability_id == "joint_attribution":
         return ("joint_candidate_scan", "dimension_scan_reuse", "dimension_scan", "daily_metric_baselines", "clickhouse_revenue_rows")
     if capability_id == "event_evidence":
-        return ("event_context_probe", "daily_metric_baselines", "clickhouse_revenue_rows")
+        return ("event_context_probe",)
+    if capability_id == "gameplay_activity_context":
+        return ("gameplay_activity_probe",)
     if capability_id in {
         "compare_periods",
         "rolling_window_compare",
@@ -5071,6 +5131,7 @@ def _capability_labels(accepted_graph: tuple[str, ...]) -> list[str]:
         "formula_decompose": "指标口径拆解",
         "driver_decomposition": "驱动拆解",
         "event_evidence": "事件或机制证据检查",
+        "gameplay_activity_context": "玩法活动上下文",
         "segment_bridge": "分群结构检查",
         "segment_contribution": "渠道或分群贡献",
         "user_mix_contribution": "新老用户结构贡献",

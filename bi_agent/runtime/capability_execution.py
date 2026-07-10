@@ -10,6 +10,7 @@ from bi_agent.runtime.analysis_contracts import (
     CompletenessReport,
     QueryResultEnvelope,
 )
+from bi_agent.runtime.canonical_values import canonical_thaw
 from bi_agent.runtime.authoritative_query_chain import (
     validate_authoritative_query_chain,
 )
@@ -20,6 +21,7 @@ from bi_agent.runtime.evidence_authority import (
     RuntimeEvidenceResolver,
     RuntimeEvidenceWriter,
     _record_capability_binding,
+    canonical_value,
     canonical_digest,
     canonical_rows_hash,
     legacy_fixture_enabled,
@@ -429,7 +431,7 @@ def _resolve_authoritative_inputs(
         ):
             raise EvidenceIntegrityError(f"rows_payload_invalid:{query_ref}")
         result = QueryResultEnvelope(
-            **dict(record.result_payload),
+            **canonical_thaw(record.result_payload),
             rows=tuple(rows),
         )
         if not record.source_snapshot_refs:
@@ -1213,16 +1215,7 @@ def _deep_freeze(value: Any) -> Any:
 
 
 def _canonical_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _canonical_value(item)
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-        }
-    if isinstance(value, (list, tuple)):
-        return [_canonical_value(item) for item in value]
-    if isinstance(value, (set, frozenset)):
-        return sorted((_canonical_value(item) for item in value), key=repr)
-    return value
+    return canonical_value(value)
 
 
 def _canonical_digest(value: Any) -> str:

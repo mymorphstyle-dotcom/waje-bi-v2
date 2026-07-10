@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 from bi_agent.capabilities.data_quality_check import data_quality_check
@@ -39,6 +40,8 @@ def execute_capability(request: CapabilityRequest) -> CapabilityEvidenceEnvelope
         return _execute_pattern_compare(request)
     if request.capability_id == "data_quality_profile":
         return _execute_data_quality_profile(request)
+    if request.capability_id in {"event_evidence", "gameplay_activity_context"}:
+        return _execute_context_capability(request)
     raise KeyError(f"unsupported capability_id: {request.capability_id}")
 
 
@@ -155,6 +158,99 @@ def _execute_data_quality_profile(
     )
 
 
+def _execute_context_capability(
+    request: CapabilityRequest,
+) -> CapabilityEvidenceEnvelope:
+    rows = tuple(dict(row) for row in _capability_rows(request, ()))
+    result_refs = _result_refs(request, ())
+    sql_hashes = _sql_hashes(request, ())
+    if request.capability_id == "event_evidence":
+        context_rows = tuple(
+            row
+            for row in rows
+            if not str(row.get("event_id") or "").startswith("__no_event__:")
+        )
+        payload = {
+            "events": context_rows,
+            "event_count": len(context_rows),
+            "zero_event_windows": tuple(
+                str(row.get("window_id") or "")
+                for row in rows
+                if str(row.get("event_id") or "").startswith("__no_event__:")
+            ),
+            "claim_boundary": (
+                "Window overlap is reviewed context for a candidate mechanism; "
+                "it does not establish causal impact."
+            ),
+        }
+        evidence_type = "candidate_mechanism" if context_rows else "insufficient"
+        strength = "medium" if context_rows else "insufficient"
+        wording_limit = "candidate" if context_rows else "insufficient"
+        limitations = () if context_rows else ("no_event_matches",)
+        numeric_facts = {"event_count": len(context_rows)}
+    else:
+        total = Decimal(0)
+        numeric_count = 0
+        for row in rows:
+            value = row.get("player_bet_amount")
+            if value is None:
+                continue
+            try:
+                total += Decimal(str(value))
+            except (InvalidOperation, ValueError):
+                continue
+            numeric_count += 1
+        payload = {
+            "activity_rows": rows,
+            "activity_metric": "player_bet_amount",
+            "claim_boundary": (
+                "Gameplay activity is operational context and cannot be relabeled "
+                "as payment or revenue."
+            ),
+        }
+        evidence_type = "observed" if rows else "insufficient"
+        strength = "observed" if rows else "low"
+        wording_limit = "contextual" if rows else "insufficient"
+        limitations = () if rows else ("no_gameplay_activity_rows",)
+        numeric_facts = {
+            "activity_row_count": len(rows),
+            "player_bet_amount_total": total if numeric_count else None,
+        }
+    evidence_type, strength, wording_limit, limitations = _evidence_boundary(
+        request,
+        evidence_type=evidence_type,
+        strength=strength,
+        wording_limit=wording_limit,
+        limitations=limitations,
+    )
+    return CapabilityEvidenceEnvelope(
+        evidence_ref=f"{request.capability_id}:{request.run_id}",
+        capability_id=request.capability_id,
+        question_family=request.question_family,
+        target_claim=request.target_claim,
+        claim_type=request.claim_type,
+        metric=request.metric,
+        scope=request.scope,
+        grain=request.grain,
+        baseline_label=str(request.baseline.get("label", "")),
+        target_label=str(request.target.get("label", "")),
+        time_window=request.time_window,
+        numeric_facts=numeric_facts,
+        typed_payload=payload,
+        result_refs=result_refs,
+        sql_hashes=sql_hashes,
+        evidence_type=evidence_type,
+        strength=strength,
+        wording_limit=wording_limit,
+        limitations=limitations,
+        disabled_degraded_blocked_path_refs=(),
+        verifier_handoff={
+            "requires_evidence_ref": f"{request.capability_id}:{request.run_id}",
+            "requires_bound_result_refs": result_refs,
+        },
+        admin_audit_ref=f"capability:{request.run_id}:{request.capability_id}",
+        **_bound_provenance(request),
+    )
 def _budget_limitation(request: CapabilityRequest) -> str:
     params = request.params
     if params.get("timeout_exceeded"):

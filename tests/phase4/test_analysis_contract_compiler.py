@@ -1237,6 +1237,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "required_fields": ["window_id", "window_role", "observation_key"],
             "unique_key": ["window_id", "observation_key"],
             "grain": ["window_id", "observation_key"],
+            "dimension_presence_policy": "paired_required",
         }
         outcome = compile_analysis_contract(
             run_id="run-workload-dedupe",
@@ -1337,7 +1338,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         self.assertEqual(gap.affected_capabilities, ("analysis_contract",))
         self.assertTrue(gap.requires_clarification)
 
-    def test_future_permission_mismatch_is_source_unbound(self):
+    def test_future_snapshot_is_typed_unavailable_as_of_not_source_unbound(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         future = DatasetSnapshot(
             "snapshot:paid:future",
@@ -1353,9 +1354,26 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         )
         outcome = self._compile_compare_with_catalog(DatasetCatalog((future,)))
 
-        self.assertIn(
-            "dataset:paid_order_success:source_unbound",
-            {gap.gap_id for gap in outcome.analysis_contract.contract_gaps},
+        gap = next(
+            gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_type == "dataset_snapshot_unavailable_as_of"
+        )
+        self.assertEqual(
+            gap.gap_id,
+            "dataset:paid_order_success:dataset_snapshot_unavailable_as_of",
+        )
+        self.assertEqual(
+            gap.diagnostic_context["as_of"],
+            "2026-06-03T11:00:00+00:00",
+        )
+        self.assertEqual(
+            gap.diagnostic_context["earliest_loaded_at"],
+            "2026-06-04T00:00:00+00:00",
+        )
+        self.assertEqual(
+            gap.diagnostic_context["earliest_snapshot_ref"],
+            "snapshot:paid:future",
         )
 
     def test_eligible_permission_mismatch_is_permission_blocked(self):
@@ -1378,6 +1396,18 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "dataset:paid_order_success:permission_blocked",
             {gap.gap_id for gap in outcome.analysis_contract.contract_gaps},
         )
+
+        future = replace(
+            eligible,
+            snapshot_ref="snapshot:paid:future-admin",
+            loaded_at="2026-06-04T00:00:00Z",
+        )
+        mixed = self._compile_compare_with_catalog(
+            DatasetCatalog((eligible, future))
+        )
+        gap_types = {gap.gap_type for gap in mixed.analysis_contract.contract_gaps}
+        self.assertIn("permission_blocked", gap_types)
+        self.assertNotIn("dataset_snapshot_unavailable_as_of", gap_types)
 
     def _assert_window_contract_gap(self, *, proposal, expected_gap_id):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
@@ -1566,6 +1596,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "required_fields": ["window_id", "window_role", "observation_key"],
             "unique_key": ["window_id", "observation_key"],
             "grain": ["window_id", "observation_key"],
+            "dimension_presence_policy": "paired_required",
         }
         outcome = compile_analysis_contract(
             run_id="run-owned-query",
@@ -1626,6 +1657,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "required_fields": ["window_id", "window_role", "observation_key"],
             "unique_key": ["window_id", "observation_key"],
             "grain": ["window_id", "observation_key"],
+            "dimension_presence_policy": "paired_required",
         }
         outcome = compile_analysis_contract(
             run_id="run-dedupe",

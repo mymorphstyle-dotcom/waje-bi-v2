@@ -3,3 +3,4 @@ clickhouse-connect==0.15.1
 PyYAML==6.0.3
 openai==2.12.0
 psycopg[binary]>=3.2,<4
+openpyxl==3.1.5

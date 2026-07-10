@@ -433,6 +433,7 @@ def _normalize_business_narrative(value: str) -> str:
         "paid_amount": "付费金额",
         "metric_coverage_profile": "指标覆盖检查",
         "metric_timeseries": "指标时间序列",
+        "gameplay_activity_context": "玩法活动上下文",
         "data_quality_profile": "数据质量检查",
         "compare_periods": "周期对比",
         "compare_period_phases": "周期内阶段对比",

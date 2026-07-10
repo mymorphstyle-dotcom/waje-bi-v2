@@ -12,6 +12,7 @@ DATA_STATES = %w[
   contract_backed
   evidence_linked
   static_assumption
+  source_unbound
   missing_contract
   permission_limited
   unsupported_grain

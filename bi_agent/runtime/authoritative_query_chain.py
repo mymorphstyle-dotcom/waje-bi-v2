@@ -10,6 +10,7 @@ from bi_agent.runtime.analysis_contracts import (
 from bi_agent.runtime.clickhouse_query_compiler import (
     validate_clickhouse_query_contract,
 )
+from bi_agent.runtime.canonical_values import canonical_thaw
 from bi_agent.runtime.evidence_authority import (
     CapabilityBindingRecord,
     EvidenceIntegrityError,
@@ -320,7 +321,7 @@ def _result_from_record(
     query: QueryExecutionRecord,
     rows: tuple[Mapping[str, Any], ...],
 ) -> QueryResultEnvelope:
-    payload = dict(query.result_payload)
+    payload = canonical_thaw(query.result_payload)
     try:
         return QueryResultEnvelope(
             query_contract_ref=str(payload["query_contract_ref"]),
@@ -332,11 +333,11 @@ def _result_from_record(
             row_count=int(payload["row_count"]),
             completeness_report_ref=str(payload["completeness_report_ref"]),
             rows=rows,
-            observed_schema=dict(payload.get("observed_schema") or {}),
+            observed_schema=canonical_thaw(payload.get("observed_schema") or {}),
             observed_windows=tuple(payload.get("observed_windows") or ()),
             observed_grain=tuple(payload.get("observed_grain") or ()),
             source_snapshot_refs=tuple(payload.get("source_snapshot_refs") or ()),
-            provider_stats=dict(payload.get("provider_stats") or {}),
+            provider_stats=canonical_thaw(payload.get("provider_stats") or {}),
             failure_reason=str(payload.get("failure_reason") or ""),
             execution_attempt_ref=str(payload.get("execution_attempt_ref") or ""),
         )
@@ -353,10 +354,10 @@ def _report_from_record(payload: Mapping[str, Any]) -> CompletenessReport:
             completeness_status=str(payload["completeness_status"]),
             analysis_readiness=str(payload["analysis_readiness"]),
             assertion_results=tuple(
-                _plain_value(item) for item in payload.get("assertion_results") or ()
+                canonical_thaw(item) for item in payload.get("assertion_results") or ()
             ),
             failure_reasons=tuple(payload.get("failure_reasons") or ()),
-            coverage_summary=_plain_value(payload.get("coverage_summary") or {}),
+            coverage_summary=canonical_thaw(payload.get("coverage_summary") or {}),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise AuthoritativeQueryChainError("completeness_report_payload_invalid") from exc
@@ -622,11 +623,3 @@ def _slot_query_family(slot: Mapping[str, Any]) -> str:
 def _require_clean_record(record: Any, code: str) -> None:
     if runtime_evidence_record_integrity_errors(record):
         raise AuthoritativeQueryChainError(code)
-
-
-def _plain_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(key): _plain_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain_value(item) for item in value]
-    return value

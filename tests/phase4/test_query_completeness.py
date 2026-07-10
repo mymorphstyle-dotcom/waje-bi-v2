@@ -23,11 +23,13 @@ from bi_agent.runtime.evidence_authority import (
 )
 from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
 from bi_agent.runtime.dataset_catalog import DatasetCatalog
-from bi_agent.runtime.clickhouse_runtime import ClickHouseRuntime
+from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult, ClickHouseRuntime
+from bi_agent.runtime.clickhouse_query_compiler import CompiledQuery
 from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
 from bi_agent.runtime.query_audit import query_audit_refs
 from bi_agent.runtime.query_completeness import (
     ASSERTIONS,
+    _event_recurrence_occurs_in_window,
     validate_query_result,
     validate_query_set,
 )
@@ -413,6 +415,271 @@ def repair_report(contract, *reasons):
 
 
 class QueryCompletenessTest(unittest.TestCase):
+    def test_cross_year_annual_recurrence_occurs_on_both_sides_only(self):
+        row = {
+            "recurrence_kind": "annual_month_day_range",
+            "recurrence_month_start": 12,
+            "recurrence_day_start": 20,
+            "recurrence_month_end": 1,
+            "recurrence_day_end": 5,
+        }
+        self.assertTrue(
+            _event_recurrence_occurs_in_window(
+                row,
+                datetime.fromisoformat("2026-12-25").date(),
+                datetime.fromisoformat("2026-12-26").date(),
+            )
+        )
+        self.assertTrue(
+            _event_recurrence_occurs_in_window(
+                row,
+                datetime.fromisoformat("2027-01-02").date(),
+                datetime.fromisoformat("2027-01-03").date(),
+            )
+        )
+        self.assertFalse(
+            _event_recurrence_occurs_in_window(
+                row,
+                datetime.fromisoformat("2027-02-02").date(),
+                datetime.fromisoformat("2027-02-03").date(),
+            )
+        )
+
+    def test_executor_uses_bounded_context_policy_for_event_rows(self):
+        contract = reviewed_contract(
+            dataset_id="external_event",
+            query_intent="event_context_probe",
+            metrics=(),
+        )
+        snapshot = reviewed_snapshot("external_event")
+        row = {
+            field: ""
+            for field in contract.result_shape.required_fields
+        }
+        row.update(
+            {
+                "window_id": contract.window_refs[0],
+                "window_role": contract.resolved_windows[0].role,
+                "observation_key": f"__no_event__:{contract.window_refs[0]}",
+                "event_id": f"__no_event__:{contract.window_refs[0]}",
+                "event_count": 0,
+                "wording_limit": "context",
+                "recurrence_day_start": 0,
+                "recurrence_day_end": 0,
+                "payload": "{}",
+            }
+        )
+
+        class ContextRuntime:
+            def __init__(self):
+                self.bounded_calls = 0
+
+            def aggregate(self, *args, **kwargs):
+                raise AssertionError("aggregate path must not execute context rows")
+
+            def bounded_context(self, sql, query_id, **kwargs):
+                self.bounded_calls += 1
+                return ClickHouseQueryResult(
+                    ok=True,
+                    rows=(row,),
+                    query_hash="hash:event-context",
+                    query_id=query_id,
+                    provider_stats={"result_overflow_mode": "throw"},
+                    execution_attempt_ref=kwargs.get("execution_attempt_ref", ""),
+                )
+
+        runtime = ContextRuntime()
+        compiled = CompiledQuery(
+            sql_text="SELECT event_id FROM events WHERE snapshot_id = 's' LIMIT 5001",
+            parameters={},
+            settings={"readonly": 2, "max_result_rows": 5001},
+            query_contract_ref=contract.query_contract_id,
+            max_context_rows=5000,
+        )
+        with patch(
+            "bi_agent.runtime.query_executor.compile_clickhouse_query",
+            return_value=compiled,
+        ):
+            envelope = ClickHouseQueryExecutor(runtime).execute(
+                contract,
+                {snapshot.snapshot_ref: snapshot},
+                execution_attempt_ref="attempt:event-context",
+            )
+
+        self.assertEqual(envelope.execution_status, "succeeded")
+        self.assertEqual(runtime.bounded_calls, 1)
+
+    def test_executor_blocks_context_probe_row_overflow(self):
+        contract = reviewed_contract(
+            dataset_id="external_event",
+            query_intent="event_context_probe",
+            metrics=(),
+        )
+        snapshot = reviewed_snapshot("external_event")
+
+        class OverflowRuntime:
+            def aggregate(self, *args, **kwargs):
+                raise AssertionError("aggregate path must not execute context rows")
+
+            def bounded_context(self, sql, query_id, **kwargs):
+                return ClickHouseQueryResult(
+                    ok=True,
+                    rows=tuple(
+                        {
+                            "window_id": "target_day",
+                            "window_role": "target",
+                            "observation_key": f"event:{index}",
+                            "event_id": f"event:{index}",
+                        }
+                        for index in range(5001)
+                    ),
+                    query_hash="hash:event-context-overflow",
+                    query_id=query_id,
+                    provider_stats={"result_overflow_mode": "throw"},
+                    execution_attempt_ref=kwargs.get("execution_attempt_ref", ""),
+                )
+
+        compiled = CompiledQuery(
+            sql_text="SELECT * FROM context_rows ORDER BY event_id LIMIT 5001",
+            parameters={},
+            settings={"readonly": 2, "max_result_rows": 5001},
+            query_contract_ref=contract.query_contract_id,
+            max_context_rows=5000,
+        )
+        with patch(
+            "bi_agent.runtime.query_executor.compile_clickhouse_query",
+            return_value=compiled,
+        ):
+            envelope = ClickHouseQueryExecutor(OverflowRuntime()).execute(
+                contract,
+                {snapshot.snapshot_ref: snapshot},
+                execution_attempt_ref="attempt:event-context-overflow",
+            )
+
+        self.assertEqual(envelope.execution_status, "failed")
+        self.assertEqual(envelope.failure_reason, "context_row_bound_exceeded:5000")
+
+    def test_event_context_zero_rows_are_explicit_complete_window_sentinels(self):
+        windows = (window("target_day"), window("rolling_7_day_baseline"))
+        context_fields = (
+            "window_id",
+            "window_role",
+            "observation_key",
+            "event_count",
+            "source_family",
+            "event_id",
+            "event_type",
+            "event_start_date",
+            "event_end_date",
+            "affected_scope",
+            "authority",
+            "evidence_level",
+            "wording_limit",
+            "recurrence_kind",
+            "recurrence_month_start",
+            "recurrence_day_start",
+            "recurrence_month_end",
+            "recurrence_day_end",
+            "payload",
+        )
+        unsigned = QueryContract(
+            query_contract_id="query:event:zero",
+            analysis_contract_ref="analysis:event:zero",
+            query_intent="event_context_probe",
+            dataset_snapshot_refs=("snapshot:paid:1",),
+            metric_bindings=(),
+            dimension_bindings=(),
+            window_refs=tuple(item.window_id for item in windows),
+            resolved_windows=windows,
+            filters=(),
+            result_shape=ResultShape(
+                context_fields,
+                ("window_id", "event_id"),
+                ("window_id", "event_id"),
+                tuple(item.window_id for item in windows),
+                "complete_context_rows",
+            ),
+            completeness_assertions=("required_windows_complete",),
+            permission_scope="analyst",
+            workload_class="interactive_aggregate",
+            contract_signature="",
+        )
+        contract = replace(
+            unsigned, contract_signature=query_contract_signature(unsigned)
+        )
+        rows = tuple(
+            {
+                "window_id": item.window_id,
+                "window_role": item.role,
+                "observation_key": f"__no_event__:{item.window_id}",
+                "event_count": 0,
+                "source_family": "",
+                "event_id": f"__no_event__:{item.window_id}",
+                "event_type": "",
+                "event_start_date": "",
+                "event_end_date": "",
+                "affected_scope": "",
+                "authority": "",
+                "evidence_level": "",
+                "wording_limit": "context",
+                "recurrence_kind": "",
+                "recurrence_month_start": 0,
+                "recurrence_day_start": 0,
+                "recurrence_month_end": 0,
+                "recurrence_day_end": 0,
+                "payload": "{}",
+            }
+            for item in windows
+        )
+        result = successful_result(contract, rows=rows)
+        report = validate_query_result(contract, result, paid_snapshot())
+        self.assertEqual(report.completeness_status, "complete")
+
+    def test_event_context_recurrence_is_independently_checked_against_window(self):
+        contract = reviewed_contract(
+            dataset_id="external_event",
+            query_intent="event_context_probe",
+            metrics=(),
+        )
+        row = {
+            field: ""
+            for field in contract.result_shape.required_fields
+        }
+        row.update(
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "event:payday:wrong-window",
+                "event_count": 1,
+                "source_family": "external_event",
+                "event_id": "event:payday:wrong-window",
+                "event_type": "payday_context",
+                "event_start_date": "2024-01-01",
+                "event_end_date": "2026-06-08",
+                "affected_scope": "Nigeria",
+                "authority": "reviewed_workbook_pending_owner_review",
+                "evidence_level": "context",
+                "wording_limit": "context",
+                "recurrence_kind": "monthly_day_range",
+                "recurrence_month_start": 0,
+                "recurrence_day_start": 25,
+                "recurrence_month_end": 0,
+                "recurrence_day_end": 30,
+                "payload": "{}",
+            }
+        )
+        result = successful_result(contract, rows=(row,))
+        report = validate_query_result(
+            contract,
+            result,
+            reviewed_snapshot("external_event"),
+        )
+        self.assertEqual(report.completeness_status, "invalid")
+        self.assertTrue(
+            any("context_event_recurrence_outside_window" in reason for reason in report.failure_reasons),
+            report.failure_reasons,
+        )
+
     def test_executor_rejects_wrong_type_query_execution_record(self):
         contract = reviewed_contract()
         snapshot = reviewed_snapshot()
@@ -1446,6 +1713,53 @@ class QueryCompletenessTest(unittest.TestCase):
         self.assertIn(
             "join_duplicate_keys_exceeded:1:0",
             dimension_report.failure_reasons,
+        )
+
+    def test_dimension_presence_policy_controls_cross_window_pairing(self):
+        rows = (
+            {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 100},
+            {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 501},
+            {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "B", "paid_amount": 80},
+        )
+        outcomes = {}
+        for policy in ("paired_required", "sparse_allowed"):
+            contract = baseline_contract(
+                query_id=f"query:dimension-presence:{policy}",
+                dimensions=(channel_dimension(),),
+            )
+            contract = replace(
+                contract,
+                result_shape=replace(
+                    contract.result_shape,
+                    dimension_presence_policy=policy,
+                ),
+            )
+            result = successful_result(contract, rows=rows)
+            report = validate_query_result(contract, result, paid_snapshot())
+            outcomes[policy] = validate_query_set(
+                (contract,),
+                (result,),
+                (report,),
+            )[0]
+
+        self.assertEqual(
+            (
+                outcomes["paired_required"].completeness_status,
+                outcomes["paired_required"].analysis_readiness,
+            ),
+            ("partial", "blocked"),
+        )
+        self.assertIn(
+            "unpaired_dimension:channel:B:missing_target",
+            outcomes["paired_required"].failure_reasons,
+        )
+        self.assertEqual(
+            (
+                outcomes["sparse_allowed"].completeness_status,
+                outcomes["sparse_allowed"].analysis_readiness,
+                outcomes["sparse_allowed"].failure_reasons,
+            ),
+            ("complete", "ready", ()),
         )
 
     def test_join_expectation_requires_complete_audit_statistics(self):

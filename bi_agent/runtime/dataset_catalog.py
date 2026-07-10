@@ -199,6 +199,33 @@ class DatasetCatalog:
                 eligible.append((loaded_at_utc, item))
         return tuple(eligible)
 
+    def future_as_of_candidates(
+        self,
+        dataset_id: str,
+        *,
+        as_of: datetime,
+        evidence_states: tuple[str, ...] = ("claim_ready",),
+        release_resolver: DatasetReleaseResolver | None = None,
+    ) -> tuple[tuple[datetime, DatasetSnapshot], ...]:
+        _validate_evidence_states(evidence_states)
+        as_of_utc = _aware_utc(as_of, field="as_of")
+        future = []
+        for item in self._snapshots:
+            if (
+                item.dataset_id != dataset_id
+                or item.status != "active"
+                or item.evidence_state not in evidence_states
+                or not _snapshot_has_release_authority(
+                    item,
+                    release_resolver or self._release_resolver,
+                )
+            ):
+                continue
+            loaded_at_utc = _parse_datetime(item.loaded_at)
+            if loaded_at_utc > as_of_utc:
+                future.append((loaded_at_utc, item))
+        return tuple(sorted(future, key=lambda candidate: (candidate[0], candidate[1].snapshot_ref)))
+
     def common_watermark(self, dataset_ids: tuple[str, ...]) -> date:
         watermarks = []
         for dataset_id in dataset_ids:
@@ -306,7 +333,7 @@ def dataset_release_authority_integrity_errors(
         return ("dataset_release_authority_type",)
     errors: list[str] = []
     if (
-        len(record.member_projections) != 2
+        not record.member_projections
         or any(
             type(item) is not DatasetSnapshotImmutableProjection
             for item in record.member_projections
@@ -315,7 +342,11 @@ def dataset_release_authority_integrity_errors(
         errors.append("dataset_release_authority_member_count")
     if tuple(sorted(record.snapshot_refs)) != record.snapshot_refs:
         errors.append("dataset_release_authority_member_order")
-    if set(record.dataset_ids) != {"market_dashboard", "market_dashboard_channel"}:
+    try:
+        expected_members = canonical_dataset_release_members(record.dataset_ids[0])
+    except (IndexError, KeyError, ValueError):
+        expected_members = ()
+    if set(record.dataset_ids) != set(expected_members):
         errors.append("dataset_release_authority_dataset_set")
     expected_release_ref = dataset_snapshot_release_ref(
         record.logical_snapshot_id,
@@ -449,6 +480,35 @@ def canonical_dataset_requires_release(dataset_id: str) -> bool:
         return False
 
 
+@lru_cache(maxsize=None)
+def canonical_dataset_release_members(dataset_id: str) -> tuple[str, ...]:
+    from bi_agent.runtime.runtime_contract_registry import (
+        CANONICAL_RUNTIME_BINDINGS_PATH,
+        RuntimeContractRegistry,
+    )
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    contract = registry.dataset(dataset_id)
+    policy = contract.get("release_membership")
+    if contract.get("requires_release") is not True or not isinstance(policy, Mapping):
+        raise KeyError(f"dataset_release_membership_missing:{dataset_id}")
+    members = policy.get("dataset_ids")
+    if (
+        not isinstance(members, (tuple, list))
+        or not members
+        or any(not isinstance(item, str) or not item for item in members)
+        or len(set(members)) != len(members)
+        or dataset_id not in members
+    ):
+        raise ValueError(f"dataset_release_membership_invalid:{dataset_id}")
+    normalized = tuple(sorted(members))
+    for member in normalized:
+        member_policy = registry.dataset(member).get("release_membership")
+        if not isinstance(member_policy, Mapping) or tuple(sorted(member_policy.get("dataset_ids") or ())) != normalized:
+            raise ValueError(f"dataset_release_membership_inconsistent:{dataset_id}")
+    return normalized
+
+
 def _snapshot_has_release_authority(
     snapshot: DatasetSnapshot,
     resolver: DatasetReleaseResolver | None,
@@ -482,13 +542,19 @@ def validate_dataset_snapshot_release_payloads(
     payloads: Sequence[Mapping[str, Any]],
 ) -> tuple[tuple[dict[str, Any], ...], str, str, str]:
     normalized = tuple(dict(payload) for payload in payloads)
-    if len(normalized) != 2:
+    if not normalized:
         raise ValueError("dataset_snapshot_release_dataset_set")
     dataset_ids = {str(item.get("dataset_id") or "") for item in normalized}
-    if dataset_ids != {"market_dashboard", "market_dashboard_channel"}:
+    try:
+        expected_dataset_ids = set(
+            canonical_dataset_release_members(next(iter(dataset_ids)))
+        )
+    except (KeyError, StopIteration, ValueError) as exc:
+        raise ValueError("dataset_snapshot_release_dataset_set") from exc
+    if dataset_ids != expected_dataset_ids or len(normalized) != len(expected_dataset_ids):
         raise ValueError("dataset_snapshot_release_dataset_set")
     snapshot_refs = tuple(str(item.get("snapshot_ref") or "") for item in normalized)
-    if any(not ref for ref in snapshot_refs) or len(set(snapshot_refs)) != 2:
+    if any(not ref for ref in snapshot_refs) or len(set(snapshot_refs)) != len(normalized):
         raise ValueError("dataset_snapshot_release_snapshot_refs")
     logical_ids = {str(item.get("logical_snapshot_id") or "") for item in normalized}
     revisions = {str(item.get("load_revision") or "") for item in normalized}

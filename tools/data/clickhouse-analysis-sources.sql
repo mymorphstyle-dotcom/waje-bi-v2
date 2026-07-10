@@ -1,3 +1,4 @@
+-- BEGIN MARKET_DASHBOARD
 CREATE TABLE IF NOT EXISTS __OVERALL_TABLE__
 (
     snapshot_id String,
@@ -86,3 +87,90 @@ CREATE TABLE IF NOT EXISTS __CHANNEL_TABLE__
 )
 ENGINE = MergeTree
 ORDER BY (snapshot_id, load_revision, business_date, game, channel);
+-- END MARKET_DASHBOARD
+
+-- BEGIN GAMEPLAY_EVENTS
+CREATE TABLE IF NOT EXISTS __GAMEPLAY_TABLE__
+(
+    snapshot_id String,
+    load_revision String,
+    business_date Date,
+    service_scope String,
+    gameplay String,
+    gameplay_users Decimal(38, 0),
+    gameplay_penetration_rate Nullable(Decimal(38, 18)),
+    gameplay_rounds Nullable(Decimal(38, 0)),
+    rounds_per_user Nullable(Decimal(38, 18)),
+    player_match_rate Nullable(Decimal(38, 18)),
+    total_rounds Nullable(Decimal(38, 0)),
+    service_fee_rake Nullable(Decimal(38, 12)),
+    robot_cash_won Nullable(Decimal(38, 12)),
+    system_rake_rate Nullable(Decimal(38, 18)),
+    gameplay_profit Nullable(Decimal(38, 12)),
+    profit_share Nullable(Decimal(38, 18)),
+    bet_amount_share Nullable(Decimal(38, 18)),
+    player_bet_amount Nullable(Decimal(38, 12)),
+    player_bet_count Nullable(Decimal(38, 0)),
+    betting_users_derived Nullable(Decimal(38, 0)),
+    player_bet_count_per_user Nullable(Decimal(38, 18)),
+    player_avg_bet_amount Nullable(Decimal(38, 18)),
+    player_bet_amount_per_user Nullable(Decimal(38, 18)),
+    robot_cash_lost_raw Nullable(Decimal(38, 12))
+)
+ENGINE = MergeTree
+ORDER BY (snapshot_id, load_revision, business_date, service_scope, gameplay);
+
+CREATE TABLE IF NOT EXISTS __GAMEPLAY_CHANNEL_TABLE__
+(
+    snapshot_id String,
+    load_revision String,
+    business_date Date,
+    channel String,
+    service_scope String,
+    gameplay String,
+    gameplay_users Decimal(38, 0),
+    gameplay_penetration_rate Nullable(Decimal(38, 18)),
+    gameplay_rounds Nullable(Decimal(38, 0)),
+    rounds_per_user Nullable(Decimal(38, 18)),
+    player_match_rate Nullable(Decimal(38, 18)),
+    total_rounds Nullable(Decimal(38, 0)),
+    service_fee_rake Nullable(Decimal(38, 12)),
+    robot_cash_won Nullable(Decimal(38, 12)),
+    system_rake_rate Nullable(Decimal(38, 18)),
+    gameplay_profit Nullable(Decimal(38, 12)),
+    profit_share Nullable(Decimal(38, 18)),
+    bet_amount_share Nullable(Decimal(38, 18)),
+    player_bet_amount Nullable(Decimal(38, 12)),
+    player_bet_count Nullable(Decimal(38, 0)),
+    betting_users_derived Nullable(Decimal(38, 0)),
+    player_bet_count_per_user Nullable(Decimal(38, 18)),
+    player_avg_bet_amount Nullable(Decimal(38, 18)),
+    player_bet_amount_per_user Nullable(Decimal(38, 18)),
+    robot_cash_lost_raw Nullable(Decimal(38, 12))
+)
+ENGINE = MergeTree
+ORDER BY (snapshot_id, load_revision, business_date, channel, service_scope, gameplay);
+
+CREATE TABLE IF NOT EXISTS __BUSINESS_EVENTS_TABLE__
+(
+    snapshot_id String,
+    load_revision String,
+    source_family LowCardinality(String),
+    event_id String,
+    event_type String,
+    event_start_date Date,
+    event_end_date Date,
+    affected_scope String,
+    authority String,
+    evidence_level String,
+    wording_limit String,
+    recurrence_kind String,
+    recurrence_month_start UInt8,
+    recurrence_day_start UInt8,
+    recurrence_month_end UInt8,
+    recurrence_day_end UInt8,
+    payload String
+)
+ENGINE = MergeTree
+ORDER BY (snapshot_id, load_revision, source_family, event_id);
+-- END GAMEPLAY_EVENTS

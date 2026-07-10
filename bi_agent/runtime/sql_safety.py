@@ -108,6 +108,12 @@ def validate_select_only(sql: str, *, aggregate: bool = False) -> SqlSafetyResul
             ok=False, query_hash=query_hash, reason="blocked_select_clause"
         )
     has_top_level_limit = "LIMIT" in top_level_token_set
+    if not aggregate and "UNION" in top_level_token_set:
+        return SqlSafetyResult(
+            ok=False,
+            query_hash=query_hash,
+            reason="global_limit_required",
+        )
     if aggregate and not has_top_level_limit and not _has_aggregate_shape(cleaned):
         return SqlSafetyResult(
             ok=False, query_hash=query_hash, reason="aggregate_shape_required"

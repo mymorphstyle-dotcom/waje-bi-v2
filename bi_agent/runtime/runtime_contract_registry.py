@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from bi_agent.runtime.analysis_contracts import DIMENSION_PRESENCE_POLICIES
 from bi_agent.runtime.contracts import load_contract
 
 
@@ -25,6 +26,7 @@ _REQUIRED_SECTIONS = (
     "artifact",
     "business_timezone",
     "claim_strength_taxonomy",
+    "metric_display_policies",
     *_MAPPING_SECTIONS,
 )
 _REQUIRED_CLAIM_STRENGTHS = frozenset(
@@ -69,6 +71,8 @@ class RuntimeContractRegistry:
                 if not isinstance(item, Mapping):
                     raise ValueError(f"runtime_contract_entry_must_be_mapping:{section}:{item_id}")
         _validate_claim_strength_taxonomy(payload["claim_strength_taxonomy"])
+        _validate_metric_display_policies(payload["metric_display_policies"])
+        _validate_query_shapes(payload.get("query_shapes") or {})
         maximum_ranks = payload["claim_strength_taxonomy"]["maximum_strength_ranks"]
         for capability_id, contract in payload["capability_inputs"].items():
             maximum = str(contract.get("maximum_claim_strength") or "")
@@ -176,6 +180,18 @@ class RuntimeContractRegistry:
 
     def query_shape(self, query_family: str) -> dict[str, Any]:
         return self._entry("query_shapes", query_family, "query_shape")
+
+    def metric_display_policy_allowed(
+        self,
+        value_semantics: str,
+        display_format: str,
+    ) -> bool:
+        policies = self._payload["metric_display_policies"]["allowed"]
+        return any(
+            str(item.get("value_semantics") or "") == value_semantics
+            and str(item.get("display_format") or "") == display_format
+            for item in policies
+        )
 
     def _entry(self, section: str, item_id: str, kind: str) -> dict[str, Any]:
         try:
@@ -295,6 +311,41 @@ def _validate_claim_strength_taxonomy(value: Any) -> None:
     }
     if dict(maximum_ranks) != expected_maximums:
         raise ValueError("runtime_claim_strength_taxonomy_maximum_ceiling_invalid")
+
+
+def _validate_metric_display_policies(value: Any) -> None:
+    if not isinstance(value, Mapping) or not str(value.get("version") or ""):
+        raise ValueError("runtime_metric_display_policies_invalid")
+    allowed = value.get("allowed")
+    if not isinstance(allowed, list) or not allowed:
+        raise ValueError("runtime_metric_display_policies_invalid")
+    pairs: set[tuple[str, str]] = set()
+    for item in allowed:
+        if not isinstance(item, Mapping):
+            raise ValueError("runtime_metric_display_policy_invalid")
+        pair = (
+            str(item.get("value_semantics") or ""),
+            str(item.get("display_format") or ""),
+        )
+        if not all(pair) or pair in pairs:
+            raise ValueError("runtime_metric_display_policy_invalid")
+        pairs.add(pair)
+
+
+def _validate_query_shapes(value: Any) -> None:
+    if not isinstance(value, Mapping):
+        raise ValueError("runtime_query_shapes_invalid")
+    for query_family, shape in value.items():
+        policy = (
+            shape.get("dimension_presence_policy")
+            if isinstance(shape, Mapping)
+            else None
+        )
+        if type(policy) is not str or policy not in DIMENSION_PRESENCE_POLICIES:
+            raise ValueError(
+                "runtime_query_shape_dimension_presence_policy:"
+                f"{query_family}:{policy or 'missing'}"
+            )
 
 
 def _walk_mapping_nodes(node: yaml.Node, *, path: tuple[str, ...]) -> None:

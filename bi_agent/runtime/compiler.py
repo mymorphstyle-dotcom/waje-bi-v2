@@ -141,6 +141,7 @@ CAPABILITY_ORDER = {
     "compare_period_phases": 22,
     "weekday_calendar_compare": 23,
     "pattern_scan": 30,
+    "gameplay_activity_context": 31,
     "formula_decompose": 40,
     "driver_decomposition": 41,
     "segment_bridge": 50,

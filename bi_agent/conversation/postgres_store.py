@@ -24,6 +24,7 @@ from bi_agent.runtime.analysis_assets import asset_dedup_key, merge_analysis_ass
 from bi_agent.runtime.dataset_catalog import (
     DatasetReleaseAuthorityRecord,
     build_dataset_release_authority_record,
+    canonical_dataset_release_members,
     canonical_dataset_requires_release,
     dataset_release_authority_record_from_mapping,
     immutable_dataset_snapshot_projection,
@@ -844,20 +845,31 @@ class PostgresConversationStore:
         member_count = int(_field(row, "member_count", 4) or 0)
         member_payloads = _json_value(_field(row, "member_payloads", 5))
         member_columns = _json_value(_field(row, "member_columns", 6))
+        stored = (
+            dataset_release_authority_record_from_mapping(release_payload)
+            if isinstance(release_payload, dict)
+            else None
+        )
+        try:
+            expected_count = len(
+                canonical_dataset_release_members(stored.dataset_ids[0])
+            ) if stored is not None else 0
+        except (IndexError, KeyError, ValueError):
+            expected_count = 0
         if (
-            not isinstance(release_payload, dict)
+            stored is None
             or not isinstance(snapshot_refs, list)
             or not isinstance(member_payloads, list)
             or not isinstance(member_columns, list)
-            or member_count != 2
-            or len(snapshot_refs) != 2
-            or len(member_payloads) != 2
-            or len(member_columns) != 2
+            or not expected_count
+            or member_count != expected_count
+            or len(snapshot_refs) != expected_count
+            or len(member_payloads) != expected_count
+            or len(member_columns) != expected_count
             or tuple(str(item.get("snapshot_ref") or "") for item in member_payloads)
             != tuple(str(ref) for ref in snapshot_refs)
         ):
             raise ValueError("dataset_release_authority_membership")
-        stored = dataset_release_authority_record_from_mapping(release_payload)
         payload_projections = tuple(
             immutable_dataset_snapshot_projection(item)
             for item in member_payloads

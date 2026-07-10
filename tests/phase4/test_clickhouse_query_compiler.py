@@ -17,6 +17,8 @@ from bi_agent.runtime.clickhouse_query_compiler import (
 from bi_agent.runtime.dataset_catalog import (
     DatasetSnapshot,
     build_dataset_release_authority_record,
+    canonical_dataset_release_members,
+    canonical_dataset_requires_release,
     dataset_snapshot_release_ref,
 )
 from bi_agent.runtime.contracts import load_contract
@@ -40,6 +42,62 @@ def compile_clickhouse_query(contract, snapshots, **kwargs):
     resolver = kwargs.pop("release_resolver", None)
     snapshots = dict(snapshots)
     first = next(iter(snapshots.values()), None)
+    if (
+        resolver is None
+        and isinstance(first, DatasetSnapshot)
+        and canonical_dataset_requires_release(first.dataset_id)
+        and first.dataset_id not in {"market_dashboard", "market_dashboard_channel"}
+    ):
+        table_names = {
+            "gameplay": "gameplay_daily__a1a1a1a1a1a1a1a1",
+            "gameplay_channel": "gameplay_channel_daily__b2b2b2b2b2b2b2b2",
+            "external_event": "business_events__c3c3c3c3c3c3c3c3",
+            "internal_operation_event": "business_events__d4d4d4d4d4d4d4d4",
+        }
+        schema_fingerprints = {
+            "gameplay": "a1" * 32,
+            "gameplay_channel": "b2" * 32,
+            "external_event": "c3" * 32,
+            "internal_operation_event": "d4" * 32,
+        }
+        canonical_registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        members = []
+        for member_dataset in canonical_dataset_release_members(first.dataset_id):
+            member = replace(
+                first,
+                snapshot_ref=(
+                    first.snapshot_ref
+                    if member_dataset == first.dataset_id
+                    else f"snapshot:{member_dataset}:compile-peer"
+                ),
+                dataset_id=member_dataset,
+                physical_table=table_names[member_dataset],
+                schema_fingerprint=schema_fingerprints[member_dataset],
+                schema_fields=tuple(
+                    canonical_registry.dataset(member_dataset)["schema_fields"]
+                ),
+                logical_snapshot_id=f"{first.dataset_id}-logical",
+                load_revision=f"{first.dataset_id}-load:sha256:reviewed",
+                rows_content_hash=("a" if member_dataset == first.dataset_id else "b") * 64,
+                evidence_state="context_only",
+                reconciliation_status="not_applicable",
+            )
+            members.append(member)
+        release_ref = dataset_snapshot_release_ref(
+            members[0].logical_snapshot_id,
+            members[0].load_revision,
+            tuple(item.snapshot_ref for item in members),
+        )
+        members = [replace(item, release_ref=release_ref) for item in members]
+        record = build_dataset_release_authority_record(
+            tuple({**item.to_dict(), "requires_release": True} for item in members)
+        )
+        selected = next(item for item in members if item.dataset_id == first.dataset_id)
+        selected = replace(selected, authority_record_ref=record.authority_record_ref)
+        snapshots = {selected.snapshot_ref: selected}
+        resolver = _ReleaseResolver(record)
     if (
         resolver is None
         and isinstance(first, DatasetSnapshot)
@@ -326,7 +384,24 @@ def contract(
         {
             "time_bucket_scan": ("calendar_week", "weekday", "month_phase"),
             "data_quality_probe": ("source_row_count",),
-            "event_context_probe": ("event_count",),
+            "event_context_probe": (
+                "event_count",
+                "source_family",
+                "event_id",
+                "event_type",
+                "event_start_date",
+                "event_end_date",
+                "affected_scope",
+                "authority",
+                "evidence_level",
+                "wording_limit",
+                "recurrence_kind",
+                "recurrence_month_start",
+                "recurrence_day_start",
+                "recurrence_month_end",
+                "recurrence_day_end",
+                "payload",
+            ),
             "high_value_scan": (
                 "high_value_threshold",
                 "high_value_amount",
@@ -336,7 +411,11 @@ def contract(
     )
     required_fields.extend(item.metric_id for item in selected_metrics)
     required_fields.extend(item.dimension_id for item in dimensions)
-    grain = ["window_id", "observation_key", *(item.dimension_id for item in dimensions)]
+    grain = [
+        "window_id",
+        "event_id" if query_intent == "event_context_probe" else "observation_key",
+        *(item.dimension_id for item in dimensions),
+    ]
     reviewed_parameters = (
         {
             "threshold_quantile": 0.95,
@@ -350,6 +429,9 @@ def contract(
         if query_intent == "high_value_scan"
         else {}
     )
+    reviewed_shape = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    ).query_shape(query_intent)
     unsigned = QueryContract(
         query_contract_id=f"query:run:{dataset_id}:{query_intent}:1",
         analysis_contract_ref="analysis:run:1",
@@ -365,6 +447,8 @@ def contract(
             tuple(grain),
             tuple(grain),
             tuple(item.window_id for item in resolved),
+            "complete_context_rows" if query_intent == "event_context_probe" else "complete_aggregate",
+            str(reviewed_shape["dimension_presence_policy"]),
         ),
         completeness_assertions=("required_windows", "unique_key"),
         permission_scope="analyst",
@@ -532,11 +616,151 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         self.assertIn("count() AS `source_row_count`", compiled_context.sql_text)
     def test_event_context_keeps_reviewed_count_with_metric_projection(self):
         compiled = compile_clickhouse_query(
-            contract(query_intent="event_context_probe"),
-            {"snapshot:paid_order_success:1": snapshot()},
+            contract(
+                dataset_id="external_event",
+                query_intent="event_context_probe",
+                metrics=(),
+            ),
+            {"snapshot:external_event:1": snapshot("external_event")},
         )
 
-        self.assertIn("count() AS `event_count`", compiled.sql_text)
+        self.assertIn("toUInt64(1) AS `event_count`", compiled.sql_text)
+        self.assertIn("`event_start_date` < tupleElement(analysis_window, 4)", compiled.sql_text)
+        self.assertIn("`event_end_date` >= tupleElement(analysis_window, 3)", compiled.sql_text)
+        for field in (
+            "source_family",
+            "event_id",
+            "event_type",
+            "event_start_date",
+            "event_end_date",
+            "affected_scope",
+            "authority",
+            "evidence_level",
+            "wording_limit",
+            "recurrence_kind",
+            "recurrence_month_start",
+            "recurrence_day_start",
+            "recurrence_month_end",
+            "recurrence_day_end",
+            "payload",
+        ):
+            self.assertIn(f"`{field}`", compiled.sql_text)
+        self.assertIn("context_rows AS (", compiled.sql_text)
+        self.assertIn("UNION ALL", compiled.sql_text)
+        self.assertIn("NOT IN (SELECT `window_id` FROM matched_events)", compiled.sql_text)
+        self.assertIn("SELECT * FROM context_rows", compiled.sql_text)
+        self.assertIn("ORDER BY `window_id`, `event_id`", compiled.sql_text)
+        self.assertTrue(compiled.sql_text.endswith("LIMIT 5001"))
+        self.assertEqual(compiled.max_context_rows, 5000)
+        self.assertEqual(compiled.settings["max_result_rows"], 5001)
+        self.assertIn("`recurrence_kind` = 'monthly_day_range'", compiled.sql_text)
+        self.assertIn("`recurrence_kind` = 'annual_month_day_range'", compiled.sql_text)
+        self.assertIn("arrayExists(recurrence_day_offset", compiled.sql_text)
+        self.assertIn("dateDiff('day'", compiled.sql_text)
+
+    def test_gameplay_activity_probe_uses_typed_context_policy_and_canonical_dimension(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        self.assertTrue(
+            registry.metric_display_policy_allowed(
+                "gameplay_activity_amount", "number"
+            )
+        )
+        dimension_contract = registry.dimension("gameplay", dataset_id="gameplay")
+        self.assertEqual(dimension_contract["source_field"], "gameplay")
+        self.assertIn("window_id", dimension_contract["allowed_grains"])
+        metric_contract = registry.metric("player_bet_amount", dataset_id="gameplay")
+        metric_binding = MetricBinding(
+            metric_id="player_bet_amount",
+            contract_ref=metric_contract["contract_ref"],
+            dataset_id="gameplay",
+            expression=metric_contract["expression"],
+            aggregation=metric_contract["aggregation"],
+            required_fields=tuple(metric_contract["required_fields"]),
+            grain=tuple(metric_contract["grain"]),
+            claim_types=tuple(metric_contract["claim_types"]),
+            reconciliation_tolerance=metric_contract["reconciliation_tolerance"],
+            reconciliation_strategy=metric_contract["reconciliation_strategy"],
+            value_semantics=metric_contract["value_semantics"],
+            display_format=metric_contract["display_format"],
+        )
+        dimension_binding = DimensionBinding(
+            "gameplay",
+            dimension_contract["contract_ref"],
+            "gameplay",
+            dimension_contract["source_field"],
+            tuple(dimension_contract["allowed_grains"]),
+        )
+        compiled = compile_clickhouse_query(
+            contract(
+                dataset_id="gameplay",
+                query_intent="gameplay_activity_probe",
+                metrics=(metric_binding,),
+                dimensions=(dimension_binding,),
+            ),
+            {"snapshot:gameplay:1": snapshot("gameplay")},
+        )
+        self.assertIn("sum(player_bet_amount)", compiled.sql_text)
+        self.assertIn("`gameplay` AS `gameplay`", compiled.sql_text)
+        self.assertNotIn("paid_amount", compiled.sql_text)
+        self.assertEqual(
+            dimension_contract["allowed_grains"],
+            ["day", "window_id"],
+        )
+        self.assertEqual(
+            contract(
+                dataset_id="gameplay",
+                query_intent="gameplay_activity_probe",
+                metrics=(metric_binding,),
+                dimensions=(dimension_binding,),
+            ).result_shape.dimension_presence_policy,
+            "sparse_allowed",
+        )
+
+    def test_dimension_presence_policy_is_signed_and_registry_bound(self):
+        base = contract(
+            dataset_id="gameplay",
+            query_intent="gameplay_activity_probe",
+            metrics=(),
+            dimensions=(),
+        )
+        drifted = replace(
+            base,
+            result_shape=replace(
+                base.result_shape,
+                dimension_presence_policy="paired_required",
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "query_contract_signature_mismatch"):
+            compile_clickhouse_query(
+                drifted,
+                {"snapshot:gameplay:1": snapshot("gameplay")},
+            )
+        with self.assertRaisesRegex(ValueError, "reviewed_result_shape_mismatch"):
+            compile_clickhouse_query(
+                resigned(drifted),
+                {"snapshot:gameplay:1": snapshot("gameplay")},
+            )
+
+        payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
+        payload["query_shapes"]["gameplay_activity_probe"].pop(
+            "dimension_presence_policy"
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "runtime_query_shape_dimension_presence_policy",
+        ):
+            RuntimeContractRegistry(payload)
+        payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
+        payload["query_shapes"]["gameplay_activity_probe"][
+            "dimension_presence_policy"
+        ] = "infer_missing_as_zero"
+        with self.assertRaisesRegex(
+            ValueError,
+            "runtime_query_shape_dimension_presence_policy",
+        ):
+            RuntimeContractRegistry(payload)
 
     def test_rejects_high_value_dimensions_outside_reviewed_threshold_grain(self):
         base = contract(
@@ -1019,6 +1243,12 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                 expected_table = (
                     "FROM `market_dashboard_daily`"
                     if dataset_id == "market_dashboard"
+                    else "FROM `gameplay_daily__a1a1a1a1a1a1a1a1`"
+                    if dataset_id == "gameplay"
+                    else "FROM `business_events__c3c3c3c3c3c3c3c3`"
+                    if dataset_id == "external_event"
+                    else "FROM `business_events__d4d4d4d4d4d4d4d4`"
+                    if dataset_id == "internal_operation_event"
                     else "FROM `analytics`.`paid_success`"
                 )
                 self.assertIn(expected_table, compiled.sql_text)

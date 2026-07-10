@@ -525,6 +525,7 @@ def _dry_run_focus(accepted_graph: list[str]) -> str:
         "outlier_scan": "异常日期识别",
         "outlier_contribution": "异常日期移除复核",
         "event_evidence": "活动事件证据",
+        "gameplay_activity_context": "玩法活动上下文",
         "compare_periods": "目标窗口和基线窗口对比",
         "answer_verify": "答案边界校验",
     }

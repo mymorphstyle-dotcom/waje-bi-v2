@@ -23,6 +23,13 @@ claim_strength_taxonomy:
     verifier_only: 0
     reducer_only: 0
 
+metric_display_policies:
+  version: "1"
+  allowed:
+    - {value_semantics: raw_scalar, display_format: number}
+    - {value_semantics: scalar_ratio, display_format: percent}
+    - {value_semantics: gameplay_activity_amount, display_format: number}
+
 datasets:
   paid_order_success:
     date_field: business_date_lagos
@@ -36,6 +43,7 @@ datasets:
     legacy_physical_tables: [market_dashboard_daily]
     requires_physical_revision: true
     requires_release: true
+    release_membership: {policy: exact_dataset_set, dataset_ids: [market_dashboard, market_dashboard_channel]}
     snapshot_field: snapshot_id
     required_fields: [business_date]
     schema_fields: [snapshot_id, load_revision, business_date, game, active_users, new_users, revenue, active_user_arpu, registrations, new_devices, login_accounts, registration_rate, zero_round_user_share, gameplay_users, gameplay_rounds, app_avg_online_time, effective_user_app_avg_online_time, historical_paid_active_users, first_paid_amount, new_paid_amount, login_user_avg_recharge, avg_first_paid_amount, first_paid_rate, first_paid_users, new_paid_rate, new_paid_users, paid_users, paid_amount, recharge_channel_fee, withdraw_request_amount, withdraw_arrived_users, withdraw_arrived_amount, withdraw_to_recharge_ratio, withdraw_request_users, withdraw_fee, withdraw_user_fee, aggregate_marketing_cost, profit]
@@ -47,6 +55,7 @@ datasets:
     legacy_physical_tables: [market_dashboard_channel_daily]
     requires_physical_revision: true
     requires_release: true
+    release_membership: {policy: exact_dataset_set, dataset_ids: [market_dashboard, market_dashboard_channel]}
     snapshot_field: snapshot_id
     required_fields: [business_date]
     schema_fields: [snapshot_id, load_revision, business_date, game, channel, active_users, new_users, revenue, active_user_arpu, registrations, new_devices, login_accounts, registration_rate, zero_round_user_share, gameplay_users, gameplay_rounds, app_avg_online_time, effective_user_app_avg_online_time, historical_paid_active_users, first_paid_amount, new_paid_amount, login_user_avg_recharge, avg_first_paid_amount, first_paid_rate, first_paid_users, new_paid_rate, new_paid_users, paid_users, paid_amount, recharge_channel_fee, withdraw_request_amount, withdraw_arrived_users, withdraw_arrived_amount, withdraw_to_recharge_ratio, withdraw_request_users, withdraw_fee, withdraw_user_fee, aggregate_marketing_cost, profit]
@@ -54,15 +63,81 @@ datasets:
     unique_key: [snapshot_id, load_revision, business_date, game, channel]
   gameplay:
     date_field: business_date
+    physical_table_prefix: gameplay_daily__
+    legacy_physical_tables: [gameplay_daily]
+    requires_physical_revision: true
+    requires_release: true
+    release_membership: {policy: exact_dataset_set, dataset_ids: [gameplay, gameplay_channel]}
+    snapshot_field: snapshot_id
     required_fields: [business_date]
+    schema_fields: [snapshot_id, load_revision, business_date, service_scope, gameplay, gameplay_users, gameplay_penetration_rate, gameplay_rounds, rounds_per_user, player_match_rate, total_rounds, service_fee_rake, robot_cash_won, system_rake_rate, gameplay_profit, profit_share, bet_amount_share, player_bet_amount, player_bet_count, betting_users_derived, player_bet_count_per_user, player_avg_bet_amount, player_bet_amount_per_user, robot_cash_lost_raw]
+    grain: [snapshot_id, load_revision, business_date, service_scope, gameplay]
+    unique_key: [snapshot_id, load_revision, business_date, service_scope, gameplay]
+  gameplay_channel:
+    date_field: business_date
+    physical_table_prefix: gameplay_channel_daily__
+    legacy_physical_tables: [gameplay_channel_daily]
+    requires_physical_revision: true
+    requires_release: true
+    release_membership: {policy: exact_dataset_set, dataset_ids: [gameplay, gameplay_channel]}
+    snapshot_field: snapshot_id
+    required_fields: [business_date, channel]
+    schema_fields: [snapshot_id, load_revision, business_date, channel, service_scope, gameplay, gameplay_users, gameplay_penetration_rate, gameplay_rounds, rounds_per_user, player_match_rate, total_rounds, service_fee_rake, robot_cash_won, system_rake_rate, gameplay_profit, profit_share, bet_amount_share, player_bet_amount, player_bet_count, betting_users_derived, player_bet_count_per_user, player_avg_bet_amount, player_bet_amount_per_user, robot_cash_lost_raw]
+    grain: [snapshot_id, load_revision, business_date, channel, service_scope, gameplay]
+    unique_key: [snapshot_id, load_revision, business_date, channel, service_scope, gameplay]
   external_event:
     date_field: event_start_date
+    physical_table_prefix: business_events__
+    legacy_physical_tables: [business_events]
+    requires_physical_revision: true
+    requires_release: true
+    release_membership: {policy: exact_dataset_set, dataset_ids: [external_event]}
+    snapshot_field: snapshot_id
     required_fields: [event_start_date]
+    schema_fields: [snapshot_id, load_revision, source_family, event_id, event_type, event_start_date, event_end_date, affected_scope, authority, evidence_level, wording_limit, recurrence_kind, recurrence_month_start, recurrence_day_start, recurrence_month_end, recurrence_day_end, payload]
+    grain: [snapshot_id, load_revision, source_family, event_id]
+    unique_key: [snapshot_id, load_revision, source_family, event_id]
   internal_operation_event:
     date_field: event_start_date
+    physical_table_prefix: business_events__
+    legacy_physical_tables: [business_events]
+    requires_physical_revision: true
+    requires_release: true
+    release_membership: {policy: exact_dataset_set, dataset_ids: [internal_operation_event]}
+    snapshot_field: snapshot_id
     required_fields: [event_start_date]
+    schema_fields: [snapshot_id, load_revision, source_family, event_id, event_type, event_start_date, event_end_date, affected_scope, authority, evidence_level, wording_limit, recurrence_kind, recurrence_month_start, recurrence_day_start, recurrence_month_end, recurrence_day_end, payload]
+    grain: [snapshot_id, load_revision, source_family, event_id]
+    unique_key: [snapshot_id, load_revision, source_family, event_id]
+    availability_policy: released_snapshot_required
 
 metrics:
+  player_bet_amount:
+    contract_ref: contracts/sources/gameplay.source.yaml@0.1#field_contracts.player_bet_amount
+    dataset_id: gameplay
+    expression: sum(player_bet_amount)
+    aggregation: sum
+    required_fields: [player_bet_amount]
+    grain: [window_id]
+    value_semantics: gameplay_activity_amount
+    display_format: number
+    reconciliation_tolerance: 0.000000000001
+    reconciliation_strategy: additive_sum
+    claim_types: [candidate_mechanism, comparative_change]
+    maximum_claim_strength: observed
+    source_adapters:
+      gameplay_channel:
+        contract_ref: contracts/sources/gameplay.source.yaml@0.1#field_contracts.player_bet_amount
+        expression: sum(player_bet_amount)
+        aggregation: sum
+        required_fields: [player_bet_amount]
+        grain: [window_id]
+        value_semantics: gameplay_activity_amount
+        display_format: number
+        reconciliation_tolerance: 0.000000000001
+        reconciliation_strategy: additive_sum
+        claim_types: [candidate_mechanism, comparative_change]
+        maximum_claim_strength: observed
   paid_amount:
     contract_ref: contracts/metrics/paid-amount.metric.yaml@0.1
     dataset_id: paid_order_success
@@ -250,6 +325,18 @@ metrics:
     display_format: number
 
 dimensions:
+  gameplay:
+    contract_ref: contracts/sources/gameplay.source.yaml@0.1#field_contracts.gameplay
+    dataset_id: gameplay
+    source_field: gameplay
+    allowed_grains: [day, window_id]
+    allowed_query_families: [gameplay_activity_probe]
+    source_adapters:
+      gameplay_channel:
+        contract_ref: contracts/sources/gameplay.source.yaml@0.1#field_contracts.gameplay
+        source_field: gameplay
+        allowed_grains: [day, window_id]
+        allowed_query_families: [gameplay_activity_probe]
   channel:
     contract_ref: contracts/dimensions/dimensions.yaml#channel
     dataset_id: paid_order_success
@@ -265,23 +352,24 @@ dimensions:
   payment_method: {contract_ref: contracts/dimensions/dimensions.yaml#payment_method, dataset_id: paid_order_success, source_field: payment_method, allowed_grains: [day, window_id]}
   region: {contract_ref: contracts/dimensions/dimensions.yaml#region, dataset_id: paid_order_success, source_field: region, allowed_grains: [day, window_id]}
   device_brand: {contract_ref: contracts/dimensions/dimensions.yaml#device_brand, dataset_id: paid_order_success, source_field: device_brand, allowed_grains: [day, window_id]}
-  gameplay: {contract_ref: contracts/dimensions/dimensions.yaml#gameplay, dataset_id: gameplay, source_field: gameplay, allowed_grains: [day, channel]}
 
 query_shapes:
-  daily_metric_baselines: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  component_driver_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  payment_success_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  dimension_contribution_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: independent}
-  joint_candidate_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: joint}
-  time_bucket_scan: {required_fields: [window_id, window_role, observation_key, calendar_week, weekday, month_phase], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  data_quality_probe: {required_fields: [window_id, window_role, observation_key, source_row_count], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  event_context_probe: {required_fields: [window_id, window_role, observation_key, event_count], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  channel_context_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key, channel], grain: [window_id, observation_key, channel], dimension_topology: joint}
-  source_reconciliation_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  daily_metric_baselines: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
+  component_driver_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
+  payment_success_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
+  dimension_contribution_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: independent, dimension_presence_policy: paired_required}
+  joint_candidate_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: joint, dimension_presence_policy: paired_required}
+  time_bucket_scan: {required_fields: [window_id, window_role, observation_key, calendar_week, weekday, month_phase], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
+  data_quality_probe: {required_fields: [window_id, window_role, observation_key, source_row_count], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
+  event_context_probe: {required_fields: [window_id, window_role, observation_key, event_count, source_family, event_id, event_type, event_start_date, event_end_date, affected_scope, authority, evidence_level, wording_limit, recurrence_kind, recurrence_month_start, recurrence_day_start, recurrence_month_end, recurrence_day_end, payload], unique_key: [window_id, event_id], grain: [window_id, event_id], result_semantics: complete_context_rows, max_context_rows: 5000, dimension_presence_policy: sparse_allowed}
+  gameplay_activity_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: sparse_allowed}
+  channel_context_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key, channel], grain: [window_id, observation_key, channel], dimension_topology: joint, dimension_presence_policy: paired_required}
+  source_reconciliation_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
   high_value_scan:
     required_fields: [window_id, window_role, observation_key, high_value_threshold, high_value_amount, high_value_paid_users]
     unique_key: [window_id, observation_key]
     grain: [window_id, observation_key]
+    dimension_presence_policy: paired_required
     query_parameters:
       threshold_quantile: 0.95
       threshold_reference: within_window_user_paid_amount
@@ -293,6 +381,16 @@ query_shapes:
       max_unmatched_rows: 0
 
 capability_inputs:
+  gameplay_activity_context:
+    query_families: [gameplay_activity_probe]
+    required_metrics: [player_bet_amount]
+    allowed_datasets: [gameplay, gameplay_channel]
+    dimension_mode: requested
+    supported_claim_types: [observed_activity, comparative_change]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: omit_path, incomplete_input: context_only}
+    supported_evidence_types: [observed]
+    maximum_claim_strength: directional
   market_health_compare:
     query_families: [daily_metric_baselines]
     metric_mode: requested

@@ -663,6 +663,9 @@ def apply_clickhouse_ddl(
     )
     if not all(existing):
         ddl = Path(ddl_path).read_text(encoding="utf-8")
+        ddl = ddl.split("-- BEGIN MARKET_DASHBOARD", 1)[1].split(
+            "-- END MARKET_DASHBOARD", 1
+        )[0]
         ddl = ddl.replace("__OVERALL_TABLE__", overall_table).replace(
             "__CHANNEL_TABLE__", channel_table
         )

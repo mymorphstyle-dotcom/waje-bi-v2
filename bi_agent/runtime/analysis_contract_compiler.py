@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import math
 from typing import Any, Iterable, Mapping
 
@@ -492,6 +492,36 @@ def _resolve_snapshots(
                 permission_scope in item.permission_scopes
                 for _, item in eligible_candidates
             )
+            future_candidates = () if permission_blocked else catalog.future_as_of_candidates(
+                dataset_id,
+                as_of=as_of,
+                evidence_states=("claim_ready", "context_only"),
+                release_resolver=release_resolver,
+            )
+            if future_candidates:
+                earliest_loaded_at, earliest = future_candidates[0]
+                gaps.append(
+                    _contract_gap(
+                        gap_type="dataset_snapshot_unavailable_as_of",
+                        gap_id=(
+                            f"dataset:{dataset_id}:"
+                            "dataset_snapshot_unavailable_as_of"
+                        ),
+                        dataset_id=dataset_id,
+                        affected_capabilities=affected_capabilities,
+                        owner="data_owner",
+                        repair_options=(
+                            "use_historical_snapshot_loaded_by_as_of",
+                            "wait_for_snapshot_availability",
+                        ),
+                        diagnostic_context={
+                            "as_of": as_of.astimezone(timezone.utc).isoformat(),
+                            "earliest_snapshot_ref": earliest.snapshot_ref,
+                            "earliest_loaded_at": earliest_loaded_at.isoformat(),
+                        },
+                    )
+                )
+                continue
             gap_type = "permission_blocked" if permission_blocked else "source_unbound"
             repair_options = (
                 ("request_permission", "use_permitted_aggregate")
@@ -603,6 +633,7 @@ def _snapshot_supports_query(
     context_families = {
         "data_quality_probe",
         "event_context_probe",
+        "gameplay_activity_probe",
         "channel_context_probe",
         "source_reconciliation_probe",
     }
@@ -639,6 +670,7 @@ def _bind_metrics(
                 contract=contract,
                 snapshot=snapshots_by_dataset.get(dataset_id),
                 affected_capabilities=affected_capabilities,
+                registry=registry,
             )
             if binding is not None:
                 bindings.append(binding)
@@ -654,6 +686,7 @@ def _bind_metric_source(
     contract: Mapping[str, Any],
     snapshot: DatasetSnapshot | None,
     affected_capabilities: tuple[str, ...],
+    registry: RuntimeContractRegistry,
 ) -> tuple[MetricBinding | None, ContractGap | None]:
     required_keys = (
         "contract_ref",
@@ -710,7 +743,7 @@ def _bind_metric_source(
             affected_capabilities=affected_capabilities,
             repair_options=("repair_metric_binding",),
         )
-    display_policy = _metric_display_policy(contract)
+    display_policy = _metric_display_policy(contract, registry)
     if display_policy is None:
         return None, _contract_gap(
             gap_type="contract_partial",
@@ -740,15 +773,13 @@ def _bind_metric_source(
 
 def _metric_display_policy(
     contract: Mapping[str, Any],
+    registry: RuntimeContractRegistry,
 ) -> tuple[str, str] | None:
     policy = (
         str(contract.get("value_semantics") or ""),
         str(contract.get("display_format") or ""),
     )
-    return policy if policy in {
-        ("raw_scalar", "number"),
-        ("scalar_ratio", "percent"),
-    } else None
+    return policy if registry.metric_display_policy_allowed(*policy) else None
 
 
 def _reconciliation_tolerance(contract: Mapping[str, Any]) -> float | None:
@@ -1223,6 +1254,7 @@ def _build_query_contracts(
                     if query_dimensions and query_family not in {
                         "channel_context_probe",
                         "data_quality_probe",
+                        "gameplay_activity_probe",
                     }:
                         companion_shape_contract = _registry_entry(
                             registry.query_shape,
@@ -1545,6 +1577,7 @@ def _result_shape(
         result_semantics=str(
             query_shape.get("result_semantics") or "complete_aggregate"
         ),
+        dimension_presence_policy=str(query_shape["dimension_presence_policy"]),
     )
 
 
@@ -1616,6 +1649,7 @@ def _contract_gap(
     owner: str = "contract_owner",
     repair_options: tuple[str, ...] = (),
     requires_clarification: bool = False,
+    diagnostic_context: Mapping[str, Any] | None = None,
 ) -> ContractGap:
     return ContractGap(
         gap_type=gap_type,
@@ -1625,6 +1659,7 @@ def _contract_gap(
         owner=owner,
         repair_options=repair_options,
         requires_clarification=requires_clarification,
+        diagnostic_context=dict(diagnostic_context or {}),
     )
 
 

@@ -5,6 +5,13 @@ from hashlib import sha256
 import json
 from typing import Any, Mapping
 
+from bi_agent.runtime.canonical_values import canonical_thaw
+
+
+DIMENSION_PRESENCE_POLICIES = frozenset(
+    {"paired_required", "sparse_allowed", "zero_filled"}
+)
+
 
 def stable_contract_signature(value: Mapping[str, Any]) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -21,6 +28,7 @@ class ContractGap:
     owner: str = "runtime_owner"
     repair_options: tuple[str, ...] = ()
     requires_clarification: bool = False
+    diagnostic_context: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -80,6 +88,7 @@ class ResultShape:
     grain: tuple[str, ...]
     required_window_ids: tuple[str, ...]
     result_semantics: str = "complete_aggregate"
+    dimension_presence_policy: str = "paired_required"
 
 
 @dataclass(frozen=True)
@@ -264,7 +273,7 @@ class QueryResultEnvelope:
     execution_attempt_ref: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        payload = asdict(self)
+        payload = canonical_thaw(self)
         payload.pop("rows")
         return payload
 
@@ -281,4 +290,4 @@ class CompletenessReport:
     coverage_summary: Mapping[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return canonical_thaw(self)

@@ -155,7 +155,13 @@ class ClickHouseQueryExecutor:
             f"clickhouse:{contract.query_contract_id}:"
             f"{query_hash[:12]}:{attempt_identity}"
         )
-        validation = validate_select_only(compiled.sql_text, aggregate=True)
+        bounded_context = (
+            contract.result_shape.result_semantics == "complete_context_rows"
+        )
+        validation = validate_select_only(
+            compiled.sql_text,
+            aggregate=not bounded_context,
+        )
         if not validation.ok:
             return finish(_failed_envelope(
                 contract,
@@ -167,7 +173,12 @@ class ClickHouseQueryExecutor:
             ))
 
         try:
-            result = self.runtime.aggregate(
+            execute = (
+                self.runtime.bounded_context
+                if bounded_context
+                else self.runtime.aggregate
+            )
+            result = execute(
                 compiled.sql_text,
                 query_id=query_id,
                 parameters=compiled.parameters,
@@ -191,6 +202,28 @@ class ClickHouseQueryExecutor:
                 query_hash=effective_hash,
                 reason=result.reason,
                 provider_stats=result.provider_stats,
+                execution_status="failed",
+                execution_attempt_ref=attempt_ref,
+            ))
+
+        if (
+            bounded_context
+            and compiled.max_context_rows > 0
+            and len(result.rows) > compiled.max_context_rows
+        ):
+            provider_stats = dict(result.provider_stats)
+            provider_stats.update(
+                {
+                    "context_row_count": len(result.rows),
+                    "max_context_rows": compiled.max_context_rows,
+                }
+            )
+            return finish(_failed_envelope(
+                contract,
+                query_id=result.query_id or query_id,
+                query_hash=effective_hash,
+                reason=f"context_row_bound_exceeded:{compiled.max_context_rows}",
+                provider_stats=provider_stats,
                 execution_status="failed",
                 execution_attempt_ref=attempt_ref,
             ))

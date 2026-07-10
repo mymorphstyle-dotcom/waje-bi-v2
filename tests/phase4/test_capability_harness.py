@@ -37,6 +37,112 @@ def run_capability(capability_id, params):
 
 
 class CapabilityHarnessTest(unittest.TestCase):
+    def test_context_capabilities_use_bound_query_rows_and_ignore_request_injection(self):
+        cases = (
+            (
+                "event_evidence",
+                "event_context_probe",
+                "candidate_mechanism",
+                ({"window_id": "target", "event_id": "event:bound", "event_count": 1, "event_type": "holiday_context"},),
+                ({"window_id": "target", "event_id": "event:injected", "event_count": 1},),
+                "events",
+                "event:bound",
+            ),
+            (
+                "gameplay_activity_context",
+                "gameplay_activity_probe",
+                "observed_activity",
+                ({"window_id": "target", "gameplay": "Rummy", "player_bet_amount": 120},),
+                ({"window_id": "target", "gameplay": "Poker", "player_bet_amount": 999999},),
+                "activity_rows",
+                "Rummy",
+            ),
+        )
+        fixture_env = {"WAJE_ALLOW_LEGACY_FIXTURES": "1", "WAJE_RUNTIME_ENV": "test"}
+        for capability_id, slot_id, claim_type, bound_rows, injected_rows, payload_key, expected in cases:
+            with self.subTest(capability_id=capability_id), patch.dict("os.environ", fixture_env):
+                query_ref = f"query:{slot_id}:1"
+                result = QueryResultEnvelope(
+                    query_contract_ref=query_ref,
+                    query_id=f"provider:{slot_id}:1",
+                    query_hash=f"hash:{slot_id}:1",
+                    result_ref=f"result:{slot_id}:1",
+                    execution_status="succeeded",
+                    rows_ref=f"rows:{slot_id}:1",
+                    row_count=len(bound_rows),
+                    completeness_report_ref=f"complete:{slot_id}:1",
+                    rows=bound_rows,
+                    observed_windows=("target",),
+                    source_snapshot_refs=(f"snapshot:{slot_id}:1",),
+                )
+                report = CompletenessReport(
+                    report_ref=f"complete:{slot_id}:1",
+                    query_contract_ref=query_ref,
+                    result_ref=result.result_ref,
+                    completeness_status="complete",
+                    analysis_readiness="ready",
+                    assertion_results=(
+                        {"assertion": "execution_succeeded", "passed": True},
+                    ),
+                    failure_reasons=(),
+                    coverage_summary={
+                        "row_count": len(bound_rows),
+                        "required_windows": ("target",),
+                        "observed_windows": ("target",),
+                        "snapshot_ref": f"snapshot:{slot_id}:1",
+                    },
+                )
+                bound = bind_capability_inputs(
+                    CapabilityExecutionPlan(
+                        capability_id=capability_id,
+                        capability_contract_ref=f"capability:{capability_id}@1",
+                        required_input_slots=(CapabilityInputSlot(slot_id, (query_ref,), True, ("complete",), tuple(bound_rows[0]), ("target",)),),
+                        optional_input_slots=(),
+                        merge_strategy="by_query_family",
+                        minimum_readiness={"required_slots": "all", "accepted_completeness": ("complete",)},
+                        degradation_policy={"missing_required_input": "block_claim"},
+                        supported_evidence_types=(("candidate_mechanism",) if capability_id == "event_evidence" else ("observed",)),
+                        maximum_claim_strength="candidate_mechanism" if capability_id == "event_evidence" else "directional",
+                        analysis_contract_ref="analysis:context:1",
+                        supported_claim_types=(claim_type,),
+                        capability_contract_version="1",
+                        capability_contract_signature=f"sha256:{capability_id}",
+                    ),
+                    results={query_ref: result},
+                    reports={query_ref: report},
+                    run_mode="fixture",
+                )
+                self.assertEqual((bound.status, bound.reasons), ("ready", ()))
+                request = CapabilityRequest(
+                    run_id="run-context",
+                    accepted_graph_id="graph-context",
+                    graph_version=1,
+                    capability_id=capability_id,
+                    question_family="business_object_impact_review",
+                    target_claim=claim_type,
+                    claim_type=claim_type,
+                    metric="player_bet_amount" if capability_id.startswith("gameplay") else "",
+                    scope="Waje Special",
+                    time_window="target",
+                    baseline={},
+                    target={"label": "target"},
+                    grain="window",
+                    filters={},
+                    dimensions=("gameplay",) if capability_id.startswith("gameplay") else (),
+                    contract_versions={},
+                    role="analyst",
+                    budget_state=BudgetState("research", 0, 50, 100),
+                    llm_business_reason="Use reviewed context rows.",
+                    params={"rows": injected_rows, "result_refs": ("injected",)},
+                    bound_input=bound,
+                    run_mode="fixture",
+                    fixture_input_mode="legacy_unbound_fixture",
+                )
+                envelope = execute_capability(request)
+                self.assertEqual(envelope.result_refs, (result.result_ref,))
+                self.assertIn(expected, repr(envelope.typed_payload[payload_key]))
+                self.assertNotIn("injected", repr(envelope.typed_payload))
+
     def test_data_quality_check_carries_payment_and_duplicate_risks(self):
         result = data_quality_check(
             [

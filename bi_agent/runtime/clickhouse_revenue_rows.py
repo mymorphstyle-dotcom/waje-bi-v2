@@ -998,6 +998,10 @@ def _result_shape_from_mapping(value: Any) -> ResultShape:
         result_semantics=_strict_string(
             item["result_semantics"], path=f"{path}.result_semantics"
         ),
+        dimension_presence_policy=_strict_string(
+            item["dimension_presence_policy"],
+            path=f"{path}.dimension_presence_policy",
+        ),
     )
 
 

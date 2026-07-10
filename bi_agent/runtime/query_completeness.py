@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
+from decimal import Decimal
 import math
 from typing import Any, Iterable, Mapping, Sequence
 
 from bi_agent.runtime.analysis_contracts import (
+    DIMENSION_PRESENCE_POLICIES,
     CompletenessReport,
     MetricBinding,
     QueryContract,
@@ -362,6 +364,7 @@ def _watermark_assertion(
         if snapshot.evidence_state != "claim_ready" and contract.query_intent not in {
             "data_quality_probe",
             "event_context_probe",
+            "gameplay_activity_probe",
             "channel_context_probe",
             "source_reconciliation_probe",
         }:
@@ -373,6 +376,7 @@ def _watermark_assertion(
             contract.dimension_bindings
             and contract.query_intent not in {
                 "data_quality_probe",
+                "gameplay_activity_probe",
                 "channel_context_probe",
                 "source_reconciliation_probe",
             }
@@ -755,7 +759,7 @@ def _dimension_total_assertion(
     results: Sequence[QueryResultEnvelope],
     reports: Sequence[CompletenessReport],
 ) -> Mapping[str, Any]:
-    if not contract.dimension_bindings:
+    if not contract.dimension_bindings or contract.reconciliation_binding is None:
         return _assertion(
             "dimension_total_reconciliation", (), details={"applicable": False}
         )
@@ -1067,14 +1071,31 @@ def _paired_windows_assertion(
     contract: QueryContract,
     result: QueryResultEnvelope,
 ) -> Mapping[str, Any]:
+    policy = contract.result_shape.dimension_presence_policy
+    if policy not in DIMENSION_PRESENCE_POLICIES:
+        return _assertion(
+            "paired_target_baseline",
+            (f"dimension_presence_policy_invalid:{policy or 'missing'}",),
+            details={"applicable": False, "dimension_presence_policy": policy},
+        )
     if not contract.dimension_bindings:
         return _assertion(
-            "paired_target_baseline", (), details={"applicable": False}
+            "paired_target_baseline",
+            (),
+            details={"applicable": False, "dimension_presence_policy": policy},
+        )
+    if policy != "paired_required":
+        return _assertion(
+            "paired_target_baseline",
+            (),
+            details={"applicable": False, "dimension_presence_policy": policy},
         )
     contract_roles = {window.role for window in contract.resolved_windows}
     if not {"target", "baseline"}.issubset(contract_roles):
         return _assertion(
-            "paired_target_baseline", (), details={"applicable": False}
+            "paired_target_baseline",
+            (),
+            details={"applicable": False, "dimension_presence_policy": policy},
         )
     dimension_ids = tuple(
         binding.dimension_id for binding in contract.dimension_bindings
@@ -1102,7 +1123,11 @@ def _paired_windows_assertion(
     return _assertion(
         "paired_target_baseline",
         reasons,
-        details={"applicable": True, "dimension_ids": dimension_ids},
+        details={
+            "applicable": True,
+            "dimension_ids": dimension_ids,
+            "dimension_presence_policy": policy,
+        },
     )
 
 
@@ -1272,6 +1297,8 @@ def _window_membership(
     contract: QueryContract,
     rows: Iterable[Mapping[str, Any]],
 ) -> tuple[dict[str, int], tuple[str, ...]]:
+    if contract.result_shape.result_semantics == "complete_context_rows":
+        return _context_window_membership(contract, tuple(rows))
     windows = {window.window_id: window for window in contract.resolved_windows}
     observations: dict[str, set[str]] = {}
     reasons = []
@@ -1318,9 +1345,157 @@ def _window_membership(
     )
 
 
+def _context_window_membership(
+    contract: QueryContract,
+    rows: tuple[Mapping[str, Any], ...],
+) -> tuple[dict[str, int], tuple[str, ...]]:
+    rows_by_window: dict[str, list[Mapping[str, Any]]] = {}
+    windows = {window.window_id: window for window in contract.resolved_windows}
+    reasons: list[str] = []
+    for row in rows:
+        window_id = str(row.get("window_id") or "")
+        if window_id not in windows:
+            reasons.append(f"unexpected_window:{window_id or 'missing'}")
+            continue
+        rows_by_window.setdefault(window_id, []).append(row)
+
+    counts: dict[str, int] = {}
+    content_fields = (
+        "source_family",
+        "event_type",
+        "affected_scope",
+        "authority",
+        "evidence_level",
+        "wording_limit",
+        "payload",
+    )
+    for window_id, window in windows.items():
+        window_rows = rows_by_window.get(window_id, [])
+        if not window_rows:
+            continue
+        sentinels = [
+            row
+            for row in window_rows
+            if str(row.get("event_id") or "").startswith("__no_event__:")
+        ]
+        real_rows = [row for row in window_rows if row not in sentinels]
+        valid = True
+        for row in window_rows:
+            if str(row.get("window_role") or "") != window.role:
+                reasons.append(f"window_role_mismatch:{window_id}")
+                valid = False
+        if sentinels:
+            expected_id = f"__no_event__:{window_id}"
+            if len(sentinels) != 1 or real_rows:
+                reasons.append(f"invalid_context_sentinel_multiplicity:{window_id}")
+                valid = False
+            sentinel = sentinels[0]
+            if (
+                sentinel.get("event_id") != expected_id
+                or sentinel.get("observation_key") != expected_id
+                or sentinel.get("event_count") != 0
+            ):
+                reasons.append(f"invalid_context_sentinel:{window_id}")
+                valid = False
+            if any(
+                str(sentinel.get(field) or "")
+                for field in (
+                    "source_family",
+                    "event_type",
+                    "event_start_date",
+                    "event_end_date",
+                    "affected_scope",
+                    "authority",
+                    "evidence_level",
+                )
+            ):
+                reasons.append(f"context_sentinel_contains_event_content:{window_id}")
+                valid = False
+        else:
+            start = date.fromisoformat(window.start_inclusive)
+            end = date.fromisoformat(window.end_exclusive)
+            for row in real_rows:
+                event_id = str(row.get("event_id") or "")
+                if not event_id or str(row.get("observation_key") or "") != event_id:
+                    reasons.append(f"invalid_context_event_identity:{window_id}")
+                    valid = False
+                if row.get("event_count") != 1:
+                    reasons.append(f"invalid_context_event_count:{window_id}:{event_id}")
+                    valid = False
+                if any(not str(row.get(field) or "") for field in content_fields):
+                    reasons.append(f"incomplete_context_event:{window_id}:{event_id}")
+                    valid = False
+                try:
+                    event_start = date.fromisoformat(str(row.get("event_start_date") or ""))
+                    event_end = date.fromisoformat(str(row.get("event_end_date") or ""))
+                except (TypeError, ValueError):
+                    reasons.append(f"invalid_context_event_interval:{window_id}:{event_id}")
+                    valid = False
+                    continue
+                if event_start > event_end or not (event_start < end and event_end >= start):
+                    reasons.append(f"context_event_outside_window:{window_id}:{event_id}")
+                    valid = False
+                if not _event_recurrence_occurs_in_window(row, start, end):
+                    reasons.append(
+                        f"context_event_recurrence_outside_window:{window_id}:{event_id}"
+                    )
+                    valid = False
+        if valid:
+            counts[window_id] = window.required_complete_days
+    return counts, _dedupe(reasons)
+
+
+def _event_recurrence_occurs_in_window(
+    row: Mapping[str, Any],
+    start: date,
+    end: date,
+) -> bool:
+    kind = str(row.get("recurrence_kind") or "")
+    if not kind:
+        return True
+    values = tuple(
+        row.get(field)
+        for field in (
+            "recurrence_month_start",
+            "recurrence_day_start",
+            "recurrence_month_end",
+            "recurrence_day_end",
+        )
+    )
+    if any(not isinstance(value, int) or isinstance(value, bool) for value in values):
+        return False
+    month_start, day_start, month_end, day_end = values
+    if kind == "monthly_day_range":
+        if month_start != 0 or month_end != 0 or not 1 <= day_start <= day_end <= 31:
+            return False
+        return any(
+            day_start <= (start + timedelta(days=offset)).day <= day_end
+            for offset in range((end - start).days)
+        )
+    if kind != "annual_month_day_range":
+        return False
+    try:
+        date(2000, month_start, day_start)
+        date(2000, month_end, day_end)
+    except ValueError:
+        return False
+    start_code = month_start * 100 + day_start
+    end_code = month_end * 100 + day_end
+    for offset in range((end - start).days):
+        current = start + timedelta(days=offset)
+        code = current.month * 100 + current.day
+        if (
+            start_code <= end_code and start_code <= code <= end_code
+        ) or (
+            start_code > end_code and (code >= start_code or code <= end_code)
+        ):
+            return True
+    return False
+
+
 def _finite_number(value: Any) -> bool:
     return (
-        isinstance(value, (int, float))
+        isinstance(value, (int, float, Decimal))
         and not isinstance(value, bool)
         and math.isfinite(float(value))
     )

@@ -2300,7 +2300,7 @@ git commit -m "feat: ingest market dashboard analysis snapshots"
 - Supports external event context and a validated internal event import interface.
 - Keeps gameplay paid-amount attribution blocked without an order-to-gameplay join contract.
 
-- [ ] **Step 1: 写 gameplay, XLSX event, and internal event 失败测试**
+- [x] **Step 1: 写 gameplay, XLSX event, and internal event 失败测试**
 
 Use temporary CSV files and an `openpyxl.Workbook` fixture. Assert:
 
@@ -2322,7 +2322,7 @@ def test_internal_event_schema_rejects_missing_authority_and_scope(self):
         load_internal_event_rows(self.write_internal_csv([["event_id", "event_start_date"], ["e1", "2026-06-02"]]), snapshot_id="ops-1")
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```bash
 python3 -m unittest tests.phase4.test_gameplay_event_ingestion -v
@@ -2330,7 +2330,7 @@ python3 -m unittest tests.phase4.test_gameplay_event_ingestion -v
 
 Expected: FAIL on missing loader module or `openpyxl`.
 
-- [ ] **Step 3: 增加 XLSX dependency and tables**
+- [x] **Step 3: 增加 XLSX dependency and tables**
 
 Append `openpyxl==3.1.5` to `requirements.txt`. Extend DDL with:
 
@@ -2340,7 +2340,7 @@ Append `openpyxl==3.1.5` to `requirements.txt`. Extend DDL with:
 
 All tables retain `snapshot_id` in the ordering key.
 
-- [ ] **Step 4: 实现 three ingestion paths**
+- [x] **Step 4: 实现 three ingestion paths**
 
 `load_gameplay_events_clickhouse.py` exposes pure parsing functions used by tests and CLI subcommands:
 
@@ -2354,7 +2354,7 @@ The gameplay parser selects the first reviewed duplicate `服务费抽水` colum
 
 Create `internal-operation-events.source.yaml` with `data_contract_state: source_unbound`, owner `data_operations_owner`, input schema, allowed candidate-mechanism wording, and blocked causal/ROI claims. The loader changes runtime availability only after a snapshot is successfully registered.
 
-- [ ] **Step 5: 运行 tests and available real loads**
+- [x] **Step 5: 运行 tests and available real loads**
 
 ```bash
 python3 -m unittest tests.phase4.test_gameplay_event_ingestion -v
@@ -2372,7 +2372,56 @@ ruby tools/contracts/validate-contracts.rb
 
 Expected: tests and contract validation PASS. Available loaders report row counts and watermarks. Internal-operation events remain `source_unbound` unless a maintained input file is supplied.
 
-- [ ] **Step 6: 提交 Task 8**
+Task 8 implementation correction: gameplay natural keys contain reviewed duplicate
+business rows. Additive activity measures are summed; per-user and rake ratios are
+recomputed from their declared numerator/denominator fields; player-match rate is
+weighted by gameplay rounds; share fields are additive within the reviewed export.
+The parser selects the first of the two reviewed equal `服务费抽水` columns and
+fails on conflicting duplicate values. All Decimal values are re-read from
+ClickHouse as quoted decimals and quantized to contract scale before full-row hash
+validation.
+
+Release membership is now a canonical dataset policy shared by the loader,
+PostgreSQL/in-memory stores, authority resolver, catalog, and compiler. Dashboard
+and gameplay use exact paired releases; external events and a future maintained
+internal-operation source use exact single-member releases. Current internal
+operations remain `source_unbound` with zero active snapshots and owner
+`data_operations_owner`; its reviewed import interface can publish only after a
+maintained file is supplied and the full release transaction succeeds.
+
+The external workbook parser validates the exact nine reviewed sheet contracts,
+normalizes native Excel dates, serial dates, ranges, month/quarter windows, and
+recurring salary rules, then sorts by the canonical event identity before hashing.
+External and gameplay releases are `context_only`; runtime bindings expose gameplay
+activity and candidate-mechanism context while keeping paid-amount attribution,
+causal, and ROI claims outside the contract and verifier boundary.
+
+Task 8 review correction: recurring salary text is parsed per workbook row into
+`monthly_day_range` or `annual_month_day_range`, including the cross-year
+`12/20..1/5` rule. Recurrence month/day fields are part of the source contract,
+ClickHouse schema, row hash, query result shape, SQL overlap predicate, and an
+independent Python completeness check. The reviewed event context limit is 5000
+rows; SQL fetches a stable, globally ordered outer `UNION` result with a 5001-row
+probe and fails closed when that probe row is present. SQL safety rejects a
+top-level `UNION` whose branch-local `LIMIT` cannot prove a global bound.
+
+Authority records use one recursive canonical thaw/plain projection across query,
+rows, completeness, and binding payloads. Nested frozen provider stats, schemas,
+coverage, assertions, and Decimal values survive official executor restoration,
+capability binding, capability execution, and final evidence verification without
+losing their content-addressed integrity checks.
+
+Dimension presence across windows is a signed result-shape policy with reviewed
+values `paired_required`, `sparse_allowed`, and `zero_filled`. Contribution scans
+retain `paired_required`; gameplay activity uses `sparse_allowed`, so a gameplay
+observed only in the rolling baseline remains valid context without an invented
+target zero row. `zero_filled` is reserved for query contracts that emit explicit
+zero-valued rows for absent dimension/window combinations. Registry loading and
+query compilation reject missing, unknown,
+or signature-drifted policies, while window coverage, schema, unique keys, and
+per-window observations remain mandatory under every policy.
+
+- [x] **Step 6: 提交 Task 8**
 
 ```bash
 git add tools/data/load_gameplay_events_clickhouse.py tests/phase4/test_gameplay_event_ingestion.py tools/data/clickhouse-analysis-sources.sql contracts/sources/internal-operation-events.source.yaml contracts/sources/gameplay.source.yaml contracts/sources/external-events.source.yaml contracts/runtime/clickhouse-analysis-bindings.yaml requirements.txt

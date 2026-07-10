@@ -104,6 +104,8 @@ class CapabilityRegistryTest(unittest.TestCase):
             "source_reconciliation",
             "metric_coverage_profile",
             "metric_timeseries",
+            "gameplay_activity_context",
+            "event_evidence",
             "data_quality_profile",
             "compare_periods",
             "compare_period_phases",

@@ -17,6 +17,7 @@ from bi_agent.runtime.analysis_contracts import (
     QueryResultEnvelope,
     query_contract_signature,
 )
+from bi_agent.runtime.canonical_values import canonical_thaw
 from bi_agent.runtime.dataset_catalog import DatasetSnapshot
 from bi_agent.runtime.query_audit import query_audit_refs
 
@@ -383,6 +384,10 @@ def canonical_digest(value: Any) -> str:
     except (TypeError, ValueError) as exc:
         raise EvidenceIntegrityError(f"canonical_json_invalid:{exc}") from exc
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def canonical_value(value: Any) -> Any:
+    return _canonical_value(value)
 
 
 def canonical_rows_hash(
@@ -968,7 +973,7 @@ def _dataclass_payload(value: Any) -> Mapping[str, Any]:
 
 def _canonical_value(value: Any) -> Any:
     if is_dataclass(value):
-        return _canonical_value(asdict(value))
+        return _canonical_value(canonical_thaw(value))
     if isinstance(value, Mapping):
         normalized = {}
         for key, item in value.items():

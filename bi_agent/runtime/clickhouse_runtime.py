@@ -19,6 +19,7 @@ ENV_NAMES = (
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
 MAX_SAMPLE_LIMIT = 1000
+MAX_BOUNDED_CONTEXT_ROWS = 10000
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,39 @@ class ClickHouseRuntime:
             aggregate=True,
             parameters=parameters,
             settings=aggregate_settings,
+            execution_attempt_ref=execution_attempt_ref,
+        )
+
+    def bounded_context(
+        self,
+        sql: str,
+        query_id: str,
+        *,
+        parameters: Mapping[str, Any] | None = None,
+        settings: Mapping[str, Any] | None = None,
+        execution_attempt_ref: str = "",
+    ) -> ClickHouseQueryResult:
+        context_settings = dict(settings or {})
+        max_rows = context_settings.get("max_result_rows")
+        if (
+            isinstance(max_rows, bool)
+            or not isinstance(max_rows, int)
+            or not 0 < max_rows <= MAX_BOUNDED_CONTEXT_ROWS
+        ):
+            return ClickHouseQueryResult(
+                ok=False,
+                reason="bounded_context_limit_required",
+                query_id=query_id,
+                execution_attempt_ref=execution_attempt_ref,
+            )
+        context_settings["result_overflow_mode"] = "throw"
+        context_settings["readonly"] = 2
+        return self._execute_select(
+            sql,
+            query_id=query_id,
+            aggregate=False,
+            parameters=parameters,
+            settings=context_settings,
             execution_attempt_ref=execution_attempt_ref,
         )
 

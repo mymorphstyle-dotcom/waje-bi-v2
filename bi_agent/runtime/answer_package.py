@@ -570,6 +570,7 @@ def _claim_authority_facts(
     target_windows: dict[str, dict[str, Any]] = {}
     baseline_windows: dict[str, dict[str, Any]] = {}
     authority_facts: list[AuthorityFact] = []
+    authority_context_facts: list[dict[str, Any]] = []
     refs = tuple(str(ref) for ref in claim.get("evidence_refs") or ())
     if not refs:
         raise ValueError("authority_evidence_refs_missing")
@@ -629,6 +630,45 @@ def _claim_authority_facts(
                         for dimension in contract.dimension_bindings
                     )
                 )
+                if contract.query_intent == "event_context_probe" and not str(
+                    row.get("event_id") or ""
+                ).startswith("__no_event__:"):
+                    context_payload = {
+                        "query_contract_ref": contract.query_contract_id,
+                        "result_ref": result.result_ref,
+                        "window_id": window_id,
+                        "window_role": role,
+                        "event_id": str(row.get("event_id") or ""),
+                        "event_type": str(row.get("event_type") or ""),
+                        "event_start_date": str(row.get("event_start_date") or ""),
+                        "event_end_date": str(row.get("event_end_date") or ""),
+                        "affected_scope": str(row.get("affected_scope") or ""),
+                        "authority": str(row.get("authority") or ""),
+                        "evidence_level": str(row.get("evidence_level") or ""),
+                        "wording_limit": str(row.get("wording_limit") or ""),
+                    }
+                    if all(
+                        context_payload[field]
+                        for field in (
+                            "event_id",
+                            "event_type",
+                            "event_start_date",
+                            "event_end_date",
+                            "affected_scope",
+                            "authority",
+                            "evidence_level",
+                            "wording_limit",
+                        )
+                    ):
+                        authority_context_facts.append(
+                            {
+                                **context_payload,
+                                "fact_ref": (
+                                    "authority-context-fact:sha256:"
+                                    f"{canonical_digest(context_payload)}"
+                                ),
+                            }
+                        )
                 for metric_id in contract_metrics:
                     value = _decimal_value(row.get(metric_id))
                     if value is None:
@@ -655,6 +695,7 @@ def _claim_authority_facts(
     return {
         "metric_ids": tuple(sorted(metric_ids)),
         "authority_facts": tuple(authority_facts),
+        "authority_context_facts": tuple(authority_context_facts),
         "grains": tuple(sorted(grains)),
         "target_windows": tuple(target_windows[key] for key in sorted(target_windows)),
         "baseline_windows": tuple(
@@ -668,6 +709,9 @@ def _project_claim_from_authority(
     facts: Mapping[str, Any],
 ) -> dict[str, Any]:
     mappings = _map_claim_numbers_to_authority(claim, facts)
+    context_facts = tuple(facts.get("authority_context_facts") or ())
+    if not mappings and context_facts:
+        return _project_context_claim_from_authority(claim, context_facts, facts)
     text = "".join(_render_authority_facts(mappings))
     projected = {
         "text": text,
@@ -746,6 +790,47 @@ def _project_claim_from_authority(
             dimension_id: _dimension_client_value(next(iter(values)))
             for dimension_id, values in sorted(dimension_values.items())
         }
+    return projected
+
+
+def _project_context_claim_from_authority(
+    claim: Mapping[str, Any],
+    context_facts: tuple[Mapping[str, Any], ...],
+    facts: Mapping[str, Any],
+) -> dict[str, Any]:
+    lines = []
+    for fact in context_facts:
+        lines.append(
+            "Window {window_id} overlaps event {event_type} "
+            "({event_start_date}..{event_end_date}, {affected_scope}); "
+            "authority={authority}, evidence_level={evidence_level}; "
+            "this is candidate-mechanism context only.".format(**fact)
+        )
+    projected = {
+        "text": " ".join(lines),
+        "claim_strength": str(claim.get("claim_strength") or ""),
+        "claim_type": str(claim.get("claim_type") or ""),
+        "evidence_refs": tuple(str(ref) for ref in claim.get("evidence_refs") or ()),
+        "numbers": {},
+        "fact_refs": [str(fact["fact_ref"]) for fact in context_facts],
+        "context_fact_selectors": [
+            {
+                "window_id": fact["window_id"],
+                "event_id": fact["event_id"],
+                "query_contract_ref": fact["query_contract_ref"],
+                "result_ref": fact["result_ref"],
+            }
+            for fact in context_facts
+        ],
+    }
+    target_windows = tuple(facts.get("target_windows") or ())
+    if len(target_windows) == 1:
+        projected["target"] = dict(target_windows[0])
+        projected["window"] = target_windows[0]["window_id"]
+        projected["time_window"] = (
+            f"{target_windows[0]['start_inclusive']}.."
+            f"{target_windows[0]['end_exclusive']}"
+        )
     return projected
 
 
@@ -1439,6 +1524,7 @@ def _client_claim_projection(
             "dimensions",
             "fact_refs",
             "fact_selectors",
+            "context_fact_selectors",
             "target_metric",
             "baseline",
             "target",

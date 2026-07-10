@@ -1,0 +1,40 @@
+contract_version: "0.1"
+source_id: internal_operation_events
+business_name: 内部运营事件维护接口
+review_status: source_unbound_waiting_for_maintained_input
+data_contract_state: source_unbound
+business_evidence_state: contextual_evidence
+owner: data_operations_owner
+source_file: null
+refresh_rule: owner_published_versioned_snapshot
+input_schema:
+  required_fields: [event_id, event_type, event_start_date, event_end_date, scope_type, scope_value, authority, evidence_level, wording_limit]
+  optional_fields: [description]
+  unique_key: [event_id]
+  event_type_values: [campaign_change, product_release, payment_incident, service_incident, operations_change]
+  affected_scope_model:
+    global: {allowed_values: [global]}
+    country: {allowed_values: [Nigeria]}
+    state: {allowed_values: [Lagos, FCT, Kano, Kaduna, Rivers, Oyo, Ogun, Plateau]}
+    service_scope: {allowed_values: [Waje Special]}
+  authority_values: [operations_owner, incident_owner, campaign_owner]
+  evidence_level_values: [reported, reviewed]
+  wording_limit_values: [context, candidate_mechanism]
+  date_rule: event_start_date_lte_event_end_date
+runtime_boundary:
+  runtime_available: false
+  activation_rule: successful_snapshot_registration_and_release
+  evidence_state_after_activation: context_only
+  source_family: internal_operation_event
+  allowed_claim_types: [candidate_mechanism]
+  blocked_claim_types: [causal, roi, paid_amount_attribution]
+runtime_binding:
+  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@1
+  dataset_id: internal_operation_event
+  physical_table_prefix: business_events__
+  grain: [snapshot_id, load_revision, source_family, event_id]
+  unique_key: [snapshot_id, load_revision, source_family, event_id]
+  canonicalization_version: internal-operation-events-v1
+known_limits:
+  - no_maintained_input_source_registered
+  - event_reports_do_not_prove_causality_or_roi

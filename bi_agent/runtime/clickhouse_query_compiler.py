@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bi_agent.runtime.analysis_contracts import (
+    DIMENSION_PRESENCE_POLICIES,
     DimensionBinding,
     JoinExpectation,
     MetricBinding,
@@ -99,6 +100,7 @@ class CompiledQuery:
     parameters: Mapping[str, Any]
     settings: Mapping[str, Any]
     query_contract_ref: str
+    max_context_rows: int = 0
 
 
 def compile_clickhouse_query(
@@ -157,7 +159,25 @@ def _compile_clickhouse_query_with_registry(
     filter_sql = (*filter_sql, *physical_filters)
     parameters.update(physical_parameters)
 
-    if contract.query_intent == "high_value_scan":
+    if contract.query_intent == "event_context_probe":
+        context_row_bound = registry.query_shape(contract.query_intent).get(
+            "max_context_rows"
+        )
+        if (
+            isinstance(context_row_bound, bool)
+            or not isinstance(context_row_bound, int)
+            or context_row_bound <= 0
+        ):
+            raise ValueError(
+                f"reviewed_context_row_bound_invalid:{contract.query_intent}"
+            )
+        sql_text = _compile_event_context_query(
+            contract,
+            snapshot,
+            filter_sql=filter_sql,
+            max_context_rows=context_row_bound,
+        )
+    elif contract.query_intent == "high_value_scan":
         _verify_high_value_semantics(contract)
         parameters["threshold_quantile"] = contract.query_parameters[
             "threshold_quantile"
@@ -177,6 +197,18 @@ def _compile_clickhouse_query_with_registry(
         )
 
     settings = {"result_overflow_mode": "throw", "readonly": 2}
+    if contract.result_shape.result_semantics == "complete_context_rows":
+        reviewed_shape = registry.query_shape(contract.query_intent)
+        max_context_rows = reviewed_shape.get("max_context_rows")
+        if (
+            isinstance(max_context_rows, bool)
+            or not isinstance(max_context_rows, int)
+            or max_context_rows <= 0
+        ):
+            raise ValueError(
+                f"reviewed_context_row_bound_invalid:{contract.query_intent}"
+            )
+        settings["max_result_rows"] = max_context_rows + 1
     if contract.join_expectation is not None:
         settings["join_use_nulls"] = 1
     return CompiledQuery(
@@ -184,6 +216,11 @@ def _compile_clickhouse_query_with_registry(
         parameters=parameters,
         settings=settings,
         query_contract_ref=contract.query_contract_id,
+        max_context_rows=(
+            context_row_bound
+            if contract.result_shape.result_semantics == "complete_context_rows"
+            else 0
+        ),
     )
 
 
@@ -239,6 +276,7 @@ def _compile_grouped_query(
     if not metrics and contract.query_intent not in {
         "event_context_probe",
         "data_quality_probe",
+        "gameplay_activity_probe",
     }:
         raise ValueError(f"query_contract_metrics_required:{contract.query_intent}")
 
@@ -260,6 +298,137 @@ def _compile_grouped_query(
             "WHERE " + "\n  AND ".join(predicates),
             "GROUP BY " + ", ".join(group_parts),
         )
+    )
+
+
+def _compile_event_context_query(
+    contract: QueryContract,
+    snapshot: DatasetSnapshot,
+    *,
+    filter_sql: tuple[str, ...],
+    max_context_rows: int,
+) -> str:
+    if contract.metric_bindings or contract.dimension_bindings:
+        raise ValueError("event_context_probe_bindings_unsupported")
+    required_fields = (
+        "source_family",
+        "event_id",
+        "event_type",
+        "event_start_date",
+        "event_end_date",
+        "affected_scope",
+        "authority",
+        "evidence_level",
+        "wording_limit",
+        "recurrence_kind",
+        "recurrence_month_start",
+        "recurrence_day_start",
+        "recurrence_month_end",
+        "recurrence_day_end",
+        "payload",
+    )
+    missing = tuple(field for field in required_fields if field not in snapshot.schema_fields)
+    if missing:
+        raise ValueError("event_context_fields_missing:" + ",".join(missing))
+    window_id = "tupleElement(analysis_window, 1)"
+    matched_selects = (
+        f"{window_id} AS `window_id`",
+        "tupleElement(analysis_window, 2) AS `window_role`",
+        "`event_id` AS `observation_key`",
+        "toUInt64(1) AS `event_count`",
+        "`source_family` AS `source_family`",
+        "`event_id` AS `event_id`",
+        "`event_type` AS `event_type`",
+        "`event_start_date` AS `event_start_date`",
+        "`event_end_date` AS `event_end_date`",
+        "`affected_scope` AS `affected_scope`",
+        "`authority` AS `authority`",
+        "`evidence_level` AS `evidence_level`",
+        "`wording_limit` AS `wording_limit`",
+        "`recurrence_kind` AS `recurrence_kind`",
+        "`recurrence_month_start` AS `recurrence_month_start`",
+        "`recurrence_day_start` AS `recurrence_day_start`",
+        "`recurrence_month_end` AS `recurrence_month_end`",
+        "`recurrence_day_end` AS `recurrence_day_end`",
+        "`payload` AS `payload`",
+    )
+    overlap_and_filters = (
+        "`event_start_date` < tupleElement(analysis_window, 4)",
+        "`event_end_date` >= tupleElement(analysis_window, 3)",
+        _event_recurrence_overlap_predicate(),
+        *filter_sql,
+    )
+    sentinel_selects = (
+        f"{window_id} AS `window_id`",
+        "tupleElement(analysis_window, 2) AS `window_role`",
+        f"concat('__no_event__:', {window_id}) AS `observation_key`",
+        "toUInt64(0) AS `event_count`",
+        "'' AS `source_family`",
+        f"concat('__no_event__:', {window_id}) AS `event_id`",
+        "'' AS `event_type`",
+        "CAST(NULL AS Nullable(Date)) AS `event_start_date`",
+        "CAST(NULL AS Nullable(Date)) AS `event_end_date`",
+        "'' AS `affected_scope`",
+        "'' AS `authority`",
+        "'' AS `evidence_level`",
+        "'context' AS `wording_limit`",
+        "'' AS `recurrence_kind`",
+        "toUInt8(0) AS `recurrence_month_start`",
+        "toUInt8(0) AS `recurrence_day_start`",
+        "toUInt8(0) AS `recurrence_month_end`",
+        "toUInt8(0) AS `recurrence_day_end`",
+        "'{}' AS `payload`",
+    )
+    return "\n".join(
+        (
+            f"WITH [{_window_tuples(contract.resolved_windows)}] AS analysis_windows,",
+            "matched_events AS (",
+            "SELECT",
+            _indented(matched_selects),
+            f"FROM {_quote_physical_table(snapshot.physical_table)}",
+            "ARRAY JOIN analysis_windows AS analysis_window",
+            "WHERE " + "\n  AND ".join(overlap_and_filters),
+            "),",
+            "context_rows AS (",
+            "  SELECT * FROM matched_events",
+            "  UNION ALL",
+            "  SELECT",
+            _indented(sentinel_selects, spaces=4),
+            "  FROM (SELECT arrayJoin(analysis_windows) AS analysis_window)",
+            f"  WHERE {window_id} NOT IN (SELECT `window_id` FROM matched_events)",
+            ")",
+            "SELECT * FROM context_rows",
+            "ORDER BY `window_id`, `event_id`",
+            f"LIMIT {max_context_rows + 1}",
+        )
+    )
+
+
+def _event_recurrence_overlap_predicate() -> str:
+    window_start = "tupleElement(analysis_window, 3)"
+    window_end = "tupleElement(analysis_window, 4)"
+    occurrence_day = f"addDays({window_start}, recurrence_day_offset)"
+    occurrence_code = (
+        f"toMonth({occurrence_day}) * 100 + toDayOfMonth({occurrence_day})"
+    )
+    start_code = "`recurrence_month_start` * 100 + `recurrence_day_start`"
+    end_code = "`recurrence_month_end` * 100 + `recurrence_day_end`"
+    return (
+        "(`recurrence_kind` = '' OR arrayExists(recurrence_day_offset -> ("
+        "(`recurrence_kind` = 'monthly_day_range' "
+        "AND `recurrence_month_start` = 0 AND `recurrence_month_end` = 0 "
+        "AND `recurrence_day_start` BETWEEN 1 AND 31 "
+        "AND `recurrence_day_end` BETWEEN `recurrence_day_start` AND 31 "
+        f"AND toDayOfMonth({occurrence_day}) BETWEEN `recurrence_day_start` "
+        "AND `recurrence_day_end`) OR "
+        "(`recurrence_kind` = 'annual_month_day_range' "
+        "AND `recurrence_month_start` BETWEEN 1 AND 12 "
+        "AND `recurrence_month_end` BETWEEN 1 AND 12 "
+        "AND `recurrence_day_start` BETWEEN 1 AND 31 "
+        "AND `recurrence_day_end` BETWEEN 1 AND 31 "
+        f"AND (({start_code} <= {end_code} AND {occurrence_code} BETWEEN {start_code} AND {end_code}) "
+        f"OR ({start_code} > {end_code} AND ({occurrence_code} >= {start_code} OR {occurrence_code} <= {end_code}))))"
+        f"), range(toUInt32(dateDiff('day', {window_start}, {window_end})))))"
     )
 
 
@@ -533,13 +702,6 @@ def _validate_metric_binding_types(binding: MetricBinding) -> None:
             "invalid_query_contract_runtime_type:"
             "metric_bindings.reconciliation_strategy"
         )
-    if (binding.value_semantics, binding.display_format) not in {
-        ("raw_scalar", "number"),
-        ("scalar_ratio", "percent"),
-    }:
-        raise ValueError(
-            "invalid_query_contract_runtime_type:metric_bindings.display_policy"
-        )
     if (
         binding.reconciliation_strategy == "ratio_from_components"
         and (not binding.numerator_metric or not binding.denominator_metric)
@@ -609,6 +771,15 @@ def _validate_result_shape_types(result_shape: ResultShape) -> None:
         result_shape.result_semantics,
         "result_shape.result_semantics",
     )
+    _require_runtime_string(
+        result_shape.dimension_presence_policy,
+        "result_shape.dimension_presence_policy",
+    )
+    if result_shape.dimension_presence_policy not in DIMENSION_PRESENCE_POLICIES:
+        raise ValueError(
+            "dimension_presence_policy_invalid:"
+            f"{result_shape.dimension_presence_policy or 'missing'}"
+        )
 
 
 def _validate_snapshot_types(snapshot: DatasetSnapshot) -> None:
@@ -743,6 +914,7 @@ def _single_snapshot(
     if snapshot.evidence_state != "claim_ready" and contract.query_intent not in {
         "data_quality_probe",
         "event_context_probe",
+        "gameplay_activity_probe",
         "channel_context_probe",
         "source_reconciliation_probe",
     }:
@@ -753,6 +925,7 @@ def _single_snapshot(
         contract.dimension_bindings
         and contract.query_intent not in {
             "data_quality_probe",
+            "gameplay_activity_probe",
             "channel_context_probe",
             "source_reconciliation_probe",
         }
@@ -1079,6 +1252,7 @@ def _verify_reviewed_query_shape(
         result_semantics=str(
             reviewed.get("result_semantics") or "complete_aggregate"
         ),
+        dimension_presence_policy=str(reviewed["dimension_presence_policy"]),
     )
     if contract.result_shape != expected_shape:
         raise ValueError(

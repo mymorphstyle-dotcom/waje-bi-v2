@@ -33,6 +33,34 @@ sheet_coverage:
   - sheet: 节假日
     business_use: holiday_context
 
+sheet_contracts:
+  尼日利亚宏观通胀汇率波动: {business_use: macro_inflation_fx_context, native_headers: [日期/窗口, 类型, 事件, 建议打标窗口], header_row: 1, date_column: 日期/窗口, type_column: 类型, description_column: 事件, scope_default: Nigeria}
+  工资周期: {business_use: payday_context, template_rows_without_header: true, description_column_index: 1, scope_default: Nigeria, recurring_window_start: "2024-01-01", recurring_window_end: "2026-06-08", recurrence: {parser: reviewed_salary_rule_zh_v1, supported_kinds: [monthly_day_range, annual_month_day_range], timezone: Africa/Lagos}}
+  重大赛事: {business_use: sports_event_context, native_headers: [日期, 时间, 赛事类型, 具体对决球队, 热度, 备注], header_row: 1, date_column: 日期, type_column: 赛事类型, description_column: 具体对决球队, scope_default: Nigeria}
+  电力波动: {business_use: electricity_issue_context, native_headers: [日期/窗口, 类型, 范围, 事件], header_row: 1, date_column: 日期/窗口, type_column: 类型, description_column: 事件, scope_column: 范围}
+  网络波动: {business_use: network_issue_context, native_headers: [日期/窗口, 类型, 范围, 事件], header_row: 1, date_column: 日期/窗口, type_column: 类型, description_column: 事件, scope_column: 范围}
+  投放媒体政策变化: {business_use: media_policy_context, native_headers: [日期, 平台, 政策变化, 内容概括, 影响程度, 对 Waje 的经营含义], header_row: 1, date_column: 日期, type_column: 平台, description_column: 内容概括, scope_default: Nigeria}
+  极端天气: {business_use: weather_context, native_headers: [日期，尼日利亚时间, 事件, 受影响区域, 规模/证据, 影响判断], header_row: 4, date_column: 日期，尼日利亚时间, type_column: 事件, description_column: 规模/证据, scope_column: 受影响区域}
+  社会稳定: {business_use: social_stability_context, native_headers: [日期，尼日利亚时间, 事件, 影响区域, 影响判断], header_row: 4, date_column: 日期，尼日利亚时间, type_column: 事件, description_column: 影响判断, scope_column: 影响区域}
+  节假日: {business_use: holiday_context, native_headers: [日期, 节假日/节庆, 覆盖区域, 影响判断], header_row: 4, date_column: 日期, type_column: 节假日/节庆, description_column: 影响判断, scope_column: 覆盖区域}
+
+runtime_binding:
+  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@1
+  dataset_id: external_event
+  physical_table_prefix: business_events__
+  grain: [snapshot_id, load_revision, source_family, event_id]
+  unique_key: [snapshot_id, load_revision, source_family, event_id]
+  canonicalization_version: external-events-v1
+  release_membership: {policy: exact_dataset_set, dataset_ids: [external_event]}
+
+runtime_boundary:
+  evidence_state: context_only
+  source_family: external_event
+  authority: reviewed_workbook_pending_owner_review
+  wording_limit: context
+  allowed_claim_types: [candidate_mechanism]
+  blocked_claim_types: [causal, roi, paid_amount_attribution]
+
 coverage:
   source_type: manually_curated_event_workbook
   rows_profiled_after_old_loader: 324
