@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.runtime import ConversationRuntime
@@ -202,7 +203,7 @@ class AnalysisAssetsTest(unittest.TestCase):
             "query_ref": "query:channel-v1",
             "result_refs": ("result:channel-v1",),
             "created_at": "2026-07-09T00:00:00+00:00",
-            "expires_at": "2026-07-10T00:00:00+00:00",
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
             "reuse_contract": base_contract,
             "row_payload": {
                 "row_count": 2,
