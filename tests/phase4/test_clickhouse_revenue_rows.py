@@ -254,9 +254,6 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         self.assertEqual(client.calls, [])
 
     def test_executor_returns_blocked_envelopes_for_contract_boundaries(self):
-        executor = ClickHouseQueryExecutor(
-            ClickHouseRuntime(client=FakeParameterizedClient())
-        )
         dataset_snapshot = snapshot()
         cases = (
             (
@@ -272,6 +269,9 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         )
         for query_contract, selected_snapshot, reason in cases:
             with self.subTest(reason=reason):
+                executor = ClickHouseQueryExecutor(
+                    ClickHouseRuntime(client=FakeParameterizedClient())
+                )
                 envelope = executor.execute(
                     query_contract,
                     {selected_snapshot.snapshot_ref: selected_snapshot},

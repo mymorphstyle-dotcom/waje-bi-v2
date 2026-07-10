@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -9,13 +11,45 @@ import yaml
 from bi_agent.runtime.contracts import load_contract
 
 
+CANONICAL_RUNTIME_BINDINGS_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "contracts"
+    / "runtime"
+    / "clickhouse-analysis-bindings.yaml"
+)
+
 _MAPPING_SECTIONS = ("datasets", "metrics", "dimensions", "capability_inputs")
 _OPTIONAL_MAPPING_SECTIONS = ("query_shapes",)
 _REQUIRED_SECTIONS = (
     "contract_version",
     "artifact",
     "business_timezone",
+    "claim_strength_taxonomy",
     *_MAPPING_SECTIONS,
+)
+_REQUIRED_CLAIM_STRENGTHS = frozenset(
+    {
+        "insufficient",
+        "context_only",
+        "dry_run_context",
+        "observed",
+        "medium",
+        "high",
+        "strong",
+    }
+)
+_REQUIRED_MAXIMUM_STRENGTHS = frozenset(
+    {
+        "directional",
+        "candidate_driver",
+        "candidate_mechanism",
+        "anomaly_candidate",
+        "recurring_pattern",
+        "quantified_contribution",
+        "trust_boundary",
+        "verifier_only",
+        "reducer_only",
+    }
 )
 
 
@@ -34,8 +68,20 @@ class RuntimeContractRegistry:
                     raise ValueError(f"runtime_contract_invalid_id:{section}:{item_id}")
                 if not isinstance(item, Mapping):
                     raise ValueError(f"runtime_contract_entry_must_be_mapping:{section}:{item_id}")
+        _validate_claim_strength_taxonomy(payload["claim_strength_taxonomy"])
+        maximum_ranks = payload["claim_strength_taxonomy"]["maximum_strength_ranks"]
+        for capability_id, contract in payload["capability_inputs"].items():
+            maximum = str(contract.get("maximum_claim_strength") or "")
+            if maximum not in maximum_ranks:
+                raise ValueError(
+                    "runtime_capability_maximum_claim_strength_unknown:"
+                    f"{capability_id}:{maximum or 'missing'}"
+                )
         self._payload = deepcopy(dict(payload))
         self._source_ref = source_ref
+        self._source_payload_digest = (
+            _runtime_contract_payload_digest(payload) if source_ref else ""
+        )
 
     @classmethod
     def from_path(cls, path: str | Path) -> "RuntimeContractRegistry":
@@ -56,6 +102,25 @@ class RuntimeContractRegistry:
     def source_ref(self) -> str:
         return self._source_ref
 
+    def source_is_current(self, expected_path: str | Path) -> bool:
+        """Return whether this registry still matches its canonical source file."""
+        if not self._source_ref or not self._source_payload_digest:
+            return False
+        source_path = Path(self._source_ref)
+        expected = Path(expected_path)
+        try:
+            if source_path.resolve() != expected.resolve():
+                return False
+            _reject_duplicate_ids(source_path)
+            source_payload = load_contract(source_path)
+        except (OSError, TypeError, ValueError):
+            return False
+        return (
+            _runtime_contract_payload_digest(self._payload)
+            == self._source_payload_digest
+            == _runtime_contract_payload_digest(source_payload)
+        )
+
     def metric(self, metric_id: str) -> dict[str, Any]:
         return self._entry("metrics", metric_id, "metric")
 
@@ -64,6 +129,41 @@ class RuntimeContractRegistry:
 
     def capability_inputs(self, capability_id: str) -> dict[str, Any]:
         return self._entry("capability_inputs", capability_id, "capability")
+
+    def capability_contract_signature(self, capability_id: str) -> str:
+        payload = {
+            "registry_contract_version": self.contract_version,
+            "capability_id": capability_id,
+            "capability_contract": self.capability_inputs(capability_id),
+            "claim_strength_taxonomy": self.claim_strength_taxonomy,
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @property
+    def claim_strength_taxonomy(self) -> dict[str, Any]:
+        return deepcopy(dict(self._payload["claim_strength_taxonomy"]))
+
+    @property
+    def claim_strength_taxonomy_version(self) -> str:
+        return str(self._payload["claim_strength_taxonomy"]["version"])
+
+    def claim_strength_rank(self, strength: str) -> int:
+        return self._strength_rank("claim_strength_ranks", strength)
+
+    def maximum_claim_strength_rank(self, strength: str) -> int:
+        return self._strength_rank("maximum_strength_ranks", strength)
+
+    def _strength_rank(self, section: str, strength: str) -> int:
+        try:
+            return int(self._payload["claim_strength_taxonomy"][section][strength])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise KeyError(f"unknown_claim_strength:{strength}") from exc
 
     def dataset(self, dataset_id: str) -> dict[str, Any]:
         return self._entry("datasets", dataset_id, "dataset")
@@ -84,6 +184,65 @@ def _reject_duplicate_ids(path: Path) -> None:
     if root is None:
         return
     _walk_mapping_nodes(root, path=())
+
+
+def _runtime_contract_payload_digest(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def runtime_registry_integrity_error(value: Any) -> str:
+    if type(value) is not RuntimeContractRegistry:
+        return "runtime_contract_registry_type_invalid"
+    if not value.source_is_current(CANONICAL_RUNTIME_BINDINGS_PATH):
+        return "runtime_contract_registry_integrity"
+    return ""
+
+
+def _validate_claim_strength_taxonomy(value: Any) -> None:
+    if not isinstance(value, Mapping) or not str(value.get("version") or ""):
+        raise ValueError("runtime_claim_strength_taxonomy_invalid")
+    for field, required in (
+        ("claim_strength_ranks", _REQUIRED_CLAIM_STRENGTHS),
+        ("maximum_strength_ranks", _REQUIRED_MAXIMUM_STRENGTHS),
+    ):
+        ranks = value.get(field)
+        if not isinstance(ranks, Mapping) or set(ranks) != set(required):
+            raise ValueError(f"runtime_claim_strength_taxonomy_incomplete:{field}")
+        if any(type(rank) is not int or rank < 0 for rank in ranks.values()):
+            raise ValueError(f"runtime_claim_strength_rank_invalid:{field}")
+    claim_ranks = value["claim_strength_ranks"]
+    if any(
+        claim_ranks[strength] != 0
+        for strength in ("insufficient", "context_only", "dry_run_context")
+    ):
+        raise ValueError("runtime_claim_strength_taxonomy_zero_layer_invalid")
+    ordered = tuple(
+        claim_ranks[strength]
+        for strength in ("observed", "medium", "high", "strong")
+    )
+    if not all(left < right for left, right in zip(ordered, ordered[1:])):
+        raise ValueError("runtime_claim_strength_taxonomy_order_invalid")
+    maximum_ranks = value["maximum_strength_ranks"]
+    expected_maximums = {
+        "directional": claim_ranks["observed"],
+        "candidate_driver": claim_ranks["medium"],
+        "candidate_mechanism": claim_ranks["medium"],
+        "anomaly_candidate": claim_ranks["medium"],
+        "recurring_pattern": claim_ranks["high"],
+        "quantified_contribution": claim_ranks["high"],
+        "trust_boundary": claim_ranks["observed"],
+        "verifier_only": 0,
+        "reducer_only": 0,
+    }
+    if dict(maximum_ranks) != expected_maximums:
+        raise ValueError("runtime_claim_strength_taxonomy_maximum_ceiling_invalid")
 
 
 def _walk_mapping_nodes(node: yaml.Node, *, path: tuple[str, ...]) -> None:

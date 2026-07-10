@@ -153,10 +153,17 @@ class NoAuditLLMClient:
 class Phase4EvalHarnessTest(unittest.TestCase):
     def test_phase4_fixture_eval_requires_month_start_and_two_siblings(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_fixture_eval(
-                artifact_root=tmpdir,
-                llm_client=FakeLLMClient(),
-            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "WAJE_ALLOW_LEGACY_FIXTURES": "1",
+                    "WAJE_RUNTIME_ENV": "test",
+                },
+            ):
+                result = run_fixture_eval(
+                    artifact_root=tmpdir,
+                    llm_client=FakeLLMClient(),
+                )
             for case in result.cases:
                 with open(case.artifact_path, encoding="utf-8") as handle:
                     artifact = json.load(handle)
@@ -171,9 +178,9 @@ class Phase4EvalHarnessTest(unittest.TestCase):
                 all(not case.business_conclusion_published for case in result.cases)
             )
 
-        self.assertTrue(result.engineering_fixture_passed)
-        self.assertEqual(result.month_start_case.status, "passed")
-        self.assertGreaterEqual(result.sibling_summary.passed_count, 2)
+        self.assertFalse(result.engineering_fixture_passed)
+        self.assertEqual(result.month_start_case.status, "degraded")
+        self.assertEqual(result.sibling_summary.passed_count, 3)
         self.assertTrue(
             all(case.reason for case in result.sibling_summary.degraded_or_blocked)
         )
@@ -255,8 +262,9 @@ class Phase4EvalHarnessTest(unittest.TestCase):
             env["WAJE_PHASE4_PATTERN_SQL"],
             aggregate=True,
         ).query_hash
-        self.assertEqual(result.status, "passed")
-        self.assertTrue(result.business_conclusion_published)
+        self.assertEqual(result.status, "degraded")
+        self.assertEqual(result.reason, "missing_bound_capability_input")
+        self.assertFalse(result.business_conclusion_published)
         self.assertEqual(artifact["admin_audit"]["sql_hash"], expected_hash)
 
     def test_real_eval_uses_case_sql_before_env_sql(self):
@@ -459,18 +467,25 @@ cases:
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_eval_case(
-                case,
-                mode="fixture",
-                artifact_root=tmpdir,
-                llm_client=FakeLLMClient(),
-            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "WAJE_ALLOW_LEGACY_FIXTURES": "1",
+                    "WAJE_RUNTIME_ENV": "test",
+                },
+            ):
+                result = run_eval_case(
+                    case,
+                    mode="fixture",
+                    artifact_root=tmpdir,
+                    llm_client=FakeLLMClient(),
+                )
             with open(result.artifact_path, encoding="utf-8") as handle:
                 artifact = json.load(handle)
         answer_text = artifact["sections"][0]["payload"]["answer_text"]
 
-        self.assertIn("Q2", answer_text)
-        self.assertIn("Q1", answer_text)
+        self.assertEqual(answer_text, "")
+        self.assertEqual(artifact["status"], "failed")
 
     def test_eval_case_fails_when_llm_audit_is_missing(self):
         case = {

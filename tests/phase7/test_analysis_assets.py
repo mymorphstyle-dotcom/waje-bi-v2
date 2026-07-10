@@ -1,21 +1,519 @@
 import unittest
-from datetime import datetime, timedelta, timezone
+from dataclasses import replace
+from datetime import datetime
+from unittest.mock import patch
 
 from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.compiler import compile_graph
+from bi_agent.runtime.analysis_contracts import CompletenessReport
+from bi_agent.runtime.artifacts import to_jsonable
+from bi_agent.runtime.evidence_authority import _record_completeness
 from bi_agent.runtime.analysis_assets import (
     build_analysis_assets,
-    build_dimension_scan_reuse_contract,
+    build_dimension_scan_reuse_contract as _build_dimension_scan_reuse_contract,
+    evaluate_dimension_scan_reuse as _evaluate_dimension_scan_reuse,
     merge_analysis_assets,
-    reusable_dimension_scan_inputs,
+    reusable_dimension_scan_inputs as _reusable_dimension_scan_inputs,
+    _reuse_contract_signature,
 )
-from bi_agent.runtime.langgraph_workflow import WorkflowRunResult, run_pattern_workflow
+from bi_agent.runtime.langgraph_workflow import (
+    WorkflowRunResult,
+    run_pattern_workflow as _run_pattern_workflow,
+)
 from tests.phase4.fake_llm import FakeLLMClient
+from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
+from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+
+def _authority_kwargs(evidence_resolver=None):
+    if evidence_resolver is None:
+        return {}
+    return {
+        "rows_loader": evidence_resolver.rows_loader,
+        "runtime_registry": RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+    }
+
+
+def evaluate_dimension_scan_reuse(*args, evidence_resolver=None, **kwargs):
+    return _evaluate_dimension_scan_reuse(
+        *args,
+        evidence_resolver=evidence_resolver,
+        **_authority_kwargs(evidence_resolver),
+        **kwargs,
+    )
+
+
+def reusable_dimension_scan_inputs(*args, evidence_resolver=None, **kwargs):
+    return _reusable_dimension_scan_inputs(
+        *args,
+        evidence_resolver=evidence_resolver,
+        **_authority_kwargs(evidence_resolver),
+        **kwargs,
+    )
+
+
+def build_dimension_scan_reuse_contract(*args, evidence_resolver=None, **kwargs):
+    return _build_dimension_scan_reuse_contract(
+        *args,
+        evidence_resolver=evidence_resolver,
+        **_authority_kwargs(evidence_resolver),
+        **kwargs,
+    )
+
+
+def run_pattern_workflow(request=None):
+    fixture_request = dict(request or {})
+    fixture_request.setdefault("run_mode", "fixture")
+    with patch.dict(
+        "os.environ",
+        {
+            "WAJE_ALLOW_LEGACY_FIXTURES": "1",
+            "WAJE_RUNTIME_ENV": "test",
+        },
+    ):
+        return _run_pattern_workflow(fixture_request)
+
+
+def verified_reuse_fixture(
+    *,
+    resolved_windows,
+    rows,
+    completeness_status="complete",
+    analysis_readiness="ready",
+    contract_versions=None,
+    schema_fingerprint="",
+):
+    asset, context = verified_dimension_scan_asset(
+        rows=rows,
+        required_fields=("window_id", "amount", "channel"),
+        resolved_windows=resolved_windows,
+        query_ref="query:channel:1",
+        completeness_status=completeness_status,
+        analysis_readiness=analysis_readiness,
+        contract_versions=contract_versions,
+        schema_fingerprint=schema_fingerprint,
+        created_at="2026-06-03T00:00:00+00:00",
+        expires_at="2026-06-03T12:00:00+00:00",
+        time_window="2026-06-01..2026-06-02",
+    )
+    return asset["reuse_contract"], asset, context["evidence_resolver"]
 
 
 class AnalysisAssetsTest(unittest.TestCase):
+    def test_report_alias_overwrite_does_not_change_bound_asset_truth(self):
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows={
+                "target_day": {
+                    "start_inclusive": "2026-06-02",
+                    "end_exclusive": "2026-06-03",
+                    "timezone": "Africa/Lagos",
+                }
+            },
+            rows=({"window_id": "target_day", "amount": 10, "channel": "A"},),
+        )
+        immutable_ref = contract["completeness_record_refs"][0]
+        immutable = resolver.resolve_completeness(immutable_ref)
+        original_report = CompletenessReport(**to_jsonable(immutable.report_payload))
+        overwritten = _record_completeness(
+            resolver,
+            replace(
+                original_report,
+                completeness_status="partial",
+                analysis_readiness="blocked",
+                failure_reasons=("later_validation_failed",),
+            ),
+        )
+
+        decision = evaluate_dimension_scan_reuse(
+            asset,
+            expected_contract=contract,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+
+        self.assertNotEqual(overwritten.record_ref, immutable_ref)
+        self.assertEqual(resolver.resolve_completeness(immutable_ref), immutable)
+        self.assertEqual(
+            resolver.resolve_latest_completeness(original_report.report_ref),
+            overwritten,
+        )
+        self.assertEqual(decision["reuse_decision"]["decision"], "reuse")
+
+    def test_asset_requires_authority_and_existing_binding_ref(self):
+        windows = {
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            }
+        }
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=({"window_id": "target_day", "amount": 10, "channel": "A"},),
+        )
+        missing_ref_contract = {
+            **contract,
+            "binding_manifest_ref": "capability-binding:missing",
+        }
+        missing_ref_contract["contract_signature"] = _reuse_contract_signature(
+            missing_ref_contract
+        )
+
+        no_resolver = evaluate_dimension_scan_reuse(
+            asset,
+            expected_contract=contract,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+        )
+        missing_ref = evaluate_dimension_scan_reuse(
+            {**asset, "reuse_contract": missing_ref_contract},
+            expected_contract=missing_ref_contract,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+
+        self.assertEqual(
+            no_resolver["reuse_decision"]["reason"],
+            "runtime_evidence_resolver_missing",
+        )
+        self.assertEqual(
+            missing_ref["reuse_decision"]["reason"],
+            "capability_binding_record_missing",
+        )
+
+    def test_row_order_is_semantic_and_duplicate_assets_are_deduped(self):
+        windows = {
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            }
+        }
+        rows = (
+            {"window_id": "target_day", "amount": 10, "channel": "A"},
+            {"window_id": "target_day", "amount": 20, "channel": "B"},
+        )
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=rows,
+        )
+        reordered = {
+            **asset,
+            "row_payload": {
+                **asset["row_payload"],
+                "rows": tuple(reversed(asset["row_payload"]["rows"])),
+            },
+        }
+
+        decision = evaluate_dimension_scan_reuse(
+            reordered,
+            expected_contract=contract,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+        matched = reusable_dimension_scan_inputs(
+            (asset, asset),
+            target_metric="paid_amount",
+            scope="full_sample",
+            time_window="2026-06-01..2026-06-02",
+            windows={"target": "2026-06-02"},
+            baselines=("previous_day",),
+            permission_scope="analyst",
+            snapshot_version="2026H1",
+            required_dimensions=("channel",),
+            required_fields=tuple(contract["required_fields"]),
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            **{
+                key: value
+                for key, value in contract.items()
+                if key
+                in {
+                    "contract_versions",
+                    "schema_fingerprint",
+                    "resolved_windows",
+                    "query_contract_signatures",
+                    "capability_contract_version",
+                    "source_snapshot_refs",
+                    "completeness_reports",
+                    "result_provenance",
+                    "completeness_record_refs",
+                    "completeness_record_digests",
+                    "unique_key_fields",
+                    "row_payload_rows_ref",
+                    "binding_manifest_ref",
+                    "binding_manifest_digest",
+                }
+            },
+            row_payload=asset["row_payload"],
+            evidence_resolver=resolver,
+        )
+
+        self.assertEqual(decision["reuse_decision"]["decision"], "reuse")
+        self.assertEqual(len(matched), 1)
+
+    def test_nan_and_mapping_unique_keys_are_stable_context_only(self):
+        windows = {
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            }
+        }
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=({"window_id": "target_day", "amount": 10, "channel": "A"},),
+        )
+        bad_rows = (
+            ({"window_id": "target_day", "amount": float("nan"), "channel": "A"},),
+            ({"window_id": "target_day", "amount": 10, "channel": {"name": "A"}},),
+        )
+
+        for rows in bad_rows:
+            with self.subTest(rows=rows):
+                candidate = {
+                    **asset,
+                    "row_payload": {
+                        **asset["row_payload"],
+                        "rows": rows,
+                    },
+                }
+                decision = evaluate_dimension_scan_reuse(
+                    candidate,
+                    expected_contract=contract,
+                    now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+                    evidence_resolver=resolver,
+                )
+                self.assertEqual(
+                    decision["reuse_decision"]["decision"],
+                    "context_only",
+                )
+
+    def test_asset_reuse_rejects_row_and_contract_signature_tampering(self):
+        windows = {
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            }
+        }
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=(
+                {"window_id": "target_day", "amount": 10, "channel": "A"},
+            ),
+        )
+        changed_rows = {
+            **asset,
+            "row_payload": {
+                **asset["row_payload"],
+                "rows": (
+                    {
+                        **asset["row_payload"]["rows"][0],
+                        "paid_amount": 999,
+                    },
+                ),
+            },
+        }
+        changed_window_contract = {
+            **contract,
+            "resolved_windows": {
+                "target_day": {
+                    "start_inclusive": "2026-06-01",
+                    "end_exclusive": "2026-06-03",
+                    "timezone": "Africa/Lagos",
+                }
+            },
+        }
+
+        row_decision = evaluate_dimension_scan_reuse(
+            changed_rows,
+            expected_contract=contract,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+        signature_decision = evaluate_dimension_scan_reuse(
+            {**asset, "reuse_contract": changed_window_contract},
+            expected_contract=contract,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+
+        self.assertEqual(
+            row_decision["reuse_decision"]["reason"],
+            "row_payload_digest_mismatch",
+        )
+        self.assertEqual(
+            signature_decision["reuse_decision"]["reason"],
+            "reuse_contract_signature_invalid",
+        )
+
+    def test_declared_windows_missing_from_actual_rows_generate_delta(self):
+        windows = {
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            },
+            "previous_day": {
+                "start_inclusive": "2026-06-01",
+                "end_exclusive": "2026-06-02",
+                "timezone": "Africa/Lagos",
+            },
+        }
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=(
+                {"window_id": "target_day", "amount": 10, "channel": "A"},
+            ),
+        )
+
+        decision = evaluate_dimension_scan_reuse(
+            asset,
+            expected_contract=contract,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+
+        self.assertEqual(decision["reuse_decision"]["decision"], "context_only")
+        self.assertIsNone(decision["delta_query_descriptor"])
+        self.assertEqual(
+            decision["reuse_decision"]["reason"],
+            "completeness_not_complete",
+        )
+
+    def test_exact_asset_signature_reuses_and_incomplete_asset_is_context_only(self):
+        windows = {
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            }
+        }
+        rows = ({"window_id": "target_day", "amount": 10, "channel": "A"},)
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=rows,
+        )
+        _, incomplete_asset, incomplete_resolver = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=rows,
+            completeness_status="partial",
+            analysis_readiness="degraded",
+        )
+
+        exact = evaluate_dimension_scan_reuse(
+            asset,
+            expected_contract=contract,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+        incomplete = evaluate_dimension_scan_reuse(
+            incomplete_asset,
+            expected_contract=contract,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=incomplete_resolver,
+        )
+
+        self.assertEqual(exact["reuse_decision"]["decision"], "reuse")
+        self.assertTrue(exact["reuse_decision"]["can_support_claim"])
+        self.assertEqual(incomplete["reuse_decision"]["decision"], "context_only")
+        self.assertEqual(incomplete["reuse_decision"]["reason"], "completeness_not_complete")
+
+    def test_partial_window_overlap_returns_exact_delta_query_descriptor(self):
+        target_window = {
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            }
+        }
+        expected_windows = {
+                **target_window,
+                "previous_day": {
+                    "start_inclusive": "2026-06-01",
+                    "end_exclusive": "2026-06-02",
+                    "timezone": "Africa/Lagos",
+                },
+        }
+        _, asset, resolver = verified_reuse_fixture(
+            resolved_windows=target_window,
+            rows=(
+                {"window_id": "target_day", "amount": 10, "channel": "A"},
+            ),
+        )
+        expected = {
+            **asset["reuse_contract"],
+            "resolved_windows": expected_windows,
+        }
+        expected["contract_signature"] = _reuse_contract_signature(expected)
+
+        evaluated = evaluate_dimension_scan_reuse(
+            asset,
+            expected_contract=expected,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+
+        self.assertEqual(evaluated["reuse_decision"]["decision"], "context_only")
+        self.assertEqual(evaluated["reuse_decision"]["reason"], "partial_window_coverage")
+        self.assertEqual(
+            evaluated["delta_query_descriptor"]["missing_window_ids"],
+            ("previous_day",),
+        )
+        self.assertEqual(
+            evaluated["delta_query_descriptor"]["reusable_window_ids"],
+            ("target_day",),
+        )
+
+    def test_asset_ttl_uses_injected_reference_clock_before_inside_and_after(self):
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows={"target_day": {"start_inclusive": "2026-06-02", "end_exclusive": "2026-06-03", "timezone": "Africa/Lagos"}},
+            rows=({"window_id": "target_day", "amount": 10, "channel": "A"},),
+        )
+
+        decisions = tuple(
+            evaluate_dimension_scan_reuse(
+                asset,
+                expected_contract=contract,
+                now=datetime.fromisoformat(reference),
+                evidence_resolver=resolver,
+            )["reuse_decision"]["decision"]
+            for reference in (
+                "2026-06-02T23:59:59+00:00",
+                "2026-06-03T06:00:00+00:00",
+                "2026-06-03T12:00:01+00:00",
+            )
+        )
+
+        self.assertEqual(decisions, ("context_only", "reuse", "context_only"))
+
+    def test_asset_ttl_rejects_naive_or_invalid_clock_inputs(self):
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows={"target_day": {"start_inclusive": "2026-06-02", "end_exclusive": "2026-06-03", "timezone": "Africa/Lagos"}},
+            rows=({"window_id": "target_day", "amount": 10, "channel": "A"},),
+        )
+        cases = (
+            ({**asset, "created_at": "2026-06-03T00:00:00"}, datetime.fromisoformat("2026-06-03T06:00:00+00:00")),
+            ({**asset, "expires_at": "not-a-time"}, datetime.fromisoformat("2026-06-03T06:00:00+00:00")),
+            (asset, datetime(2026, 6, 3, 6, 0, 0)),
+        )
+
+        for candidate, reference in cases:
+            with self.subTest(candidate=candidate, reference=reference):
+                decision = evaluate_dimension_scan_reuse(
+                    candidate,
+                    expected_contract=contract,
+                    now=reference,
+                    evidence_resolver=resolver,
+                )
+                self.assertEqual(
+                    decision["reuse_decision"]["decision"],
+                    "context_only",
+                )
+
     def test_builds_assets_from_answer_package(self):
         assets = build_analysis_assets(
             {
@@ -183,85 +681,57 @@ class AnalysisAssetsTest(unittest.TestCase):
         self.assertEqual(assets[0]["query_ref"], "query:1")
 
     def test_dimension_scan_reuse_rejects_contract_version_or_schema_drift(self):
-        base_contract = build_dimension_scan_reuse_contract(
-            target_metric="paid_amount",
-            scope="full_sample",
-            time_window="yesterday",
-            windows={"target": "yesterday"},
-            baselines=("previous_day",),
-            permission_scope="analyst",
-            snapshot_version="2026H1",
-            dimensions=("channel",),
-            required_fields=("period", "group", "amount", "orders"),
-            contract_versions={"payment_fact": "v1"},
-            schema_fingerprint="schema:v1",
-        )
-        asset = {
-            "asset_type": "dimension_scan",
-            "status": "usable",
-            "dimensions": ("channel",),
-            "query_ref": "query:channel-v1",
-            "result_refs": ("result:channel-v1",),
-            "created_at": "2026-07-09T00:00:00+00:00",
-            "expires_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
-            "reuse_contract": base_contract,
-            "row_payload": {
-                "row_count": 2,
-                "truncated": False,
-                "rows": [
-                    {"period": "2026-07-07", "group": "previous_day", "amount": 80, "orders": 12, "channel": "ads"},
-                    {"period": "2026-07-08", "group": "target", "amount": 120, "orders": 18, "channel": "ads"},
-                ],
-            },
-            "applicable_scans": ("dimension_scan",),
+        windows = {
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            }
         }
-
-        matched = reusable_dimension_scan_inputs(
-            (asset,),
-            target_metric="paid_amount",
-            scope="full_sample",
-            time_window="yesterday",
-            windows={"target": "yesterday"},
-            baselines=("previous_day",),
-            permission_scope="analyst",
-            snapshot_version="2026H1",
-            required_dimensions=("channel",),
-            required_fields=("period", "group", "amount", "orders"),
+        rows = (
+            {"window_id": "target_day", "amount": 10, "channel": "A"},
+        )
+        base_contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=rows,
             contract_versions={"payment_fact": "v1"},
             schema_fingerprint="schema:v1",
         )
-        contract_drift = reusable_dimension_scan_inputs(
-            (asset,),
-            target_metric="paid_amount",
-            scope="full_sample",
-            time_window="yesterday",
-            windows={"target": "yesterday"},
-            baselines=("previous_day",),
-            permission_scope="analyst",
-            snapshot_version="2026H1",
-            required_dimensions=("channel",),
-            required_fields=("period", "group", "amount", "orders"),
+        contract_drift, _, _ = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=rows,
             contract_versions={"payment_fact": "v2"},
             schema_fingerprint="schema:v1",
         )
-        schema_drift = reusable_dimension_scan_inputs(
-            (asset,),
-            target_metric="paid_amount",
-            scope="full_sample",
-            time_window="yesterday",
-            windows={"target": "yesterday"},
-            baselines=("previous_day",),
-            permission_scope="analyst",
-            snapshot_version="2026H1",
-            required_dimensions=("channel",),
-            required_fields=("period", "group", "amount", "orders"),
+        schema_drift, _, _ = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=rows,
             contract_versions={"payment_fact": "v1"},
             schema_fingerprint="schema:v2",
         )
 
-        self.assertEqual(len(matched), 1)
-        self.assertEqual(contract_drift, ())
-        self.assertEqual(schema_drift, ())
+        exact = evaluate_dimension_scan_reuse(
+            asset,
+            expected_contract=base_contract,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+        contract_decision = evaluate_dimension_scan_reuse(
+            asset,
+            expected_contract=contract_drift,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+        schema_decision = evaluate_dimension_scan_reuse(
+            asset,
+            expected_contract=schema_drift,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+
+        self.assertEqual(exact["reuse_decision"]["decision"], "reuse")
+        self.assertEqual(contract_decision["reuse_decision"]["decision"], "context_only")
+        self.assertEqual(schema_decision["reuse_decision"]["decision"], "context_only")
 
     def test_store_dedupes_reusable_assets_by_content_and_keeps_latest_metadata(self):
         store = InMemoryConversationStore()
@@ -455,14 +925,8 @@ class AnalysisAssetsTest(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         assets = store.list_analysis_assets("thread-agent-assets", result["topic_id"])
         asset_types = {asset["asset_type"] for asset in assets}
-        self.assertIn("compiler_runtime_plan", asset_types)
-        self.assertIn("contract_gap_diagnostic", asset_types)
-        self.assertIn("claim_context_slot", asset_types)
-        claim_context = next(asset for asset in assets if asset["asset_type"] == "claim_context_slot")
-        self.assertEqual(tuple(claim_context["limitations"]), ("needs_segment_sample_review",))
-        self.assertEqual(claim_context["verifier_status"], "passed")
-        self.assertEqual(claim_context["wording_limit"], "candidate")
-        self.assertFalse(claim_context["can_support_business_truth"])
+        self.assertEqual(result["answer_package"]["status"], "failed")
+        self.assertEqual(asset_types, set())
 
     def test_claim_asset_requires_strong_wording_limit_for_business_truth_support(self):
         assets = build_analysis_assets(
@@ -682,7 +1146,7 @@ class AnalysisAssetsTest(unittest.TestCase):
         self.assertEqual(assets[0]["verifier_status"], "passed")
         self.assertTrue(assets[0]["can_support_business_truth"])
 
-    def test_follow_up_run_reuses_persisted_dimension_scan_assets(self):
+    def test_follow_up_legacy_asset_stays_context_only_without_exact_signature(self):
         class Provider:
             def configured(self):
                 return True
@@ -767,12 +1231,11 @@ class AnalysisAssetsTest(unittest.TestCase):
         self.assertEqual(first["status"], "completed")
         self.assertEqual(second["status"], "completed")
         assets = store.list_analysis_assets("thread-follow-up-assets", first["topic_id"])
-        self.assertTrue(any(asset["asset_type"] == "dimension_scan" for asset in assets))
+        self.assertEqual(first["answer_package"]["status"], "failed")
+        self.assertFalse(any(asset["asset_type"] == "dimension_scan" for asset in assets))
         prior_assets = store.runs["run-follow-up-scan"]["request"]["prior_analysis_assets"]
-        self.assertTrue(any(asset["asset_type"] == "dimension_scan" for asset in prior_assets))
-        compiler_plan = second["answer_package"]["admin_audit"]["compiler_runtime_plan"]
-        self.assertIn("dimension_scan_reuse", compiler_plan["query_intents"])
-        self.assertNotIn("dimension_scan", compiler_plan["query_intents"])
+        self.assertFalse(any(asset["asset_type"] == "dimension_scan" for asset in prior_assets))
+        self.assertEqual(second["answer_package"]["status"], "failed")
         compiled = compile_graph(
             question_family="segment_or_factor_attribution",
             target_metric="paid_amount",
@@ -790,8 +1253,8 @@ class AnalysisAssetsTest(unittest.TestCase):
             },
             prior_analysis_assets=tuple(prior_assets),
         )
-        self.assertIn("dimension_scan_reuse", compiled.runtime_plan["query_intents"])
-        self.assertNotIn("dimension_scan", compiled.runtime_plan["query_intents"])
+        self.assertNotIn("dimension_scan_reuse", compiled.runtime_plan["query_intents"])
+        self.assertIn("dimension_scan", compiled.runtime_plan["query_intents"])
 
 
 if __name__ == "__main__":

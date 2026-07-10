@@ -1704,7 +1704,7 @@ git commit -m "feat: validate clickhouse result completeness"
 - Produces: `BoundCapabilityInput` or typed blocked/degraded input.
 - Extends: `CapabilityEvidenceEnvelope` with analysis/query/completeness/snapshot refs and supported claim types.
 
-- [ ] **Step 1: 写失败测试，禁止 intent fallback 和不完整输入**
+- [x] **Step 1: 写失败测试，禁止 intent fallback 和不完整输入**
 
 Create `tests/phase4/test_capability_execution.py`:
 
@@ -1807,7 +1807,7 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```bash
 python3 -m unittest tests.phase4.test_capability_execution -v
@@ -1815,7 +1815,7 @@ python3 -m unittest tests.phase4.test_capability_execution -v
 
 Expected: FAIL on missing module.
 
-- [ ] **Step 3: 实现 exact slot binder**
+- [x] **Step 3: 实现 exact slot binder**
 
 Create `bi_agent/runtime/capability_execution.py`:
 
@@ -1909,7 +1909,7 @@ Requiredness comes from the typed slot, so any failed match for a required slot
 is blocked regardless of the reason text; status logic must not infer
 requiredness from string prefixes.
 
-- [ ] **Step 4: 扩展 evidence envelope and asset signature**
+- [x] **Step 4: 扩展 evidence envelope and asset signature**
 
 Append these defaulted fields to `CapabilityEvidenceEnvelope`:
 
@@ -1924,7 +1924,160 @@ supported_claim_types: tuple[str, ...] = ()
 
 Update every envelope builder to populate them from `BoundCapabilityInput`. Extend asset reuse signatures with concrete windows, query contract signatures, completeness digest, capability contract version, and snapshot refs. Reuse returns `context_only` whenever completeness is not `complete` or a required signature differs. Partial window overlap produces a delta-query descriptor listing exact missing window ids.
 
-- [ ] **Step 5: 运行 Task 6 验证**
+Task 6 implementation correction: `CapabilityExecutionPlan` carries the exact
+analysis contract ref and contract-backed supported claim types into
+`BoundCapabilityInput`; evidence builders copy primary and validation provenance
+from that bound input. Production execution without a factory-created valid
+bound input is blocked before calculation. Legacy unbound values require all of
+`run_mode=fixture`, `WAJE_ALLOW_LEGACY_FIXTURES=1`, and
+`WAJE_RUNTIME_ENV=test|development`; an unset environment is denied.
+Runtime evidence crosses process boundaries through three protocols:
+`RuntimeEvidenceResolver` resolves immutable metadata records,
+`RowsPayloadLoader` loads aggregate rows by `rows_ref`, and
+`RuntimeEvidenceWriter` writes typed query/completeness/binding records. The
+in-memory implementation keeps row payloads in a separate loader; `RowsRecord`
+contains only row hash, count, reviewed unique key, and storage ref. This is the
+same split Task 9 must implement with PostgreSQL metadata plus ClickHouse or
+artifact row loading. Closure-held typed writers replace the module-global
+write token and reject wrong record kinds, invalid refs, digest drift, and
+arbitrary objects. Caller maps remain ref selectors only.
+
+Completeness records are content-addressed and immutable. A mutable
+`report_ref` alias may locate the latest validation result for diagnostics, but
+bound capability/evidence/asset truth pins exact `completeness_record_refs` and
+digests for primary and validation inputs. Re-validating the same report alias
+creates a new record and cannot change an existing binding or reusable asset.
+The binder recomputes standalone/query-set assertions and audit refs, validates
+the complete runtime registry capability contract, then registers the immutable
+binding record. Embedded manifests remain integrity caches and cannot authorize
+a claim.
+
+The answer verifier resolves the binding record and closes every
+query/result/rows hash/completeness/snapshot link. Every claim entering the
+business summary, claim groups, or visualization plan needs at least one fully
+resolved authority-backed evidence item, independent of the claim-strength
+label. All-context, blocked, insufficient, unbound, policy-tampered, partial,
+or failed evidence remains visible as a limitation and cannot become a passed
+claim. Supported claim/evidence types, maximum claim strength, binding status,
+and completeness come from the binding record; evidence self-report must match
+that authority policy. A missing or throwing resolver fails closed. Shared
+immutable validation totals may serve multiple slots and are
+deduplicated in final provenance; primary/validation overlap and same-ref
+different-payload collisions remain blocked. Capability contract
+version/signature comes from the canonical full runtime registry contract, so
+policy drift changes its identity and a plan cannot reuse the old signature.
+
+Publishable `evidence_refs` contain authority-backed evidence only. Context,
+blocked, and insufficient material uses `context_evidence_refs`; it cannot
+satisfy claim numbers, scope, time window, or the main conclusion. Every
+publishable ref must independently resolve and pass record integrity. If the
+verifier status is anything other than exact `passed`, or any draft claim is
+rejected, the Answer Package is marked `blocked_by_evidence_verifier` and all
+visible final answer, summary text, business summary, claims, visual blocks,
+and final explanation prose are scrubbed. The package carries typed verifier
+codes/indexes for Task 10 repair without generating a local business
+narrative. ConversationAgentCore runs the same scrub before persistence and
+return, so a custom or remote workflow runner cannot bypass this gate.
+
+Every resolver consumer recomputes the canonical authority payload, digest,
+content-addressed record ref, and denormalized fields for snapshot, query
+execution, rows metadata, completeness, and capability binding records.
+Wrong adapter return types, exceptions, typed-record payload drift, and writer
+return-type drift fail closed. Query execution records never embed row
+payloads; aggregate rows remain behind `RowsPayloadLoader`.
+
+Claim strength uses the versioned global taxonomy in the runtime bindings
+contract. Actual strengths (`insufficient`, `context_only`,
+`dry_run_context`, `observed`, `medium`, `high`, `strong`) and capability
+maximum categories are ranked there. The taxonomy participates in every
+capability signature; plans and binding records pin taxonomy version and
+maximum rank. Unknown strengths and claims above the capability ceiling fail
+verification.
+
+Asset build/reuse now requires the same authority resolver and binding record.
+It resolves query, result, rows, completeness, snapshot, and binding records;
+self-signed embedded assets are context only. Row hashes use canonical JSON with
+`allow_nan=False`, finite numbers, scalar unique keys, and reviewed-key sorting,
+so row order does not change semantic identity. Malformed rows are stable
+`context_only`, and duplicate assets are removed by contract/result identity.
+Partial concrete-window overlap uses actual rows to emit exact reusable and
+missing window ids. TTL checks receive the accepted Analysis Contract clock and
+fail closed on naive or invalid timestamps; UTC-now remains the default only
+when no contract clock was supplied.
+
+`validate_query_result` accepts one snapshot, an exact snapshot mapping, or a
+snapshot sequence. It validates every declared source snapshot for watermark,
+permission, active status, and schema identity; one stale or invalid source
+blocks readiness regardless of input order. Query-execution authority
+collisions surface as `EvidenceIntegrityError`; the executor cannot return a
+succeeded envelope that differs from the already recorded authority rows.
+
+Task 6 delivery correction: binder, verifier, and reusable-asset admission now
+share one authoritative query-chain validator. It reloads rows, reconstructs
+the exact result envelope, reruns standalone and query-set completeness, checks
+canonical reports and compiler policy, and rejects re-digested link drift. All
+production authority decisions require an explicitly supplied, exact-type
+registry whose payload still matches the canonical WAJE runtime binding file;
+resolver-held or caller-constructed registries cannot authorize claims. Core
+also recomputes verifier status and claim partitions before persistence and
+delivery, then removes client-supplied LLM, quality, and admin prose on hard
+failure. Internal artifacts may retain the raw audit for diagnosis. Partial
+asset coverage remains a typed `context_only` decision with exact reusable and
+missing windows and compiles `dimension_scan_delta`; only an exact match can
+suppress a full scan.
+
+The delivery correction also closes three remaining semantic boundaries. The
+shared validator derives the complete capability slot policy from the canonical
+registry and matches persisted query intents, metric families, required
+windows, result shapes, reconciliation dependencies, readiness, evidence types,
+claim types, and strength ceiling before a binding can authorize any consumer.
+Core returns a closed client projection rebuilt from independently accepted
+claims and their authority refs; it assigns deterministic claim ids, regenerates
+claim groups and visual blocks, derives final prose only from accepted claim
+text, and exposes verifier codes/indexes while retaining full diagnostics in an
+internal audit event. Wording warnings remain non-blocking. `RowsRecord` now
+separates logical `rows_ref` from a content-addressed physical `storage_ref`;
+loaders resolve the latter while every query and binding link continues to use
+the former, with hash, count, unique-key, and storage-content checks unchanged.
+
+Client projection additionally builds a persisted authority fact closure before
+creating delivery claim ids. Each typed fact pins query/result refs, metric,
+window id and role, observation key, dimension key, grain, value, and the metric
+display policy compiled from the canonical registry. Structured claim fields
+must map to one exact fact or one exact target/baseline pair. Explicit per-field
+selectors close over query/result refs, metric, window role/id, observation key,
+dimensions, and grain; missing selectors remain valid only when the authority
+set is already unique. Equal values in another window or dimension cannot
+satisfy the mapping. Client-facing factual clauses are rendered only from mapped
+facts. Caller prose stays in the internal audit path and never contributes to
+final text, claim groups, or visual blocks. Claims without fact refs are omitted
+from every client surface. The registry supports typed `raw_scalar/number` and
+`scalar_ratio/percent` policies; unknown or default facts render as raw scalars,
+and only the ratio policy applies percent scaling. The policy is part of
+`MetricBinding`, QueryContract signatures, current-source validation, and
+authority fact ids. Target metric, grain, baseline, target, and evidence strength
+are derived from canonical contracts and binding policy. Wording warnings remain
+advisory, so style and narrative structure stay outside the hard LLM audit gate.
+
+Delta projection resolves target and baseline facts from selectors before it
+reads the claimed delta. Each side must reduce to one fact, and the selected pair
+must have compatible typed dimensions, grain, and populated observation keys.
+Only then can arithmetic and direction be checked; a caller-supplied delta never
+chooses between multiple authority pairs. Dimension keys use a typed canonical
+scalar representation for null, boolean, integer, number, and string values.
+`None` binds to the query contract's explicit `null_bucket`, while `0`, `False`,
+`None`, and the empty string retain distinct identities in rows, fact refs, and
+selectors. Query completeness uses canonical typed unique-key digests as well,
+so Python scalar equality cannot collapse boolean and numeric dimension keys.
+Typed number selectors never cross a float boundary. They expose separate
+`canonical_value` and `display_value` strings and replay the canonical value
+exactly. Decimal canonicalization is built from `Decimal.as_tuple()` into a
+normalized scientific representation, independent of the active decimal
+context. It is bounded to 4096 coefficient digits and an absolute scientific
+exponent of 10000; larger values fail closed without expanding an unbounded
+fixed-point string. Query-row authority continues to reject NaN and infinities.
+
+- [x] **Step 5: 运行 Task 6 验证**
 
 ```bash
 python3 -m unittest tests.phase4.test_capability_execution -v
@@ -1933,7 +2086,7 @@ python3 -m pytest tests/phase4/test_capability_harness.py tests/phase7/test_anal
 
 Expected: all tests PASS.
 
-- [ ] **Step 6: 提交 Task 6**
+- [x] **Step 6: 提交 Task 6**
 
 ```bash
 git add bi_agent/runtime/capability_execution.py bi_agent/runtime/capability_models.py bi_agent/runtime/analysis_assets.py tests/phase4/test_capability_execution.py tests/phase7/test_analysis_assets.py
@@ -2164,6 +2317,7 @@ git commit -m "feat: ingest gameplay and event evidence snapshots"
 **Interfaces:**
 - Produces transactional persistence for analysis contracts, query contracts/runs, completeness reports, evidence manifests, claim links, and repair attempts.
 - Adds these records to Answer Package admin audit and `context_manifest` refs.
+- Implements a PostgreSQL-backed `RuntimeEvidenceResolver` for the immutable query, rows-ref metadata, snapshot, completeness, and capability-binding records introduced in Task 6; write paths remain internal to the runtime persistence transaction.
 
 - [ ] **Step 1: 写 transactional persistence 失败测试**
 
@@ -2194,6 +2348,32 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
         for table in ("analysis_contracts", "query_contracts", "query_runs", "query_completeness_reports", "evidence_manifests", "claim_evidence_links"):
             self.assertIn(f"waje_runtime.{table}", sql)
         self.assertEqual(connection.commits, 1)
+
+    def test_postgres_resolver_rejects_tampered_typed_authority_record(self):
+        connection = FakeConnection()
+        store = PostgresConversationStore(connection)
+        store.seed_runtime_authority_record(
+            kind="capability_binding",
+            record_ref="capability-binding:compare_periods:sha256:expected",
+            payload={"capability_id": "tampered"},
+            digest="expected",
+        )
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "capability_binding_record_integrity",
+        ):
+            store.runtime_evidence_resolver().resolve_capability_binding(
+                "capability-binding:compare_periods:sha256:expected"
+            )
+
+    def test_postgres_metadata_resolver_uses_separate_rows_payload_loader(self):
+        resolver = PostgresRuntimeEvidenceResolver(FakeConnection())
+        loader = ClickHouseArtifactRowsPayloadLoader(
+            clickhouse=FakeClickHouse(),
+            artifact_root="artifacts",
+        )
+        self.assertIsInstance(resolver.resolve_rows("rows:1"), RowsRecord)
+        self.assertEqual(loader.load_rows("rows:1"), ({"window_id": "target"},))
 ```
 
 - [ ] **Step 2: 运行测试并确认失败**
@@ -2236,11 +2416,46 @@ CREATE TABLE IF NOT EXISTS waje_runtime.query_runs (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS waje_runtime.query_execution_authority (
+  record_ref text PRIMARY KEY,
+  result_ref text NOT NULL UNIQUE REFERENCES waje_runtime.query_runs(result_ref) ON DELETE CASCADE,
+  record_digest text NOT NULL,
+  payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.rows_metadata_authority (
+  record_ref text PRIMARY KEY,
+  rows_ref text NOT NULL UNIQUE,
+  rows_content_hash text NOT NULL,
+  row_count bigint NOT NULL CHECK (row_count >= 0),
+  unique_key_fields jsonb NOT NULL,
+  storage_ref text NOT NULL,
+  record_digest text NOT NULL,
+  payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS waje_runtime.query_completeness_reports (
-  report_ref text PRIMARY KEY,
+  record_ref text PRIMARY KEY,
+  report_ref text NOT NULL,
+  report_digest text NOT NULL,
   result_ref text NOT NULL REFERENCES waje_runtime.query_runs(result_ref) ON DELETE CASCADE,
   completeness_status text NOT NULL,
   analysis_readiness text NOT NULL,
+  payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS query_completeness_reports_report_ref_idx
+  ON waje_runtime.query_completeness_reports (report_ref, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.capability_binding_authority (
+  record_ref text PRIMARY KEY,
+  capability_id text NOT NULL,
+  binding_digest text NOT NULL,
+  claim_strength_taxonomy_version text NOT NULL,
+  maximum_claim_strength_rank integer NOT NULL CHECK (maximum_claim_strength_rank >= 0),
   payload jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -2273,7 +2488,15 @@ CREATE TABLE IF NOT EXISTS waje_runtime.query_repair_attempts (
 
 `save_analysis_runtime_records()` performs all inserts with `commit=False`, writes one audit event with `commit=False`, then commits once. On exception it calls `connection.rollback()` and re-raises. Add the same logical API to `InMemoryConversationStore` for unit tests.
 
-Do not persist aggregate row payloads in PostgreSQL. Persist result ref, query hash, schema/window/grain summaries, provider stats, completeness, and artifact refs. ClickHouse remains the result source.
+PostgreSQL stores immutable authority metadata and canonical payloads for query
+execution, rows refs, completeness records, and capability bindings. Every PG
+resolver read runs the same public Task 6 record-integrity validator before
+returning a typed record. `report_ref` is a non-unique latest-lookup alias;
+`record_ref` is the completeness primary key and claim/asset truth ref. Do not
+persist aggregate row payloads in PostgreSQL. A separate
+`RowsPayloadLoader` reads them from ClickHouse or local artifacts by
+`storage_ref`; PostgreSQL persists row hash/count/unique-key/storage metadata
+only.
 
 - [ ] **Step 5: 扩展 Answer Package and ContextManifest**
 
@@ -2327,6 +2550,7 @@ git commit -m "feat: persist analysis contract evidence chains"
 - Produces: `AnalysisRuntime.from_environment(store)` and `AnalysisRuntime.execute(request, proposal, accepted_graph)`.
 - ConversationAgentCore accepts optional internal `analysis_context` for fixed eval clocks; Gateway production calls omit it.
 - Workflow consumes exact `CapabilityExecutionPlan` inputs and removes arbitrary live row fallback.
+- `AnalysisRuntime` owns/passes the runtime evidence authority resolver through executor, completeness validation, binder, capability harness, answer verifier, and analysis-asset build/reuse.
 
 - [ ] **Step 1: 写 ConversationAgentCore fixed-clock and no-fallback tests**
 

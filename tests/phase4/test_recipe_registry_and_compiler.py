@@ -6,6 +6,7 @@ from bi_agent.runtime.analysis_assets import build_dimension_scan_reuse_contract
 from bi_agent.runtime.contracts import load_contract
 from bi_agent.runtime.models import RecipeEntry
 from bi_agent.runtime.recipe_registry import load_recipe_registry
+from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
 
 
 def _contract_gap_ids(row_shape):
@@ -416,6 +417,26 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
         self.assertEqual(compiled.runtime_plan["baselines"], ("custom_baseline",))
 
     def test_compiler_passes_prior_analysis_assets_into_runtime_plan(self):
+        required_fields = (
+            "period",
+            "group",
+            "amount",
+            "paid_users",
+            "orders",
+            "first_paid_users",
+        )
+        resolved_windows = {
+            "target_day": {"start_inclusive": "2026-07-08", "end_exclusive": "2026-07-09", "timezone": "Africa/Lagos"},
+            "previous_day": {"start_inclusive": "2026-07-07", "end_exclusive": "2026-07-08", "timezone": "Africa/Lagos"},
+        }
+        asset, content = verified_dimension_scan_asset(
+            required_fields=required_fields,
+            resolved_windows=resolved_windows,
+            rows=(
+                {"window_id": "previous_day", "period": "2026-07-07", "group": "baseline", "amount": 100, "paid_users": 10, "orders": 12, "first_paid_users": 3, "channel": "A"},
+                {"window_id": "target_day", "period": "2026-07-08", "group": "target", "amount": 130, "paid_users": 11, "orders": 14, "first_paid_users": 4, "channel": "A"},
+            ),
+        )
         compiled = compile_graph(
             question_family="segment_or_factor_attribution",
             target_metric="paid_amount",
@@ -430,61 +451,10 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
                 "snapshot_version": "2026H1",
                 "contract_versions": {"runtime": "contract-v1"},
                 "schema_fingerprint": "schema-v1",
+                "as_of": "2026-07-09T00:00:00+00:00",
+                **content,
             },
-            prior_analysis_assets=(
-                {
-                    "asset_type": "dimension_scan",
-                    "dimensions": ("channel",),
-                    "status": "usable",
-                    "query_ref": "query:channel-scan",
-                    "reuse_contract": build_dimension_scan_reuse_contract(
-                        target_metric="paid_amount",
-                        scope="full_sample",
-                        time_window="2026-07-08",
-                        windows={"target": "2026-07-08", "baseline": "2026-07-07"},
-                        baselines=("previous_day",),
-                        permission_scope="analyst",
-                        snapshot_version="2026H1",
-                        dimensions=("channel",),
-                        required_fields=(
-                            "period",
-                            "group",
-                            "amount",
-                            "paid_users",
-                            "orders",
-                            "first_paid_users",
-                        ),
-                        contract_versions={"runtime": "contract-v1"},
-                        schema_fingerprint="schema-v1",
-                    ),
-                    "created_at": "2026-07-08T08:00:00+00:00",
-                    "expires_at": "2026-07-10T08:00:00+00:00",
-                    "row_payload": {
-                        "rows": (
-                            {
-                                "period": "2026-07-07",
-                                "group": "baseline",
-                                "amount": 100,
-                                "paid_users": 10,
-                                "orders": 12,
-                                "first_paid_users": 3,
-                                "channel": "A",
-                            },
-                            {
-                                "period": "2026-07-08",
-                                "group": "target",
-                                "amount": 130,
-                                "paid_users": 11,
-                                "orders": 14,
-                                "first_paid_users": 4,
-                                "channel": "A",
-                            },
-                        ),
-                        "row_count": 2,
-                        "truncated": False,
-                    },
-                },
-            ),
+            prior_analysis_assets=(asset,),
         )
 
         self.assertIn("query:channel-scan", compiled.runtime_plan["asset_inputs_used"])

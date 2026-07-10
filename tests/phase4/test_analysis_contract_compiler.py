@@ -35,6 +35,104 @@ def snapshot(dataset_id, table, watermark):
 
 
 class AnalysisContractCompilerTest(unittest.TestCase):
+    def test_claim_strength_taxonomy_is_ranked_and_part_of_capability_signature(self):
+        payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
+        registry = RuntimeContractRegistry(payload)
+        original = registry.capability_contract_signature("compare_periods")
+
+        self.assertEqual(registry.claim_strength_rank("observed"), 1)
+        self.assertEqual(registry.maximum_claim_strength_rank("directional"), 1)
+        with self.assertRaisesRegex(KeyError, "unknown_claim_strength"):
+            registry.claim_strength_rank("invented_strength")
+
+        changed = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
+        changed["claim_strength_taxonomy"]["version"] = "2"
+        self.assertNotEqual(
+            RuntimeContractRegistry(changed).capability_contract_signature(
+                "compare_periods"
+            ),
+            original,
+        )
+
+    def test_claim_strength_taxonomy_rejects_reversed_duplicate_and_unknown_ranks(self):
+        cases = {
+            "reversed": lambda value: value["claim_strength_ranks"].update(
+                {"observed": 3, "medium": 2}
+            ),
+            "duplicate": lambda value: value["claim_strength_ranks"].update(
+                {"observed": 2, "medium": 2}
+            ),
+            "zero_layer": lambda value: value["claim_strength_ranks"].update(
+                {"context_only": 1}
+            ),
+            "unknown": lambda value: value["maximum_strength_ranks"].update(
+                {"invented_category": 1}
+            ),
+            "ceiling": lambda value: value["maximum_strength_ranks"].update(
+                {"verifier_only": 1}
+            ),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name=name):
+                payload = load_contract(
+                    "contracts/runtime/clickhouse-analysis-bindings.yaml"
+                )
+                mutate(payload["claim_strength_taxonomy"])
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "runtime_claim_strength_taxonomy",
+                ):
+                    RuntimeContractRegistry(payload)
+
+    def test_capability_policy_drift_changes_canonical_contract_ref(self):
+        payload = load_contract(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        changed = load_contract(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        changed["capability_inputs"]["compare_periods"]["degradation_policy"] = {
+            "missing_required_input": "block_claim",
+            "incomplete_input": "context_only",
+        }
+        catalogs = DatasetCatalog(
+            (snapshot("paid_order_success", "paid", "2026-07-04"),)
+        )
+
+        original = compile_analysis_contract(
+            run_id="run-capability-signature-original",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["comparative_change"],
+            },
+            accepted_capabilities=("compare_periods",),
+            catalog=catalogs,
+            registry=RuntimeContractRegistry(payload),
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+        drifted = compile_analysis_contract(
+            run_id="run-capability-signature-drifted",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["comparative_change"],
+            },
+            accepted_capabilities=("compare_periods",),
+            catalog=catalogs,
+            registry=RuntimeContractRegistry(changed),
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertNotEqual(
+            original.capability_plans[0].capability_contract_ref,
+            drifted.capability_plans[0].capability_contract_ref,
+        )
+        self.assertNotEqual(
+            original.capability_plans[0].capability_contract_signature,
+            drifted.capability_plans[0].capability_contract_signature,
+        )
+
     def test_segment_queries_are_independent_and_companions_are_validation_only(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
@@ -86,6 +184,14 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             )
             companion_refs.add(companion.query_contract_id)
         segment_slots = outcome.capability_plans[0].required_input_slots
+        self.assertEqual(
+            outcome.capability_plans[0].analysis_contract_ref,
+            outcome.analysis_contract.analysis_contract_id,
+        )
+        self.assertEqual(
+            outcome.capability_plans[0].supported_claim_types,
+            ("segment_contribution_or_mix_shift",),
+        )
         self.assertEqual(len(segment_slots), 2)
         self.assertEqual(
             {
@@ -454,6 +560,61 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         self.assertEqual(changed.metric_bindings[0].reconciliation_tolerance, 0.25)
         self.assertNotEqual(base.contract_signature, changed.contract_signature)
 
+    def test_metric_display_policy_is_bound_and_signed(self):
+        base_payload = load_contract(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        changed_payload = load_contract(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        changed_payload["metrics"]["paid_amount"].update(
+            {
+                "value_semantics": "scalar_ratio",
+                "display_format": "percent",
+            }
+        )
+
+        base = self._compile_compare_with_registry(
+            RuntimeContractRegistry(base_payload)
+        ).query_contracts[0]
+        changed = self._compile_compare_with_registry(
+            RuntimeContractRegistry(changed_payload)
+        ).query_contracts[0]
+
+        self.assertEqual(base.metric_bindings[0].value_semantics, "raw_scalar")
+        self.assertEqual(base.metric_bindings[0].display_format, "number")
+        self.assertEqual(changed.metric_bindings[0].value_semantics, "scalar_ratio")
+        self.assertEqual(changed.metric_bindings[0].display_format, "percent")
+        self.assertNotEqual(base.contract_signature, changed.contract_signature)
+
+    def test_invalid_or_missing_metric_display_policy_blocks_binding(self):
+        for case_id, mutate in (
+            (
+                "invalid_pair",
+                lambda metric: metric.update(
+                    {"value_semantics": "raw_scalar", "display_format": "percent"}
+                ),
+            ),
+            ("missing", lambda metric: metric.pop("display_format")),
+        ):
+            payload = load_contract(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            )
+            mutate(payload["metrics"]["paid_amount"])
+
+            outcome = self._compile_compare_with_registry(
+                RuntimeContractRegistry(payload)
+            )
+
+            with self.subTest(case_id=case_id):
+                self.assertFalse(outcome.query_contracts)
+                self.assertTrue(
+                    any(
+                        gap.gap_id.startswith("metric:paid_amount:")
+                        for gap in outcome.analysis_contract.contract_gaps
+                    )
+                )
+
     def test_invalid_metric_reconciliation_strategy_blocks_binding(self):
         payload = load_contract(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
@@ -479,6 +640,9 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "required_metrics": ["paid_amount"],
             "minimum_readiness": {"accepted_completeness": ["complete"]},
             "degradation_policy": {"missing_required_input": "block_claim"},
+            "supported_evidence_types": ["statistical_association"],
+            "supported_claim_types": ["comparative_change"],
+            "maximum_claim_strength": "directional",
         }
         payload["capability_inputs"]["interactive_scan"] = dict(common)
         payload["capability_inputs"]["batch_scan"] = {**common, "workload_class": "batch_aggregate"}
@@ -791,6 +955,9 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "query_families": ["shared_metric_scan"],
             "minimum_readiness": {"accepted_completeness": ["complete"]},
             "degradation_policy": {"missing_required_input": "block_claim"},
+            "supported_evidence_types": ["statistical_association"],
+            "supported_claim_types": ["comparative_change"],
+            "maximum_claim_strength": "directional",
         }
         payload["capability_inputs"]["shared_amount"] = {
             **common,
@@ -847,6 +1014,9 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "query_families": ["ordered_metric_scan"],
             "minimum_readiness": {"accepted_completeness": ["complete"]},
             "degradation_policy": {"missing_required_input": "block_claim"},
+            "supported_evidence_types": ["statistical_association"],
+            "supported_claim_types": ["comparative_change"],
+            "maximum_claim_strength": "directional",
         }
         payload["capability_inputs"]["order_a"] = {
             **common,

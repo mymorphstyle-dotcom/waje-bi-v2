@@ -1,6 +1,10 @@
 import unittest
 
-from bi_agent.runtime.answer_package import build_answer_package, verify_answer_package
+from bi_agent.runtime.answer_package import (
+    build_answer_package,
+    build_claim_groups,
+    verify_answer_package,
+)
 
 
 class AnswerPackageClaimGroupsTest(unittest.TestCase):
@@ -46,28 +50,8 @@ class AnswerPackageClaimGroupsTest(unittest.TestCase):
 
         claim_groups = package["sections"][0]["payload"]["claim_groups"]
 
-        self.assertEqual(
-            claim_groups,
-            [
-                {
-                    "text": "Q2 相比 Q1 日均付费金额提升 15.0%。",
-                    "scope": "full_sample",
-                    "baseline": {"label": "Q1"},
-                    "target": {"label": "Q2"},
-                    "target_metric": "paid_amount",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "evidence_refs": ["compare_periods:run"],
-                    "evidence_type": "statistical_association",
-                    "evidence_types": ["statistical_association"],
-                    "strength": "high",
-                    "strengths": ["high"],
-                    "wording_limit": "supported",
-                    "wording_limits": ["supported"],
-                    "limitations": [],
-                    "verifier_status": "passed",
-                }
-            ],
-        )
+        self.assertEqual(claim_groups, [])
+        self.assertEqual(package["admin_audit"]["verifier"]["status"], "failed")
 
     def test_claim_groups_preserve_mixed_evidence_metadata_across_refs(self):
         package = build_answer_package(
@@ -111,7 +95,17 @@ class AnswerPackageClaimGroupsTest(unittest.TestCase):
             artifact_audit={},
         )
 
-        claim_group = package["sections"][0]["payload"]["claim_groups"][0]
+        claim_group = build_claim_groups(
+            draft_claims=({
+                "text": "渠道差异有信号，但机制结论仍是候选。",
+                "evidence_refs": ["compare_periods:run", "outlier_scan:inline"],
+                "scope": "full_sample",
+                "time_window": "2026-01-01..2026-06-30",
+                "target_metric": "paid_amount",
+            },),
+            evidence=package["sections"][1]["payload"]["evidence"],
+            verifier={"status": "passed"},
+        )[0]
         self.assertEqual(claim_group["evidence_type"], "statistical_association")
         self.assertEqual(
             claim_group["evidence_types"],
@@ -160,7 +154,17 @@ class AnswerPackageClaimGroupsTest(unittest.TestCase):
             artifact_audit={},
         )
 
-        claim_group = package["sections"][0]["payload"]["claim_groups"][0]
+        claim_group = build_claim_groups(
+            draft_claims=({
+                "text": "第二条证据缺少元数据时也要保留边界。",
+                "evidence_refs": ["driver_decomposition:inline", "outlier_scan:inline"],
+                "scope": "full_sample",
+                "time_window": "2026-01-01..2026-06-30",
+                "target_metric": "paid_amount",
+            },),
+            evidence=package["sections"][1]["payload"]["evidence"],
+            verifier={"status": "passed"},
+        )[0]
         self.assertEqual(
             claim_group["evidence_types"],
             ["accounting_contribution", "missing"],
@@ -207,23 +211,7 @@ class AnswerPackageClaimGroupsTest(unittest.TestCase):
         summary = package["sections"][0]["payload"]
         visual_blocks = summary["visualization_plan"]["blocks"]
 
-        self.assertEqual(
-            visual_blocks,
-            [
-                {
-                    "id": "visual-1",
-                    "block_type": "period_comparison",
-                    "title": "期间对比",
-                    "claim_text": "Q2 相比 Q1 日均付费金额提升 15.0%。",
-                    "target_metric": "paid_amount",
-                    "scope": "full_sample",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "evidence_refs": ["compare_periods:run"],
-                    "limitations": ["no_channel_breakdown"],
-                    "verifier_status": "passed",
-                }
-            ],
-        )
+        self.assertEqual(visual_blocks, [])
 
     def test_strong_claim_fails_when_evidence_ref_is_missing(self):
         verifier = verify_answer_package(
@@ -275,7 +263,7 @@ class AnswerPackageClaimGroupsTest(unittest.TestCase):
             )
         )
 
-    def test_verifier_accepts_business_rounding_for_ratio_claims(self):
+    def test_verifier_does_not_accept_rounded_numbers_from_unbound_evidence(self):
         verifier = verify_answer_package(
             draft_claims=[
                 {
@@ -300,7 +288,10 @@ class AnswerPackageClaimGroupsTest(unittest.TestCase):
             visible_limitations=[],
         )
 
-        self.assertEqual(verifier["status"], "passed")
+        self.assertEqual(verifier["status"], "failed")
+        self.assertTrue(
+            any(error["code"] == "number_mismatch" for error in verifier["errors"])
+        )
 
     def test_verifier_rejects_material_number_drift(self):
         verifier = verify_answer_package(

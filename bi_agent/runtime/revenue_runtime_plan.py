@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 from typing import Any
@@ -24,6 +25,7 @@ REVENUE_COMPONENT_FIELDS = (
 )
 SEGMENT_DIMENSION_KEYS = ("channel",)
 JOINT_DIMENSION_KEYS = ("channel", "payment_method", "region", "device_brand")
+_INVALID_REFERENCE_TIME = object()
 DIMENSION_CANDIDATES = (
     {"field": "channel", "business_name": "一级渠道", "required": True},
     {"field": "region", "business_name": "地区", "required": False},
@@ -69,6 +71,12 @@ def build_revenue_runtime_plan(
     analysis_contract, query_contracts, capability_execution_plans = _contract_projection(
         normalized_context
     )
+    reuse_signature = _reuse_signature_context(
+        normalized_context,
+        analysis_contract=analysis_contract,
+        query_contracts=query_contracts,
+        capability_execution_plans=capability_execution_plans,
+    )
     windows = _windows(normalized_context)
     baselines = _baselines(normalized_context, axes, question_text)
     scope = _scope(normalized_context)
@@ -78,6 +86,10 @@ def build_revenue_runtime_plan(
     schema_fields = _schema_fields(normalized_context)
     dimensions = _dimension_candidates(graph, axes)
     row_shape = _row_shape(graph, axes, dimensions, schema_fields=schema_fields)
+    reuse_required_fields = _dimension_scan_required_fields(
+        query_contracts,
+        fallback=tuple(row_shape["required_fields"]),
+    )
     time_bucket_contracts = _time_bucket_contracts(
         graph,
         pattern_family=str(normalized_context.get("pattern_family") or ""),
@@ -99,14 +111,33 @@ def build_revenue_runtime_plan(
         snapshot_version=snapshot_version,
         contract_versions=contract_versions,
         schema_fingerprint=schema_fingerprint,
-        required_fields=tuple(row_shape["required_fields"]),
+        required_fields=reuse_required_fields,
+        now=_reference_time(normalized_context),
+        **reuse_signature,
     )
-    reusable_assets = tuple(item["query_ref"] for item in reusable_asset_rows)
+    exact_reuse_rows = tuple(
+        item
+        for item in reusable_asset_rows
+        if item.get("reuse_decision", {}).get("decision") == "reuse"
+        and item.get("rows")
+    )
+    reusable_assets = tuple(item["query_ref"] for item in exact_reuse_rows)
+    reuse_decisions = tuple(
+        dict(item["reuse_decision"])
+        for item in reusable_asset_rows
+        if isinstance(item.get("reuse_decision"), Mapping)
+    )
+    delta_query_descriptors = tuple(
+        dict(item["delta_query_descriptor"])
+        for item in reusable_asset_rows
+        if isinstance(item.get("delta_query_descriptor"), Mapping)
+    )
     query_intents = _query_intents(
         graph,
         axes,
         reusable_assets,
         row_shape,
+        has_dimension_delta=bool(delta_query_descriptors),
         time_bucket_contracts=time_bucket_contracts,
     )
     reuse_contract = build_dimension_scan_reuse_contract(
@@ -118,9 +149,10 @@ def build_revenue_runtime_plan(
         permission_scope=permission_scope,
         snapshot_version=snapshot_version,
         dimensions=_required_dimension_scan_dimensions(graph),
-        required_fields=tuple(row_shape["required_fields"]),
+        required_fields=reuse_required_fields,
         contract_versions=contract_versions,
         schema_fingerprint=schema_fingerprint,
+        **reuse_signature,
     )
     return {
         "target_metric": target_metric,
@@ -148,7 +180,9 @@ def build_revenue_runtime_plan(
         "row_shapes": (row_shape,),
         "contract_gaps": row_shape["contract_gaps"],
         "asset_inputs_used": reusable_assets,
-        "asset_row_inputs": reusable_asset_rows,
+        "asset_row_inputs": exact_reuse_rows,
+        "reuse_decisions": reuse_decisions,
+        "delta_query_descriptors": delta_query_descriptors,
         "asset_reuse_contract": reuse_contract,
         "analysis_contract": analysis_contract,
         "query_contracts": query_contracts,
@@ -374,6 +408,25 @@ def _reusable_asset_rows(
     contract_versions: Mapping[str, str],
     schema_fingerprint: str,
     required_fields: tuple[str, ...],
+    now: datetime | None,
+    resolved_windows: Any,
+    query_contract_signatures: Mapping[str, Any],
+    completeness_digest: str,
+    completeness_status: str,
+    capability_contract_version: str,
+    source_snapshot_refs: tuple[str, ...],
+    completeness_reports: tuple[Mapping[str, Any], ...],
+    result_provenance: tuple[Mapping[str, Any], ...],
+    completeness_record_refs: tuple[str, ...],
+    completeness_record_digests: tuple[str, ...],
+    row_payload: Mapping[str, Any] | None,
+    unique_key_fields: tuple[str, ...],
+    row_payload_rows_ref: str,
+    binding_manifest_ref: str,
+    binding_manifest_digest: str,
+    evidence_resolver: Any,
+    rows_loader: Any,
+    runtime_registry: Any,
 ) -> tuple[dict[str, Any], ...]:
     needed_dimensions = _required_dimension_scan_dimensions(graph)
     if not needed_dimensions:
@@ -391,7 +444,164 @@ def _reusable_asset_rows(
         required_fields=required_fields,
         contract_versions=contract_versions,
         schema_fingerprint=schema_fingerprint,
+        now=now,
+        resolved_windows=resolved_windows,
+        query_contract_signatures=query_contract_signatures,
+        completeness_digest=completeness_digest,
+        completeness_status=completeness_status,
+        capability_contract_version=capability_contract_version,
+        source_snapshot_refs=source_snapshot_refs,
+        completeness_reports=completeness_reports,
+        result_provenance=result_provenance,
+        completeness_record_refs=completeness_record_refs,
+        completeness_record_digests=completeness_record_digests,
+        row_payload=row_payload,
+        unique_key_fields=unique_key_fields,
+        row_payload_rows_ref=row_payload_rows_ref,
+        binding_manifest_ref=binding_manifest_ref,
+        binding_manifest_digest=binding_manifest_digest,
+        evidence_resolver=evidence_resolver,
+        rows_loader=rows_loader,
+        runtime_registry=runtime_registry,
     )
+
+
+def _reuse_signature_context(
+    bound_context: Mapping[str, Any],
+    *,
+    analysis_contract: Mapping[str, Any],
+    query_contracts: tuple[Mapping[str, Any], ...],
+    capability_execution_plans: tuple[Mapping[str, Any], ...],
+) -> dict[str, Any]:
+    explicit_query_signatures = bound_context.get("query_contract_signatures")
+    if isinstance(explicit_query_signatures, Mapping):
+        query_signatures = {
+            str(key): str(value)
+            for key, value in explicit_query_signatures.items()
+            if key and value
+        }
+    else:
+        query_signatures = {
+            str(query.get("query_contract_id") or ""): str(
+                query.get("contract_signature") or ""
+            )
+            for query in query_contracts
+            if query.get("query_contract_id") and query.get("contract_signature")
+        }
+    explicit_snapshots = bound_context.get("source_snapshot_refs")
+    if isinstance(explicit_snapshots, Iterable) and not isinstance(
+        explicit_snapshots,
+        (str, bytes, Mapping),
+    ):
+        snapshot_refs = tuple(
+            dict.fromkeys(str(ref) for ref in explicit_snapshots if ref)
+        )
+    else:
+        snapshot_refs = tuple(
+            dict.fromkeys(
+                str(ref)
+                for query in query_contracts
+                for ref in query.get("dataset_snapshot_refs") or ()
+                if ref
+            )
+        )
+    capability_version = str(
+        bound_context.get("capability_contract_version") or ""
+    )
+    if not capability_version:
+        segment_plan = next(
+            (
+                plan
+                for plan in capability_execution_plans
+                if plan.get("capability_id") == "segment_contribution"
+            ),
+            {},
+        )
+        capability_version = str(
+            segment_plan.get("capability_contract_ref") or ""
+        )
+    return {
+        "resolved_windows": (
+            bound_context.get("resolved_windows")
+            or analysis_contract.get("resolved_windows")
+            or ()
+        ),
+        "query_contract_signatures": query_signatures,
+        "completeness_digest": str(
+            bound_context.get("completeness_digest") or ""
+        ),
+        "completeness_status": str(
+            bound_context.get("completeness_status") or ""
+        ),
+        "capability_contract_version": capability_version,
+        "source_snapshot_refs": snapshot_refs,
+        "completeness_reports": tuple(
+            item
+            for item in (bound_context.get("completeness_reports") or ())
+            if isinstance(item, Mapping)
+        ),
+        "result_provenance": tuple(
+            item
+            for item in (bound_context.get("result_provenance") or ())
+            if isinstance(item, Mapping)
+        ),
+        "completeness_record_refs": tuple(
+            str(item)
+            for item in (bound_context.get("completeness_record_refs") or ())
+            if item
+        ),
+        "completeness_record_digests": tuple(
+            str(item)
+            for item in (bound_context.get("completeness_record_digests") or ())
+            if item
+        ),
+        "row_payload": (
+            bound_context.get("row_payload")
+            if isinstance(bound_context.get("row_payload"), Mapping)
+            else None
+        ),
+        "unique_key_fields": tuple(
+            str(item)
+            for item in (bound_context.get("unique_key_fields") or ())
+            if item
+        ),
+        "row_payload_rows_ref": str(
+            bound_context.get("row_payload_rows_ref") or ""
+        ),
+        "binding_manifest_ref": str(
+            bound_context.get("binding_manifest_ref") or ""
+        ),
+        "binding_manifest_digest": str(
+            bound_context.get("binding_manifest_digest") or ""
+        ),
+        "evidence_resolver": bound_context.get("evidence_resolver"),
+        "rows_loader": bound_context.get("rows_loader"),
+        "runtime_registry": bound_context.get("runtime_registry"),
+    }
+
+
+def _reference_time(bound_context: Mapping[str, Any]) -> Any:
+    value = (
+        bound_context.get("reference_time")
+        or bound_context.get("now")
+        or bound_context.get("as_of")
+    )
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return _INVALID_REFERENCE_TIME
+        return value.astimezone(timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return _INVALID_REFERENCE_TIME
+    if parsed.tzinfo is None:
+        return _INVALID_REFERENCE_TIME
+    return parsed.astimezone(timezone.utc)
 
 
 def _required_dimension_scan_dimensions(graph: tuple[str, ...]) -> frozenset[str]:
@@ -400,12 +610,30 @@ def _required_dimension_scan_dimensions(graph: tuple[str, ...]) -> frozenset[str
     return frozenset()
 
 
+def _dimension_scan_required_fields(
+    query_contracts: tuple[Mapping[str, Any], ...],
+    *,
+    fallback: tuple[str, ...],
+) -> tuple[str, ...]:
+    for contract in query_contracts:
+        if str(contract.get("query_intent") or "") != "dimension_contribution_scan":
+            continue
+        shape = contract.get("result_shape")
+        if not isinstance(shape, Mapping):
+            continue
+        fields = tuple(str(item) for item in shape.get("required_fields") or () if item)
+        if fields:
+            return fields
+    return fallback
+
+
 def _query_intents(
     graph: tuple[str, ...],
     axes: tuple[str, ...],
     reusable_assets: tuple[str, ...],
     row_shape: Mapping[str, Any],
     *,
+    has_dimension_delta: bool = False,
     time_bucket_contracts: tuple[dict[str, Any], ...] = (),
 ) -> tuple[str, ...]:
     intents = ["daily_metric_baselines"]
@@ -415,7 +643,9 @@ def _query_intents(
         intents.append("time_bucket_scan")
     if reusable_assets:
         intents.append("dimension_scan_reuse")
-    if "segment_contribution" in graph and not reusable_assets:
+    if has_dimension_delta:
+        intents.append("dimension_scan_delta")
+    if "segment_contribution" in graph and not reusable_assets and not has_dimension_delta:
         intents.append("dimension_scan")
     if "joint_attribution" in graph:
         intents.append("joint_candidate_scan")
@@ -458,7 +688,7 @@ def _capability_inputs(
             inputs[capability] = {
                 "preferred_query_intents": _available_intents(
                     query_intents,
-                    ("dimension_scan_reuse", "dimension_scan", "joint_candidate_scan", "daily_metric_baselines"),
+                    ("dimension_scan_reuse", "dimension_scan_delta", "dimension_scan", "joint_candidate_scan", "daily_metric_baselines"),
                 ),
                 "required_fields": required_fields,
                 "dimension_keys": dimension_keys[:1],

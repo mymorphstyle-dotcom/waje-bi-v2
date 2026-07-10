@@ -1,10 +1,20 @@
+from dataclasses import replace
 import unittest
+from unittest.mock import patch
 
 from bi_agent.capabilities.driver_decomposition import driver_decomposition
 from bi_agent.capabilities.data_quality_check import data_quality_check
 from bi_agent.capabilities.outlier_contribution import outlier_contribution
 from bi_agent.capabilities.segment_contribution import segment_contribution
+from bi_agent.runtime.analysis_contracts import (
+    CapabilityExecutionPlan,
+    CapabilityInputSlot,
+    CompletenessReport,
+    QueryResultEnvelope,
+)
 from bi_agent.runtime.capability_harness import execute_capability
+from bi_agent.runtime.answer_package import verify_answer_package
+from bi_agent.runtime.capability_execution import bind_capability_inputs
 from bi_agent.runtime.capability_models import BudgetState, CapabilityRequest
 
 
@@ -47,6 +57,81 @@ class CapabilityHarnessTest(unittest.TestCase):
         self.assertIn("duplicate_order_risk", result.limitations)
 
     def test_pattern_scan_returns_normalized_envelope(self):
+        pattern_rows = (
+            {"month": "2026-01", "phase": "start", "amount": 130},
+            {"month": "2026-01", "phase": "middle", "amount": 100},
+            {"month": "2026-01", "phase": "end", "amount": 90},
+            {"month": "2026-02", "phase": "start", "amount": 140},
+            {"month": "2026-02", "phase": "middle", "amount": 100},
+            {"month": "2026-02", "phase": "end", "amount": 90},
+        )
+        query_result = QueryResultEnvelope(
+            query_contract_ref="query:pattern:1",
+            query_id="provider:pattern:1",
+            query_hash="hash:pattern:1",
+            result_ref="result:pattern:1",
+            execution_status="succeeded",
+            rows_ref="rows:pattern:1",
+            row_count=len(pattern_rows),
+            completeness_report_ref="complete:pattern:1",
+            rows=pattern_rows,
+            observed_windows=("target_day",),
+            source_snapshot_refs=("snapshot:paid:1",),
+        )
+        completeness = CompletenessReport(
+            report_ref="complete:pattern:1",
+            query_contract_ref="query:pattern:1",
+            result_ref="result:pattern:1",
+            completeness_status="complete",
+            analysis_readiness="ready",
+            assertion_results=(
+                {"assertion": "execution_succeeded", "passed": True},
+            ),
+            failure_reasons=(),
+            coverage_summary={
+                "row_count": len(pattern_rows),
+                "required_windows": ("target_day",),
+                "observed_windows": ("target_day",),
+                "snapshot_ref": "snapshot:paid:1",
+            },
+        )
+        fixture_env = {
+            "WAJE_ALLOW_LEGACY_FIXTURES": "1",
+            "WAJE_RUNTIME_ENV": "test",
+        }
+        with patch.dict("os.environ", fixture_env):
+            bound = bind_capability_inputs(
+                CapabilityExecutionPlan(
+                capability_id="compare_period_phases",
+                capability_contract_ref="capability:compare_period_phases@1",
+                required_input_slots=(
+                    CapabilityInputSlot(
+                        slot_id="time_bucket_scan",
+                        query_contract_refs=("query:pattern:1",),
+                        required=True,
+                        accepted_completeness=("complete",),
+                        required_fields=("month", "phase", "amount"),
+                        required_window_ids=("target_day",),
+                    ),
+                ),
+                optional_input_slots=(),
+                merge_strategy="by_query_family",
+                minimum_readiness={
+                    "required_slots": "all",
+                    "accepted_completeness": ("complete",),
+                },
+                degradation_policy={"missing_required_input": "block_claim"},
+                supported_evidence_types=("statistical_association",),
+                maximum_claim_strength="recurring_pattern",
+                analysis_contract_ref="analysis:run-1:1",
+                supported_claim_types=("recurring_pattern_existence",),
+                capability_contract_version="1",
+                capability_contract_signature="sha256:compare-period-phases",
+            ),
+                results={"query:pattern:1": query_result},
+                reports={"query:pattern:1": completeness},
+                run_mode="fixture",
+            )
         request = CapabilityRequest(
             run_id="run-1",
             accepted_graph_id="graph-1",
@@ -73,27 +158,61 @@ class CapabilityHarnessTest(unittest.TestCase):
             ),
             llm_business_reason="Check whether month start is higher than sibling phases.",
             params={
-                "rows": [
-                    {"month": "2026-01", "phase": "start", "amount": 130},
-                    {"month": "2026-01", "phase": "middle", "amount": 100},
-                    {"month": "2026-01", "phase": "end", "amount": 90},
-                    {"month": "2026-02", "phase": "start", "amount": 140},
-                    {"month": "2026-02", "phase": "middle", "amount": 100},
-                    {"month": "2026-02", "phase": "end", "amount": 90},
-                ],
+                "rows": list(pattern_rows),
                 "result_refs": ("sqlhash-1",),
                 "pattern_family": "intra_period",
                 "target_phase": "start",
                 "min_periods": 2,
             },
+            bound_input=bound,
+            run_mode="fixture",
+            fixture_input_mode="legacy_unbound_fixture",
         )
 
-        envelope = execute_capability(request)
+        with patch.dict("os.environ", fixture_env):
+            envelope = execute_capability(request)
 
         self.assertEqual(envelope.capability_id, "compare_period_phases")
         self.assertEqual(envelope.target_label, "start")
         self.assertEqual(envelope.baseline_label, "middle_or_end")
-        self.assertEqual(envelope.result_refs, ("sqlhash-1",))
+        self.assertEqual(
+            envelope.result_refs,
+            ("result:pattern:1",),
+        )
+        self.assertEqual(envelope.analysis_contract_ref, "analysis:run-1:1")
+        self.assertEqual(
+            envelope.capability_contract_ref,
+            "capability:compare_period_phases@1",
+        )
+        self.assertEqual(
+            envelope.query_contract_refs,
+            ("query:pattern:1",),
+        )
+        self.assertEqual(
+            envelope.completeness_report_refs,
+            ("complete:pattern:1",),
+        )
+        self.assertEqual(envelope.source_snapshot_refs, ("snapshot:paid:1",))
+        self.assertEqual(envelope.binding_manifest_ref, "")
+        self.assertEqual(
+            envelope.supported_claim_types,
+            ("recurring_pattern_existence",),
+        )
+        self.assertEqual(envelope.sql_hashes, ())
+        self.assertEqual(envelope.evidence_type, "statistical_association")
+        verifier = verify_answer_package(
+            draft_claims=(
+                {
+                    "text": "月初模式稳定。",
+                    "claim_strength": "observed",
+                    "claim_type": "recurring_pattern_existence",
+                    "evidence_refs": (envelope.evidence_ref,),
+                },
+            ),
+            evidence=(envelope.to_dict(),),
+            visible_limitations=envelope.limitations,
+        )
+        self.assertEqual(verifier["status"], "failed")
         self.assertIn("median_uplift", envelope.numeric_facts)
 
     def test_compare_periods_public_capability_uses_custom_baseline_scan(self):
@@ -140,10 +259,55 @@ class CapabilityHarnessTest(unittest.TestCase):
         envelope = execute_capability(request)
 
         self.assertEqual(envelope.capability_id, "compare_periods")
-        self.assertEqual(envelope.target_label, "Q2")
-        self.assertEqual(envelope.baseline_label, "Q1")
-        self.assertEqual(envelope.numeric_facts["comparable_periods"], 1)
-        self.assertAlmostEqual(envelope.numeric_facts["median_uplift"], 0.2)
+        self.assertEqual(envelope.evidence_type, "insufficient")
+        self.assertEqual(envelope.wording_limit, "blocked")
+        self.assertEqual(envelope.numeric_facts, {})
+        self.assertIn("missing_bound_capability_input", envelope.limitations)
+        self.assertEqual(envelope.result_refs, ())
+        self.assertEqual(envelope.query_contract_refs, ())
+        self.assertEqual(envelope.completeness_report_refs, ())
+        self.assertEqual(envelope.source_snapshot_refs, ())
+        self.assertEqual(envelope.supported_claim_types, ())
+
+        fixture_request = replace(
+            request,
+            run_mode="fixture",
+            fixture_input_mode="legacy_unbound_fixture",
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            unset_environment = execute_capability(fixture_request)
+        self.assertEqual(unset_environment.wording_limit, "blocked")
+        self.assertEqual(unset_environment.numeric_facts, {})
+
+        with patch.dict(
+            "os.environ",
+            {
+                "WAJE_ALLOW_LEGACY_FIXTURES": "1",
+                "WAJE_RUNTIME_ENV": "test",
+            },
+        ):
+            fixture_envelope = execute_capability(fixture_request)
+        self.assertEqual(fixture_envelope.result_refs, ("sqlhash-2",))
+        self.assertEqual(fixture_envelope.supported_claim_types, ())
+        self.assertEqual(fixture_envelope.numeric_facts["comparable_periods"], 1)
+        self.assertEqual(fixture_envelope.evidence_type, "statistical_association")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "WAJE_ALLOW_LEGACY_FIXTURES": "1",
+                "WAJE_RUNTIME_ENV": "production",
+            },
+        ):
+            production = execute_capability(
+                replace(
+                    request,
+                    run_mode="fixture",
+                    fixture_input_mode="legacy_unbound_fixture",
+                )
+            )
+        self.assertEqual(production.wording_limit, "blocked")
+        self.assertEqual(production.numeric_facts, {})
 
     def test_driver_decomposition_identifies_volume_or_unit_driver(self):
         result = driver_decomposition(

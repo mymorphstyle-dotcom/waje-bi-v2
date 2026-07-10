@@ -6,10 +6,24 @@ import hashlib
 import secrets
 from typing import Any, Mapping, Sequence
 
-from bi_agent.runtime.analysis_contracts import QueryContract, QueryResultEnvelope
+from bi_agent.runtime.analysis_contracts import (
+    QueryContract,
+    QueryResultEnvelope,
+    query_contract_signature,
+)
 from bi_agent.runtime.clickhouse_query_compiler import compile_clickhouse_query
 from bi_agent.runtime.clickhouse_runtime import ClickHouseRuntime, audit_query_hash
 from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.evidence_authority import (
+    EvidenceIntegrityError,
+    RowsPayloadLoader,
+    RuntimeEvidenceAuthority,
+    RuntimeEvidenceResolver,
+    RuntimeEvidenceWriter,
+    _record_query_execution,
+    canonical_digest,
+    runtime_evidence_record_integrity_errors,
+)
 from bi_agent.runtime.query_audit import query_audit_refs, query_rows_ref
 from bi_agent.runtime.sql_safety import validate_select_only
 
@@ -36,6 +50,10 @@ class AggregateRowsStore:
     def get(self, rows_ref: str) -> tuple[Mapping[str, Any], ...]:
         return deepcopy(self._rows[rows_ref])
 
+    def load_rows(self, storage_ref: str) -> tuple[Mapping[str, Any], ...] | None:
+        rows = self._rows.get(storage_ref)
+        return deepcopy(rows) if rows is not None else None
+
 
 class ClickHouseQueryExecutor:
     def __init__(
@@ -43,9 +61,28 @@ class ClickHouseQueryExecutor:
         runtime: ClickHouseRuntime,
         *,
         rows_store: AggregateRowsStore | None = None,
+        evidence_authority: RuntimeEvidenceAuthority | None = None,
+        evidence_resolver: RuntimeEvidenceResolver | None = None,
+        evidence_writer: RuntimeEvidenceWriter | None = None,
+        rows_loader: RowsPayloadLoader | None = None,
     ) -> None:
         self.runtime = runtime
         self.rows_store = rows_store or AggregateRowsStore()
+        authority = evidence_authority
+        if authority is None and (
+            evidence_resolver is None or evidence_writer is None or rows_loader is None
+        ):
+            authority = RuntimeEvidenceAuthority()
+        self.evidence_authority = authority
+        self.evidence_resolver = evidence_resolver or authority
+        self.evidence_writer = evidence_writer or (
+            authority._runtime_writer() if authority is not None else None
+        )
+        self.rows_loader = rows_loader or (
+            authority.rows_loader if authority is not None else None
+        )
+        if self.evidence_writer is None:
+            raise ValueError("runtime_evidence_writer_missing")
 
     def execute(
         self,
@@ -54,6 +91,38 @@ class ClickHouseQueryExecutor:
         *,
         execution_attempt_ref: str = "",
     ) -> QueryResultEnvelope:
+        def finish(envelope: QueryResultEnvelope) -> QueryResultEnvelope:
+            if (
+                envelope.execution_status != "succeeded"
+                and query_contract_signature(contract)
+                != contract.contract_signature
+            ):
+                return envelope
+            record = _record_query_execution(
+                self.evidence_writer,
+                contract,
+                envelope,
+                snapshots,
+            )
+            expected_result_payload = envelope.to_dict()
+            expected_result_payload.pop("rows", None)
+            if (
+                runtime_evidence_record_integrity_errors(record)
+                or record.query_contract_ref != contract.query_contract_id
+                or record.result_ref != envelope.result_ref
+                or record.rows_ref != envelope.rows_ref
+                or record.completeness_report_ref
+                != envelope.completeness_report_ref
+                or canonical_digest(record.query_contract)
+                != canonical_digest(contract.to_dict())
+                or canonical_digest(record.result_payload)
+                != canonical_digest(expected_result_payload)
+            ):
+                raise EvidenceIntegrityError(
+                    "query_execution_writer_record_invalid"
+                )
+            return envelope
+
         attempt_ref = execution_attempt_ref or (
             "attempt:" + secrets.token_urlsafe(18)
         )
@@ -66,14 +135,14 @@ class ClickHouseQueryExecutor:
         try:
             compiled = compile_clickhouse_query(contract, snapshots)
         except (KeyError, PermissionError, TypeError, ValueError) as exc:
-            return _failed_envelope(
+            return finish(_failed_envelope(
                 contract,
                 query_id=blocked_query_id,
                 query_hash="",
                 reason=str(exc),
                 execution_status="blocked",
                 execution_attempt_ref=attempt_ref,
-            )
+            ))
         query_hash = audit_query_hash(compiled.sql_text, compiled.parameters)
         query_id = (
             f"clickhouse:{contract.query_contract_id}:"
@@ -81,14 +150,14 @@ class ClickHouseQueryExecutor:
         )
         validation = validate_select_only(compiled.sql_text, aggregate=True)
         if not validation.ok:
-            return _failed_envelope(
+            return finish(_failed_envelope(
                 contract,
                 query_id=query_id,
                 query_hash=query_hash,
                 reason=validation.reason,
                 execution_status="blocked",
                 execution_attempt_ref=attempt_ref,
-            )
+            ))
 
         try:
             result = self.runtime.aggregate(
@@ -99,17 +168,17 @@ class ClickHouseQueryExecutor:
                 execution_attempt_ref=attempt_ref,
             )
         except TypeError as exc:
-            return _failed_envelope(
+            return finish(_failed_envelope(
                 contract,
                 query_id=query_id,
                 query_hash=query_hash,
                 reason=f"clickhouse_provider_type_error:{exc}",
                 execution_status="failed",
                 execution_attempt_ref=attempt_ref,
-            )
+            ))
         effective_hash = result.query_hash or query_hash
         if not result.ok:
-            return _failed_envelope(
+            return finish(_failed_envelope(
                 contract,
                 query_id=result.query_id or query_id,
                 query_hash=effective_hash,
@@ -117,14 +186,14 @@ class ClickHouseQueryExecutor:
                 provider_stats=result.provider_stats,
                 execution_status="failed",
                 execution_attempt_ref=attempt_ref,
-            )
+            ))
 
         rows, join_audit_stats, failure_reason = _aggregate_rows(
             result.rows,
             contract,
         )
         if failure_reason:
-            return _failed_envelope(
+            return finish(_failed_envelope(
                 contract,
                 query_id=result.query_id or query_id,
                 query_hash=effective_hash,
@@ -138,7 +207,7 @@ class ClickHouseQueryExecutor:
                     else "failed"
                 ),
                 execution_attempt_ref=attempt_ref,
-            )
+            ))
 
         audit_refs = query_audit_refs(
             effective_hash,
@@ -155,7 +224,7 @@ class ClickHouseQueryExecutor:
         )
         provider_stats = dict(result.provider_stats)
         provider_stats.update(join_audit_stats)
-        return QueryResultEnvelope(
+        return finish(QueryResultEnvelope(
             query_contract_ref=contract.query_contract_id,
             query_id=result.query_id or query_id,
             query_hash=effective_hash,
@@ -171,7 +240,7 @@ class ClickHouseQueryExecutor:
             source_snapshot_refs=contract.dataset_snapshot_refs,
             provider_stats=provider_stats,
             execution_attempt_ref=attempt_ref,
-        )
+        ))
 
 
 def _failed_envelope(

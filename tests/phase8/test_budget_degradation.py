@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from bi_agent.runtime.answer_package import build_answer_package
 from bi_agent.runtime.capability_harness import execute_capability
@@ -6,6 +7,17 @@ from bi_agent.runtime.capability_models import BudgetState, CapabilityRequest
 
 
 class BudgetDegradationTest(unittest.TestCase):
+    def setUp(self):
+        self.fixture_environment = patch.dict(
+            "os.environ",
+            {
+                "WAJE_ALLOW_LEGACY_FIXTURES": "1",
+                "WAJE_RUNTIME_ENV": "test",
+            },
+        )
+        self.fixture_environment.start()
+        self.addCleanup(self.fixture_environment.stop)
+
     def test_hard_budget_skip_enters_answer_package_limitations(self):
         envelope = execute_capability(_request(BudgetState("research", 100, 50, 100)))
 
@@ -78,6 +90,8 @@ def _request(budget=None, params=None):
         budget_state=budget or BudgetState("research", 0, 50, 100),
         llm_business_reason="Check budget behavior.",
         params=merged_params,
+        run_mode="fixture",
+        fixture_input_mode="legacy_unbound_fixture",
     )
 
 

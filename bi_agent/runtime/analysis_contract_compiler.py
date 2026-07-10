@@ -125,6 +125,7 @@ def compile_analysis_contract(
         query_contracts,
         query_refs_by_capability,
         registry,
+        analysis_contract_ref=analysis_contract_id,
     )
     capability_input_gaps = _reconcile_capability_inputs(
         capabilities,
@@ -481,6 +482,8 @@ def _bind_metrics(
             "aggregation",
             "required_fields",
             "grain",
+            "value_semantics",
+            "display_format",
         )
         missing = tuple(key for key in required_keys if key not in contract)
         if missing:
@@ -544,6 +547,18 @@ def _bind_metrics(
                 )
             )
             continue
+        display_policy = _metric_display_policy(contract)
+        if display_policy is None:
+            gaps.append(
+                _contract_gap(
+                    gap_type="contract_partial",
+                    gap_id=f"metric:{metric_id}:invalid:display_policy",
+                    dataset_id=dataset_id,
+                    affected_capabilities=affected_capabilities,
+                    repair_options=("repair_metric_binding",),
+                )
+            )
+            continue
         bindings.append(
             MetricBinding(
                 metric_id=metric_id,
@@ -561,9 +576,24 @@ def _bind_metrics(
                 claim_types=_mapping_values(contract, "claim_types"),
                 reconciliation_tolerance=reconciliation_tolerance,
                 reconciliation_strategy=reconciliation_strategy,
+                value_semantics=display_policy[0],
+                display_format=display_policy[1],
             )
         )
     return tuple(bindings), tuple(gaps)
+
+
+def _metric_display_policy(
+    contract: Mapping[str, Any],
+) -> tuple[str, str] | None:
+    policy = (
+        str(contract.get("value_semantics") or ""),
+        str(contract.get("display_format") or ""),
+    )
+    return policy if policy in {
+        ("raw_scalar", "number"),
+        ("scalar_ratio", "percent"),
+    } else None
 
 
 def _reconciliation_tolerance(contract: Mapping[str, Any]) -> float | None:
@@ -1082,6 +1112,8 @@ def _build_capability_plans(
     query_contracts: tuple[QueryContract, ...],
     query_refs_by_capability: Mapping[str, tuple[str, ...]],
     registry: RuntimeContractRegistry,
+    *,
+    analysis_contract_ref: str,
 ) -> tuple[CapabilityExecutionPlan, ...]:
     plans = []
     for capability_id in accepted_capabilities:
@@ -1174,6 +1206,13 @@ def _build_capability_plans(
             contract.get("contract_ref")
             or f"{registry.source_ref}#capability_inputs.{capability_id}"
         )
+        capability_signature = registry.capability_contract_signature(
+            capability_id
+        )
+        capability_ref = (
+            f"{capability_ref}|runtime_version={registry.contract_version}"
+            f"|sha256={capability_signature}"
+        )
         plans.append(
             CapabilityExecutionPlan(
                 capability_id=capability_id,
@@ -1189,6 +1228,21 @@ def _build_capability_plans(
                 ),
                 maximum_claim_strength=str(
                     contract.get("maximum_claim_strength") or ""
+                ),
+                analysis_contract_ref=analysis_contract_ref,
+                supported_claim_types=_mapping_values(
+                    contract,
+                    "supported_claim_types",
+                ),
+                capability_contract_version=registry.contract_version,
+                capability_contract_signature=capability_signature,
+                claim_strength_taxonomy_version=(
+                    registry.claim_strength_taxonomy_version
+                ),
+                maximum_claim_strength_rank=(
+                    registry.maximum_claim_strength_rank(
+                        str(contract.get("maximum_claim_strength") or "")
+                    )
                 ),
             )
         )

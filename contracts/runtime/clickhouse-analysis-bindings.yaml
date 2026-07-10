@@ -2,6 +2,27 @@ contract_version: "1"
 artifact: clickhouse_analysis_runtime_bindings
 business_timezone: Africa/Lagos
 
+claim_strength_taxonomy:
+  version: "1"
+  claim_strength_ranks:
+    insufficient: 0
+    context_only: 0
+    dry_run_context: 0
+    observed: 1
+    medium: 2
+    high: 3
+    strong: 4
+  maximum_strength_ranks:
+    directional: 1
+    candidate_driver: 2
+    candidate_mechanism: 2
+    anomaly_candidate: 2
+    recurring_pattern: 3
+    quantified_contribution: 3
+    trust_boundary: 1
+    verifier_only: 0
+    reducer_only: 0
+
 datasets:
   paid_order_success:
     date_field: business_date_lagos
@@ -30,6 +51,8 @@ metrics:
     aggregation: sum
     required_fields: [paid_amount_ngn]
     grain: [window_id]
+    value_semantics: raw_scalar
+    display_format: number
     reconciliation_tolerance: 0.01
     reconciliation_strategy: additive_sum
     claim_types: [comparative_change, formula_component_contribution, segment_contribution_or_mix_shift]
@@ -40,6 +63,8 @@ metrics:
     aggregation: distinct_count
     required_fields: [user_id]
     grain: [window_id]
+    value_semantics: raw_scalar
+    display_format: number
     reconciliation_strategy: unsupported_non_additive
   paid_orders:
     contract_ref: contracts/sources/paid-order-detail.source.yaml@0.2
@@ -48,6 +73,8 @@ metrics:
     aggregation: distinct_count
     required_fields: [order_id]
     grain: [window_id]
+    value_semantics: raw_scalar
+    display_format: number
     reconciliation_strategy: exact_additive_count
   first_paid_users:
     contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
@@ -56,6 +83,8 @@ metrics:
     aggregation: distinct_count_if
     required_fields: [user_id, is_first_payment]
     grain: [window_id]
+    value_semantics: raw_scalar
+    display_format: number
     reconciliation_strategy: unsupported_non_additive
   paid_frequency:
     contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
@@ -64,6 +93,8 @@ metrics:
     aggregation: ratio
     required_fields: [order_id, user_id]
     grain: [window_id]
+    value_semantics: raw_scalar
+    display_format: number
     numerator_metric: paid_orders
     denominator_metric: paid_users
     reconciliation_strategy: ratio_from_components
@@ -74,6 +105,8 @@ metrics:
     aggregation: ratio
     required_fields: [paid_amount_ngn, order_id]
     grain: [window_id]
+    value_semantics: raw_scalar
+    display_format: number
     numerator_metric: paid_amount
     denominator_metric: paid_orders
     reconciliation_strategy: ratio_from_components
@@ -84,6 +117,8 @@ metrics:
     aggregation: ratio
     required_fields: [订单id, 支付状态, 支付发起时间]
     grain: [window_id]
+    value_semantics: scalar_ratio
+    display_format: percent
     reconciliation_strategy: unsupported_non_additive
 
 dimensions:

@@ -312,6 +312,7 @@ def run_eval_case(
         "required_fields": _required_fields_for_case(case),
         "requested_nodes": tuple(case.get("required_capabilities", ())),
         "allow_question_interrupt": False,
+        "run_mode": mode,
     }
     for key in ("question", "baseline", "target"):
         if key in case:
@@ -452,9 +453,10 @@ def _status_from_answer_package(
     if pattern is None:
         return "failed", "missing_primary_pattern_evidence"
     limitation_reason = ",".join(_evidence_limitations(pattern))
-    if final.get("status") == "blocked":
+    evidence_verifier_block = final.get("code") == "evidence_verifier_failed"
+    if final.get("status") == "blocked" and not evidence_verifier_block:
         return "blocked", final.get("explanation") or limitation_reason or "blocked"
-    if final.get("status") == "degraded":
+    if final.get("status") == "degraded" and not evidence_verifier_block:
         return "degraded", ",".join(
             item
             for item in (limitation_reason, final.get("explanation", "degraded"))

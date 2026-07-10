@@ -2,6 +2,8 @@ import unittest
 
 from bi_agent.runtime.analysis_assets import build_dimension_scan_reuse_contract
 from bi_agent.runtime.revenue_runtime_plan import build_revenue_runtime_plan
+from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
 
 
 class RevenueRuntimePlanTest(unittest.TestCase):
@@ -244,65 +246,32 @@ class RevenueRuntimePlanTest(unittest.TestCase):
         self.assertIn("gameplay_contract_missing", {gap["gap_id"] for gap in row_shape["contract_gaps"]})
 
     def test_prior_assets_reduce_repeated_scans(self):
+        required_fields = (
+            "period",
+            "group",
+            "amount",
+            "paid_users",
+            "orders",
+            "first_paid_users",
+        )
+        resolved_windows = {
+            "target_day": {"start_inclusive": "2026-07-08", "end_exclusive": "2026-07-09", "timezone": "Africa/Lagos"},
+            "previous_day": {"start_inclusive": "2026-07-07", "end_exclusive": "2026-07-08", "timezone": "Africa/Lagos"},
+        }
+        asset, content = verified_dimension_scan_asset(
+            required_fields=required_fields,
+            resolved_windows=resolved_windows,
+            rows=(
+                {"window_id": "previous_day", "period": "2026-07-07", "group": "baseline", "amount": 100, "paid_users": 10, "orders": 12, "first_paid_users": 3, "channel": "A"},
+                {"window_id": "target_day", "period": "2026-07-08", "group": "target", "amount": 130, "paid_users": 11, "orders": 14, "first_paid_users": 4, "channel": "A"},
+            ),
+        )
         plan = build_revenue_runtime_plan(
             target_metric="paid_amount",
             accepted_graph=("segment_contribution", "answer_verify"),
             diagnostic_axes=("factor_topk",),
             question_text="继续看哪个渠道影响最大",
-            prior_assets=(
-                {
-                    "asset_type": "dimension_scan",
-                    "dimensions": ("channel",),
-                    "status": "usable",
-                    "query_ref": "query:channel-scan",
-                    "reuse_contract": build_dimension_scan_reuse_contract(
-                        target_metric="paid_amount",
-                        scope="full_sample",
-                        time_window="2026-07-08",
-                        windows={"target": "2026-07-08", "baseline": "2026-07-07"},
-                        baselines=("previous_day",),
-                        permission_scope="analyst",
-                        snapshot_version="2026H1",
-                        dimensions=("channel",),
-                        required_fields=(
-                            "period",
-                            "group",
-                            "amount",
-                            "paid_users",
-                            "orders",
-                            "first_paid_users",
-                        ),
-                        contract_versions={"runtime": "contract-v1"},
-                        schema_fingerprint="schema-v1",
-                    ),
-                    "created_at": "2026-07-08T08:00:00+00:00",
-                    "expires_at": "2026-07-10T08:00:00+00:00",
-                    "row_payload": {
-                        "rows": (
-                            {
-                                "period": "2026-07-07",
-                                "group": "baseline",
-                                "amount": 100,
-                                "paid_users": 10,
-                                "orders": 12,
-                                "first_paid_users": 3,
-                                "channel": "A",
-                            },
-                            {
-                                "period": "2026-07-08",
-                                "group": "target",
-                                "amount": 130,
-                                "paid_users": 11,
-                                "orders": 14,
-                                "first_paid_users": 4,
-                                "channel": "A",
-                            },
-                        ),
-                        "row_count": 2,
-                        "truncated": False,
-                    },
-                },
-            ),
+            prior_assets=(asset,),
             bound_context={
                 "scope": "full_sample",
                 "time_window": "2026-07-08",
@@ -312,6 +281,8 @@ class RevenueRuntimePlanTest(unittest.TestCase):
                 "snapshot_version": "2026H1",
                 "contract_versions": {"runtime": "contract-v1"},
                 "schema_fingerprint": "schema-v1",
+                "as_of": "2026-07-09T00:00:00+00:00",
+                **content,
             },
         )
 
@@ -321,6 +292,78 @@ class RevenueRuntimePlanTest(unittest.TestCase):
         self.assertEqual(plan["asset_row_inputs"][0]["query_ref"], "query:channel-scan")
         self.assertEqual(len(plan["asset_row_inputs"][0]["rows"]), 2)
         self.assertEqual(plan["asset_row_inputs"][0]["rows"][0]["channel"], "A")
+
+    def test_partial_asset_propagates_exact_delta_without_silent_full_scan(self):
+        target_window = {
+            "target_day": {
+                "start_inclusive": "2026-07-08",
+                "end_exclusive": "2026-07-09",
+                "timezone": "Africa/Lagos",
+            }
+        }
+        expected_windows = {
+            **target_window,
+            "previous_day": {
+                "start_inclusive": "2026-07-07",
+                "end_exclusive": "2026-07-08",
+                "timezone": "Africa/Lagos",
+            },
+        }
+        asset, content = verified_dimension_scan_asset(
+            required_fields=("window_id", "amount", "channel"),
+            resolved_windows=target_window,
+            rows=(
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "2026-07-08",
+                    "paid_amount": 130.0,
+                    "amount": 130.0,
+                    "channel": "A",
+                },
+            ),
+        )
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=("segment_contribution", "answer_verify"),
+            diagnostic_axes=("factor_topk",),
+            question_text="继续看哪个渠道影响最大",
+            prior_assets=(asset,),
+            bound_context={
+                "scope": "full_sample",
+                "time_window": "2026-07-08",
+                "windows": {"target": "2026-07-08", "baseline": "2026-07-07"},
+                "baselines": ("previous_day",),
+                "permission_scope": "analyst",
+                "snapshot_version": "2026H1",
+                "contract_versions": {"runtime": "contract-v1"},
+                "schema_fingerprint": "schema-v1",
+                "as_of": "2026-07-09T00:00:00+00:00",
+                **content,
+                "resolved_windows": expected_windows,
+                "runtime_registry": RuntimeContractRegistry.from_path(
+                    "contracts/runtime/clickhouse-analysis-bindings.yaml"
+                ),
+            },
+        )
+
+        self.assertEqual(plan["asset_inputs_used"], ())
+        self.assertEqual(plan["asset_row_inputs"], ())
+        self.assertEqual(
+            plan["reuse_decisions"][0]["reason"],
+            "partial_window_coverage",
+        )
+        self.assertEqual(
+            plan["delta_query_descriptors"][0]["missing_window_ids"],
+            ("previous_day",),
+        )
+        self.assertEqual(
+            plan["delta_query_descriptors"][0]["reusable_window_ids"],
+            ("target_day",),
+        )
+        self.assertIn("dimension_scan_delta", plan["query_intents"])
+        self.assertNotIn("dimension_scan", plan["query_intents"])
+        self.assertNotIn("dimension_scan_reuse", plan["query_intents"])
 
     def test_non_matching_prior_assets_do_not_suppress_needed_scan(self):
         plan = build_revenue_runtime_plan(

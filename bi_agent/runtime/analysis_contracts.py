@@ -58,6 +58,8 @@ class MetricBinding:
     claim_types: tuple[str, ...] = ()
     reconciliation_tolerance: float = 0.0
     reconciliation_strategy: str = "unsupported_non_additive"
+    value_semantics: str = "raw_scalar"
+    display_format: str = "number"
 
 
 @dataclass(frozen=True)
@@ -210,6 +212,12 @@ class CapabilityExecutionPlan:
     degradation_policy: Mapping[str, Any]
     supported_evidence_types: tuple[str, ...]
     maximum_claim_strength: str
+    analysis_contract_ref: str = ""
+    supported_claim_types: tuple[str, ...] = ()
+    capability_contract_version: str = ""
+    capability_contract_signature: str = ""
+    claim_strength_taxonomy_version: str = ""
+    maximum_claim_strength_rank: int = -1
 
 
 @dataclass(frozen=True)

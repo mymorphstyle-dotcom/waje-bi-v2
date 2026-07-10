@@ -100,10 +100,36 @@ def compile_clickhouse_query(
     contract: QueryContract,
     snapshots: Mapping[str, DatasetSnapshot],
 ) -> CompiledQuery:
+    return _compile_clickhouse_query_with_registry(
+        contract,
+        snapshots,
+        registry=_runtime_registry(),
+    )
+
+
+def validate_clickhouse_query_contract(
+    contract: QueryContract,
+    snapshots: Mapping[str, DatasetSnapshot],
+    *,
+    registry: RuntimeContractRegistry,
+) -> None:
+    """Validate one persisted query against an explicitly trusted registry."""
+    _compile_clickhouse_query_with_registry(
+        contract,
+        snapshots,
+        registry=registry,
+    )
+
+
+def _compile_clickhouse_query_with_registry(
+    contract: QueryContract,
+    snapshots: Mapping[str, DatasetSnapshot],
+    *,
+    registry: RuntimeContractRegistry,
+) -> CompiledQuery:
     _validate_runtime_types(contract, snapshots)
     _verify_contract_signature(contract)
     _verify_window_consistency(contract)
-    registry = _runtime_registry()
     _verify_reviewed_query_shape(contract, registry)
     snapshot = _single_snapshot(contract, snapshots)
     date_expression = _date_expression(snapshot, registry=registry)
@@ -451,6 +477,8 @@ def _validate_metric_binding_types(binding: MetricBinding) -> None:
         "numerator_metric",
         "denominator_metric",
         "zero_denominator_policy",
+        "value_semantics",
+        "display_format",
     ):
         _require_runtime_string(
             getattr(binding, field_name),
@@ -485,6 +513,13 @@ def _validate_metric_binding_types(binding: MetricBinding) -> None:
         raise ValueError(
             "invalid_query_contract_runtime_type:"
             "metric_bindings.reconciliation_strategy"
+        )
+    if (binding.value_semantics, binding.display_format) not in {
+        ("raw_scalar", "number"),
+        ("scalar_ratio", "percent"),
+    }:
+        raise ValueError(
+            "invalid_query_contract_runtime_type:metric_bindings.display_policy"
         )
     if (
         binding.reconciliation_strategy == "ratio_from_components"
@@ -951,6 +986,8 @@ def _verify_reviewed_bindings(
                 reviewed.get("reconciliation_strategy")
                 or "unsupported_non_additive"
             ),
+            value_semantics=str(reviewed.get("value_semantics") or "raw_scalar"),
+            display_format=str(reviewed.get("display_format") or "number"),
         )
         if not _safe_contract_expression(
             binding.expression,

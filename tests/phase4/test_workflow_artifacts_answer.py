@@ -1,18 +1,37 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from bi_agent.runtime.answer_package import build_answer_package, verify_answer_package
+from bi_agent.runtime.answer_package import (
+    build_answer_package,
+    scrub_answer_package_for_delivery,
+    verify_answer_package,
+)
 from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.langgraph_workflow import (
     _available_fields_for_contract_diagnostics,
     _contract_gap_diagnostics_from_state,
+    _compiler_bound_context,
     _ensure_blocked_boundary_audit,
     _local_coverage_block_reason,
-    run_pattern_workflow,
+    run_pattern_workflow as _run_pattern_workflow,
 )
 from bi_agent.runtime.artifacts import filter_artifact_for_role
 from tests.phase4.fake_llm import FakeLLMClient
+
+
+def run_pattern_workflow(request=None):
+    fixture_request = dict(request or {})
+    fixture_request.setdefault("run_mode", "fixture")
+    with patch.dict(
+        "os.environ",
+        {
+            "WAJE_ALLOW_LEGACY_FIXTURES": "1",
+            "WAJE_RUNTIME_ENV": "test",
+        },
+    ):
+        return _run_pattern_workflow(fixture_request)
 
 
 def _llm_input_payload(answer_package, task):
@@ -27,6 +46,265 @@ def _llm_input_payload(answer_package, task):
 
 
 class WorkflowArtifactsAnswerTest(unittest.TestCase):
+    def test_compiler_bound_context_carries_accepted_analysis_contract_clock(self):
+        context = _compiler_bound_context(
+            {
+                "intent": {"scope": "full_sample"},
+                "request": {
+                    "analysis_contract": {
+                        "analysis_contract_id": "analysis:clock:1",
+                        "as_of": "2026-06-03T12:00:00+01:00",
+                        "resolved_windows": (
+                            {
+                                "window_id": "target_day",
+                                "start_inclusive": "2026-06-02",
+                                "end_exclusive": "2026-06-03",
+                                "timezone": "Africa/Lagos",
+                            },
+                        ),
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(context["as_of"], "2026-06-03T12:00:00+01:00")
+        self.assertEqual(
+            context["analysis_contract"]["analysis_contract_id"],
+            "analysis:clock:1",
+        )
+        self.assertEqual(
+            context["resolved_windows"][0]["window_id"],
+            "target_day",
+        )
+
+    def test_every_publishable_claim_requires_authoritative_provenance(self):
+        for strength in ("observed", "medium", "high", "strong"):
+            with self.subTest(strength=strength):
+                verifier = verify_answer_package(
+                    draft_claims=(
+                        {
+                            "text": "渠道是主要驱动。",
+                            "claim_strength": strength,
+                            "claim_type": "segment_contribution_or_mix_shift",
+                            "evidence_refs": ("segment:unbound",),
+                        },
+                    ),
+                    evidence=(
+                        {
+                            "evidence_ref": "segment:unbound",
+                            "wording_limit": "supported",
+                            "strength": strength,
+                            "evidence_type": "statistical_association",
+                            "typed_payload": {},
+                        },
+                    ),
+                    visible_limitations=(),
+                )
+
+                self.assertEqual(verifier["status"], "failed")
+                self.assertIn(
+                    "claim_missing_authoritative_provenance",
+                    {error["code"] for error in verifier["errors"]},
+                )
+
+    def test_context_only_numeric_claim_is_not_published_without_authority(self):
+        package = build_answer_package(
+            run_id="context-only-numeric",
+            draft_claims=(
+                {
+                    "text": "目标日付费金额为 42。",
+                    "claim_strength": "context_only",
+                    "claim_type": "comparative_change",
+                    "numbers": {"paid_amount": 42},
+                    "evidence_refs": ("context:42",),
+                },
+            ),
+            evidence=(
+                {
+                    "evidence_ref": "context:42",
+                    "evidence_type": "context_only",
+                    "wording_limit": "context_only",
+                    "typed_payload": {"paid_amount": 42},
+                    "limitations": ("authority_backed_evidence_missing",),
+                },
+            ),
+            checkpoint_events=(),
+            proposed_graph=(),
+            accepted_graph=(),
+            rejected_or_degraded_mutations=(),
+            validator_results=(),
+            sql_text="",
+            sql_hash="",
+            artifact_audit={},
+        )
+
+        summary = package["sections"][0]["payload"]
+        self.assertEqual(summary["claims"], [])
+        self.assertEqual(summary["claim_groups"], [])
+        self.assertIn("authority_backed_evidence_missing", summary["limitations"])
+        self.assertEqual(package["admin_audit"]["verifier"]["status"], "failed")
+
+    def test_verifier_failure_scrubs_all_visible_final_text(self):
+        package = build_answer_package(
+            run_id="scrub-rejected-final-text",
+            draft_claims=({
+                "text": "目标日付费金额为 42。",
+                "claim_strength": "context_only",
+                "claim_type": "comparative_change",
+                "numbers": {"paid_amount": 42},
+                "evidence_refs": ("context:42",),
+            },),
+            evidence=({
+                "evidence_ref": "context:42",
+                "evidence_type": "context_only",
+                "typed_payload": {"paid_amount": 42},
+                "limitations": ("authority_backed_evidence_missing",),
+            },),
+            checkpoint_events=(),
+            proposed_graph=(),
+            accepted_graph=(),
+            rejected_or_degraded_mutations=(),
+            validator_results=(),
+            sql_text="",
+            sql_hash="",
+            artifact_audit={},
+            answer_text="目标日付费金额为 42。",
+            final_business_summary="目标日付费金额为 42。",
+            final_explanation={"explanation": "目标日付费金额为 42。"},
+        )
+
+        summary = package["sections"][0]["payload"]
+        self.assertEqual(package["status"], "failed")
+        self.assertEqual(package["final_answer"], "")
+        self.assertEqual(summary["answer_text"], "")
+        self.assertEqual(summary["final_business_summary"], "")
+        self.assertEqual(
+            summary["final_explanation"]["status"],
+            "blocked",
+        )
+        self.assertNotIn("42", str(summary["final_explanation"]))
+        self.assertTrue(package["evidence_verifier_block"]["reasons"])
+
+    def test_empty_claims_with_free_text_fail_closed_and_are_scrubbed(self):
+        package = build_answer_package(
+            run_id="empty-claims-free-text",
+            draft_claims=(),
+            evidence=(),
+            checkpoint_events=(),
+            proposed_graph=(),
+            accepted_graph=(),
+            rejected_or_degraded_mutations=(),
+            validator_results=(),
+            sql_text="",
+            sql_hash="",
+            artifact_audit={},
+            answer_text="unverified answer",
+            final_business_summary="unverified summary",
+            final_explanation={"explanation": "unverified explanation"},
+            follow_up_questions=("unverified follow-up",),
+        )
+
+        verifier = package["admin_audit"]["verifier"]
+        self.assertEqual(verifier["status"], "failed")
+        self.assertIn(
+            "free_text_without_verified_claim",
+            {item["code"] for item in verifier["errors"]},
+        )
+        self.assertEqual(package["final_answer"], "")
+        self.assertEqual(package["follow_up_questions"], [])
+        self.assertEqual(package["final_explanation"]["status"], "blocked")
+
+    def test_hard_failure_scrubs_every_business_visible_prose_field(self):
+        package = scrub_answer_package_for_delivery(
+            {
+                "status": "draft",
+                "final_answer": "secret final",
+                "answer_text": "secret answer",
+                "final_business_summary": "secret summary",
+                "follow_up_questions": ["secret follow-up"],
+                "semantic_audit": {
+                    "summary": "secret semantic",
+                    "warnings": [
+                        {"code": "wording_risk", "detail": "secret detail"}
+                    ],
+                },
+                "final_explanation": {"explanation": "secret explanation"},
+                "quality_gate": {
+                    "business_audit_summary": "secret audit",
+                    "retry_instruction": "secret retry",
+                    "review_notes": "secret notes",
+                    "business_insight_present": True,
+                },
+                "sections": [
+                    {
+                        "section_id": "summary",
+                        "visibility": "business_summary",
+                        "payload": {
+                            "answer_text": "secret section answer",
+                            "final_business_summary": "secret section summary",
+                            "limitations": ["secret"],
+                            "claims": [{"text": "secret claim"}],
+                            "claim_groups": [{"title": "secret group"}],
+                            "visualization_plan": {"title": "secret chart"},
+                            "final_explanation": {"text": "secret section explanation"},
+                        },
+                    }
+                ],
+                "admin_audit": {
+                    "verifier": {
+                        "status": "failed",
+                        "errors": [{"code": "authority_failed", "detail": "secret"}],
+                        "rejected_claim_indexes": [],
+                    },
+                    "original": "secret retained for admin",
+                },
+            }
+        )
+
+        self.assertEqual(package["status"], "failed")
+        self.assertEqual(package["final_answer"], "")
+        self.assertEqual(package["answer_text"], "")
+        self.assertEqual(package["final_business_summary"], "")
+        self.assertEqual(package["follow_up_questions"], [])
+        self.assertEqual(
+            package["semantic_audit"],
+            {"warnings": [{"code": "wording_risk"}]},
+        )
+        self.assertEqual(package["quality_gate"]["status"], "failed")
+        self.assertEqual(package["quality_gate"]["code"], "evidence_verifier_failed")
+        self.assertFalse(package["quality_gate"]["has_verified_claims"])
+        self.assertNotIn("business_audit_summary", package["quality_gate"])
+        self.assertNotIn("retry_instruction", package["quality_gate"])
+        self.assertNotIn("review_notes", package["quality_gate"])
+        summary = package["sections"][0]["payload"]
+        self.assertEqual(summary["limitations"], [])
+        self.assertNotIn("secret", str({
+            key: value for key, value in package.items() if key != "admin_audit"
+        }))
+        self.assertNotIn("original", package["admin_audit"])
+
+    def test_passed_with_warnings_remains_deliverable(self):
+        package = scrub_answer_package_for_delivery(
+            {
+                "status": "draft",
+                "final_answer": "verified answer",
+                "follow_up_questions": ["verified follow-up"],
+                "quality_gate": {"business_audit_summary": "risk only"},
+                "sections": [],
+                "admin_audit": {
+                    "verifier": {
+                        "status": "passed_with_warnings",
+                        "warnings": [{"code": "wording_risk"}],
+                        "rejected_claim_indexes": [],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(package["status"], "draft")
+        self.assertEqual(package["final_answer"], "verified answer")
+        self.assertNotIn("evidence_verifier_block", package)
+
     def test_available_fields_for_contract_diagnostics_ignores_projected_rows(self):
         fields = _available_fields_for_contract_diagnostics(
             {
@@ -150,7 +428,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             "contract_absent",
         )
 
-    def test_joint_attribution_visual_plan_uses_contribution_breakdown(self):
+    def test_unbound_joint_attribution_claim_has_no_published_visual(self):
         package = build_answer_package(
             run_id="joint-visual-package",
             draft_claims=[
@@ -186,9 +464,10 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             artifact_audit={},
         )
 
-        block = package["sections"][0]["payload"]["visualization_plan"]["blocks"][0]
-        self.assertEqual(block["block_type"], "contribution_breakdown")
-        self.assertEqual(block["title"], "贡献拆解")
+        summary = package["sections"][0]["payload"]
+        self.assertEqual(summary["claims"], [])
+        self.assertEqual(summary["visualization_plan"]["blocks"], [])
+        self.assertEqual(package["admin_audit"]["verifier"]["status"], "failed")
 
     def test_langgraph_failure_does_not_publish_business_conclusion(self):
         result = run_pattern_workflow(
@@ -257,6 +536,10 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 "synthesize_answer",
                 "semantic_audit",
                 "hard_verify_answer",
+                "repair_answer",
+                "semantic_audit",
+                "hard_verify_answer",
+                "generate_degraded_explanation",
                 "final_business_summary",
                 "answer_quality_gate",
                 "persist_artifact",
@@ -268,9 +551,8 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertIn("llm_calls", artifact["admin_audit"])
         summary = artifact["sections"][0]["payload"]
         self.assertIn("final_business_summary", summary)
-        self.assertIn("我对问题的理解", summary["final_business_summary"])
-        self.assertIn("分析脉络", summary["final_business_summary"])
-        self.assertIn("最终结论", summary["final_business_summary"])
+        self.assertEqual(summary["final_business_summary"], "")
+        self.assertEqual(artifact["status"], "failed")
 
     def test_business_artifact_sections_expose_sql_hash_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -420,10 +702,12 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
 
         self.assertEqual(result.status, "draft")
         self.assertIsNotNone(result.answer_package)
-        self.assertIn(
-            "missing_required_summary_markers",
-            result.answer_package["quality_gate"]["final_summary_display_warnings"],
+        self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
+        self.assertEqual(
+            result.answer_package["quality_gate"]["code"],
+            "evidence_verifier_failed",
         )
+        self.assertFalse(result.answer_package["quality_gate"]["has_verified_claims"])
 
     def test_final_business_summary_allows_bounded_insight_without_exact_claim_copy(self):
         fake = FakeLLMClient(
@@ -449,10 +733,11 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             )
 
         summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
-        self.assertIn("洞察上可以继续观察支付节奏和用户结构", summary)
-        self.assertIn("方向一致比例", summary)
-        self.assertNotIn("方向命中率", summary)
-        self.assertNotIn("周期内付费金额模式在 2024-01..2026-05 观察到", summary)
+        self.assertEqual(summary, "")
+        self.assertEqual(
+            result.answer_package["status"],
+            "failed",
+        )
 
     def test_final_business_summary_does_not_create_local_material_claim_warning(self):
         fake = FakeLLMClient(
@@ -498,10 +783,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
 
         self.assertEqual(result.status, "draft")
         self.assertIsNotNone(result.answer_package)
-        self.assertNotIn(
-            "unsupported_material_claim",
-            result.answer_package["quality_gate"]["final_summary_display_warnings"],
-        )
+        self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
 
     def test_final_business_summary_businessizes_driver_scope_and_labels(self):
         fake = FakeLLMClient(
@@ -554,13 +836,11 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             )
 
         summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
-        self.assertIn("全体用户", summary)
-        self.assertIn("单付费用户金额", summary)
-        self.assertIn("付费用户数", summary)
-        self.assertNotIn("all_users", summary)
-        self.assertNotIn("单用户/单订单", summary)
-        self.assertNotIn("驱动因素", summary)
-        self.assertNotIn("单用户付费金额", summary)
+        self.assertEqual(summary, "")
+        self.assertEqual(
+            result.answer_package["status"],
+            "failed",
+        )
 
     def test_final_business_summary_receives_composite_business_threads(self):
         fake = FakeLLMClient(
@@ -670,8 +950,11 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             )
 
         summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
-        self.assertIn("不能归因于特定原因", summary)
-        self.assertIn("洞察上可以继续观察支付节奏和用户结构", summary)
+        self.assertEqual(summary, "")
+        self.assertEqual(
+            result.answer_package["status"],
+            "failed",
+        )
 
     def test_medium_pattern_blocks_reliable_wording(self):
         verifier = verify_answer_package(
@@ -964,12 +1247,13 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         verifier = result.answer_package["admin_audit"]["verifier"]
 
         self.assertEqual(result.status, "draft")
-        self.assertTrue(summary["claims"])
+        self.assertEqual(summary["claims"], [])
         self.assertTrue(evidence)
-        self.assertEqual(verifier["status"], "passed")
-        claim = summary["claims"][0]
-        self.assertTrue(claim["evidence_refs"])
-        self.assertEqual(claim["evidence_refs"], [evidence[0]["evidence_ref"]])
+        self.assertEqual(verifier["status"], "failed")
+        self.assertIn(
+            "claim_without_authority_backed_evidence",
+            {item["code"] for item in verifier["errors"]},
+        )
         self.assertEqual(
             result.answer_package["admin_audit"]["contract_gap_diagnostics"][0]["gap_id"],
             "event_context_contract_missing",

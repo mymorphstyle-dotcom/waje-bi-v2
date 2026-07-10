@@ -763,6 +763,8 @@ def _metric_binding_from_mapping(value: Any, *, index: int) -> MetricBinding:
             "claim_types",
             "reconciliation_tolerance",
             "reconciliation_strategy",
+            "value_semantics",
+            "display_format",
         ),
         path=path,
     )
@@ -804,6 +806,14 @@ def _metric_binding_from_mapping(value: Any, *, index: int) -> MetricBinding:
         reconciliation_strategy=_strict_string(
             item["reconciliation_strategy"],
             path=f"{path}.reconciliation_strategy",
+        ),
+        value_semantics=_strict_string(
+            item["value_semantics"],
+            path=f"{path}.value_semantics",
+        ),
+        display_format=_strict_string(
+            item["display_format"],
+            path=f"{path}.display_format",
         ),
     )
 

@@ -96,6 +96,12 @@ def metric(dataset_id="paid_order_success", expression=None):
             if dataset_id == "payment_attempt"
             else "additive_sum"
         ),
+        value_semantics=(
+            "scalar_ratio" if dataset_id == "payment_attempt" else "raw_scalar"
+        ),
+        display_format=(
+            "percent" if dataset_id == "payment_attempt" else "number"
+        ),
     )
 
 
@@ -459,6 +465,29 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             "bi_agent.runtime.clickhouse_query_compiler._runtime_registry",
             return_value=registry,
         ), self.assertRaisesRegex(ValueError, "unsafe_metric_expression"):
+            compile_clickhouse_query(
+                resigned,
+                {"snapshot:paid_order_success:1": snapshot()},
+            )
+
+    def test_rejects_resigned_display_policy_drift_from_current_registry(self):
+        base = contract()
+        drifted_binding = replace(
+            base.metric_bindings[0],
+            value_semantics="scalar_ratio",
+            display_format="percent",
+        )
+        unsigned = replace(
+            base,
+            metric_bindings=(drifted_binding,),
+            contract_signature="",
+        )
+        resigned = replace(
+            unsigned,
+            contract_signature=query_contract_signature(unsigned),
+        )
+
+        with self.assertRaisesRegex(ValueError, "reviewed_metric_binding_mismatch"):
             compile_clickhouse_query(
                 resigned,
                 {"snapshot:paid_order_success:1": snapshot()},

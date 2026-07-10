@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from bi_agent.capabilities.data_quality_check import data_quality_check
 from bi_agent.capabilities.pattern_scan import scan_pattern
@@ -9,6 +9,11 @@ from bi_agent.runtime.capability_models import (
     CapabilityEvidenceEnvelope,
     CapabilityRequest,
 )
+from bi_agent.runtime.capability_execution import (
+    BoundCapabilityInput,
+    validate_bound_capability_input,
+)
+from bi_agent.runtime.evidence_authority import legacy_fixture_enabled
 
 PATTERN_COMPARE_CAPABILITIES = frozenset(
     {
@@ -22,6 +27,11 @@ PATTERN_COMPARE_CAPABILITIES = frozenset(
 
 
 def execute_capability(request: CapabilityRequest) -> CapabilityEvidenceEnvelope:
+    if _bound_input(request) is None and not _legacy_fixture_allowed(request):
+        return _blocked_envelope(request, "missing_bound_capability_input")
+    input_limitation = _bound_input_limitation(request)
+    if input_limitation:
+        return _blocked_envelope(request, input_limitation)
     budget_limitation = _budget_limitation(request)
     if budget_limitation:
         return _blocked_envelope(request, budget_limitation)
@@ -36,8 +46,10 @@ def _execute_pattern_compare(
     request: CapabilityRequest,
 ) -> CapabilityEvidenceEnvelope:
     params: dict[str, Any] = dict(request.params)
-    rows = params.pop("rows")
-    result_refs = tuple(params.pop("result_refs", ()))
+    rows = _capability_rows(request, params.pop("rows", ()))
+    legacy_refs = params.pop("result_refs", ())
+    result_refs = _result_refs(request, legacy_refs)
+    sql_hashes = _sql_hashes(request, legacy_refs)
     pattern_family = params.pop("pattern_family", "intra_period")
     result = scan_pattern(
         rows,
@@ -48,6 +60,13 @@ def _execute_pattern_compare(
         **params,
     )
     payload = dict(result.typed_payload)
+    evidence_type, strength, wording_limit, limitations = _evidence_boundary(
+        request,
+        evidence_type=result.evidence_type,
+        strength=result.strength,
+        wording_limit=result.wording_limit,
+        limitations=tuple(result.limitations),
+    )
     return CapabilityEvidenceEnvelope(
         evidence_ref=result.evidence_ref,
         capability_id=request.capability_id,
@@ -69,11 +88,11 @@ def _execute_pattern_compare(
         },
         typed_payload=payload,
         result_refs=result_refs,
-        sql_hashes=result_refs,
-        evidence_type=result.evidence_type,
-        strength=result.strength,
-        wording_limit=result.wording_limit,
-        limitations=tuple(result.limitations),
+        sql_hashes=sql_hashes,
+        evidence_type=evidence_type,
+        strength=strength,
+        wording_limit=wording_limit,
+        limitations=limitations,
         disabled_degraded_blocked_path_refs=(),
         verifier_handoff={
             "requires_baseline_label": str(request.baseline.get("label", "")),
@@ -81,6 +100,7 @@ def _execute_pattern_compare(
             "requires_evidence_ref": result.evidence_ref,
         },
         admin_audit_ref=f"capability:{request.run_id}:{request.capability_id}",
+        **_bound_provenance(request),
     )
 
 
@@ -88,8 +108,10 @@ def _execute_data_quality_profile(
     request: CapabilityRequest,
 ) -> CapabilityEvidenceEnvelope:
     params: dict[str, Any] = dict(request.params)
-    rows = params.pop("rows")
-    result_refs = tuple(params.pop("result_refs", ()))
+    rows = _capability_rows(request, params.pop("rows", ()))
+    legacy_refs = params.pop("result_refs", ())
+    result_refs = _result_refs(request, legacy_refs)
+    sql_hashes = _sql_hashes(request, legacy_refs)
     result = data_quality_check(
         rows,
         required_fields=tuple(params.pop("required_fields", ())),
@@ -97,6 +119,13 @@ def _execute_data_quality_profile(
     )
     payload = dict(result.typed_payload)
     row_count = payload.get("row_count")
+    evidence_type, strength, wording_limit, limitations = _evidence_boundary(
+        request,
+        evidence_type=result.evidence_type,
+        strength=result.strength,
+        wording_limit=result.wording_limit,
+        limitations=tuple(result.limitations),
+    )
     return CapabilityEvidenceEnvelope(
         evidence_ref=f"{request.capability_id}:{request.run_id}",
         capability_id=request.capability_id,
@@ -112,16 +141,17 @@ def _execute_data_quality_profile(
         numeric_facts={"row_count": row_count},
         typed_payload=payload,
         result_refs=result_refs,
-        sql_hashes=result_refs,
-        evidence_type=result.evidence_type,
-        strength=result.strength,
-        wording_limit=result.wording_limit,
-        limitations=tuple(result.limitations),
+        sql_hashes=sql_hashes,
+        evidence_type=evidence_type,
+        strength=strength,
+        wording_limit=wording_limit,
+        limitations=limitations,
         disabled_degraded_blocked_path_refs=(),
         verifier_handoff={
             "requires_evidence_ref": f"{request.capability_id}:{request.run_id}",
         },
         admin_audit_ref=f"capability:{request.run_id}:{request.capability_id}",
+        **_bound_provenance(request),
     )
 
 
@@ -143,7 +173,7 @@ def _budget_limitation(request: CapabilityRequest) -> str:
 
 
 def _blocked_envelope(request: CapabilityRequest, limitation: str) -> CapabilityEvidenceEnvelope:
-    result_refs = tuple(request.params.get("result_refs", ()))
+    result_refs = _result_refs(request, request.params.get("result_refs", ()))
     rows = request.params.get("rows", ())
     row_count = len(rows) if isinstance(rows, (list, tuple)) else None
     return CapabilityEvidenceEnvelope(
@@ -167,7 +197,7 @@ def _blocked_envelope(request: CapabilityRequest, limitation: str) -> Capability
             "hard_limit": request.budget_state.hard_limit,
         },
         result_refs=result_refs,
-        sql_hashes=result_refs,
+        sql_hashes=_sql_hashes(request, request.params.get("result_refs", ())),
         evidence_type="insufficient",
         strength="low",
         wording_limit="blocked",
@@ -175,6 +205,209 @@ def _blocked_envelope(request: CapabilityRequest, limitation: str) -> Capability
         disabled_degraded_blocked_path_refs=(limitation,),
         verifier_handoff={"blocked_by": limitation},
         admin_audit_ref=f"capability:{request.run_id}:{request.capability_id}",
+        **_bound_provenance(request),
+    )
+
+
+def _bound_input(request: CapabilityRequest) -> BoundCapabilityInput | None:
+    value = request.bound_input
+    return value if isinstance(value, BoundCapabilityInput) else None
+
+
+def _bound_input_limitation(request: CapabilityRequest) -> str:
+    bound = _bound_input(request)
+    if bound is None:
+        return ""
+    validation_reason = validate_bound_capability_input(
+        bound,
+        request.evidence_resolver,
+        allow_fixture=_legacy_fixture_allowed(request),
+    )
+    if validation_reason:
+        return validation_reason
+    if bound.capability_id != request.capability_id:
+        return "bound_capability_mismatch"
+    if bound.status == "blocked":
+        return "bound_capability_input_blocked"
+    if request.claim_type not in bound.supported_claim_types:
+        return "unsupported_claim_type"
+    return ""
+
+
+def _capability_rows(
+    request: CapabilityRequest,
+    unbound_rows: Any,
+) -> tuple[Mapping[str, Any], ...] | Any:
+    bound = _bound_input(request)
+    if bound is None:
+        return unbound_rows
+    requested_slot = str(request.params.get("input_slot_id") or "")
+    if requested_slot:
+        return bound.rows_by_slot.get(requested_slot, ())
+    if len(bound.rows_by_slot) == 1:
+        return next(iter(bound.rows_by_slot.values()))
+    requested_slots = request.params.get("input_slot_ids")
+    if isinstance(requested_slots, (list, tuple)):
+        return tuple(
+            row
+            for slot_id in requested_slots
+            for row in bound.rows_by_slot.get(str(slot_id), ())
+        )
+    return ()
+
+
+def _result_refs(request: CapabilityRequest, legacy_refs: Any) -> tuple[str, ...]:
+    bound = _bound_input(request)
+    if bound is not None:
+        return _dedupe((*bound.result_refs, *bound.validation_result_refs))
+    if _legacy_fixture_allowed(request):
+        return tuple(str(ref) for ref in legacy_refs if ref)
+    return ()
+
+
+def _sql_hashes(request: CapabilityRequest, legacy_refs: Any) -> tuple[str, ...]:
+    if (
+        _bound_input(request) is None and _legacy_fixture_allowed(request)
+    ):
+        return tuple(str(ref) for ref in legacy_refs if ref)
+    return ()
+
+
+def _bound_provenance(request: CapabilityRequest) -> dict[str, Any]:
+    bound = _bound_input(request)
+    if bound is None or validate_bound_capability_input(
+        bound,
+        request.evidence_resolver,
+        allow_fixture=_legacy_fixture_allowed(request),
+    ):
+        return {
+            "analysis_contract_ref": "",
+            "capability_contract_ref": "",
+            "query_contract_refs": (),
+            "query_execution_record_refs": (),
+            "query_execution_record_digests": (),
+            "rows_metadata_record_refs": (),
+            "rows_metadata_record_digests": (),
+            "completeness_report_refs": (),
+            "completeness_record_refs": (),
+            "completeness_record_digests": (),
+            "source_snapshot_refs": (),
+            "supported_evidence_types": (),
+            "supported_claim_types": (),
+            "maximum_claim_strength": "",
+            "maximum_claim_strength_rank": -1,
+            "claim_strength_taxonomy_version": "",
+            "input_status": "fixture" if _legacy_fixture_allowed(request) else "blocked",
+            "input_completeness_statuses": (),
+            "binding_manifest_ref": "",
+            "binding_manifest_digest": "",
+        }
+    return {
+        "analysis_contract_ref": bound.analysis_contract_ref,
+        "capability_contract_ref": bound.capability_contract_ref,
+        "query_contract_refs": _dedupe(
+            (*bound.query_contract_refs, *bound.validation_query_contract_refs)
+        ),
+        "query_execution_record_refs": _dedupe(
+            (
+                *bound.query_execution_record_refs,
+                *bound.validation_query_execution_record_refs,
+            )
+        ),
+        "query_execution_record_digests": _dedupe(
+            (
+                *bound.query_execution_record_digests,
+                *bound.validation_query_execution_record_digests,
+            )
+        ),
+        "rows_metadata_record_refs": _dedupe(
+            (
+                *bound.rows_metadata_record_refs,
+                *bound.validation_rows_metadata_record_refs,
+            )
+        ),
+        "rows_metadata_record_digests": _dedupe(
+            (
+                *bound.rows_metadata_record_digests,
+                *bound.validation_rows_metadata_record_digests,
+            )
+        ),
+        "completeness_report_refs": _dedupe(
+            (
+                *bound.completeness_report_refs,
+                *bound.validation_completeness_report_refs,
+            )
+        ),
+        "completeness_record_refs": _dedupe(
+            (
+                *bound.completeness_record_refs,
+                *bound.validation_completeness_record_refs,
+            )
+        ),
+        "completeness_record_digests": _dedupe(
+            (
+                *bound.completeness_record_digests,
+                *bound.validation_completeness_record_digests,
+            )
+        ),
+        "source_snapshot_refs": _dedupe(
+            (*bound.source_snapshot_refs, *bound.validation_source_snapshot_refs)
+        ),
+        "supported_claim_types": bound.supported_claim_types,
+        "supported_evidence_types": bound.supported_evidence_types,
+        "maximum_claim_strength": bound.maximum_claim_strength,
+        "maximum_claim_strength_rank": bound.maximum_claim_strength_rank,
+        "claim_strength_taxonomy_version": bound.claim_strength_taxonomy_version,
+        "input_status": bound.status,
+        "input_completeness_statuses": bound.input_completeness_statuses,
+        "binding_manifest_ref": bound.binding_manifest_ref,
+        "binding_manifest_digest": getattr(bound, "binding_manifest_digest", ""),
+    }
+
+
+def _evidence_boundary(
+    request: CapabilityRequest,
+    *,
+    evidence_type: str,
+    strength: str,
+    wording_limit: str,
+    limitations: tuple[str, ...],
+) -> tuple[str, str, str, tuple[str, ...]]:
+    bound = _bound_input(request)
+    if bound is None or not bound.binding_manifest_ref:
+        if _legacy_fixture_allowed(request):
+            return (
+                evidence_type,
+                strength,
+                wording_limit,
+                _dedupe((*limitations, "legacy_fixture_non_authoritative")),
+            )
+        return evidence_type, strength, wording_limit, limitations
+    if evidence_type not in bound.supported_evidence_types:
+        return (
+            "insufficient",
+            "low",
+            "blocked",
+            _dedupe((*limitations, "unsupported_evidence_type")),
+        )
+    if bound.status == "degraded":
+        return (
+            evidence_type,
+            "low",
+            "contextual",
+            _dedupe((*limitations, *bound.reasons)),
+        )
+    return evidence_type, strength, wording_limit, limitations
+
+
+def _dedupe(values: Any) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(str(value) for value in values if value))
+
+
+def _legacy_fixture_allowed(request: CapabilityRequest) -> bool:
+    return bool(
+        request.fixture_input_mode == "legacy_unbound_fixture"
+        and legacy_fixture_enabled(request.run_mode)
     )
 
 

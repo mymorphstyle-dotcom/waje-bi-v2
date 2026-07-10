@@ -12,6 +12,14 @@ from bi_agent.runtime.analysis_contracts import (
     QueryResultEnvelope,
 )
 from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.evidence_authority import (
+    EvidenceIntegrityError,
+    RuntimeEvidenceAuthority,
+    RuntimeEvidenceWriter,
+    _record_completeness,
+    canonical_digest,
+    runtime_evidence_record_integrity_errors,
+)
 from bi_agent.runtime.query_audit import query_audit_refs
 
 
@@ -39,13 +47,19 @@ _JOIN_AUDIT_FIELDS = (
 def validate_query_result(
     contract: QueryContract,
     result: QueryResultEnvelope,
-    snapshot: DatasetSnapshot,
+    snapshot: DatasetSnapshot
+    | Mapping[str, DatasetSnapshot]
+    | Sequence[DatasetSnapshot],
+    *,
+    evidence_authority: RuntimeEvidenceAuthority | None = None,
+    evidence_writer: RuntimeEvidenceWriter | None = None,
 ) -> CompletenessReport:
+    snapshots = _normalize_snapshots(snapshot)
     rows = tuple(result.rows)
     execution_succeeded = result.execution_status == "succeeded"
     core_assertions = (
         _execution_assertion(contract, result, rows),
-        _watermark_assertion(contract, snapshot),
+        _watermark_assertion(contract, snapshots),
         _required_fields_assertion(contract, result, rows),
         (
             _required_windows_assertion(contract, rows)
@@ -81,14 +95,19 @@ def validate_query_result(
         "window_day_counts": dict(window_day_counts),
         "expected_grain": tuple(contract.result_shape.grain),
         "observed_grain": tuple(result.observed_grain),
-        "snapshot_ref": snapshot.snapshot_ref,
-        "snapshot_watermark": snapshot.watermark,
+        "snapshot_ref": snapshots[0].snapshot_ref if len(snapshots) == 1 else "",
+        "snapshot_refs": tuple(result.source_snapshot_refs),
+        "snapshot_watermark": snapshots[0].watermark if len(snapshots) == 1 else "",
+        "snapshot_watermarks": {
+            item.snapshot_ref: item.watermark for item in snapshots
+        },
+        "rows_ref": result.rows_ref,
     }
     if pending_reconciliation is not None:
         coverage_summary["reconciliation_validation"] = dict(
             pending_reconciliation["details"]
         )
-    return CompletenessReport(
+    report = CompletenessReport(
         report_ref=result.completeness_report_ref,
         result_ref=result.result_ref,
         query_contract_ref=contract.query_contract_id,
@@ -98,12 +117,21 @@ def validate_query_result(
         failure_reasons=failure_reasons,
         coverage_summary=coverage_summary,
     )
+    writer = evidence_writer or (
+        evidence_authority._runtime_writer() if evidence_authority is not None else None
+    )
+    if writer is not None:
+        report = _recorded_or_blocked(report, writer)
+    return report
 
 
 def validate_query_set(
     contracts: Sequence[QueryContract],
     results: Sequence[QueryResultEnvelope],
     reports: Sequence[CompletenessReport],
+    *,
+    evidence_authority: RuntimeEvidenceAuthority | None = None,
+    evidence_writer: RuntimeEvidenceWriter | None = None,
 ) -> tuple[CompletenessReport, ...]:
     if not (len(contracts) == len(results) == len(reports)):
         raise ValueError("query_set_length_mismatch")
@@ -181,7 +209,48 @@ def validate_query_set(
                 coverage_summary=coverage_summary,
             )
         )
-    return tuple(validated)
+    output = tuple(validated)
+    writer = evidence_writer or (
+        evidence_authority._runtime_writer() if evidence_authority is not None else None
+    )
+    if writer is not None:
+        output = tuple(_recorded_or_blocked(report, writer) for report in output)
+    return output
+
+
+def _recorded_or_blocked(
+    report: CompletenessReport,
+    writer: RuntimeEvidenceWriter,
+) -> CompletenessReport:
+    try:
+        record = _record_completeness(writer, report)
+        invalid = (
+            runtime_evidence_record_integrity_errors(record)
+            or record.report_ref != report.report_ref
+            or record.query_contract_ref != report.query_contract_ref
+            or record.result_ref != report.result_ref
+            or canonical_digest(record.report_payload)
+            != canonical_digest(report.to_dict())
+        )
+    except (AttributeError, EvidenceIntegrityError, TypeError, ValueError):
+        invalid = True
+    if not invalid:
+        return report
+    assertion = {
+        "assertion": "runtime_evidence_authority_write",
+        "passed": False,
+        "failure_reasons": ("runtime_evidence_writer_record_invalid",),
+        "details": {"authority_status": "invalid"},
+    }
+    return replace(
+        report,
+        completeness_status="invalid",
+        analysis_readiness="blocked",
+        assertion_results=(*report.assertion_results, assertion),
+        failure_reasons=_dedupe(
+            (*report.failure_reasons, "runtime_evidence_writer_record_invalid")
+        ),
+    )
 
 
 def _execution_assertion(
@@ -239,25 +308,17 @@ def _execution_assertion(
 
 def _watermark_assertion(
     contract: QueryContract,
-    snapshot: DatasetSnapshot,
+    snapshots: Sequence[DatasetSnapshot],
 ) -> Mapping[str, Any]:
     reasons = []
-    if snapshot.snapshot_ref not in contract.dataset_snapshot_refs:
+    actual_refs = tuple(item.snapshot_ref for item in snapshots)
+    if set(actual_refs) != set(contract.dataset_snapshot_refs) or len(actual_refs) != len(
+        contract.dataset_snapshot_refs
+    ):
         reasons.append(
-            f"snapshot_ref_mismatch:{snapshot.snapshot_ref}:"
-            f"{','.join(contract.dataset_snapshot_refs)}"
+            "snapshot_refs_mismatch:"
+            f"{','.join(actual_refs)}:{','.join(contract.dataset_snapshot_refs)}"
         )
-    if contract.permission_scope not in snapshot.permission_scopes:
-        reasons.append(
-            "snapshot_permission_scope_mismatch:"
-            f"{contract.permission_scope}:"
-            f"{','.join(snapshot.permission_scopes)}"
-        )
-    try:
-        observed = date.fromisoformat(snapshot.watermark)
-    except (TypeError, ValueError):
-        observed = None
-        reasons.append(f"snapshot_watermark_invalid:{snapshot.watermark}")
     required_values = []
     for window in contract.resolved_windows:
         try:
@@ -268,16 +329,89 @@ def _watermark_assertion(
                 f"{window.window_id}:{window.source_watermark_requirement}"
             )
     required = max(required_values) if required_values else None
-    if observed is not None and required is not None and observed < required:
-        reasons.append(f"snapshot_stale:{observed.isoformat()}:{required.isoformat()}")
+    observed_by_ref = {}
+    for snapshot in snapshots:
+        if contract.permission_scope not in snapshot.permission_scopes:
+            reasons.append(
+                "snapshot_permission_scope_mismatch:"
+                + (
+                    f"{snapshot.snapshot_ref}:"
+                    if len(snapshots) > 1
+                    else ""
+                )
+                + f"{contract.permission_scope}:"
+                f"{','.join(snapshot.permission_scopes)}"
+            )
+        if snapshot.status != "active":
+            reasons.append(
+                f"snapshot_status_invalid:{snapshot.snapshot_ref}:{snapshot.status}"
+            )
+        if not snapshot.schema_fingerprint:
+            reasons.append(f"snapshot_schema_missing:{snapshot.snapshot_ref}")
+        required_source_fields = {
+            field
+            for binding in contract.metric_bindings
+            if binding.dataset_id == snapshot.dataset_id
+            for field in binding.required_fields
+        } | {
+            binding.source_field
+            for binding in contract.dimension_bindings
+            if binding.dataset_id == snapshot.dataset_id
+        }
+        missing_fields = sorted(required_source_fields - set(snapshot.schema_fields))
+        if missing_fields:
+            reasons.append(
+                f"snapshot_schema_fields_missing:{snapshot.snapshot_ref}:"
+                + ",".join(missing_fields)
+            )
+        try:
+            observed = date.fromisoformat(snapshot.watermark)
+        except (TypeError, ValueError):
+            observed = None
+            reasons.append(
+                f"snapshot_watermark_invalid:{snapshot.snapshot_ref}:{snapshot.watermark}"
+            )
+        observed_by_ref[snapshot.snapshot_ref] = snapshot.watermark
+        if observed is not None and required is not None and observed < required:
+            reasons.append(
+                "snapshot_stale:"
+                + (
+                    f"{snapshot.snapshot_ref}:"
+                    if len(snapshots) > 1
+                    else ""
+                )
+                + f"{observed.isoformat()}:{required.isoformat()}"
+            )
     return _assertion(
         "snapshot_watermark",
         reasons,
         details={
-            "observed": snapshot.watermark,
+            "observed": observed_by_ref,
             "required": required.isoformat() if required is not None else "",
         },
     )
+
+
+def _normalize_snapshots(
+    snapshots: DatasetSnapshot
+    | Mapping[str, DatasetSnapshot]
+    | Sequence[DatasetSnapshot],
+) -> tuple[DatasetSnapshot, ...]:
+    if isinstance(snapshots, DatasetSnapshot):
+        return (snapshots,)
+    if isinstance(snapshots, Mapping):
+        values = tuple(snapshots.values())
+        if any(
+            not isinstance(item, DatasetSnapshot)
+            or str(key) != item.snapshot_ref
+            for key, item in snapshots.items()
+        ):
+            return ()
+        return values
+    if isinstance(snapshots, Sequence) and not isinstance(snapshots, (str, bytes)):
+        values = tuple(snapshots)
+        return values if all(isinstance(item, DatasetSnapshot) for item in values) else ()
+    return ()
 
 
 def _required_fields_assertion(
@@ -378,12 +512,13 @@ def _unique_key_assertion(
         if any(field not in row for field in key_fields):
             continue
         key = tuple(row[field] for field in key_fields)
-        if key in seen:
+        typed_key = canonical_digest(key)
+        if typed_key in seen:
             reasons.append(
                 "duplicate_key:"
                 + ",".join(f"{field}={value}" for field, value in zip(key_fields, key))
             )
-        seen.add(key)
+        seen.add(typed_key)
     return _assertion(
         "unique_key",
         _dedupe(reasons),

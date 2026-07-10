@@ -1343,6 +1343,8 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
                             state["request"].get("required_fields", ())
                         ),
                     },
+                    **_capability_authority_inputs(state, "data_quality_profile"),
+                    **_capability_compatibility_mode(state),
                 )
             )
         )
@@ -1399,6 +1401,8 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
                         "pattern_family": pattern_family,
                         **pattern_params,
                     },
+                    **_capability_authority_inputs(state, capability_id),
+                    **_capability_compatibility_mode(state),
                 )
             )
         )
@@ -1564,6 +1568,33 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
 
     state["evidence"] = [_evidence_dict(item, state) for item in evidence]
     return state
+
+
+def _capability_compatibility_mode(state: WorkflowState) -> dict[str, str]:
+    run_mode = str((state.get("request") or {}).get("run_mode") or "production")
+    return {
+        "run_mode": run_mode,
+        "fixture_input_mode": (
+            "legacy_unbound_fixture" if run_mode == "fixture" else ""
+        ),
+    }
+
+
+def _capability_authority_inputs(
+    state: WorkflowState,
+    capability_id: str,
+) -> dict[str, Any]:
+    request = state.get("request") or {}
+    bound_inputs = request.get("bound_capability_inputs")
+    bound_input = (
+        bound_inputs.get(capability_id)
+        if isinstance(bound_inputs, Mapping)
+        else None
+    )
+    return {
+        "bound_input": bound_input,
+        "evidence_resolver": request.get("evidence_resolver"),
+    }
 
 
 def _reduce_evidence(state: WorkflowState) -> WorkflowState:
@@ -2107,6 +2138,31 @@ def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
         for key in ("pattern_family", "pattern_params", "time_window", "baseline", "target", "scope")
         if intent.get(key) not in ("", None, {}, [])
     }
+    analysis_contract = (
+        state.get("analysis_contract")
+        or request.get("analysis_contract")
+    )
+    outcome = state.get("analysis_compile_outcome") or request.get(
+        "analysis_compile_outcome"
+    )
+    if analysis_contract is None and outcome is not None:
+        analysis_contract = getattr(outcome, "analysis_contract", None)
+    if hasattr(analysis_contract, "to_dict"):
+        analysis_contract = analysis_contract.to_dict()
+    if isinstance(analysis_contract, Mapping):
+        normalized_analysis = dict(analysis_contract)
+        context["analysis_contract"] = normalized_analysis
+        if normalized_analysis.get("as_of") not in (None, ""):
+            context["as_of"] = str(normalized_analysis["as_of"])
+        resolved = normalized_analysis.get("resolved_windows")
+        if isinstance(resolved, Sequence) and not isinstance(
+            resolved, (str, bytes)
+        ):
+            context["resolved_windows"] = tuple(
+                dict(item) for item in resolved if isinstance(item, Mapping)
+            )
+    elif request.get("as_of") not in (None, ""):
+        context["as_of"] = str(request.get("as_of"))
     if request.get("role"):
         context["permission_scope"] = str(request.get("role"))
     if isinstance(request.get("contract_versions"), Mapping):
@@ -3508,6 +3564,9 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         run_id=state["run_id"],
         draft_claims=state.get("draft_claims", []),
         evidence=state.get("evidence", []),
+        evidence_resolver=request.get("evidence_resolver"),
+        rows_loader=request.get("rows_loader"),
+        runtime_registry=request.get("runtime_registry"),
         checkpoint_events=state["checkpoint_events"],
         proposed_graph=proposed_graph,
         accepted_graph=accepted_graph,

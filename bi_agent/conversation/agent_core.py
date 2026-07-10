@@ -11,8 +11,14 @@ from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.analysis_assets import build_analysis_assets
+from bi_agent.runtime.answer_package import reverify_answer_package_for_delivery
 from bi_agent.runtime.compiler import compile_graph
+from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult, run_pattern_workflow
+from bi_agent.runtime.runtime_contract_registry import (
+    CANONICAL_RUNTIME_BINDINGS_PATH,
+    RuntimeContractRegistry,
+)
 
 
 WorkflowRunner = Callable[[dict[str, Any]], Any]
@@ -26,11 +32,19 @@ class ConversationAgentCore:
         workflow_runner: Optional[WorkflowRunner] = None,
         conversation_llm_client: Any = None,
         row_provider: Any = None,
+        evidence_resolver: Any = None,
+        rows_loader: Any = None,
+        evidence_writer: Any = None,
+        runtime_registry: RuntimeContractRegistry | None = None,
     ) -> None:
         self.store = store
         self.workflow_runner = workflow_runner or run_pattern_workflow
         self.conversation_llm_client = conversation_llm_client
         self.row_provider = row_provider
+        self.evidence_resolver = evidence_resolver
+        self.rows_loader = rows_loader
+        self.evidence_writer = evidence_writer
+        self.runtime_registry = runtime_registry
 
     def run_message(
         self,
@@ -150,6 +164,14 @@ class ConversationAgentCore:
             request["clarification_choice"] = clarification_choice
         if self.row_provider is not None:
             request["row_provider"] = self.row_provider
+        if self.evidence_resolver is not None:
+            request["evidence_resolver"] = self.evidence_resolver
+        if self.rows_loader is not None:
+            request["rows_loader"] = self.rows_loader
+        if self.evidence_writer is not None:
+            request["evidence_writer"] = self.evidence_writer
+        if self.runtime_registry is not None:
+            request["runtime_registry"] = self.runtime_registry
         self.store.upsert_run(
             run_id,
             thread_id=thread_id,
@@ -189,7 +211,22 @@ class ConversationAgentCore:
                 "failure_reason": result.failure_reason,
             }
 
-        package = dict(result.answer_package)
+        internal_verifier_audit: dict[str, Any] = {}
+        package = reverify_answer_package_for_delivery(
+            result.answer_package,
+            evidence_resolver=self.evidence_resolver,
+            rows_loader=self.rows_loader,
+            runtime_registry=self.runtime_registry,
+            internal_verifier_audit=internal_verifier_audit,
+        )
+        self.store.add_audit_event(
+            "delivery_verifier_completed",
+            thread_id=thread_id,
+            topic_id=turn.topic_id or "",
+            run_id=run_id,
+            ref=run_id,
+            payload=internal_verifier_audit,
+        )
         package["run_id"] = run_id
         package["artifact_path"] = result.artifact_path
         accepted_graph = (
@@ -205,7 +242,12 @@ class ConversationAgentCore:
             self.store.save_analysis_assets(
                 thread_id,
                 turn.topic_id,
-                build_analysis_assets(package),
+                build_analysis_assets(
+                    package,
+                    evidence_resolver=self.evidence_resolver,
+                    rows_loader=self.rows_loader,
+                    runtime_registry=self.runtime_registry,
+                ),
             )
         self.store.upsert_run(
             run_id,
@@ -237,6 +279,14 @@ class ConversationAgentCore:
         real_llm: bool = False,
         real_clickhouse: bool = False,
     ) -> "ConversationAgentCore":
+        authority = RuntimeEvidenceAuthority()
+        registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+        authority_kwargs = {
+            "evidence_resolver": authority,
+            "rows_loader": authority.rows_loader,
+            "evidence_writer": authority._runtime_writer(),
+            "runtime_registry": registry,
+        }
         if real_llm or real_clickhouse:
             row_provider = None
             if real_clickhouse:
@@ -247,8 +297,13 @@ class ConversationAgentCore:
                 PostgresConversationStore.from_env(),
                 conversation_llm_client=_conversation_llm_from_env() if real_llm else None,
                 row_provider=row_provider,
+                **authority_kwargs,
             )
-        return cls(InMemoryConversationStore(), workflow_runner=_dry_run_workflow)
+        return cls(
+            InMemoryConversationStore(),
+            workflow_runner=_dry_run_workflow,
+            **authority_kwargs,
+        )
 
 
 def _conversation_llm_from_env() -> Any:
@@ -262,13 +317,27 @@ def _conversation_llm_from_env() -> Any:
 
 def _persistable_request(request: dict[str, Any]) -> dict[str, Any]:
     safe = dict(request or {})
-    for key in ("row_provider", "llm_client"):
+    for key in (
+        "row_provider",
+        "llm_client",
+        "evidence_resolver",
+        "rows_loader",
+        "evidence_writer",
+        "runtime_registry",
+    ):
         if key in safe:
             safe[key] = _runtime_object_descriptor(safe[key])
     runtime = safe.get("runtime")
     if isinstance(runtime, dict):
         safe_runtime = dict(runtime)
-        for key in ("row_provider", "llm_client"):
+        for key in (
+            "row_provider",
+            "llm_client",
+            "evidence_resolver",
+            "rows_loader",
+            "evidence_writer",
+            "runtime_registry",
+        ):
             if key in safe_runtime:
                 safe_runtime[key] = _runtime_object_descriptor(safe_runtime[key])
         safe["runtime"] = safe_runtime
@@ -599,7 +668,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     prior_analysis_assets = _parse_prior_analysis_assets(args.prior_analysis_assets)
 
     store = PostgresConversationStore.from_env()
-    core = ConversationAgentCore(store, conversation_llm_client=_conversation_llm_from_env())
+    authority = RuntimeEvidenceAuthority()
+    core = ConversationAgentCore(
+        store,
+        conversation_llm_client=_conversation_llm_from_env(),
+        evidence_resolver=authority,
+        rows_loader=authority.rows_loader,
+        evidence_writer=authority._runtime_writer(),
+        runtime_registry=RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        ),
+    )
     result = core.run_message(
         thread_id=args.thread_id,
         run_id=args.run_id,

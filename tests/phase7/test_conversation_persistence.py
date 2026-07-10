@@ -157,6 +157,20 @@ class ConversationPersistenceTest(unittest.TestCase):
         self.assertIn("waje_runtime.dataset_snapshots", statement)
         self.assertEqual(params["dataset_id"], "paid_order_success")
 
+    def test_postgres_store_lists_json_encoded_dataset_snapshot_payload(self):
+        payload = _dataset_snapshot_payload(
+            "snapshot:paid_order:json", "paid_order_success"
+        )
+        connection = FakeConnection(
+            rows=[(json.dumps(payload, ensure_ascii=False, sort_keys=True),)]
+        )
+        store = PostgresConversationStore(connection)
+
+        self.assertEqual(
+            store.list_dataset_snapshots("paid_order_success"),
+            (payload,),
+        )
+
     def test_postgres_snapshot_save_rolls_back_when_audit_insert_fails(self):
         connection = FakeConnection(fail_execute_at=2)
         store = PostgresConversationStore(connection)

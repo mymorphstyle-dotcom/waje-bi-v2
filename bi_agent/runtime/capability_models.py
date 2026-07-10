@@ -77,6 +77,10 @@ class CapabilityRequest:
     budget_state: BudgetState
     llm_business_reason: str
     params: Mapping[str, Any]
+    bound_input: Any = None
+    evidence_resolver: Any = None
+    fixture_input_mode: str = ""
+    run_mode: str = "production"
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,26 @@ class CapabilityEvidenceEnvelope:
     disabled_degraded_blocked_path_refs: tuple[str, ...]
     verifier_handoff: Mapping[str, Any]
     admin_audit_ref: str
+    analysis_contract_ref: str = ""
+    capability_contract_ref: str = ""
+    query_contract_refs: tuple[str, ...] = ()
+    query_execution_record_refs: tuple[str, ...] = ()
+    query_execution_record_digests: tuple[str, ...] = ()
+    rows_metadata_record_refs: tuple[str, ...] = ()
+    rows_metadata_record_digests: tuple[str, ...] = ()
+    completeness_report_refs: tuple[str, ...] = ()
+    completeness_record_refs: tuple[str, ...] = ()
+    completeness_record_digests: tuple[str, ...] = ()
+    source_snapshot_refs: tuple[str, ...] = ()
+    supported_evidence_types: tuple[str, ...] = ()
+    supported_claim_types: tuple[str, ...] = ()
+    maximum_claim_strength: str = ""
+    maximum_claim_strength_rank: int = -1
+    claim_strength_taxonomy_version: str = ""
+    input_status: str = ""
+    input_completeness_statuses: tuple[str, ...] = ()
+    binding_manifest_ref: str = ""
+    binding_manifest_digest: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

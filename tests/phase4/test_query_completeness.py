@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import datetime
 import unittest
+from unittest.mock import patch
 
 from bi_agent.runtime.analysis_contracts import (
     CompletenessReport,
@@ -12,8 +13,14 @@ from bi_agent.runtime.analysis_contracts import (
     ReconciliationBinding,
     ResolvedWindow,
     ResultShape,
+    query_contract_signature,
 )
 from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.evidence_authority import (
+    EvidenceIntegrityError,
+    RuntimeEvidenceAuthority,
+    canonical_rows_hash,
+)
 from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
 from bi_agent.runtime.dataset_catalog import DatasetCatalog
 from bi_agent.runtime.clickhouse_runtime import ClickHouseRuntime
@@ -49,6 +56,22 @@ class _TruncatedClickHouseClient:
         return _TruncatedClickHouseResult()
 
 
+class _SuccessfulClickHouseResult:
+    column_names = ("window_id", "window_role", "observation_key", "paid_amount")
+    result_rows = (
+        ("target_day", "target", "2026-06-02", 42.0),
+        ("rolling_7_day_baseline", "baseline", "2026-05-26", 40.0),
+        ("same_weekday_last_week", "baseline", "2026-05-26", 41.0),
+    )
+    summary = {}
+    query_id = "provider-success"
+
+
+class _SuccessfulClickHouseClient:
+    def query(self, sql, **kwargs):
+        return _SuccessfulClickHouseResult()
+
+
 def paid_snapshot(watermark="2026-07-04"):
     return DatasetSnapshot(
         "snapshot:paid:1",
@@ -56,7 +79,13 @@ def paid_snapshot(watermark="2026-07-04"):
         "analytics.paid_success",
         watermark,
         "schema:paid:1",
-        ("business_date_lagos", "paid_amount_ngn", "channel"),
+        (
+            "business_date_lagos",
+            "paid_amount_ngn",
+            "channel",
+            "order_id",
+            "user_id",
+        ),
         "contract:paid@1",
         ("analyst",),
         "2026-07-05T00:00:00Z",
@@ -384,6 +413,94 @@ def repair_report(contract, *reasons):
 
 
 class QueryCompletenessTest(unittest.TestCase):
+    def test_executor_rejects_wrong_type_query_execution_record(self):
+        contract = reviewed_contract()
+        snapshot = reviewed_snapshot()
+        authority = RuntimeEvidenceAuthority()
+
+        class WrongWriter:
+            def record_query_execution(self, contract, result, snapshots):
+                return object()
+
+            def record_completeness(self, report):
+                return object()
+
+            def record_capability_binding(self, plan, binding_payload):
+                return object()
+
+        executor = ClickHouseQueryExecutor(
+            ClickHouseRuntime(client=_SuccessfulClickHouseClient()),
+            evidence_resolver=authority,
+            evidence_writer=WrongWriter(),
+            rows_loader=authority.rows_loader,
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "query_execution_writer_record_invalid",
+        ):
+            executor.execute(
+                contract,
+                {snapshot.snapshot_ref: snapshot},
+                execution_attempt_ref="attempt:wrong-writer",
+            )
+
+    def test_completeness_wrong_writer_returns_typed_blocked_report(self):
+        class WrongWriter:
+            def record_query_execution(self, contract, result, snapshots):
+                return object()
+
+            def record_completeness(self, report):
+                return object()
+
+            def record_capability_binding(self, plan, binding_payload):
+                return object()
+
+        contract = baseline_contract()
+        report = validate_query_result(
+            contract,
+            successful_result(contract, rows=complete_rows()),
+            paid_snapshot(),
+            evidence_writer=WrongWriter(),
+        )
+
+        self.assertEqual(report.completeness_status, "invalid")
+        self.assertEqual(report.analysis_readiness, "blocked")
+        self.assertIn(
+            "runtime_evidence_writer_record_invalid",
+            report.failure_reasons,
+        )
+        self.assertFalse(
+            next(
+                assertion
+                for assertion in report.assertion_results
+                if assertion["assertion"] == "runtime_evidence_authority_write"
+            )["passed"]
+        )
+
+    def test_executor_does_not_hide_authority_collision(self):
+        contract = reviewed_contract()
+        snapshot = reviewed_snapshot()
+        executor = ClickHouseQueryExecutor(
+            ClickHouseRuntime(client=_SuccessfulClickHouseClient())
+        )
+
+        with patch(
+            "bi_agent.runtime.query_executor._record_query_execution",
+            side_effect=EvidenceIntegrityError(
+                "authority_ref_collision:query:result"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                EvidenceIntegrityError,
+                "authority_ref_collision",
+            ):
+                executor.execute(
+                    contract,
+                    {snapshot.snapshot_ref: snapshot},
+                    execution_attempt_ref="attempt:collision",
+                )
+
     def test_sql_success_with_history_but_missing_target_is_partial(self):
         contract = baseline_contract()
         report = validate_query_result(
@@ -499,6 +616,40 @@ class QueryCompletenessTest(unittest.TestCase):
         self.assertEqual(report.completeness_status, "stale")
         self.assertEqual(report.analysis_readiness, "blocked")
         self.assertIn("snapshot_stale:2026-06-01:2026-06-02", report.failure_reasons)
+
+    def test_every_source_snapshot_must_be_ready_in_any_input_order(self):
+        contract = baseline_contract()
+        second_ref = "snapshot:paid:2"
+        contract = replace(
+            contract,
+            dataset_snapshot_refs=(paid_snapshot().snapshot_ref, second_ref),
+        )
+        contract = replace(
+            contract,
+            contract_signature=query_contract_signature(contract),
+        )
+        result = successful_result(contract, rows=complete_rows())
+        good = paid_snapshot()
+        stale = replace(
+            paid_snapshot("2026-06-01"),
+            snapshot_ref=second_ref,
+        )
+
+        reports = (
+            validate_query_result(contract, result, snapshots)
+            for snapshots in ((good, stale), (stale, good))
+        )
+
+        for report in reports:
+            self.assertEqual(report.completeness_status, "stale")
+            self.assertEqual(report.analysis_readiness, "blocked")
+            self.assertEqual(
+                report.coverage_summary["snapshot_refs"],
+                contract.dataset_snapshot_refs,
+            )
+            self.assertTrue(
+                any(reason.startswith(f"snapshot_stale:{second_ref}:") for reason in report.failure_reasons)
+            )
 
     def test_blocked_and_failed_execution_are_invalid(self):
         contract = baseline_contract()
@@ -1346,11 +1497,17 @@ class QueryCompletenessTest(unittest.TestCase):
     def test_runtime_failure_preserves_transient_type_through_repair(self):
         contract = reviewed_contract()
         snapshot = reviewed_snapshot()
-        envelope = ClickHouseQueryExecutor(
+        executor = ClickHouseQueryExecutor(
             ClickHouseRuntime(client=_TransientClickHouseClient())
-        ).execute(contract, {snapshot.snapshot_ref: snapshot})
+        )
+        envelope = executor.execute(contract, {snapshot.snapshot_ref: snapshot})
 
-        report = validate_query_result(contract, envelope, snapshot)
+        report = validate_query_result(
+            contract,
+            envelope,
+            snapshot,
+            evidence_authority=executor.evidence_authority,
+        )
         decision = plan_query_repair(
             contract,
             report,
@@ -1380,6 +1537,21 @@ class QueryCompletenessTest(unittest.TestCase):
             )
         )
         self.assertEqual(decision.action, "retry_same")
+        authority_record = executor.evidence_authority.resolve_query_execution(
+            envelope.result_ref
+        )
+        self.assertEqual(authority_record.contract_signature, contract.contract_signature)
+        self.assertEqual(authority_record.rows_content_hash, canonical_rows_hash((), ()))
+        completeness_record = executor.evidence_authority.resolve_completeness(
+            executor.evidence_authority.resolve_latest_completeness(
+                report.report_ref
+            ).record_ref
+        )
+        self.assertEqual(completeness_record.result_ref, envelope.result_ref)
+        self.assertEqual(
+            completeness_record.report_payload["failure_reasons"],
+            report.failure_reasons,
+        )
 
     def test_transient_mixed_with_hard_failure_does_not_retry_same(self):
         contract = baseline_contract()
