@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any, Iterable, Mapping
 
@@ -14,6 +14,7 @@ from bi_agent.runtime.analysis_contracts import (
     QueryContract,
     ResolvedWindow,
     ResultShape,
+    query_contract_signature,
     stable_contract_signature,
 )
 from bi_agent.runtime.dataset_catalog import DatasetCatalog, DatasetSnapshot
@@ -920,10 +921,9 @@ def _build_query_contracts(
                     "workload_class": str(
                         capability.get("workload_class") or "interactive_aggregate"
                     ),
+                    "query_parameters": _query_parameters(query_shape),
                 }
-                dedupe_key = stable_contract_signature(
-                    _semantic_query_body(logical)
-                )
+                dedupe_key = query_contract_signature(logical)
                 existing_index = seen.get(dedupe_key)
                 if existing_index is None:
                     seen[dedupe_key] = len(logical_queries)
@@ -941,9 +941,7 @@ def _build_query_contracts(
         contracts.append(
             QueryContract(
                 query_contract_id=query_contract_id,
-                contract_signature=stable_contract_signature(
-                    _semantic_query_body(logical)
-                ),
+                contract_signature=query_contract_signature(logical),
                 **logical,
             )
         )
@@ -1271,34 +1269,22 @@ def _registry_entry(accessor: Any, item_id: str) -> dict[str, Any] | None:
         return None
 
 
-def _semantic_query_body(logical: Mapping[str, Any]) -> dict[str, Any]:
-    semantic_fields = (
-        "query_intent",
-        "dataset_snapshot_refs",
-        "metric_bindings",
-        "dimension_bindings",
-        "window_refs",
-        "resolved_windows",
-        "filters",
-        "result_shape",
-        "completeness_assertions",
-        "permission_scope",
-        "workload_class",
-    )
+def _query_parameters(query_shape: Mapping[str, Any]) -> dict[str, Any]:
+    value = query_shape.get("query_parameters") or {}
+    if not isinstance(value, Mapping):
+        raise ValueError("query_shape_parameters_must_be_mapping")
     return {
-        field: _serialize_contract_value(logical[field])
-        for field in semantic_fields
+        str(key): _freeze_contract_value(item)
+        for key, item in value.items()
     }
 
 
-def _serialize_contract_value(value: Any) -> Any:
-    if hasattr(value, "__dataclass_fields__"):
-        return asdict(value)
-    if isinstance(value, tuple):
-        return tuple(_serialize_contract_value(item) for item in value)
+def _freeze_contract_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {
-            str(key): _serialize_contract_value(item)
+            str(key): _freeze_contract_value(item)
             for key, item in value.items()
         }
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_contract_value(item) for item in value)
     return value

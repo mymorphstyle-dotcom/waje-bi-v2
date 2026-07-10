@@ -1,0 +1,987 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime
+from functools import lru_cache
+from pathlib import Path
+import re
+from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from bi_agent.runtime.analysis_contracts import (
+    DimensionBinding,
+    MetricBinding,
+    QueryContract,
+    ResolvedWindow,
+    ResultShape,
+    query_contract_signature,
+)
+from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+
+_RUNTIME_BINDINGS_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "contracts"
+    / "runtime"
+    / "clickhouse-analysis-bindings.yaml"
+)
+_PHYSICAL_IDENTIFIER = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$"
+)
+_LOGICAL_IDENTIFIER = re.compile(r"^[^\W\d]\w*$", re.UNICODE)
+_AGGREGATE_EXPRESSION = re.compile(
+    r"\b(?:avg|count|countIf|max|min|nullIf|quantile|quantileExact|"
+    r"sum|sumIf|uniq|uniqExact|uniqExactIf)\s*\(",
+    re.IGNORECASE,
+)
+_STRUCTURAL_KEYWORDS = frozenset(
+    {
+        "alter",
+        "array",
+        "attach",
+        "create",
+        "delete",
+        "detach",
+        "drop",
+        "format",
+        "from",
+        "grant",
+        "insert",
+        "join",
+        "kill",
+        "outfile",
+        "revoke",
+        "select",
+        "settings",
+        "system",
+        "truncate",
+        "union",
+        "update",
+        "with",
+    }
+)
+_METRIC_FUNCTIONS = frozenset(
+    {
+        "avg",
+        "count",
+        "countif",
+        "max",
+        "min",
+        "nullif",
+        "sum",
+        "sumif",
+        "uniqexact",
+        "uniqexactif",
+    }
+)
+_DATE_FUNCTIONS = frozenset(
+    {
+        "todate",
+        "totimezone",
+        "fromunixtimestamp64milli",
+        "toint64orzero",
+    }
+)
+
+
+@dataclass(frozen=True)
+class CompiledQuery:
+    sql_text: str
+    parameters: Mapping[str, Any]
+    settings: Mapping[str, Any]
+    query_contract_ref: str
+
+
+def compile_clickhouse_query(
+    contract: QueryContract,
+    snapshots: Mapping[str, DatasetSnapshot],
+) -> CompiledQuery:
+    _validate_runtime_types(contract, snapshots)
+    _verify_contract_signature(contract)
+    _verify_window_consistency(contract)
+    registry = _runtime_registry()
+    _verify_reviewed_query_shape(contract, registry)
+    snapshot = _single_snapshot(contract, snapshots)
+    date_expression = _date_expression(snapshot, registry=registry)
+    _verify_reviewed_bindings(contract, snapshot, registry=registry)
+    parameters = _window_parameters(contract.resolved_windows)
+    filter_sql, filter_parameters = _compile_filters(contract.filters, snapshot)
+    parameters.update(filter_parameters)
+
+    if contract.query_intent == "high_value_scan":
+        _verify_high_value_semantics(contract)
+        parameters["threshold_quantile"] = contract.query_parameters[
+            "threshold_quantile"
+        ]
+        sql_text = _compile_high_value_query(
+            contract,
+            snapshot,
+            date_expression=date_expression,
+            filter_sql=filter_sql,
+        )
+    else:
+        sql_text = _compile_grouped_query(
+            contract,
+            snapshot,
+            date_expression=date_expression,
+            filter_sql=filter_sql,
+        )
+
+    return CompiledQuery(
+        sql_text=sql_text,
+        parameters=parameters,
+        settings={"result_overflow_mode": "throw", "readonly": 2},
+        query_contract_ref=contract.query_contract_id,
+    )
+
+
+def _verify_high_value_semantics(contract: QueryContract) -> None:
+    if contract.dimension_bindings:
+        raise ValueError("high_value_dimension_bindings_unsupported")
+    threshold_reference = contract.query_parameters.get("threshold_reference")
+    if threshold_reference != "within_window_user_paid_amount":
+        raise ValueError(
+            f"high_value_threshold_reference_unsupported:{threshold_reference}"
+        )
+    aggregation_grain = _string_tuple(
+        contract.query_parameters.get("aggregation_grain")
+    )
+    supported_grain = ("window_id", "observation_key", "user_id")
+    if aggregation_grain != supported_grain:
+        raise ValueError(
+            "high_value_aggregation_grain_unsupported:"
+            + ",".join(aggregation_grain)
+        )
+    threshold_quantile = contract.query_parameters.get("threshold_quantile")
+    if (
+        isinstance(threshold_quantile, bool)
+        or not isinstance(threshold_quantile, (int, float))
+        or not 0 < threshold_quantile < 1
+    ):
+        raise ValueError(
+            f"high_value_threshold_quantile_invalid:{threshold_quantile}"
+        )
+
+
+def _compile_grouped_query(
+    contract: QueryContract,
+    snapshot: DatasetSnapshot,
+    *,
+    date_expression: str,
+    filter_sql: tuple[str, ...],
+) -> str:
+    dimensions = _dimension_selects(contract, snapshot)
+    metrics = _metric_selects(contract, snapshot)
+    intent_selects, intent_groups = _intent_selects(
+        contract.query_intent,
+        date_expression=date_expression,
+        has_metrics=bool(metrics),
+    )
+    select_parts = (
+        "tupleElement(analysis_window, 1) AS `window_id`",
+        "tupleElement(analysis_window, 2) AS `window_role`",
+        f"toString({date_expression}) AS `observation_key`",
+        *(item[0] for item in dimensions),
+        *intent_selects,
+        *metrics,
+    )
+    if not metrics and contract.query_intent not in {
+        "event_context_probe",
+        "data_quality_probe",
+    }:
+        raise ValueError(f"query_contract_metrics_required:{contract.query_intent}")
+
+    group_parts = (
+        "`window_id`",
+        "`window_role`",
+        "`observation_key`",
+        *(item[1] for item in dimensions),
+        *intent_groups,
+    )
+    predicates = _window_predicates(date_expression, filter_sql)
+    return "\n".join(
+        (
+            f"WITH [{_window_tuples(contract.resolved_windows)}] AS analysis_windows",
+            "SELECT",
+            _indented(select_parts),
+            f"FROM {_quote_physical_table(snapshot.physical_table)}",
+            "ARRAY JOIN analysis_windows AS analysis_window",
+            "WHERE " + "\n  AND ".join(predicates),
+            "GROUP BY " + ", ".join(group_parts),
+        )
+    )
+
+
+def _compile_high_value_query(
+    contract: QueryContract,
+    snapshot: DatasetSnapshot,
+    *,
+    date_expression: str,
+    filter_sql: tuple[str, ...],
+) -> str:
+    if snapshot.dataset_id != "paid_order_success":
+        raise ValueError(f"high_value_scan_unsupported_dataset:{snapshot.dataset_id}")
+    if "user_id" not in snapshot.schema_fields:
+        raise ValueError("high_value_scan_requires_field:user_id")
+    if len(contract.metric_bindings) != 1:
+        raise ValueError("high_value_scan_requires_single_metric")
+    binding = contract.metric_bindings[0]
+    predicates = _window_predicates(date_expression, filter_sql)
+    partition_fields = (
+        "`window_id`",
+        "`window_role`",
+        "`observation_key`",
+    )
+    partition = ", ".join(partition_fields)
+    final_select = (
+        "`window_id`",
+        "`window_role`",
+        "`observation_key`",
+        f"sum(`user_metric_value`) AS {_quote_identifier(binding.metric_id)}",
+        "max(`threshold_cutoff`) AS `high_value_threshold`",
+        "sumIf(`user_metric_value`, `is_high_value`) AS `high_value_amount`",
+        "countIf(`is_high_value`) AS `high_value_paid_users`",
+    )
+    return "\n".join(
+        (
+            f"WITH [{_window_tuples(contract.resolved_windows)}] AS analysis_windows,",
+            "user_totals AS (",
+            "  SELECT",
+            _indented(
+                (
+                    "tupleElement(analysis_window, 1) AS `window_id`",
+                    "tupleElement(analysis_window, 2) AS `window_role`",
+                    f"toString({date_expression}) AS `observation_key`",
+                    "`user_id` AS `user_id`",
+                    f"{binding.expression} AS `user_metric_value`",
+                ),
+                spaces=4,
+            ),
+            f"  FROM {_quote_physical_table(snapshot.physical_table)}",
+            "  ARRAY JOIN analysis_windows AS analysis_window",
+            "  WHERE " + "\n    AND ".join(predicates),
+            "  GROUP BY " + ", ".join((*partition_fields, "`user_id`")),
+            "),",
+            "thresholds AS (",
+            "  SELECT",
+            "    " + ",\n    ".join(partition_fields) + ",",
+            "    quantileExact(%(threshold_quantile)s)(`user_metric_value`) "
+            "AS `threshold_cutoff`",
+            "  FROM user_totals",
+            "  GROUP BY " + partition,
+            "),",
+            "classified AS (",
+            "  SELECT",
+            "    user_totals.* ,",
+            "    thresholds.`threshold_cutoff` AS `threshold_cutoff`,",
+            "    user_totals.`user_metric_value` >= "
+            "thresholds.`threshold_cutoff` AS `is_high_value`",
+            "  FROM user_totals",
+            "  INNER JOIN thresholds USING (" + partition + ")",
+            ")",
+            "SELECT",
+            _indented(final_select),
+            "FROM classified",
+            "GROUP BY " + partition,
+        )
+    )
+
+
+def _intent_selects(
+    query_intent: str,
+    *,
+    date_expression: str,
+    has_metrics: bool,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if query_intent == "time_bucket_scan":
+        return (
+            (
+                f"toMonday({date_expression}) AS `calendar_week`",
+                f"toDayOfWeek({date_expression}) AS `weekday`",
+                "multiIf("
+                f"toDayOfMonth({date_expression}) <= 10, 'start', "
+                f"toDayOfMonth({date_expression}) <= 20, 'mid', 'end'"
+                ") AS `month_phase`",
+            ),
+            ("`calendar_week`", "`weekday`", "`month_phase`"),
+        )
+    if query_intent == "data_quality_probe":
+        return (("count() AS `source_row_count`",), ())
+    if query_intent == "event_context_probe":
+        return (("count() AS `event_count`",) if not has_metrics else (), ())
+    return (), ()
+
+
+def _validate_runtime_types(
+    contract: QueryContract,
+    snapshots: Mapping[str, DatasetSnapshot],
+) -> None:
+    if not isinstance(contract, QueryContract):
+        raise TypeError("invalid_query_contract_runtime_type:query_contract")
+    for field_name in (
+        "query_contract_id",
+        "analysis_contract_ref",
+        "query_intent",
+        "permission_scope",
+        "workload_class",
+        "contract_signature",
+    ):
+        _require_runtime_string(getattr(contract, field_name), field_name)
+    _require_runtime_string_tuple(
+        contract.dataset_snapshot_refs,
+        "dataset_snapshot_refs",
+    )
+    _require_runtime_instances(
+        contract.metric_bindings,
+        MetricBinding,
+        "metric_bindings",
+    )
+    for binding in contract.metric_bindings:
+        _validate_metric_binding_types(binding)
+    _require_runtime_instances(
+        contract.dimension_bindings,
+        DimensionBinding,
+        "dimension_bindings",
+    )
+    for binding in contract.dimension_bindings:
+        _validate_dimension_binding_types(binding)
+    _require_runtime_string_tuple(contract.window_refs, "window_refs")
+    _require_runtime_instances(
+        contract.resolved_windows,
+        ResolvedWindow,
+        "resolved_windows",
+    )
+    for window in contract.resolved_windows:
+        _validate_window_types(window)
+    if not isinstance(contract.filters, tuple) or any(
+        not isinstance(item, Mapping) for item in contract.filters
+    ):
+        raise TypeError("invalid_query_contract_runtime_type:filters")
+    if not isinstance(contract.result_shape, ResultShape):
+        raise TypeError("invalid_query_contract_runtime_type:result_shape")
+    _validate_result_shape_types(contract.result_shape)
+    _require_runtime_string_tuple(
+        contract.completeness_assertions,
+        "completeness_assertions",
+    )
+    if not isinstance(contract.query_parameters, Mapping):
+        raise TypeError("invalid_query_contract_runtime_type:query_parameters")
+
+    if not isinstance(snapshots, Mapping):
+        raise TypeError("invalid_snapshots_runtime_type")
+    for snapshot_ref, snapshot in snapshots.items():
+        if not isinstance(snapshot_ref, str) or not isinstance(
+            snapshot,
+            DatasetSnapshot,
+        ):
+            raise TypeError("invalid_snapshot_runtime_type")
+        _validate_snapshot_types(snapshot)
+        if snapshot_ref != snapshot.snapshot_ref:
+            raise ValueError(f"dataset_snapshot_ref_key_mismatch:{snapshot_ref}")
+
+
+def _validate_metric_binding_types(binding: MetricBinding) -> None:
+    for field_name in (
+        "metric_id",
+        "contract_ref",
+        "dataset_id",
+        "expression",
+        "aggregation",
+        "numerator_metric",
+        "denominator_metric",
+        "zero_denominator_policy",
+    ):
+        _require_runtime_string(
+            getattr(binding, field_name),
+            f"metric_bindings.{field_name}",
+        )
+    _require_runtime_string_tuple(
+        binding.required_fields,
+        "metric_bindings.required_fields",
+    )
+    _require_runtime_string_tuple(binding.grain, "metric_bindings.grain")
+    _require_runtime_string_tuple(
+        binding.claim_types,
+        "metric_bindings.claim_types",
+    )
+
+
+def _validate_dimension_binding_types(binding: DimensionBinding) -> None:
+    for field_name in (
+        "dimension_id",
+        "contract_ref",
+        "dataset_id",
+        "source_field",
+        "null_bucket",
+        "permission_scope",
+    ):
+        _require_runtime_string(
+            getattr(binding, field_name),
+            f"dimension_bindings.{field_name}",
+        )
+    _require_runtime_string_tuple(
+        binding.allowed_grains,
+        "dimension_bindings.allowed_grains",
+    )
+
+
+def _validate_window_types(window: ResolvedWindow) -> None:
+    for field_name in (
+        "window_id",
+        "role",
+        "label",
+        "start_inclusive",
+        "end_exclusive",
+        "timezone",
+        "aggregation",
+        "source_watermark_requirement",
+        "membership_policy",
+    ):
+        _require_runtime_string(
+            getattr(window, field_name),
+            f"resolved_windows.{field_name}",
+        )
+        if not getattr(window, field_name).strip():
+            raise ValueError(f"invalid_resolved_window_field:{field_name}")
+    if (
+        isinstance(window.required_complete_days, bool)
+        or not isinstance(window.required_complete_days, int)
+    ):
+        raise TypeError(
+            "invalid_query_contract_runtime_type:"
+            "resolved_windows.required_complete_days"
+        )
+
+
+def _validate_result_shape_types(result_shape: ResultShape) -> None:
+    for field_name in (
+        "required_fields",
+        "unique_key",
+        "grain",
+        "required_window_ids",
+    ):
+        _require_runtime_string_tuple(
+            getattr(result_shape, field_name),
+            f"result_shape.{field_name}",
+        )
+    _require_runtime_string(
+        result_shape.result_semantics,
+        "result_shape.result_semantics",
+    )
+
+
+def _validate_snapshot_types(snapshot: DatasetSnapshot) -> None:
+    for field_name in (
+        "snapshot_ref",
+        "dataset_id",
+        "physical_table",
+        "watermark",
+        "schema_fingerprint",
+        "contract_ref",
+        "loaded_at",
+        "status",
+    ):
+        value = getattr(snapshot, field_name)
+        if not isinstance(value, str):
+            raise TypeError("invalid_snapshot_runtime_type")
+        if not value.strip():
+            raise ValueError(f"invalid_snapshot_metadata:{field_name}")
+    for value in (snapshot.schema_fields, snapshot.permission_scopes):
+        if not isinstance(value, tuple) or any(
+            not isinstance(item, str) for item in value
+        ):
+            raise TypeError("invalid_snapshot_runtime_type")
+    try:
+        date.fromisoformat(snapshot.watermark)
+    except ValueError as exc:
+        raise ValueError("invalid_snapshot_metadata:watermark") from exc
+    try:
+        loaded_at = datetime.fromisoformat(
+            snapshot.loaded_at.replace("Z", "+00:00")
+        )
+    except ValueError as exc:
+        raise ValueError("invalid_snapshot_metadata:loaded_at") from exc
+    if loaded_at.tzinfo is None or loaded_at.utcoffset() is None:
+        raise ValueError("invalid_snapshot_metadata:loaded_at")
+
+
+def _require_runtime_instances(
+    value: Any,
+    item_type: type,
+    field_name: str,
+) -> None:
+    if not isinstance(value, tuple) or any(
+        not isinstance(item, item_type) for item in value
+    ):
+        raise TypeError(f"invalid_query_contract_runtime_type:{field_name}")
+
+
+def _require_runtime_string(value: Any, field_name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"invalid_query_contract_runtime_type:{field_name}")
+
+
+def _require_runtime_string_tuple(value: Any, field_name: str) -> None:
+    if not isinstance(value, tuple) or any(
+        not isinstance(item, str) for item in value
+    ):
+        raise TypeError(f"invalid_query_contract_runtime_type:{field_name}")
+
+
+def _verify_window_consistency(contract: QueryContract) -> None:
+    resolved_ids = tuple(window.window_id for window in contract.resolved_windows)
+    if len(resolved_ids) != len(set(resolved_ids)):
+        raise ValueError("query_contract_window_refs_not_unique")
+    if resolved_ids != contract.window_refs:
+        raise ValueError("query_contract_window_refs_mismatch")
+    if contract.result_shape.required_window_ids != contract.window_refs:
+        raise ValueError("query_contract_result_window_refs_mismatch")
+    for window in contract.resolved_windows:
+        _verify_window_boundary(window)
+
+
+def _verify_window_boundary(window: ResolvedWindow) -> None:
+    try:
+        start = date.fromisoformat(window.start_inclusive)
+        end = date.fromisoformat(window.end_exclusive)
+        watermark = date.fromisoformat(window.source_watermark_requirement)
+        ZoneInfo(window.timezone)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise ValueError(
+            f"invalid_resolved_window_boundary:{window.window_id}"
+        ) from exc
+    duration_days = (end - start).days
+    if (
+        duration_days <= 0
+        or window.required_complete_days <= 0
+        or window.required_complete_days > duration_days
+        or not start <= watermark < end
+    ):
+        raise ValueError(
+            f"invalid_resolved_window_boundary:{window.window_id}"
+        )
+
+
+def _single_snapshot(
+    contract: QueryContract,
+    snapshots: Mapping[str, DatasetSnapshot],
+) -> DatasetSnapshot:
+    if len(contract.dataset_snapshot_refs) != 1:
+        raise ValueError("query_contract_requires_single_snapshot")
+    snapshot_ref = contract.dataset_snapshot_refs[0]
+    snapshot = snapshots.get(snapshot_ref)
+    if snapshot is None:
+        raise ValueError(f"dataset_snapshot_missing:{snapshot_ref}")
+    if snapshot.status != "active":
+        raise ValueError(f"dataset_snapshot_inactive:{snapshot_ref}")
+    if contract.permission_scope not in snapshot.permission_scopes:
+        raise PermissionError(f"dataset_snapshot_permission_denied:{snapshot_ref}")
+    for binding in (*contract.metric_bindings, *contract.dimension_bindings):
+        if binding.dataset_id != snapshot.dataset_id:
+            raise ValueError(
+                f"binding_dataset_mismatch:{binding.dataset_id}:{snapshot.dataset_id}"
+            )
+    _quote_physical_table(snapshot.physical_table)
+    return snapshot
+
+
+def _date_expression(
+    snapshot: DatasetSnapshot,
+    *,
+    registry: RuntimeContractRegistry,
+) -> str:
+    try:
+        adapter = registry.dataset(snapshot.dataset_id)
+    except KeyError as exc:
+        raise ValueError(f"unsupported_dataset_adapter:{snapshot.dataset_id}") from exc
+    required_fields = tuple(str(item) for item in adapter.get("required_fields") or ())
+    missing = tuple(field for field in required_fields if field not in snapshot.schema_fields)
+    if missing:
+        raise ValueError(
+            f"dataset_date_binding_fields_missing:{snapshot.dataset_id}:{','.join(missing)}"
+        )
+    date_field = str(adapter.get("date_field") or "")
+    if date_field:
+        if date_field not in required_fields:
+            raise ValueError(f"dataset_date_binding_invalid:{snapshot.dataset_id}")
+        return _quote_identifier(date_field)
+    date_expression = str(adapter.get("date_expression") or "")
+    if not date_expression or not _safe_contract_expression(
+        date_expression,
+        allowed_functions=_DATE_FUNCTIONS,
+        allowed_fields=frozenset(required_fields),
+    ):
+        raise ValueError(f"dataset_date_binding_invalid:{snapshot.dataset_id}")
+    return date_expression
+
+
+@lru_cache(maxsize=1)
+def _runtime_registry() -> RuntimeContractRegistry:
+    return RuntimeContractRegistry.from_path(_RUNTIME_BINDINGS_PATH)
+
+
+def _window_parameters(windows: Sequence[ResolvedWindow]) -> dict[str, Any]:
+    if not windows:
+        raise ValueError("query_contract_windows_required")
+    parameters: dict[str, Any] = {}
+    seen: set[str] = set()
+    for index, window in enumerate(windows):
+        if window.window_id in seen:
+            raise ValueError(f"duplicate_window_id:{window.window_id}")
+        seen.add(window.window_id)
+        if window.membership_policy != "allow_overlap":
+            raise ValueError(
+                f"unsupported_window_membership_policy:{window.membership_policy}"
+            )
+        parameters[f"window_id_{index}"] = window.window_id
+        parameters[f"window_role_{index}"] = window.role
+        parameters[f"start_{index}"] = window.start_inclusive
+        parameters[f"end_{index}"] = window.end_exclusive
+    return parameters
+
+
+def _window_tuples(windows: Sequence[ResolvedWindow]) -> str:
+    return ", ".join(
+        "("
+        f"%(window_id_{index})s, %(window_role_{index})s, "
+        f"toDate(%(start_{index})s), toDate(%(end_{index})s)"
+        ")"
+        for index, _ in enumerate(windows)
+    )
+
+
+def _window_predicates(
+    date_expression: str,
+    filter_sql: Sequence[str],
+) -> tuple[str, ...]:
+    return (
+        f"{date_expression} >= tupleElement(analysis_window, 3)",
+        f"{date_expression} < tupleElement(analysis_window, 4)",
+        *filter_sql,
+    )
+
+
+def _compile_filters(
+    filters: Sequence[Mapping[str, Any]],
+    snapshot: DatasetSnapshot,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    clauses: list[str] = []
+    parameters: dict[str, Any] = {}
+    scalar_operators = {
+        "eq": "=",
+        "ne": "!=",
+        "gt": ">",
+        "gte": ">=",
+        "lt": "<",
+        "lte": "<=",
+    }
+    for index, filter_item in enumerate(filters):
+        field = str(filter_item.get("field") or "")
+        if field not in snapshot.schema_fields:
+            raise ValueError(f"unsupported_filter_field:{field}")
+        quoted_field = _quote_identifier(field)
+        operator = str(filter_item.get("op") or "").casefold()
+        parameter_name = f"filter_{index}"
+        if operator in scalar_operators:
+            value = _filter_scalar(filter_item.get("value"), operator=operator)
+            clauses.append(
+                f"{quoted_field} {scalar_operators[operator]} %({parameter_name})s"
+            )
+            parameters[parameter_name] = value
+        elif operator in {"in", "not_in"}:
+            raw_values = filter_item.get("value")
+            if not isinstance(raw_values, Sequence) or isinstance(
+                raw_values, (str, bytes)
+            ):
+                raise ValueError(f"invalid_filter_value:{operator}")
+            values = tuple(
+                _filter_scalar(value, operator=operator) for value in raw_values
+            )
+            if not values:
+                raise ValueError(f"invalid_filter_value:{operator}")
+            placeholders = []
+            for value_index, value in enumerate(values):
+                item_name = f"{parameter_name}_{value_index}"
+                placeholders.append(f"%({item_name})s")
+                parameters[item_name] = value
+            keyword = "NOT IN" if operator == "not_in" else "IN"
+            clauses.append(f"{quoted_field} {keyword} ({', '.join(placeholders)})")
+        elif operator in {"is_null", "is_not_null"}:
+            clauses.append(
+                f"{quoted_field} IS {'NOT ' if operator == 'is_not_null' else ''}NULL"
+            )
+        elif operator == "between":
+            raw_values = filter_item.get("value")
+            if not isinstance(raw_values, Sequence) or isinstance(
+                raw_values, (str, bytes)
+            ) or len(raw_values) != 2:
+                raise ValueError("invalid_filter_value:between")
+            start_name = f"{parameter_name}_start"
+            end_name = f"{parameter_name}_end"
+            parameters[start_name] = _filter_scalar(raw_values[0], operator=operator)
+            parameters[end_name] = _filter_scalar(raw_values[1], operator=operator)
+            clauses.append(
+                f"{quoted_field} BETWEEN %({start_name})s AND %({end_name})s"
+            )
+        else:
+            raise ValueError(f"unsupported_filter_operator:{operator or 'missing'}")
+    return tuple(clauses), parameters
+
+
+def _filter_scalar(value: Any, *, operator: str) -> Any:
+    if value is None or isinstance(value, (Mapping, list, tuple, set)):
+        raise ValueError(f"invalid_filter_value:{operator}")
+    if not isinstance(value, (str, int, float, bool)):
+        raise ValueError(f"invalid_filter_value:{operator}")
+    return value
+
+
+def _dimension_selects(
+    contract: QueryContract,
+    snapshot: DatasetSnapshot,
+) -> tuple[tuple[str, str], ...]:
+    selected = []
+    seen: set[str] = set()
+    for binding in contract.dimension_bindings:
+        if binding.dimension_id in seen:
+            raise ValueError(f"duplicate_dimension_binding:{binding.dimension_id}")
+        seen.add(binding.dimension_id)
+        if binding.source_field not in snapshot.schema_fields:
+            raise ValueError(f"dimension_field_missing:{binding.source_field}")
+        source = _quote_identifier(binding.source_field)
+        alias = _quote_identifier(binding.dimension_id)
+        selected.append((f"{source} AS {alias}", alias))
+    return tuple(selected)
+
+
+def _metric_selects(
+    contract: QueryContract,
+    snapshot: DatasetSnapshot,
+) -> tuple[str, ...]:
+    selected = []
+    seen: set[str] = set()
+    for binding in contract.metric_bindings:
+        if binding.metric_id in seen:
+            raise ValueError(f"duplicate_metric_binding:{binding.metric_id}")
+        seen.add(binding.metric_id)
+        selected.append(
+            f"{binding.expression} AS {_quote_identifier(binding.metric_id)}"
+        )
+    return tuple(selected)
+
+
+def _safe_expression(expression: str) -> bool:
+    if not isinstance(expression, str) or not expression.strip():
+        return False
+    if any(token in expression for token in (";", "--", "/*", "*/", "#")):
+        return False
+    return re.fullmatch(r"[\w\s`'().,+*/%<>=!\-]+", expression, re.UNICODE) is not None
+
+
+def _verify_contract_signature(contract: QueryContract) -> None:
+    expected = query_contract_signature(contract)
+    if contract.contract_signature != expected:
+        raise ValueError(
+            f"query_contract_signature_mismatch:{contract.query_contract_id}"
+        )
+
+
+def _verify_reviewed_query_shape(
+    contract: QueryContract,
+    registry: RuntimeContractRegistry,
+) -> None:
+    try:
+        reviewed = registry.query_shape(contract.query_intent)
+    except KeyError as exc:
+        raise ValueError(
+            f"reviewed_query_shape_missing:{contract.query_intent}"
+        ) from exc
+    reviewed_parameters = _freeze_contract_value(
+        reviewed.get("query_parameters") or {}
+    )
+    if _freeze_contract_value(contract.query_parameters) != reviewed_parameters:
+        raise ValueError(
+            f"reviewed_query_parameters_mismatch:{contract.query_intent}"
+        )
+    dimension_ids = tuple(item.dimension_id for item in contract.dimension_bindings)
+    expected_shape = ResultShape(
+        required_fields=_dedupe(
+            (
+                *_string_tuple(reviewed.get("required_fields")),
+                *(item.metric_id for item in contract.metric_bindings),
+                *dimension_ids,
+            )
+        ),
+        unique_key=_dedupe(
+            (*_string_tuple(reviewed.get("unique_key")), *dimension_ids)
+        ),
+        grain=_dedupe((*_string_tuple(reviewed.get("grain")), *dimension_ids)),
+        required_window_ids=contract.window_refs,
+        result_semantics=str(
+            reviewed.get("result_semantics") or "complete_aggregate"
+        ),
+    )
+    if contract.result_shape != expected_shape:
+        raise ValueError(
+            f"reviewed_result_shape_mismatch:{contract.query_intent}"
+        )
+
+
+def _verify_reviewed_bindings(
+    contract: QueryContract,
+    snapshot: DatasetSnapshot,
+    *,
+    registry: RuntimeContractRegistry,
+) -> None:
+    for binding in contract.metric_bindings:
+        try:
+            reviewed = registry.metric(binding.metric_id)
+        except KeyError as exc:
+            raise ValueError(
+                f"reviewed_metric_binding_mismatch:{binding.metric_id}"
+            ) from exc
+        expected = MetricBinding(
+            metric_id=binding.metric_id,
+            contract_ref=str(reviewed.get("contract_ref") or ""),
+            dataset_id=str(reviewed.get("dataset_id") or ""),
+            expression=str(reviewed.get("expression") or ""),
+            aggregation=str(reviewed.get("aggregation") or ""),
+            required_fields=_string_tuple(reviewed.get("required_fields")),
+            grain=_string_tuple(reviewed.get("grain")),
+            numerator_metric=str(reviewed.get("numerator_metric") or ""),
+            denominator_metric=str(reviewed.get("denominator_metric") or ""),
+            zero_denominator_policy=str(
+                reviewed.get("zero_denominator_policy") or "null"
+            ),
+            claim_types=_string_tuple(reviewed.get("claim_types")),
+        )
+        if not _safe_contract_expression(
+            binding.expression,
+            allowed_functions=_METRIC_FUNCTIONS,
+            allowed_fields=frozenset(binding.required_fields),
+        ) or not _AGGREGATE_EXPRESSION.search(binding.expression):
+            raise ValueError(f"unsafe_metric_expression:{binding.metric_id}")
+        if binding != expected:
+            raise ValueError(
+                f"reviewed_metric_binding_mismatch:{binding.metric_id}"
+            )
+        missing = tuple(
+            field for field in binding.required_fields if field not in snapshot.schema_fields
+        )
+        if missing:
+            raise ValueError(
+                f"metric_binding_fields_missing:{binding.metric_id}:{','.join(missing)}"
+            )
+
+    for binding in contract.dimension_bindings:
+        try:
+            reviewed = registry.dimension(binding.dimension_id)
+        except KeyError as exc:
+            raise ValueError(
+                f"reviewed_dimension_binding_mismatch:{binding.dimension_id}"
+            ) from exc
+        expected = DimensionBinding(
+            dimension_id=binding.dimension_id,
+            contract_ref=str(reviewed.get("contract_ref") or ""),
+            dataset_id=str(reviewed.get("dataset_id") or ""),
+            source_field=str(reviewed.get("source_field") or ""),
+            allowed_grains=_string_tuple(reviewed.get("allowed_grains")),
+            null_bucket=str(reviewed.get("null_bucket") or "Unknown"),
+            permission_scope=contract.permission_scope,
+        )
+        if binding != expected:
+            raise ValueError(
+                f"reviewed_dimension_binding_mismatch:{binding.dimension_id}"
+            )
+
+
+def _safe_contract_expression(
+    expression: str,
+    *,
+    allowed_functions: frozenset[str],
+    allowed_fields: frozenset[str],
+) -> bool:
+    if not _safe_expression(expression):
+        return False
+    quoted_fields = frozenset(re.findall(r"`([^`]+)`", expression))
+    if not quoted_fields.issubset(allowed_fields):
+        return False
+    masked = _mask_expression_quotes(expression)
+    functions = frozenset(
+        item.casefold()
+        for item in re.findall(r"\b([^\W\d]\w*)\s*\(", masked, re.UNICODE)
+    )
+    if not functions.issubset(allowed_functions):
+        return False
+    identifiers = frozenset(
+        item
+        for item in re.findall(r"\b[^\W\d]\w*\b", masked, re.UNICODE)
+        if item.casefold() not in functions
+    )
+    if {item.casefold() for item in identifiers} & _STRUCTURAL_KEYWORDS:
+        return False
+    return identifiers.issubset(allowed_fields)
+
+
+def _mask_expression_quotes(expression: str) -> str:
+    output = []
+    index = 0
+    quote = ""
+    while index < len(expression):
+        char = expression[index]
+        if quote:
+            output.append(" ")
+            if char == quote:
+                if quote == "'" and index + 1 < len(expression) and expression[index + 1] == "'":
+                    output.append(" ")
+                    index += 2
+                    continue
+                quote = ""
+            index += 1
+            continue
+        if char in {"'", "`"}:
+            quote = char
+            output.append(" ")
+        else:
+            output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def _freeze_contract_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _freeze_contract_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_contract_value(item) for item in value)
+    return value
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    return tuple(str(item) for item in value)
+
+
+def _dedupe(values: Sequence[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(str(item) for item in values))
+
+
+def _quote_physical_table(value: str) -> str:
+    if not isinstance(value, str) or _PHYSICAL_IDENTIFIER.fullmatch(value) is None:
+        raise ValueError(f"invalid_physical_table:{value}")
+    return ".".join(f"`{part}`" for part in value.split("."))
+
+
+def _quote_identifier(value: str) -> str:
+    if not isinstance(value, str) or _LOGICAL_IDENTIFIER.fullmatch(value) is None:
+        raise ValueError(f"invalid_identifier:{value}")
+    return f"`{value}`"
+
+
+def _indented(parts: Sequence[str], *, spaces: int = 2) -> str:
+    prefix = " " * spaces
+    return ",\n".join(f"{prefix}{part}" for part in parts)

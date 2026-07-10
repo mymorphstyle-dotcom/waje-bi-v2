@@ -54,9 +54,12 @@ AGGREGATE_FUNCTIONS = (
     "max",
     "min",
     "quantile",
+    "quantileExact",
     "sum",
     "sumIf",
     "uniq",
+    "uniqExact",
+    "uniqExactIf",
 )
 TABLE_FUNCTION_INTRODUCERS = frozenset({"FROM", "JOIN"})
 

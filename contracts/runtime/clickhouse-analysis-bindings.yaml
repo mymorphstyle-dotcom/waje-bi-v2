@@ -90,7 +90,14 @@ query_shapes:
   time_bucket_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
   data_quality_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
   event_context_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  high_value_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  high_value_scan:
+    required_fields: [window_id, window_role, observation_key]
+    unique_key: [window_id, observation_key]
+    grain: [window_id, observation_key]
+    query_parameters:
+      threshold_quantile: 0.95
+      threshold_reference: within_window_user_paid_amount
+      aggregation_grain: [window_id, observation_key, user_id]
 
 capability_inputs:
   compare_periods:

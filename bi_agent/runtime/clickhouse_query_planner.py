@@ -174,7 +174,7 @@ def build_clickhouse_query_specs(
                 optional_fields=_string_tuple(row_shape.get("optional_fields")),
             )
         if spec:
-            specs.append(spec)
+            specs.append({**spec, "contract_mode": "legacy"})
     return tuple(specs)
 
 

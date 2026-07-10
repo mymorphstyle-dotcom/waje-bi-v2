@@ -4,8 +4,18 @@ from dataclasses import dataclass, field
 import os
 from typing import Any, Mapping, Optional, Sequence
 
+from bi_agent.runtime.analysis_contracts import (
+    DimensionBinding,
+    MetricBinding,
+    QueryContract,
+    QueryResultEnvelope,
+    ResolvedWindow,
+    ResultShape,
+)
 from bi_agent.runtime.clickhouse_query_planner import build_clickhouse_query_specs
 from bi_agent.runtime.clickhouse_runtime import ClickHouseRuntime, IDENTIFIER_PATTERN
+from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
 from bi_agent.runtime.sql_safety import validate_select_only
 
 
@@ -35,6 +45,9 @@ class RevenueRowPlan:
     dimension_keys: tuple[str, ...]
     reason: str = ""
     query_plans: tuple[RevenueQueryPlan, ...] = ()
+    contract_mode: str = "legacy"
+    query_contracts: tuple[QueryContract, ...] = ()
+    snapshots: Mapping[str, DatasetSnapshot] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -48,14 +61,23 @@ class RevenueRowsResult:
     rows_by_intent: Mapping[str, tuple[dict[str, Any], ...]] = field(default_factory=dict)
     result_refs_by_intent: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     query_results: tuple[dict[str, Any], ...] = ()
+    contract_mode: str = "legacy"
+    query_envelopes: tuple[QueryResultEnvelope, ...] = ()
 
 
 class ClickHouseRevenueRows:
     def __init__(
-        self, runtime: Optional[ClickHouseRuntime] = None, table: Optional[str] = None
+        self,
+        runtime: Optional[ClickHouseRuntime] = None,
+        table: Optional[str] = None,
+        *,
+        snapshots: Mapping[str, DatasetSnapshot] | None = None,
+        executor: ClickHouseQueryExecutor | None = None,
     ) -> None:
         self.runtime = runtime or ClickHouseRuntime.from_env()
         self.table = table or os.environ.get("WAJE_CLICKHOUSE_PAYMENT_TABLE", DEFAULT_TABLE)
+        self.snapshots = dict(snapshots or {})
+        self.executor = executor or ClickHouseQueryExecutor(self.runtime)
         self._schema_fields: tuple[str, ...] | None = None
 
     @classmethod
@@ -98,6 +120,11 @@ class ClickHouseRevenueRows:
         compiler_runtime_plan = request.get("compiler_runtime_plan")
         if (
             isinstance(compiler_runtime_plan, Mapping)
+            and "query_contracts" in compiler_runtime_plan
+        ):
+            return self._typed_plan(request, compiler_runtime_plan)
+        if (
+            isinstance(compiler_runtime_plan, Mapping)
             and compiler_runtime_plan.get("query_intents")
         ):
             specs = build_clickhouse_query_specs(
@@ -121,7 +148,11 @@ class ClickHouseRevenueRows:
                 query_id=f"{request.get('run_id', 'run')}:compiler_runtime_plan",
                 required_fields=_required_fields(request),
                 dimension_keys=_dimension_keys(accepted_graph, request),
-                reason="invalid_identifier" if not _safe_identifier(self.table) else "no_executable_query_spec",
+                reason=(
+                    "invalid_identifier"
+                    if not _safe_identifier(self.table)
+                    else "no_executable_query_spec"
+                ),
             )
 
         dimensions = _dimension_keys(accepted_graph, request)
@@ -174,7 +205,82 @@ LIMIT {MAX_ROWS}
             ),
         )
 
+    def _typed_plan(
+        self,
+        request: Mapping[str, Any],
+        compiler_runtime_plan: Mapping[str, Any],
+    ) -> RevenueRowPlan:
+        try:
+            query_contracts = _query_contracts(
+                compiler_runtime_plan.get("query_contracts") or ()
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            return RevenueRowPlan(
+                sql_text="",
+                query_id=f"{request.get('run_id', 'run')}:typed_projection",
+                required_fields=(),
+                dimension_keys=(),
+                reason=f"invalid_typed_query_contract_projection:{exc}",
+                contract_mode="typed",
+            )
+        if not query_contracts:
+            return RevenueRowPlan(
+                sql_text="",
+                query_id=f"{request.get('run_id', 'run')}:typed_query_contracts",
+                required_fields=(),
+                dimension_keys=(),
+                reason="typed_query_contracts_missing",
+                contract_mode="typed",
+            )
+        snapshots = dict(self.snapshots)
+        try:
+            for source in (
+                compiler_runtime_plan.get("dataset_snapshots"),
+                request.get("dataset_snapshots"),
+            ):
+                snapshots.update(_dataset_snapshots(source or ()))
+        except (KeyError, TypeError, ValueError) as exc:
+            first = query_contracts[0]
+            return RevenueRowPlan(
+                sql_text="",
+                query_id=first.query_contract_id,
+                required_fields=first.result_shape.required_fields,
+                dimension_keys=tuple(
+                    item.dimension_id for item in first.dimension_bindings
+                ),
+                reason=f"invalid_typed_query_contract_projection:{exc}",
+                contract_mode="typed",
+                query_contracts=query_contracts,
+            )
+        if not snapshots:
+            first = query_contracts[0]
+            return RevenueRowPlan(
+                sql_text="",
+                query_id=first.query_contract_id,
+                required_fields=first.result_shape.required_fields,
+                dimension_keys=tuple(
+                    item.dimension_id for item in first.dimension_bindings
+                ),
+                reason="typed_dataset_snapshots_missing",
+                contract_mode="typed",
+                query_contracts=query_contracts,
+            )
+        first = query_contracts[0]
+        return RevenueRowPlan(
+            sql_text="",
+            query_id=first.query_contract_id,
+            required_fields=first.result_shape.required_fields,
+            dimension_keys=tuple(
+                item.dimension_id for item in first.dimension_bindings
+            ),
+            contract_mode="typed",
+            query_contracts=query_contracts,
+            snapshots=snapshots,
+        )
+
     def fetch(self, plan: RevenueRowPlan) -> RevenueRowsResult:
+        if plan.contract_mode == "typed":
+            return self._fetch_typed(plan)
         query_plans = plan.query_plans or (
             RevenueQueryPlan(
                 sql_text=plan.sql_text,
@@ -297,6 +403,69 @@ LIMIT {MAX_ROWS}
             rows_by_intent=rows_by_intent,
             result_refs_by_intent=result_refs_by_intent,
             query_results=tuple(query_results),
+            contract_mode="legacy",
+        )
+
+    def _fetch_typed(self, plan: RevenueRowPlan) -> RevenueRowsResult:
+        if plan.reason or not plan.query_contracts:
+            return RevenueRowsResult(
+                ok=False,
+                reason=plan.reason or "typed_query_contracts_missing",
+                query_id=plan.query_id,
+                contract_mode="typed",
+            )
+        envelopes: list[QueryResultEnvelope] = []
+        rows_by_intent: dict[str, tuple[dict[str, Any], ...]] = {}
+        refs_by_intent: dict[str, tuple[str, ...]] = {}
+        query_results: list[dict[str, Any]] = []
+        result_refs: list[str] = []
+        failure_reasons: list[str] = []
+        for contract in plan.query_contracts:
+            envelope = self.executor.execute(contract, plan.snapshots)
+            envelopes.append(envelope)
+            query_results.append(
+                {
+                    **envelope.to_dict(),
+                    "intent": contract.query_intent,
+                    "ok": envelope.execution_status == "succeeded",
+                    "reason": envelope.failure_reason,
+                    "result_refs": ((envelope.result_ref,) if envelope.result_ref else ()),
+                    "contract_mode": "typed",
+                }
+            )
+            if envelope.execution_status != "succeeded":
+                failure_reasons.append(envelope.failure_reason)
+                continue
+            existing_rows = rows_by_intent.get(contract.query_intent, ())
+            rows_by_intent[contract.query_intent] = (
+                *existing_rows,
+                *(dict(row) for row in envelope.rows),
+            )
+            existing_refs = refs_by_intent.get(contract.query_intent, ())
+            refs_by_intent[contract.query_intent] = (
+                *existing_refs,
+                envelope.result_ref,
+            )
+            result_refs.append(envelope.result_ref)
+
+        successful = tuple(
+            envelope
+            for envelope in envelopes
+            if envelope.execution_status == "succeeded"
+        )
+        primary = successful[0] if successful else envelopes[0]
+        return RevenueRowsResult(
+            ok=not failure_reasons,
+            rows=tuple(dict(row) for row in primary.rows),
+            query_hash=primary.query_hash,
+            query_id=primary.query_id,
+            reason=";".join(dict.fromkeys(failure_reasons)),
+            result_refs=tuple(dict.fromkeys(result_refs)),
+            rows_by_intent=rows_by_intent,
+            result_refs_by_intent=refs_by_intent,
+            query_results=tuple(query_results),
+            contract_mode="typed",
+            query_envelopes=tuple(envelopes),
         )
 
 
@@ -368,7 +537,397 @@ def _query_result_payload(
         "row_count": row_count,
         "dimension_keys": plan.dimension_keys,
         "claim_use": plan.claim_use,
+        "contract_mode": "legacy",
     }
+
+
+def _query_contracts(value: Any) -> tuple[QueryContract, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    contracts = []
+    for item in value:
+        if isinstance(item, QueryContract):
+            contracts.append(item)
+        elif isinstance(item, Mapping):
+            contracts.append(_query_contract_from_mapping(item))
+        else:
+            raise TypeError("invalid_query_contract_projection")
+    return tuple(contracts)
+
+
+def _query_contract_from_mapping(item: Mapping[str, Any]) -> QueryContract:
+    _require_keys(
+        item,
+        (
+            "query_contract_id",
+            "analysis_contract_ref",
+            "query_intent",
+            "dataset_snapshot_refs",
+            "metric_bindings",
+            "dimension_bindings",
+            "window_refs",
+            "resolved_windows",
+            "filters",
+            "result_shape",
+            "completeness_assertions",
+            "permission_scope",
+            "workload_class",
+            "contract_signature",
+            "query_parameters",
+        ),
+        path="query_contract",
+    )
+    return QueryContract(
+        query_contract_id=_strict_string(
+            item["query_contract_id"], path="query_contract.query_contract_id"
+        ),
+        analysis_contract_ref=_strict_string(
+            item["analysis_contract_ref"],
+            path="query_contract.analysis_contract_ref",
+        ),
+        query_intent=_strict_string(
+            item["query_intent"], path="query_contract.query_intent"
+        ),
+        dataset_snapshot_refs=_strict_string_sequence(
+            item["dataset_snapshot_refs"],
+            path="query_contract.dataset_snapshot_refs",
+        ),
+        metric_bindings=tuple(
+            binding
+            if isinstance(binding, MetricBinding)
+            else _metric_binding_from_mapping(binding, index=index)
+            for index, binding in enumerate(
+                _strict_sequence(
+                    item["metric_bindings"],
+                    path="query_contract.metric_bindings",
+                )
+            )
+        ),
+        dimension_bindings=tuple(
+            binding
+            if isinstance(binding, DimensionBinding)
+            else _dimension_binding_from_mapping(binding, index=index)
+            for index, binding in enumerate(
+                _strict_sequence(
+                    item["dimension_bindings"],
+                    path="query_contract.dimension_bindings",
+                )
+            )
+        ),
+        window_refs=_strict_string_sequence(
+            item["window_refs"], path="query_contract.window_refs"
+        ),
+        resolved_windows=tuple(
+            window
+            if isinstance(window, ResolvedWindow)
+            else _resolved_window_from_mapping(window, index=index)
+            for index, window in enumerate(
+                _strict_sequence(
+                    item["resolved_windows"],
+                    path="query_contract.resolved_windows",
+                )
+            )
+        ),
+        filters=tuple(
+            _filter_from_mapping(filter_item, index=index)
+            for index, filter_item in enumerate(
+                _strict_sequence(item["filters"], path="query_contract.filters")
+            )
+        ),
+        result_shape=(
+            item["result_shape"]
+            if isinstance(item["result_shape"], ResultShape)
+            else _result_shape_from_mapping(item["result_shape"])
+        ),
+        completeness_assertions=_strict_string_sequence(
+            item["completeness_assertions"],
+            path="query_contract.completeness_assertions",
+        ),
+        permission_scope=_strict_string(
+            item["permission_scope"], path="query_contract.permission_scope"
+        ),
+        workload_class=_strict_string(
+            item["workload_class"], path="query_contract.workload_class"
+        ),
+        contract_signature=_strict_string(
+            item["contract_signature"], path="query_contract.contract_signature"
+        ),
+        query_parameters=dict(
+            _strict_mapping(
+                item["query_parameters"],
+                path="query_contract.query_parameters",
+            )
+        ),
+    )
+
+
+def _metric_binding_from_mapping(value: Any, *, index: int) -> MetricBinding:
+    path = f"query_contract.metric_bindings[{index}]"
+    item = _strict_mapping(value, path=path)
+    _require_keys(
+        item,
+        (
+            "metric_id",
+            "contract_ref",
+            "dataset_id",
+            "expression",
+            "aggregation",
+            "required_fields",
+            "grain",
+            "numerator_metric",
+            "denominator_metric",
+            "zero_denominator_policy",
+            "claim_types",
+        ),
+        path=path,
+    )
+    return MetricBinding(
+        metric_id=_strict_string(item["metric_id"], path=f"{path}.metric_id"),
+        contract_ref=_strict_string(
+            item["contract_ref"], path=f"{path}.contract_ref"
+        ),
+        dataset_id=_strict_string(item["dataset_id"], path=f"{path}.dataset_id"),
+        expression=_strict_string(item["expression"], path=f"{path}.expression"),
+        aggregation=_strict_string(
+            item["aggregation"], path=f"{path}.aggregation"
+        ),
+        required_fields=_strict_string_sequence(
+            item["required_fields"], path=f"{path}.required_fields"
+        ),
+        grain=_strict_string_sequence(item["grain"], path=f"{path}.grain"),
+        numerator_metric=_strict_string(
+            item["numerator_metric"],
+            path=f"{path}.numerator_metric",
+            allow_empty=True,
+        ),
+        denominator_metric=_strict_string(
+            item["denominator_metric"],
+            path=f"{path}.denominator_metric",
+            allow_empty=True,
+        ),
+        zero_denominator_policy=_strict_string(
+            item["zero_denominator_policy"],
+            path=f"{path}.zero_denominator_policy",
+        ),
+        claim_types=_strict_string_sequence(
+            item["claim_types"], path=f"{path}.claim_types"
+        ),
+    )
+
+
+def _dimension_binding_from_mapping(value: Any, *, index: int) -> DimensionBinding:
+    path = f"query_contract.dimension_bindings[{index}]"
+    item = _strict_mapping(value, path=path)
+    _require_keys(
+        item,
+        (
+            "dimension_id",
+            "contract_ref",
+            "dataset_id",
+            "source_field",
+            "allowed_grains",
+            "null_bucket",
+            "permission_scope",
+        ),
+        path=path,
+    )
+    return DimensionBinding(
+        dimension_id=_strict_string(
+            item["dimension_id"], path=f"{path}.dimension_id"
+        ),
+        contract_ref=_strict_string(
+            item["contract_ref"], path=f"{path}.contract_ref"
+        ),
+        dataset_id=_strict_string(item["dataset_id"], path=f"{path}.dataset_id"),
+        source_field=_strict_string(
+            item["source_field"], path=f"{path}.source_field"
+        ),
+        allowed_grains=_strict_string_sequence(
+            item["allowed_grains"], path=f"{path}.allowed_grains"
+        ),
+        null_bucket=_strict_string(
+            item["null_bucket"], path=f"{path}.null_bucket"
+        ),
+        permission_scope=_strict_string(
+            item["permission_scope"], path=f"{path}.permission_scope"
+        ),
+    )
+
+
+def _resolved_window_from_mapping(value: Any, *, index: int) -> ResolvedWindow:
+    path = f"query_contract.resolved_windows[{index}]"
+    item = _strict_mapping(value, path=path)
+    required = tuple(ResolvedWindow.__dataclass_fields__)
+    _require_keys(item, required, path=path)
+    return ResolvedWindow(
+        window_id=_strict_string(item["window_id"], path=f"{path}.window_id"),
+        role=_strict_string(item["role"], path=f"{path}.role"),
+        label=_strict_string(item["label"], path=f"{path}.label"),
+        start_inclusive=_strict_string(
+            item["start_inclusive"], path=f"{path}.start_inclusive"
+        ),
+        end_exclusive=_strict_string(
+            item["end_exclusive"], path=f"{path}.end_exclusive"
+        ),
+        timezone=_strict_string(item["timezone"], path=f"{path}.timezone"),
+        aggregation=_strict_string(
+            item["aggregation"], path=f"{path}.aggregation"
+        ),
+        required_complete_days=_strict_int(
+            item["required_complete_days"],
+            path=f"{path}.required_complete_days",
+        ),
+        source_watermark_requirement=_strict_string(
+            item["source_watermark_requirement"],
+            path=f"{path}.source_watermark_requirement",
+        ),
+        membership_policy=_strict_string(
+            item["membership_policy"], path=f"{path}.membership_policy"
+        ),
+    )
+
+
+def _filter_from_mapping(value: Any, *, index: int) -> dict[str, Any]:
+    path = f"query_contract.filters[{index}]"
+    item = _strict_mapping(value, path=path)
+    _require_keys(
+        item,
+        ("field", "op"),
+        path=path,
+        allowed=("field", "op", "value"),
+    )
+    _strict_string(item["field"], path=f"{path}.field")
+    _strict_string(item["op"], path=f"{path}.op")
+    return dict(item)
+
+
+def _result_shape_from_mapping(value: Any) -> ResultShape:
+    path = "query_contract.result_shape"
+    item = _strict_mapping(value, path=path)
+    _require_keys(item, tuple(ResultShape.__dataclass_fields__), path=path)
+    return ResultShape(
+        required_fields=_strict_string_sequence(
+            item["required_fields"], path=f"{path}.required_fields"
+        ),
+        unique_key=_strict_string_sequence(
+            item["unique_key"], path=f"{path}.unique_key"
+        ),
+        grain=_strict_string_sequence(item["grain"], path=f"{path}.grain"),
+        required_window_ids=_strict_string_sequence(
+            item["required_window_ids"], path=f"{path}.required_window_ids"
+        ),
+        result_semantics=_strict_string(
+            item["result_semantics"], path=f"{path}.result_semantics"
+        ),
+    )
+
+
+def _strict_mapping(value: Any, *, path: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{path}:mapping_required")
+    return value
+
+
+def _strict_sequence(value: Any, *, path: str) -> Sequence[Any]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError(f"{path}:sequence_required")
+    return value
+
+
+def _strict_string_sequence(value: Any, *, path: str) -> tuple[str, ...]:
+    return tuple(
+        _strict_string(item, path=f"{path}[{index}]")
+        for index, item in enumerate(_strict_sequence(value, path=path))
+    )
+
+
+def _strict_string(value: Any, *, path: str, allow_empty: bool = False) -> str:
+    if not isinstance(value, str) or (not allow_empty and not value):
+        raise ValueError(f"{path}:string_required")
+    return value
+
+
+def _strict_int(value: Any, *, path: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{path}:integer_required")
+    return value
+
+
+def _require_keys(
+    item: Mapping[str, Any],
+    required: Sequence[str],
+    *,
+    path: str,
+    allowed: Sequence[str] | None = None,
+) -> None:
+    missing = tuple(key for key in required if key not in item)
+    if missing:
+        raise ValueError(f"{path}:missing:{','.join(missing)}")
+    accepted = frozenset(allowed or required)
+    unexpected = tuple(str(key) for key in item if key not in accepted)
+    if unexpected:
+        raise ValueError(f"{path}:unexpected:{','.join(unexpected)}")
+
+
+def _dataset_snapshots(value: Any) -> dict[str, DatasetSnapshot]:
+    if isinstance(value, Mapping):
+        items = value.items()
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        items = (("", item) for item in value)
+    else:
+        raise ValueError("dataset_snapshots:mapping_or_sequence_required")
+    snapshots = {}
+    for index, (key, item) in enumerate(items):
+        path = f"dataset_snapshots[{index}]"
+        snapshot = (
+            item
+            if isinstance(item, DatasetSnapshot)
+            else _dataset_snapshot_from_mapping(item, path=path)
+            if isinstance(item, Mapping)
+            else None
+        )
+        if snapshot is None:
+            raise ValueError(f"{path}:snapshot_required")
+        mapping_key = str(key or snapshot.snapshot_ref)
+        if mapping_key != snapshot.snapshot_ref:
+            raise ValueError(f"{path}:snapshot_ref_key_mismatch")
+        if mapping_key in snapshots:
+            raise ValueError(f"{path}:duplicate_snapshot_ref:{mapping_key}")
+        snapshots[mapping_key] = snapshot
+    return snapshots
+
+
+def _dataset_snapshot_from_mapping(
+    value: Mapping[str, Any],
+    *,
+    path: str,
+) -> DatasetSnapshot:
+    fields = tuple(DatasetSnapshot.__dataclass_fields__)
+    _require_keys(value, fields, path=path)
+    return DatasetSnapshot(
+        snapshot_ref=_strict_string(
+            value["snapshot_ref"], path=f"{path}.snapshot_ref"
+        ),
+        dataset_id=_strict_string(value["dataset_id"], path=f"{path}.dataset_id"),
+        physical_table=_strict_string(
+            value["physical_table"], path=f"{path}.physical_table"
+        ),
+        watermark=_strict_string(value["watermark"], path=f"{path}.watermark"),
+        schema_fingerprint=_strict_string(
+            value["schema_fingerprint"], path=f"{path}.schema_fingerprint"
+        ),
+        schema_fields=_strict_string_sequence(
+            value["schema_fields"], path=f"{path}.schema_fields"
+        ),
+        contract_ref=_strict_string(
+            value["contract_ref"], path=f"{path}.contract_ref"
+        ),
+        permission_scopes=_strict_string_sequence(
+            value["permission_scopes"], path=f"{path}.permission_scopes"
+        ),
+        loaded_at=_strict_string(value["loaded_at"], path=f"{path}.loaded_at"),
+        status=_strict_string(value["status"], path=f"{path}.status"),
+    )
 
 
 def _row_query_intent(query_id: str, reason: str = "") -> str:

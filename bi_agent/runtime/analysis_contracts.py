@@ -94,9 +94,73 @@ class QueryContract:
     permission_scope: str
     workload_class: str
     contract_signature: str
+    query_parameters: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+_QUERY_CONTRACT_SEMANTIC_FIELDS = (
+    "query_intent",
+    "dataset_snapshot_refs",
+    "metric_bindings",
+    "dimension_bindings",
+    "window_refs",
+    "resolved_windows",
+    "filters",
+    "result_shape",
+    "completeness_assertions",
+    "permission_scope",
+    "workload_class",
+    "query_parameters",
+)
+
+
+def query_contract_semantic_body(
+    value: QueryContract | Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        field_name: _serialize_contract_value(
+            _contract_field(
+                value,
+                field_name,
+                default={} if field_name == "query_parameters" else None,
+            )
+        )
+        for field_name in _QUERY_CONTRACT_SEMANTIC_FIELDS
+    }
+
+
+def query_contract_signature(value: QueryContract | Mapping[str, Any]) -> str:
+    return stable_contract_signature(query_contract_semantic_body(value))
+
+
+def _contract_field(
+    value: QueryContract | Mapping[str, Any],
+    field_name: str,
+    *,
+    default: Any,
+) -> Any:
+    if isinstance(value, Mapping):
+        if field_name in value:
+            return value[field_name]
+        if field_name == "query_parameters":
+            return default
+        raise ValueError(f"query_contract_semantic_field_missing:{field_name}")
+    return getattr(value, field_name)
+
+
+def _serialize_contract_value(value: Any) -> Any:
+    if hasattr(value, "__dataclass_fields__"):
+        return asdict(value)
+    if isinstance(value, Mapping):
+        return {
+            str(key): _serialize_contract_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return tuple(_serialize_contract_value(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True)

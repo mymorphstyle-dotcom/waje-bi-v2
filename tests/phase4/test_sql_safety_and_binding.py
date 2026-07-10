@@ -29,12 +29,98 @@ class FakeNoQueryIdClient:
     def __init__(self):
         self.queries = []
 
-    def query(self, sql):
+    def query(self, sql, *, parameters=None, settings=None):
         self.queries.append(sql)
         return FakeQueryResult()
 
 
+class FakeRejectedRequiredKwargClient:
+    def __init__(self, rejected_kwarg):
+        self.rejected_kwarg = rejected_kwarg
+        self.calls = []
+
+    def query(self, sql, **kwargs):
+        self.calls.append((sql, kwargs))
+        raise TypeError(
+            "query() got an unexpected keyword argument "
+            f"'{self.rejected_kwarg}'"
+        )
+
+
+class FakeBroadSettingsTypeErrorClient:
+    def __init__(self):
+        self.calls = []
+
+    def query(self, sql, **kwargs):
+        self.calls.append((sql, kwargs))
+        raise TypeError("unsupported parameter type in settings")
+
+
+class FakeBreakResult(FakeQueryResult):
+    summary = {"result_overflow_mode": "break", "read_rows": 100}
+
+
+class FakeBreakClient:
+    def __init__(self):
+        self.calls = []
+
+    def query(self, sql, **kwargs):
+        self.calls.append((sql, kwargs))
+        return FakeBreakResult()
+
+
 class SqlSafetyAndBindingTest(unittest.TestCase):
+    def test_required_parameters_and_settings_fail_closed_without_retry(self):
+        for rejected_kwarg in ("parameters", "settings"):
+            with self.subTest(rejected_kwarg=rejected_kwarg):
+                client = FakeRejectedRequiredKwargClient(rejected_kwarg)
+                runtime = ClickHouseRuntime(client=client)
+
+                result = runtime.aggregate(
+                    "SELECT count() FROM paid_success WHERE status = %(status)s",
+                    query_id="required-kwargs",
+                    parameters={"status": "paid"},
+                    settings={"readonly": 2},
+                )
+
+                self.assertFalse(result.ok)
+                self.assertEqual(
+                    result.reason,
+                    f"clickhouse_required_kwarg_unsupported:{rejected_kwarg}",
+                )
+                self.assertEqual(result.provider_stats["unsupported_kwarg"], rejected_kwarg)
+                self.assertEqual(len(client.calls), 1)
+
+    def test_broad_settings_type_error_is_not_a_compatibility_signal(self):
+        client = FakeBroadSettingsTypeErrorClient()
+        runtime = ClickHouseRuntime(client=client)
+
+        with self.assertRaisesRegex(TypeError, "unsupported parameter type in settings"):
+            runtime.aggregate(
+                "SELECT count() FROM paid_success",
+                query_id="broad-type-error",
+                parameters={},
+                settings={"readonly": 2},
+            )
+
+        self.assertEqual(len(client.calls), 1)
+
+    def test_provider_break_overflow_is_never_accepted_as_success(self):
+        client = FakeBreakClient()
+        runtime = ClickHouseRuntime(client=client)
+
+        result = runtime.aggregate(
+            "SELECT count() FROM paid_success",
+            query_id="overflow-break",
+            parameters={},
+            settings={"readonly": 2},
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "clickhouse_result_truncated")
+        self.assertEqual(result.provider_stats["result_overflow_mode"], "break")
+        self.assertEqual(len(client.calls), 1)
+
     def test_select_with_limit_is_allowed(self):
         result = validate_select_only(
             "SELECT pay_date, sum(amount) FROM paid_success GROUP BY pay_date LIMIT 10"
@@ -78,6 +164,19 @@ class SqlSafetyAndBindingTest(unittest.TestCase):
         result = validate_select_only("SELECT count(*) FROM paid_success", aggregate=True)
         self.assertTrue(result.ok)
         self.assertTrue(result.query_hash)
+
+    def test_reviewed_clickhouse_aggregate_variants_are_recognized(self):
+        for expression in (
+            "uniqExact(order_id)",
+            "uniqExactIf(order_id, status = 'paid')",
+            "quantileExact(0.95)(amount)",
+        ):
+            with self.subTest(expression=expression):
+                result = validate_select_only(
+                    f"SELECT {expression} FROM paid_success",
+                    aggregate=True,
+                )
+                self.assertTrue(result.ok, result.reason)
 
     def test_select_without_limit_requires_aggregate_marker(self):
         result = validate_select_only("SELECT * FROM paid_success")

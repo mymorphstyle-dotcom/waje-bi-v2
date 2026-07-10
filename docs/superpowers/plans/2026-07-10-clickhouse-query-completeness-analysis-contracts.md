@@ -307,6 +307,7 @@ class QueryContract:
     permission_scope: str
     workload_class: str
     contract_signature: str
+    query_parameters: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1089,11 +1090,11 @@ capability_inputs:
     supported_claim_types: []
 ```
 
-The implementation must load this YAML with `load_contract()` and reject missing sections or duplicate ids. The reviewed artifact also carries `query_shapes` keyed by query family so `ResultShape` is contract-driven; daily observation shapes include `window_id`, `window_role`, and `observation_key`, with `observation_key` in the unique key and grain. Runtime bindings cover every id from `public_capability_ids()` plus canonical legacy graph aliases. Coverage tests derive this set dynamically from the canonical registries.
+The implementation must load this YAML with `load_contract()` and reject missing sections or duplicate ids. The reviewed artifact also carries `query_shapes` keyed by query family so `ResultShape` and query parameters are contract-driven; daily observation shapes include `window_id`, `window_role`, and `observation_key`, with `observation_key` in the unique key and grain. `high_value_scan` carries reviewed `threshold_quantile=0.95`, `threshold_reference=within_window_user_paid_amount`, and `aggregation_grain=[window_id, observation_key, user_id]`. Runtime bindings cover every id from `public_capability_ids()` plus canonical legacy graph aliases. Coverage tests derive this set dynamically from the canonical registries.
 
 - [ ] **Step 4: 实现 registry 和 compiler**
 
-Create `RuntimeContractRegistry` with `metric()`, `dimension()`, `capability_inputs()`, and `dataset()` accessors that return copied mappings. Explicit proposal claim intents remain advisory: the compiler intersects them with the union of accepted capability `supported_claim_types`; no-query verifier/reducer contracts with empty claim support do not expand that ceiling. Unsupported explicit intents produce typed gaps and never enter `AnalysisContract.claim_intents`; when none remain, `unbound_claim_intent` keeps resolver attribution non-empty. Implicit binding then uses accepted capability claim types, metric claim types only when capability contracts provide none, then a typed unbound gap. `maximum_claim_strength` stays a plan/verifier boundary and is never interpreted as a claim type.
+Create `RuntimeContractRegistry` with `metric()`, `dimension()`, `capability_inputs()`, and `dataset()` accessors that return copied mappings. Query semantic identity is defined once by shared `query_contract_semantic_body()` / `query_contract_signature()` helpers in `analysis_contracts.py`; Task 3 dedupe and final signatures use those helpers. The body covers query intent, snapshot refs, complete metric and dimension bindings, windows, filters, result shape, assertions, permission, workload, and reviewed `query_parameters`, while excluding identity and signature. Query-family parameters are copied from the reviewed `query_shapes` entry. Explicit proposal claim intents remain advisory: the compiler intersects them with the union of accepted capability `supported_claim_types`; no-query verifier/reducer contracts with empty claim support do not expand that ceiling. Unsupported explicit intents produce typed gaps and never enter `AnalysisContract.claim_intents`; when none remain, `unbound_claim_intent` keeps resolver attribution non-empty. Implicit binding then uses accepted capability claim types, metric claim types only when capability contracts provide none, then a typed unbound gap. `maximum_claim_strength` stays a plan/verifier boundary and is never interpreted as a claim type.
 
 ```python
 @dataclass(frozen=True)
@@ -1293,7 +1294,13 @@ git commit -m "feat: compile llm proposals into analysis contracts"
 - Modify: `bi_agent/runtime/clickhouse_runtime.py:29-165`
 - Modify: `bi_agent/runtime/clickhouse_query_planner.py:42-626`
 - Modify: `bi_agent/runtime/clickhouse_revenue_rows.py:19-543`
+- Modify: `bi_agent/runtime/sql_safety.py:49-58`
+- Modify: `bi_agent/runtime/analysis_contracts.py`
+- Modify: `bi_agent/runtime/analysis_contract_compiler.py`
+- Modify: `contracts/runtime/clickhouse-analysis-bindings.yaml`
+- Modify: `tests/phase4/test_analysis_contract_compiler.py`
 - Modify: `tests/phase4/test_clickhouse_revenue_rows.py`
+- Modify: `tests/phase4/test_sql_safety_and_binding.py`
 
 **Interfaces:**
 - Consumes: `QueryContract`, resolved `DatasetSnapshot` records.
@@ -1341,8 +1348,11 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         compiled = compile_clickhouse_query(contract, {"snapshot:paid:1": snapshot})
 
         self.assertNotIn("now(", compiled.sql_text)
-        self.assertIn("arrayJoin", compiled.sql_text)
-        self.assertIn("same_weekday_last_week", compiled.parameters.values())
+        self.assertRegex(compiled.sql_text.casefold(), r"\barray\s+join\b")
+        self.assertEqual(compiled.parameters["start_1"], compiled.parameters["start_2"])
+        self.assertNotEqual(compiled.parameters["window_id_1"], compiled.parameters["window_id_2"])
+        self.assertIn("%(window_id_1)s", compiled.sql_text)
+        self.assertIn("%(window_id_2)s", compiled.sql_text)
         self.assertNotIn("LIMIT 5000", compiled.sql_text)
 
 
@@ -1382,7 +1392,7 @@ def aggregate(
     )
 ```
 
-Pass `parameters` and `settings` to `client.query()`. Preserve compatibility with fake clients that reject these kwargs only when the `TypeError` explicitly names the unsupported kwarg. Add `provider_stats` to `ClickHouseQueryResult`, sourced from `result.summary` and `result.query_id` where available. Configure aggregate queries with `result_overflow_mode='throw'`; runtime never accepts server-side break/truncation as success.
+Pass `parameters` and `settings` to `client.query()`. Compatibility retry may remove only an explicitly unsupported `query_id`. Typed `parameters` and `settings` are required safety inputs: an explicit rejection returns a precise failed result after one provider call, and broad internal `TypeError` values propagate. Add `provider_stats` to `ClickHouseQueryResult`, sourced from `result.summary` and `result.query_id` where available. Configure aggregate queries with `result_overflow_mode='throw'`; runtime never accepts server-side break/truncation as success.
 
 - [ ] **Step 4: 实现 source adapters and window relation**
 
@@ -1429,7 +1439,7 @@ def compile_clickhouse_query(contract: QueryContract, snapshots: Mapping[str, Da
     )
 ```
 
-Implement dedicated branches for `payment_attempt`, `time_bucket_scan`, `data_quality_probe`, `high_value_scan`, and event datasets. Each branch uses only active contract expressions and logical snapshot bindings. `high_value_scan` computes the user threshold inside ClickHouse and returns aggregate buckets without user ids.
+At entry, the compiler validates the concrete `QueryContract` nested runtime types and every snapshot value before reading attributes, so malformed direct typed objects produce explicit `TypeError` or `ValueError` boundaries that the executor maps to blocked envelopes. Snapshot scalar metadata must be non-empty, watermark must be an ISO date, and loaded-at must be a timezone-aware ISO datetime. After this structural gate it recomputes the shared semantic signature and fails closed on mismatch. The non-empty, ordered, unique resolved window ids must exactly equal `window_refs`; `ResultShape.required_window_ids` must match the same tuple; each resolved window must have non-empty typed fields plus a valid timezone, date interval, watermark requirement, and complete-day bound. Metric and dimension bindings, query shape parameters, and dataset date adapters are compared exactly with reviewed registry entries. Lexical defense applies function allowlists and structural-keyword rejection after masking quoted literals and identifiers. Implement dedicated branches for `payment_attempt`, `time_bucket_scan`, `data_quality_probe`, `high_value_scan`, and event datasets. Each branch uses only active contract expressions and logical snapshot bindings. `high_value_scan` reads its threshold quantile, reference, and aggregation grain from reviewed `query_parameters`, passes the quantile as a ClickHouse parameter, and uses separate user totals, threshold, classification, and final aggregate layers so the output contains aggregate buckets without user ids or aggregate alias shadowing. Its reviewed grain is `[window_id, observation_key, user_id]`; dimension bindings are rejected until a versioned registry grain/template explicitly defines per-dimension thresholds.
 
 - [ ] **Step 5: 实现 executor envelope and compatibility wrapper**
 
@@ -1441,6 +1451,21 @@ and returns one `QueryResultEnvelope` with explicit `row_count` and
 and is excluded from `to_dict()`. The executor generates
 `result:<query_hash>:<query_contract_signature_prefix>` only after successful
 execution.
+
+Observed grain is derived from expected key fields present in every returned row;
+it is empty when the result does not demonstrate that grain. Compile, signature,
+permission, reviewed-contract, and SQL-safety failures return blocked envelopes;
+provider failures return failed envelopes. Typed revenue execution collects every
+contract envelope even when one query is blocked or failed. Typed projection is
+strict for nested bindings, windows, filters, result shape, and query parameters;
+malformed projections fail in typed mode and never fall through to legacy. Rows
+refs include query hash, semantic signature, and snapshot identity, and row reads
+return isolated copies.
+
+The aggregate-shape validator must recognize the reviewed ClickHouse aggregate
+function families used by Task 3 bindings, including `uniqExact`,
+`uniqExactIf`, and `quantileExact`; it must not reject a typed aggregate merely
+because the reviewed function is a stricter ClickHouse variant.
 
 Update `ClickHouseRevenueRows` to delegate typed contracts to the executor. Keep the old `build_clickhouse_query_specs()` path only when `compiler_runtime_plan.query_contracts` is absent. Mark legacy query results with `contract_mode="legacy"`; they cannot satisfy the new completeness acceptance in Task 11.
 

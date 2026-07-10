@@ -10,6 +10,8 @@ from bi_agent.runtime.analysis_contracts import (
     QueryResultEnvelope,
     ResolvedWindow,
     ResultShape,
+    query_contract_semantic_body,
+    query_contract_signature,
     stable_contract_signature,
 )
 from bi_agent.runtime.window_resolver import resolve_revenue_windows
@@ -223,6 +225,52 @@ class AnalysisContractsTest(unittest.TestCase):
         left = stable_contract_signature({"b": [2, 1], "a": {"x": 1}})
         right = stable_contract_signature({"a": {"x": 1}, "b": [2, 1]})
         self.assertEqual(left, right)
+
+    def test_query_contract_signature_covers_parameters_and_excludes_identity(self):
+        base = {
+            "query_contract_id": "query:run-a:1",
+            "analysis_contract_ref": "analysis:run-a:1",
+            "query_intent": "high_value_scan",
+            "dataset_snapshot_refs": ("snapshot:paid:1",),
+            "metric_bindings": (),
+            "dimension_bindings": (),
+            "window_refs": (),
+            "resolved_windows": (),
+            "filters": (),
+            "result_shape": ResultShape((), (), (), ()),
+            "completeness_assertions": (),
+            "permission_scope": "analyst",
+            "workload_class": "interactive_aggregate",
+            "contract_signature": "ignored",
+            "query_parameters": {
+                "threshold_quantile": 0.95,
+                "threshold_reference": "within_window_user_paid_amount",
+                "aggregation_grain": ("window_id", "observation_key", "user_id"),
+            },
+        }
+        first = QueryContract(**base)
+        second = QueryContract(
+            **{
+                **base,
+                "query_contract_id": "query:run-b:9",
+                "analysis_contract_ref": "analysis:run-b:1",
+                "contract_signature": "different-ignored-value",
+            }
+        )
+
+        self.assertEqual(query_contract_signature(first), query_contract_signature(second))
+        self.assertNotIn("query_contract_id", query_contract_semantic_body(first))
+        self.assertNotIn("contract_signature", query_contract_semantic_body(first))
+        changed = QueryContract(
+            **{
+                **base,
+                "query_parameters": {
+                    **base["query_parameters"],
+                    "threshold_quantile": 0.9,
+                },
+            }
+        )
+        self.assertNotEqual(query_contract_signature(first), query_contract_signature(changed))
 
 
 if __name__ == "__main__":

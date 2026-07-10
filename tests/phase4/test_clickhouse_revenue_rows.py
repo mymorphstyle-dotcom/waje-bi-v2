@@ -1,7 +1,15 @@
+from dataclasses import replace
 import unittest
 
+from bi_agent.runtime.analysis_contracts import QueryResultEnvelope
 from bi_agent.runtime.clickhouse_revenue_rows import ClickHouseRevenueRows
-from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult
+from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult, ClickHouseRuntime
+from bi_agent.runtime.query_executor import AggregateRowsStore, ClickHouseQueryExecutor
+from tests.phase4.test_clickhouse_query_compiler import (
+    contract,
+    resigned,
+    snapshot,
+)
 
 
 class FakeRuntime:
@@ -41,7 +49,283 @@ class FakeRuntime:
         )
 
 
+class FakeParameterizedResult:
+    column_names = ("window_id", "window_role", "observation_key", "paid_amount")
+    result_rows = (("target_day", "target", "2026-06-02", 120.0),)
+    summary = {"read_rows": 42, "read_bytes": 2048}
+    query_id = "provider-query-id"
+
+
+class FakeParameterizedClient:
+    def __init__(self):
+        self.calls = []
+
+    def query(self, sql, **kwargs):
+        self.calls.append((sql, kwargs))
+        return FakeParameterizedResult()
+
+
+class FakeInternalTypeErrorClient:
+    def query(self, sql, **kwargs):
+        raise TypeError("client decoding bug")
+
+
+class FakeResultClient:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    def query(self, sql, **kwargs):
+        self.calls.append((sql, kwargs))
+        return self.result
+
+
 class ClickHouseRevenueRowsTest(unittest.TestCase):
+    def test_executor_blocks_invalid_direct_nested_runtime_type(self):
+        client = FakeParameterizedClient()
+        executor = ClickHouseQueryExecutor(ClickHouseRuntime(client=client))
+        dataset_snapshot = snapshot()
+        invalid = resigned(contract(), filters=("not-a-filter-mapping",))
+
+        envelope = executor.execute(
+            invalid,
+            {dataset_snapshot.snapshot_ref: dataset_snapshot},
+        )
+
+        self.assertEqual(envelope.execution_status, "blocked")
+        self.assertIn(
+            "invalid_query_contract_runtime_type:filters",
+            envelope.failure_reason,
+        )
+        self.assertEqual(client.calls, [])
+
+    def test_executor_returns_blocked_envelopes_for_contract_boundaries(self):
+        executor = ClickHouseQueryExecutor(
+            ClickHouseRuntime(client=FakeParameterizedClient())
+        )
+        dataset_snapshot = snapshot()
+        cases = (
+            (
+                replace(contract(), contract_signature="tampered"),
+                dataset_snapshot,
+                "query_contract_signature_mismatch",
+            ),
+            (
+                contract(),
+                replace(dataset_snapshot, permission_scopes=("business_reader",)),
+                "dataset_snapshot_permission_denied",
+            ),
+        )
+        for query_contract, selected_snapshot, reason in cases:
+            with self.subTest(reason=reason):
+                envelope = executor.execute(
+                    query_contract,
+                    {selected_snapshot.snapshot_ref: selected_snapshot},
+                )
+                self.assertEqual(envelope.execution_status, "blocked")
+                self.assertIn(reason, envelope.failure_reason)
+                self.assertEqual(envelope.result_ref, "")
+                self.assertEqual(envelope.rows_ref, "")
+
+    def test_observed_grain_contains_only_expected_keys_present_in_every_row(self):
+        result = type(
+            "MissingObservationResult",
+            (),
+            {
+                "column_names": ("window_id", "window_role", "paid_amount"),
+                "result_rows": (("target_day", "target", 120.0),),
+                "summary": {"read_rows": 1},
+                "query_id": "missing-observation",
+            },
+        )()
+        executor = ClickHouseQueryExecutor(
+            ClickHouseRuntime(client=FakeResultClient(result))
+        )
+        dataset_snapshot = snapshot()
+
+        envelope = executor.execute(
+            contract(),
+            {dataset_snapshot.snapshot_ref: dataset_snapshot},
+        )
+
+        self.assertEqual(envelope.execution_status, "succeeded")
+        self.assertEqual(envelope.observed_grain, ("window_id",))
+
+    def test_raw_identifier_result_is_blocked(self):
+        result = type(
+            "RawIdentifierResult",
+            (),
+            {
+                "column_names": (
+                    "window_id",
+                    "window_role",
+                    "observation_key",
+                    "paid_amount",
+                    "user_id",
+                ),
+                "result_rows": (
+                    ("target_day", "target", "2026-06-02", 120.0, "raw-user"),
+                ),
+                "summary": {"read_rows": 1},
+                "query_id": "raw-identifier",
+            },
+        )()
+        executor = ClickHouseQueryExecutor(
+            ClickHouseRuntime(client=FakeResultClient(result))
+        )
+        dataset_snapshot = snapshot()
+
+        envelope = executor.execute(
+            contract(),
+            {dataset_snapshot.snapshot_ref: dataset_snapshot},
+        )
+
+        self.assertEqual(envelope.execution_status, "blocked")
+        self.assertEqual(
+            envelope.failure_reason,
+            "raw_identifier_output_rejected:user_id",
+        )
+        self.assertEqual(envelope.result_ref, "")
+
+    def test_rows_store_ref_is_audit_complete_and_reads_are_isolated(self):
+        rows_store = AggregateRowsStore()
+        query_contract = contract()
+        original = ({"window_id": "target_day", "nested": {"value": 1}},)
+
+        rows_ref = rows_store.persist(
+            "query-hash",
+            query_contract.contract_signature,
+            query_contract.dataset_snapshot_refs,
+            original,
+        )
+        first_read = rows_store.get(rows_ref)
+        first_read[0]["nested"]["value"] = 99
+
+        self.assertIn("query-hash", rows_ref)
+        self.assertIn(query_contract.contract_signature[:16], rows_ref)
+        self.assertEqual(rows_store.get(rows_ref)[0]["nested"]["value"], 1)
+
+    def test_result_and_rows_refs_share_the_same_audit_identity(self):
+        executor = ClickHouseQueryExecutor(
+            ClickHouseRuntime(client=FakeParameterizedClient())
+        )
+        dataset_snapshot = snapshot()
+
+        envelope = executor.execute(
+            contract(),
+            {dataset_snapshot.snapshot_ref: dataset_snapshot},
+        )
+
+        self.assertEqual(
+            envelope.rows_ref.removeprefix("rows:"),
+            envelope.result_ref.removeprefix("result:"),
+        )
+
+    def test_typed_execution_collects_success_after_an_earlier_blocked_contract(self):
+        client = FakeParameterizedClient()
+        dataset_snapshot = snapshot()
+        valid = contract()
+        blocked = replace(
+            valid,
+            query_contract_id="query:run:blocked:1",
+            contract_signature="tampered",
+        )
+        succeeding = replace(valid, query_contract_id="query:run:succeeding:2")
+        provider = ClickHouseRevenueRows(
+            runtime=ClickHouseRuntime(client=client),
+            snapshots={dataset_snapshot.snapshot_ref: dataset_snapshot},
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-multi-typed",
+                "compiler_runtime_plan": {
+                    "query_contracts": (blocked, succeeding),
+                },
+            },
+            {"time_window": "yesterday"},
+            ("compare_periods",),
+        )
+
+        result = provider.fetch(plan)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(len(result.query_envelopes), 2)
+        self.assertEqual(
+            tuple(item.execution_status for item in result.query_envelopes),
+            ("blocked", "succeeded"),
+        )
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(result.rows[0]["paid_amount"], 120.0)
+
+    def test_typed_projection_rejects_malformed_nested_values_without_fallback(self):
+        provider = ClickHouseRevenueRows(
+            runtime=ClickHouseRuntime(client=FakeParameterizedClient()),
+            snapshots={snapshot().snapshot_ref: snapshot()},
+        )
+        projections = []
+        malformed_filter = contract().to_dict()
+        malformed_filter["filters"] = ("silently-dropped",)
+        projections.append(malformed_filter)
+        malformed_binding = contract().to_dict()
+        malformed_binding["metric_bindings"] = ({"metric_id": "paid_amount"},)
+        projections.append(malformed_binding)
+        malformed_parameters = contract().to_dict()
+        malformed_parameters["query_parameters"] = ("not", "a", "mapping")
+        projections.append(malformed_parameters)
+
+        for index, projection in enumerate(projections):
+            with self.subTest(index=index):
+                plan = provider.plan(
+                    {
+                        "run_id": f"run-malformed-{index}",
+                        "compiler_runtime_plan": {
+                            "query_contracts": (projection,),
+                        },
+                    },
+                    {"time_window": "yesterday"},
+                    ("compare_periods",),
+                )
+                result = provider.fetch(plan)
+                self.assertEqual(plan.contract_mode, "typed")
+                self.assertIn("invalid_typed_query_contract_projection", plan.reason)
+                self.assertFalse(result.ok)
+                self.assertEqual(result.contract_mode, "typed")
+
+    def test_typed_projection_rejects_invalid_snapshots_and_unknown_nested_keys(self):
+        unexpected_binding_key = contract().to_dict()
+        unexpected_binding_key["metric_bindings"][0]["silent_extension"] = True
+        projections = (
+            {
+                "query_contracts": (unexpected_binding_key,),
+                "dataset_snapshots": (snapshot(),),
+            },
+            {
+                "query_contracts": (contract(),),
+                "dataset_snapshots": (snapshot(), "silently-invalid"),
+            },
+        )
+
+        for index, runtime_plan in enumerate(projections):
+            with self.subTest(index=index):
+                client = FakeParameterizedClient()
+                provider = ClickHouseRevenueRows(
+                    runtime=ClickHouseRuntime(client=client),
+                )
+                plan = provider.plan(
+                    {
+                        "run_id": f"run-invalid-projection-{index}",
+                        "compiler_runtime_plan": runtime_plan,
+                    },
+                    {"time_window": "yesterday"},
+                    ("compare_periods",),
+                )
+                result = provider.fetch(plan)
+
+                self.assertEqual(plan.contract_mode, "typed")
+                self.assertIn("invalid_typed_query_contract_projection", plan.reason)
+                self.assertFalse(result.ok)
+                self.assertEqual(client.calls, [])
+
     def test_schema_fields_reads_clickhouse_describe_rows(self):
         provider = ClickHouseRevenueRows(
             runtime=FakeRuntime(
@@ -585,6 +869,94 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "invalid_identifier")
         self.assertEqual(runtime.calls, [])
+
+    def test_typed_executor_passes_parameters_settings_and_preserves_audit_envelope(self):
+        client = FakeParameterizedClient()
+        runtime = ClickHouseRuntime(client=client)
+        executor = ClickHouseQueryExecutor(runtime)
+        query_contract = contract()
+        dataset_snapshot = snapshot()
+
+        envelope = executor.execute(
+            query_contract,
+            {dataset_snapshot.snapshot_ref: dataset_snapshot},
+        )
+
+        self.assertIsInstance(envelope, QueryResultEnvelope)
+        self.assertEqual(client.calls[0][1]["parameters"]["window_id_0"], "target_day")
+        self.assertEqual(client.calls[0][1]["settings"]["result_overflow_mode"], "throw")
+        self.assertEqual(envelope.provider_stats["read_rows"], 42)
+        self.assertEqual(
+            envelope.provider_stats["provider_query_id"],
+            "provider-query-id",
+        )
+        self.assertTrue(envelope.rows_ref.startswith("rows:"))
+        self.assertEqual(envelope.row_count, 1)
+        self.assertTrue(envelope.completeness_report_ref)
+        self.assertNotIn("rows", envelope.to_dict())
+
+    def test_query_hash_covers_parameters_as_well_as_sql(self):
+        executor = ClickHouseQueryExecutor(
+            ClickHouseRuntime(client=FakeParameterizedClient())
+        )
+        dataset_snapshot = snapshot()
+        first = contract(filters=({"field": "channel", "op": "eq", "value": "A"},))
+        second = contract(filters=({"field": "channel", "op": "eq", "value": "B"},))
+
+        first_result = executor.execute(
+            first,
+            {dataset_snapshot.snapshot_ref: dataset_snapshot},
+        )
+        second_result = executor.execute(
+            second,
+            {dataset_snapshot.snapshot_ref: dataset_snapshot},
+        )
+
+        self.assertNotEqual(first_result.query_hash, second_result.query_hash)
+        self.assertNotEqual(first_result.rows_ref, second_result.rows_ref)
+
+    def test_internal_type_error_is_not_downgraded_to_compatibility_call(self):
+        runtime = ClickHouseRuntime(client=FakeInternalTypeErrorClient())
+
+        with self.assertRaisesRegex(TypeError, "client decoding bug"):
+            runtime.aggregate(
+                "SELECT count() FROM paid_success",
+                query_id="typed-error",
+                parameters={"value": 1},
+                settings={"readonly": 2},
+            )
+
+    def test_revenue_adapter_uses_typed_contracts_without_legacy_fallback(self):
+        client = FakeParameterizedClient()
+        dataset_snapshot = snapshot()
+        provider = ClickHouseRevenueRows(
+            runtime=ClickHouseRuntime(client=client),
+            snapshots={dataset_snapshot.snapshot_ref: dataset_snapshot},
+        )
+        plan = provider.plan(
+            {
+                "run_id": "run-typed",
+                "compiler_runtime_plan": {
+                    "query_contracts": (contract().to_dict(),),
+                },
+            },
+            {"time_window": "yesterday"},
+            ("compare_periods",),
+        )
+
+        result = provider.fetch(plan)
+
+        self.assertEqual(plan.contract_mode, "typed")
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            result.query_envelopes[0].query_contract_ref,
+            contract().query_contract_id,
+        )
+        self.assertTrue(
+            all(item["contract_mode"] == "typed" for item in result.query_results)
+        )
+        self.assertNotIn("now(", client.calls[0][0].casefold())
+        self.assertNotIn("limit 5000", client.calls[0][0].casefold())
 
 
 if __name__ == "__main__":

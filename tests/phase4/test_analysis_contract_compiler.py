@@ -2,6 +2,7 @@ from datetime import datetime
 import unittest
 
 from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
+from bi_agent.runtime.analysis_contracts import query_contract_signature
 from bi_agent.runtime.capability_registry import public_capability_ids
 from bi_agent.runtime.compiler import SUPPORTED_CAPABILITIES, compile_graph
 from bi_agent.runtime.contracts import load_contract
@@ -34,6 +35,40 @@ def snapshot(dataset_id, table, watermark):
 
 
 class AnalysisContractCompilerTest(unittest.TestCase):
+    def test_high_value_query_uses_reviewed_parameters_in_shared_signature(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-high-value-parameters",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["candidate_driver"],
+            },
+            accepted_capabilities=("high_value_user_contribution",),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        query = outcome.query_contracts[0]
+        self.assertEqual(
+            query.query_parameters,
+            {
+                "threshold_quantile": 0.95,
+                "threshold_reference": "within_window_user_paid_amount",
+                "aggregation_grain": (
+                    "window_id",
+                    "observation_key",
+                    "user_id",
+                ),
+            },
+        )
+        self.assertEqual(query.contract_signature, query_contract_signature(query))
+
     def test_explicit_claim_outside_capability_ceiling_is_rejected(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         outcome = compile_analysis_contract(
