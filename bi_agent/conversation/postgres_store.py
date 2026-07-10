@@ -481,6 +481,71 @@ class PostgresConversationStore:
                 assets.append(payload)
         return tuple(assets)
 
+    def save_dataset_snapshot(self, payload: dict[str, Any]) -> None:
+        try:
+            self._execute(
+                """
+                INSERT INTO waje_runtime.dataset_snapshots(
+                  snapshot_ref, dataset_id, physical_table, watermark, schema_fingerprint,
+                  schema_fields, contract_ref, permission_scopes, loaded_at, status, payload
+                ) VALUES (
+                  %(snapshot_ref)s, %(dataset_id)s, %(physical_table)s, %(watermark)s,
+                  %(schema_fingerprint)s, %(schema_fields)s::jsonb, %(contract_ref)s,
+                  %(permission_scopes)s::jsonb, %(loaded_at)s, %(status)s, %(payload)s::jsonb
+                )
+                ON CONFLICT (snapshot_ref) DO UPDATE SET
+                  dataset_id = EXCLUDED.dataset_id,
+                  physical_table = EXCLUDED.physical_table,
+                  watermark = EXCLUDED.watermark,
+                  schema_fingerprint = EXCLUDED.schema_fingerprint,
+                  schema_fields = EXCLUDED.schema_fields,
+                  contract_ref = EXCLUDED.contract_ref,
+                  permission_scopes = EXCLUDED.permission_scopes,
+                  loaded_at = EXCLUDED.loaded_at,
+                  status = EXCLUDED.status,
+                  payload = EXCLUDED.payload
+                """,
+                {
+                    **payload,
+                    "schema_fields": _json(payload.get("schema_fields", [])),
+                    "permission_scopes": _json(payload.get("permission_scopes", [])),
+                    "payload": _json(payload),
+                },
+                commit=False,
+            )
+            self._audit(
+                "dataset_snapshot_saved",
+                ref=payload["snapshot_ref"],
+                payload=payload,
+                commit=False,
+            )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def list_dataset_snapshots(self, dataset_id: str = "") -> tuple[dict[str, Any], ...]:
+        rows = self._fetchall(
+            """
+            SELECT payload
+            FROM waje_runtime.dataset_snapshots
+            WHERE (%(dataset_id)s = '' OR dataset_id = %(dataset_id)s)
+            ORDER BY loaded_at, snapshot_ref
+            """,
+            {"dataset_id": dataset_id},
+        )
+        snapshots: list[dict[str, Any]] = []
+        for row in rows:
+            payload = _field(row, "payload", 0)
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError:
+                    payload = None
+            if isinstance(payload, dict):
+                snapshots.append(payload)
+        return tuple(snapshots)
+
     def record_run_nodes(self, run_id: str, checkpoint_events: tuple[dict, ...]) -> None:
         for index, event in enumerate(checkpoint_events):
             node_name = str(event.get("node") or event.get("name") or f"node_{index}")

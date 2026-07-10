@@ -165,6 +165,21 @@ CREATE TABLE IF NOT EXISTS waje_runtime.audit_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS waje_runtime.dataset_snapshots (
+  snapshot_ref text PRIMARY KEY,
+  dataset_id text NOT NULL,
+  physical_table text NOT NULL,
+  watermark date NOT NULL,
+  schema_fingerprint text NOT NULL,
+  schema_fields jsonb NOT NULL DEFAULT '[]'::jsonb,
+  contract_ref text NOT NULL,
+  permission_scopes jsonb NOT NULL DEFAULT '[]'::jsonb,
+  loaded_at timestamptz NOT NULL,
+  status text NOT NULL,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_conversation_topics_thread ON waje_runtime.conversation_topics(thread_id);
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread ON waje_runtime.conversation_turns(thread_id);
 CREATE INDEX IF NOT EXISTS idx_analysis_runs_thread ON waje_runtime.analysis_runs(thread_id);
@@ -172,3 +187,5 @@ CREATE INDEX IF NOT EXISTS idx_result_refs_topic ON waje_runtime.result_refs(top
 CREATE INDEX IF NOT EXISTS idx_analysis_assets_topic ON waje_runtime.analysis_assets(topic_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_investigation_artifacts_topic ON waje_runtime.investigation_artifacts(topic_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_events_thread ON waje_runtime.audit_events(thread_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_lookup
+  ON waje_runtime.dataset_snapshots(dataset_id, status, loaded_at DESC);

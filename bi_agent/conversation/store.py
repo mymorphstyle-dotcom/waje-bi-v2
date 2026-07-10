@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -34,8 +35,13 @@ class InMemoryConversationStore:
         self.reuse_decisions: dict[tuple[str, str], list[dict]] = defaultdict(list)
         self.answer_packages: dict[str, dict] = {}
         self.analysis_assets: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        self.dataset_snapshots: dict[str, dict[str, Any]] = {}
         self.clarification_states: dict[str, ClarificationState] = {}
-        self.audit_events: list[dict] = []
+        self._audit_events: list[dict] = []
+
+    @property
+    def audit_events(self) -> list[dict]:
+        return deepcopy(self._audit_events)
 
     def create_thread(self, thread_id: Optional[str] = None, *, owner_id: str = "user") -> ThreadState:
         thread_id = thread_id or f"thread-{uuid4().hex[:12]}"
@@ -199,6 +205,22 @@ class InMemoryConversationStore:
     def list_analysis_assets(self, thread_id: str, topic_id: str) -> tuple[dict[str, Any], ...]:
         return tuple(dict(asset) for asset in self.analysis_assets.get((thread_id, topic_id), ()))
 
+    def save_dataset_snapshot(self, payload: dict[str, Any]) -> None:
+        snapshot = deepcopy(payload)
+        self.dataset_snapshots[snapshot["snapshot_ref"]] = snapshot
+        self.add_audit_event(
+            "dataset_snapshot_saved",
+            ref=snapshot["snapshot_ref"],
+            payload=deepcopy(snapshot),
+        )
+
+    def list_dataset_snapshots(self, dataset_id: str = "") -> tuple[dict[str, Any], ...]:
+        return tuple(
+            deepcopy(payload)
+            for payload in self.dataset_snapshots.values()
+            if not dataset_id or payload.get("dataset_id") == dataset_id
+        )
+
     def record_run_nodes(self, run_id: str, checkpoint_events: tuple[dict, ...]) -> None:
         self.runs.setdefault(run_id, {})["checkpoint_events"] = list(checkpoint_events)
         self.add_audit_event("run_nodes_recorded", run_id=run_id, ref=run_id)
@@ -213,14 +235,14 @@ class InMemoryConversationStore:
         ref: str = "",
         payload: dict | None = None,
     ) -> None:
-        self.audit_events.append(
+        self._audit_events.append(
             {
                 "event_type": event_type,
                 "thread_id": thread_id,
                 "topic_id": topic_id,
                 "run_id": run_id,
                 "ref": ref,
-                "payload": payload or {},
+                "payload": deepcopy(payload) if payload is not None else {},
             }
         )
 

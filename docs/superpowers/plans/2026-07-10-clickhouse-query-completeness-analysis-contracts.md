@@ -544,6 +544,12 @@ git commit -m "feat: add deterministic analysis contract windows"
 - Produces: `DatasetSnapshot`, `DatasetCatalog.resolve(dataset_id, as_of)`, `DatasetCatalog.common_watermark(dataset_ids)`.
 - Produces store methods: `save_dataset_snapshot(payload)` and `list_dataset_snapshots(dataset_id="")`.
 
+**Accepted invariants:**
+- `resolve()` requires timezone-aware `as_of` and timezone-aware snapshot `loaded_at`; both values are normalized to UTC before comparison.
+- A repeated `snapshot_ref` is an idempotent full replacement. Every mirrored SQL column and the JSON payload must describe the same snapshot version.
+- PostgreSQL snapshot upsert plus audit insertion is one explicit transaction. An upsert, audit, or commit exception triggers rollback and is re-raised unchanged.
+- InMemory save, list, and audit-read boundaries use canonical deep copies so callers cannot mutate stored snapshots or audit history through shared nested values.
+
 - [ ] **Step 1: 写 catalog 和 persistence 失败测试**
 
 Create `tests/phase4/test_dataset_catalog.py`:
@@ -598,6 +604,13 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
+Add catalog regression tests for:
+
+- naive `as_of` rejected with `timezone_aware_required:as_of`;
+- naive snapshot `loaded_at` rejected with `timezone_aware_required:loaded_at`;
+- equivalent UTC offsets compared as the same instant;
+- latest eligible version selected while future, inactive, and permission-blocked versions are excluded.
+
 Extend `tests/phase7/test_conversation_persistence.py`:
 
 ```python
@@ -621,7 +634,17 @@ def test_schema_and_store_persist_dataset_snapshots(self):
     )
     sql = "\n".join(statement for statement, _ in connection.statements)
     self.assertIn("waje_runtime.dataset_snapshots", sql)
+    self.assertIn("waje_runtime.audit_events", sql)
+    self.assertEqual(connection.commits, 1)
 ```
+
+Add persistence regression tests for:
+
+- failure on the second execute (audit insert) rolls back once and commits zero times;
+- commit failure rolls back once and commits zero times;
+- `ON CONFLICT` updates every mirrored snapshot column plus `payload`, and bound mirror params match the serialized payload;
+- saving a reused `snapshot_ref` replaces the complete in-memory snapshot and removes it from the previous dataset filter;
+- nested `schema_fields` and `permission_scopes` cannot be mutated through the original input, list return values, or audit reads.
 
 - [ ] **Step 2: 运行测试并确认失败**
 
@@ -640,7 +663,7 @@ Create `bi_agent/runtime/dataset_catalog.py`:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Iterable
 
 
@@ -666,17 +689,21 @@ class DatasetCatalog:
         self._snapshots = tuple(snapshots)
 
     def resolve(self, dataset_id: str, *, as_of: datetime, permission_scope: str) -> DatasetSnapshot:
-        eligible = [
-            item
-            for item in self._snapshots
-            if item.dataset_id == dataset_id
-            and item.status == "active"
-            and permission_scope in item.permission_scopes
-            and _parse_datetime(item.loaded_at) <= as_of
-        ]
+        as_of_utc = _aware_utc(as_of, field="as_of")
+        eligible = []
+        for item in self._snapshots:
+            if (
+                item.dataset_id != dataset_id
+                or item.status != "active"
+                or permission_scope not in item.permission_scopes
+            ):
+                continue
+            loaded_at_utc = _parse_datetime(item.loaded_at)
+            if loaded_at_utc <= as_of_utc:
+                eligible.append((loaded_at_utc, item))
         if not eligible:
             raise KeyError(f"dataset_snapshot_unavailable:{dataset_id}")
-        return max(eligible, key=lambda item: (_parse_datetime(item.loaded_at), item.snapshot_ref))
+        return max(eligible, key=lambda candidate: (candidate[0], candidate[1].snapshot_ref))[1]
 
     def common_watermark(self, dataset_ids: tuple[str, ...]) -> date:
         watermarks = []
@@ -692,7 +719,16 @@ class DatasetCatalog:
 
 
 def _parse_datetime(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return _aware_utc(
+        datetime.fromisoformat(value.replace("Z", "+00:00")),
+        field="loaded_at",
+    )
+
+
+def _aware_utc(value: datetime, *, field: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"timezone_aware_required:{field}")
+    return value.astimezone(timezone.utc)
 ```
 
 - [ ] **Step 4: 增加 PostgreSQL snapshot 表和两个 store 实现**
@@ -719,39 +755,56 @@ CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_lookup
   ON waje_runtime.dataset_snapshots(dataset_id, status, loaded_at DESC);
 ```
 
-Add matching methods to both stores. `PostgresConversationStore.save_dataset_snapshot()` performs one upsert and one audit event in one commit; `InMemoryConversationStore` stores payloads keyed by `snapshot_ref`.
+Add matching methods to both stores. `PostgresConversationStore.save_dataset_snapshot()` performs one upsert and one audit event in one explicit transaction; `InMemoryConversationStore` stores deep-copied payloads keyed by `snapshot_ref` and returns deep copies from snapshot and audit-read boundaries.
 
 ```python
 def save_dataset_snapshot(self, payload: dict[str, Any]) -> None:
-    self._execute(
-        """
-        INSERT INTO waje_runtime.dataset_snapshots(
-          snapshot_ref, dataset_id, physical_table, watermark, schema_fingerprint,
-          schema_fields, contract_ref, permission_scopes, loaded_at, status, payload
-        ) VALUES (
-          %(snapshot_ref)s, %(dataset_id)s, %(physical_table)s, %(watermark)s,
-          %(schema_fingerprint)s, %(schema_fields)s::jsonb, %(contract_ref)s,
-          %(permission_scopes)s::jsonb, %(loaded_at)s, %(status)s, %(payload)s::jsonb
+    try:
+        self._execute(
+            """
+            INSERT INTO waje_runtime.dataset_snapshots(
+              snapshot_ref, dataset_id, physical_table, watermark, schema_fingerprint,
+              schema_fields, contract_ref, permission_scopes, loaded_at, status, payload
+            ) VALUES (
+              %(snapshot_ref)s, %(dataset_id)s, %(physical_table)s, %(watermark)s,
+              %(schema_fingerprint)s, %(schema_fields)s::jsonb, %(contract_ref)s,
+              %(permission_scopes)s::jsonb, %(loaded_at)s, %(status)s, %(payload)s::jsonb
+            )
+            ON CONFLICT (snapshot_ref) DO UPDATE SET
+              dataset_id = EXCLUDED.dataset_id,
+              physical_table = EXCLUDED.physical_table,
+              watermark = EXCLUDED.watermark,
+              schema_fingerprint = EXCLUDED.schema_fingerprint,
+              schema_fields = EXCLUDED.schema_fields,
+              contract_ref = EXCLUDED.contract_ref,
+              permission_scopes = EXCLUDED.permission_scopes,
+              loaded_at = EXCLUDED.loaded_at,
+              status = EXCLUDED.status,
+              payload = EXCLUDED.payload
+            """,
+            {
+                **payload,
+                "schema_fields": _json(payload.get("schema_fields", [])),
+                "permission_scopes": _json(payload.get("permission_scopes", [])),
+                "payload": _json(payload),
+            },
+            commit=False,
         )
-        ON CONFLICT (snapshot_ref) DO UPDATE SET
-          watermark = EXCLUDED.watermark,
-          schema_fingerprint = EXCLUDED.schema_fingerprint,
-          schema_fields = EXCLUDED.schema_fields,
-          permission_scopes = EXCLUDED.permission_scopes,
-          loaded_at = EXCLUDED.loaded_at,
-          status = EXCLUDED.status,
-          payload = EXCLUDED.payload
-        """,
-        {
-            **payload,
-            "schema_fields": _json(payload.get("schema_fields", [])),
-            "permission_scopes": _json(payload.get("permission_scopes", [])),
-            "payload": _json(payload),
-        },
-        commit=False,
-    )
-    self._audit("dataset_snapshot_saved", ref=payload["snapshot_ref"], payload=payload)
+        self._audit(
+            "dataset_snapshot_saved",
+            ref=payload["snapshot_ref"],
+            payload=payload,
+            commit=False,
+        )
+        self.connection.commit()
+    except Exception:
+        self.connection.rollback()
+        raise
 ```
+
+The in-memory implementation uses `copy.deepcopy` when saving snapshot payloads,
+when returning listed snapshots, when recording audit payloads, and when exposing
+audit events to readers.
 
 - [ ] **Step 5: 运行 Task 2 验证**
 
