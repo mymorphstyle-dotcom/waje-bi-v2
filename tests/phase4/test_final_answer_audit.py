@@ -28,7 +28,7 @@ class FinalAnswerAuditTest(unittest.TestCase):
         self.assertEqual(state["final_business_summary"], original_summary)
         self.assertEqual(llm.payload["final_answer"], original_summary)
 
-    def test_audit_receives_only_claim_referenced_evidence_envelopes(self):
+    def test_audit_merges_verified_claim_and_brief_evidence_refs_in_order(self):
         llm = _CapturingAuditLLM()
         state = _audit_state(llm)
         state["draft_claims"] = [
@@ -78,13 +78,16 @@ class FinalAnswerAuditTest(unittest.TestCase):
                 "sql_hashes": ["sql-outlier"],
             },
         ]
+        state["evidence_brief"] = {
+            "evidence_refs": ["driver:secondary", "pattern:primary", "outlier:unrelated"]
+        }
 
         _final_answer_audit(state)
 
         envelopes = llm.payload["evidence_envelopes"]
         self.assertEqual(
             [item["evidence_ref"] for item in envelopes],
-            ["pattern:primary", "driver:secondary"],
+            ["pattern:primary", "driver:secondary", "outlier:unrelated"],
         )
         self.assertEqual(envelopes[0]["evidence_type"], "statistical_association")
         self.assertEqual(envelopes[0]["strength"], "high")
@@ -120,7 +123,7 @@ class FinalAnswerAuditTest(unittest.TestCase):
             ["pattern:primary"],
         )
 
-    def test_audit_ignores_rejected_claim_refs_and_uses_brief_evidence(self):
+    def test_audit_excludes_rejected_claim_refs_while_using_brief_evidence(self):
         llm = _CapturingAuditLLM()
         state = _audit_state(llm)
         state["verifier"] = {"errors": [{"code": "number_mismatch", "claim_index": 0}]}
@@ -169,15 +172,14 @@ class FinalAnswerAuditTest(unittest.TestCase):
         self.assertTrue(audit["blocks_display"])
         self.assertEqual(audit["hard_blockers"], ["unsupported_main_claim"])
 
-    def test_unknown_hard_blocker_code_does_not_block_display(self):
+    def test_unknown_repairable_warning_becomes_nonblocking_contract_mismatch(self):
         audit = normalize_final_answer_audit(
             {
                 "display_status": "hard_blocked",
                 "hard_blockers": ["totally_unknown_blocker"],
                 "repairable_warnings": [
                     "missing_business_interpretation",
-                    "unsupported_wording",
-                    "unknown_warning",
+                    "发现一条没有证据支持的陈述",
                 ],
                 "retry_instruction": "补一句业务排查方向。",
                 "business_audit_summary": "有一条不受支持的审计码。",
@@ -187,9 +189,13 @@ class FinalAnswerAuditTest(unittest.TestCase):
         self.assertEqual(audit["display_status"], "ready_with_warnings")
         self.assertFalse(audit["blocks_display"])
         self.assertEqual(audit["hard_blockers"], [])
-        self.assertEqual(audit["repairable_warnings"], ["missing_business_interpretation"])
+        self.assertEqual(
+            audit["repairable_warnings"],
+            ["missing_business_interpretation", "final_answer_audit_contract_mismatch"],
+        )
+        self.assertEqual(audit["retry_instruction"], "补一句业务排查方向。")
 
-    def test_unsupported_material_claim_is_the_only_supported_wording_warning(self):
+    def test_unknown_wording_warning_keeps_supported_warning_and_contract_mismatch(self):
         audit = normalize_final_answer_audit(
             {
                 "display_status": "ready_with_warnings",
@@ -200,7 +206,10 @@ class FinalAnswerAuditTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(audit["repairable_warnings"], ["unsupported_material_claim"])
+        self.assertEqual(
+            audit["repairable_warnings"],
+            ["unsupported_material_claim", "final_answer_audit_contract_mismatch"],
+        )
 
     def test_local_hard_blockers_override_llm_ready_audit(self):
         class ReadyAuditLLM:

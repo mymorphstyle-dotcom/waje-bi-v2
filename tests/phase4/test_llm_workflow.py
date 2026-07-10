@@ -1134,6 +1134,16 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("do not write statistical association", text)
         self.assertIn("当前证据能把排查方向收敛到", text)
 
+    def test_final_answer_audit_prompt_requires_exact_audit_enums(self):
+        messages = build_prompt("final_answer_audit", {"final_answer": "check"}).messages
+        text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("ready, ready_with_warnings, or hard_blocked", text)
+        self.assertIn("unsupported_material_claim", text)
+        self.assertIn("repairable_warnings must contain only", text)
+        self.assertIn("Do not put explanatory prose in hard_blockers or repairable_warnings", text)
+        self.assertIn("retry_instruction and business_audit_summary", text)
+
     def test_degraded_explanation_sanitizes_unsupported_period_and_threshold_advice(self):
         with self.assertRaisesRegex(WorkflowFailure, "materiality_drift"):
             _sanitize_terminal_explanation(

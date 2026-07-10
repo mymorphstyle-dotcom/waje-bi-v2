@@ -3879,11 +3879,18 @@ def normalize_final_answer_audit(output: Mapping[str, Any]) -> dict[str, Any]:
         for code in dict.fromkeys(str(item) for item in output.get("hard_blockers") or ())
         if code in allowed_hard_blockers
     ]
-    warnings = [
+    raw_warnings = [
         code
         for code in dict.fromkeys(str(item) for item in output.get("repairable_warnings") or ())
+        if code
+    ]
+    warnings = [
+        code
+        for code in raw_warnings
         if code in allowed_warnings
     ]
+    if any(code not in allowed_warnings for code in raw_warnings):
+        warnings.append("final_answer_audit_contract_mismatch")
     audit = {
         "display_status": status,
         "blocks_display": bool(hard_blockers),
@@ -4078,10 +4085,9 @@ def _final_answer_audit_evidence_envelopes(state: WorkflowState) -> list[dict[st
         if isinstance(claim, Mapping)
         for ref in claim.get("evidence_refs", ())
     ]
-    if not refs:
-        evidence_brief = state.get("evidence_brief", {})
-        if isinstance(evidence_brief, Mapping):
-            refs = [str(ref) for ref in evidence_brief.get("evidence_refs", ())]
+    evidence_brief = state.get("evidence_brief", {})
+    if isinstance(evidence_brief, Mapping):
+        refs.extend(str(ref) for ref in evidence_brief.get("evidence_refs", ()))
     return [
         to_jsonable(evidence_by_ref[ref])
         for ref in dict.fromkeys(refs)
