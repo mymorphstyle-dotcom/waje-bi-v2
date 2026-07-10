@@ -114,7 +114,7 @@
 
 **Interfaces:**
 - Produces: `ResolvedWindow`, `ContractGap`, `AnalysisContract`, `QueryContract`, `QueryResultEnvelope`, `CompletenessReport`, `CapabilityInputSlot`, `CapabilityExecutionPlan`.
-- Produces: `resolve_revenue_windows(target_semantic, baselines, as_of, timezone_name, dataset_watermarks) -> WindowResolution`.
+- Produces: `resolve_revenue_windows(target_semantic, baselines, as_of, timezone_name, dataset_watermarks, affected_capabilities, affected_claim_types) -> WindowResolution`.
 - Consumed by: Tasks 2-11.
 
 - [ ] **Step 1: 写失败测试，锁定日期、watermark 和重叠窗口行为**
@@ -137,6 +137,8 @@ class AnalysisContractsTest(unittest.TestCase):
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
             timezone_name="Africa/Lagos",
             dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
+            affected_capabilities=("compare_periods",),
+            affected_claim_types=("comparative_change",),
         )
 
         windows = {window.window_id: window for window in result.windows}
@@ -155,12 +157,28 @@ class AnalysisContractsTest(unittest.TestCase):
             as_of=datetime.fromisoformat("2026-07-10T12:00:00+01:00"),
             timezone_name="Africa/Lagos",
             dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
+            affected_capabilities=("compare_periods",),
+            affected_claim_types=("comparative_change",),
         )
 
         self.assertEqual(result.windows[0].start_inclusive, "2026-07-09")
         self.assertEqual(result.gaps[0].gap_type, "window_data_unavailable")
         self.assertEqual(result.gaps[0].dataset_id, "paid_order_success")
         self.assertEqual(result.gaps[0].owner, "data_owner")
+        self.assertEqual(result.gaps[0].affected_capabilities, ("compare_periods",))
+        self.assertEqual(result.gaps[0].affected_claim_types, ("comparative_change",))
+
+    def test_rejects_duplicate_baselines(self):
+        with self.assertRaisesRegex(ValueError, "duplicate_baseline:previous_day"):
+            resolve_revenue_windows(
+                target_semantic="yesterday",
+                baselines=("previous_day", "previous_day"),
+                as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+                timezone_name="Africa/Lagos",
+                dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
+                affected_capabilities=("compare_periods",),
+                affected_claim_types=("comparative_change",),
+            )
 
     def test_contract_signature_is_order_stable(self):
         left = stable_contract_signature({"b": [2, 1], "a": {"x": 1}})
@@ -171,6 +189,12 @@ class AnalysisContractsTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 ```
+
+The same module also constructs `AnalysisContract`, `QueryContract`,
+`CapabilityExecutionPlan`, and `QueryResultEnvelope` directly. It asserts nested
+`to_dict()` output, external result references, internal-only aggregate rows,
+structured readiness/degradation mappings, non-empty gap impact fields, and
+distinct gap ids for two requested target dates sharing one dataset watermark.
 
 - [ ] **Step 2: 运行测试并确认失败**
 
@@ -270,11 +294,13 @@ class ResultShape:
 @dataclass(frozen=True)
 class QueryContract:
     query_contract_id: str
+    analysis_contract_ref: str
     query_intent: str
     dataset_snapshot_refs: tuple[str, ...]
     metric_bindings: tuple[MetricBinding, ...]
     dimension_bindings: tuple[DimensionBinding, ...]
-    windows: tuple[ResolvedWindow, ...]
+    window_refs: tuple[str, ...]
+    resolved_windows: tuple[ResolvedWindow, ...]
     filters: tuple[Mapping[str, Any], ...]
     result_shape: ResultShape
     completeness_assertions: tuple[str, ...]
@@ -303,7 +329,8 @@ class CapabilityExecutionPlan:
     required_input_slots: tuple[CapabilityInputSlot, ...]
     optional_input_slots: tuple[CapabilityInputSlot, ...]
     merge_strategy: str
-    degradation_policy: str
+    minimum_readiness: Mapping[str, Any]
+    degradation_policy: Mapping[str, Any]
     supported_evidence_types: tuple[str, ...]
     maximum_claim_strength: str
 
@@ -322,7 +349,7 @@ class AnalysisContract:
     metric_bindings: tuple[MetricBinding, ...]
     dimension_bindings: tuple[DimensionBinding, ...]
     dataset_requirements: tuple[str, ...]
-    capability_plans: tuple[CapabilityExecutionPlan, ...]
+    capability_requirements: tuple[str, ...]
     permission_scope: str
     contract_gaps: tuple[ContractGap, ...] = ()
     clarification_outcome_ref: str = ""
@@ -338,6 +365,10 @@ class QueryResultEnvelope:
     query_hash: str
     result_ref: str
     execution_status: str
+    rows_ref: str
+    row_count: int
+    completeness_report_ref: str
+    # Aggregate-only in-process payload. External consumers use rows_ref.
     rows: tuple[Mapping[str, Any], ...] = ()
     observed_schema: Mapping[str, str] = field(default_factory=dict)
     observed_windows: tuple[str, ...] = ()
@@ -347,7 +378,9 @@ class QueryResultEnvelope:
     failure_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload.pop("rows")
+        return payload
 
 
 @dataclass(frozen=True)
@@ -392,7 +425,14 @@ def resolve_revenue_windows(
     as_of: datetime,
     timezone_name: str,
     dataset_watermarks: Mapping[str, date],
+    affected_capabilities: tuple[str, ...],
+    affected_claim_types: tuple[str, ...],
 ) -> WindowResolution:
+    seen_baselines = set()
+    for baseline in baselines:
+        if baseline in seen_baselines:
+            raise ValueError(f"duplicate_baseline:{baseline}")
+        seen_baselines.add(baseline)
     local_day = as_of.astimezone(ZoneInfo(timezone_name)).date()
     target_day = _resolve_target_day(target_semantic, local_day)
     windows = [_day_window("target_day", "target", target_day, timezone_name)]
@@ -421,13 +461,23 @@ def resolve_revenue_windows(
             raise ValueError(f"unsupported_baseline:{baseline}")
     gaps = []
     required_end = target_day
+    has_window_gap = any(watermark < required_end for watermark in dataset_watermarks.values())
+    if has_window_gap and not affected_capabilities:
+        raise ValueError("window_gap_requires_affected_capabilities")
+    if has_window_gap and not affected_claim_types:
+        raise ValueError("window_gap_requires_affected_claim_types")
     for dataset_id, watermark in sorted(dataset_watermarks.items()):
         if watermark < required_end:
             gaps.append(
                 ContractGap(
                     gap_type="window_data_unavailable",
-                    gap_id=f"{dataset_id}:watermark:{watermark.isoformat()}",
+                    gap_id=(
+                        f"{dataset_id}:target_day:{target_day.isoformat()}:"
+                        f"watermark:{watermark.isoformat()}"
+                    ),
                     dataset_id=dataset_id,
+                    affected_capabilities=affected_capabilities,
+                    affected_claim_types=affected_claim_types,
                     owner="data_owner",
                     repair_options=("wait_for_refresh", "use_latest_complete_business_day"),
                     requires_clarification=True,
@@ -810,6 +860,54 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         )
         self.assertIn("source_unbound", {gap.gap_type for gap in outcome.analysis_contract.contract_gaps})
 
+    def test_omitted_claim_intents_with_stale_snapshot_returns_typed_window_gap(self):
+        registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
+        outcome = compile_analysis_contract(
+            run_id="run-stale",
+            proposal={
+                "question_families": ["paid_amount_change_explanation"],
+                "target_metrics": ["paid_amount"],
+                "requested_dimensions": [],
+                "baselines": ["previous_day"],
+            },
+            accepted_capabilities=("compare_periods",),
+            catalog=DatasetCatalog((snapshot("paid_order_success", "paid_success", "2026-07-04"),)),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-07-10T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        window_gap = next(
+            gap for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_type == "window_data_unavailable"
+        )
+        self.assertEqual(outcome.analysis_contract.claim_intents, ("comparative_change",))
+        self.assertEqual(window_gap.affected_claim_types, ("comparative_change",))
+
+    def test_unbound_claim_intent_returns_contract_partial_gap(self):
+        registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
+        outcome = compile_analysis_contract(
+            run_id="run-unbound-claim",
+            proposal={
+                "question_families": ["evidence_quality_review"],
+                "target_metrics": [],
+                "requested_dimensions": [],
+                "baselines": [],
+            },
+            accepted_capabilities=("answer_verify",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        claim_gap = next(
+            gap for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_type == "contract_partial"
+        )
+        self.assertEqual(outcome.analysis_contract.claim_intents, ("unbound_claim_intent",))
+        self.assertEqual(claim_gap.affected_claim_types, ("unbound_claim_intent",))
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -906,7 +1004,11 @@ dimensions:
   gameplay: {contract_ref: contracts/dimensions/dimensions.yaml#gameplay, dataset_id: gameplay, source_field: gameplay, allowed_grains: [day, channel]}
 
 capability_inputs:
-  compare_periods: {query_families: [daily_metric_baselines], required_metrics: [paid_amount], required_windows: [target_day]}
+  compare_periods:
+    query_families: [daily_metric_baselines]
+    required_metrics: [paid_amount]
+    required_windows: [target_day]
+    supported_claim_types: [comparative_change]
   rolling_window_compare: {query_families: [daily_metric_baselines], required_metrics: [paid_amount], required_windows: [target_day, rolling_7_day_baseline]}
   driver_decomposition: {query_families: [component_driver_scan, payment_success_scan], required_metrics: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount], optional_metrics: [payment_success_rate]}
   segment_contribution: {query_families: [dimension_contribution_scan], required_metrics: [paid_amount]}
@@ -915,6 +1017,10 @@ capability_inputs:
   data_quality_profile: {query_families: [data_quality_probe], required_metrics: [paid_amount]}
   event_evidence: {query_families: [event_context_probe], required_metrics: []}
   high_value_user_contribution: {query_families: [high_value_scan], required_metrics: [paid_amount]}
+  answer_verify:
+    query_families: []
+    required_metrics: []
+    supported_claim_types: []
 ```
 
 The implementation must load this YAML with `load_contract()` and reject missing sections or duplicate ids.
@@ -931,30 +1037,87 @@ class AnalysisCompileOutcome:
     capability_plans: tuple[CapabilityExecutionPlan, ...]
 
 
+def _bind_claim_intents(
+    proposal: Mapping[str, Any],
+    accepted_capabilities: tuple[str, ...],
+    metric_bindings: tuple[MetricBinding, ...],
+    registry: RuntimeContractRegistry,
+) -> tuple[tuple[str, ...], tuple[ContractGap, ...]]:
+    explicit = tuple(dict.fromkeys(
+        str(value).strip()
+        for value in proposal.get("claim_intents") or ()
+        if str(value).strip()
+    ))
+    if explicit:
+        return explicit, ()
+
+    inferred = []
+    for capability_id in accepted_capabilities:
+        capability_contract = registry.capability_inputs(capability_id)
+        inferred.extend(capability_contract.get("supported_claim_types") or ())
+    for binding in metric_bindings:
+        inferred.extend(binding.claim_types)
+    accepted = tuple(dict.fromkeys(str(value).strip() for value in inferred if str(value).strip()))
+    if accepted:
+        return accepted, ()
+
+    diagnosed = ("unbound_claim_intent",)
+    return diagnosed, (
+        ContractGap(
+            gap_type="contract_partial",
+            gap_id="claim_intents:unbound",
+            affected_capabilities=tuple(dict.fromkeys(accepted_capabilities)),
+            affected_claim_types=diagnosed,
+            owner="contract_owner",
+            repair_options=(
+                "bind_capability_claim_types",
+                "bind_metric_claim_types",
+                "clarify_claim_intent",
+            ),
+            requires_clarification=True,
+        ),
+    )
+
+
 def compile_analysis_contract(...):
     required_dataset_ids = _required_dataset_ids(proposal, accepted_capabilities, registry)
     snapshots, source_gaps = _resolve_snapshots(required_dataset_ids, catalog, as_of, permission_scope)
+    metric_bindings, metric_gaps = _bind_metrics(proposal, accepted_capabilities, registry, snapshots)
+    dimension_bindings, dimension_gaps = _bind_dimensions(proposal, registry, snapshots)
+    accepted_claim_intents, claim_intent_gaps = _bind_claim_intents(
+        proposal,
+        accepted_capabilities,
+        metric_bindings,
+        registry,
+    )
     resolution = resolve_revenue_windows(
         target_semantic=str(proposal.get("target_semantic") or "yesterday"),
         baselines=tuple(proposal.get("baselines") or ()),
         as_of=as_of,
         timezone_name="Africa/Lagos",
         dataset_watermarks={item.dataset_id: date.fromisoformat(item.watermark) for item in snapshots},
+        affected_capabilities=tuple(accepted_capabilities),
+        affected_claim_types=accepted_claim_intents,
     )
-    metric_bindings, metric_gaps = _bind_metrics(proposal, accepted_capabilities, registry, snapshots)
-    dimension_bindings, dimension_gaps = _bind_dimensions(proposal, registry, snapshots)
+    analysis_contract_id = f"analysis:{run_id}:1"
     query_contracts = _build_query_contracts(
-        run_id, accepted_capabilities, proposal, snapshots, resolution.windows,
+        run_id, analysis_contract_id, accepted_capabilities, proposal, snapshots, resolution.windows,
         metric_bindings, dimension_bindings, registry, permission_scope,
     )
     capability_plans = _build_capability_plans(accepted_capabilities, query_contracts, registry)
-    gaps = tuple((*source_gaps, *resolution.gaps, *metric_gaps, *dimension_gaps))
+    gaps = tuple((
+        *source_gaps,
+        *metric_gaps,
+        *dimension_gaps,
+        *claim_intent_gaps,
+        *resolution.gaps,
+    ))
     analysis = AnalysisContract(
-        analysis_contract_id=f"analysis:{run_id}:1",
+        analysis_contract_id=analysis_contract_id,
         contract_version="1",
         question_families=tuple(proposal.get("question_families") or ()),
         target_metric_refs=tuple(binding.contract_ref for binding in metric_bindings if binding.metric_id in proposal.get("target_metrics", ())),
-        claim_intents=tuple(proposal.get("claim_intents") or ()),
+        claim_intents=accepted_claim_intents,
         scope=dict(proposal.get("scope") or {"type": "full_sample"}),
         business_timezone="Africa/Lagos",
         as_of=as_of.isoformat(),
@@ -962,14 +1125,20 @@ def compile_analysis_contract(...):
         metric_bindings=metric_bindings,
         dimension_bindings=dimension_bindings,
         dataset_requirements=required_dataset_ids,
-        capability_plans=capability_plans,
+        capability_requirements=tuple(accepted_capabilities),
         permission_scope=permission_scope,
         contract_gaps=gaps,
     )
     return AnalysisCompileOutcome(analysis, query_contracts, capability_plans)
 ```
 
-`_build_query_contracts()` deduplicates by dataset, query family, metric set, dimension set, windows, permission scope, and result shape. It computes `contract_signature` from the complete serialized contract body before adding the signature.
+`_build_query_contracts()` sets `analysis_contract_ref`, `window_refs`, and an
+immutable `resolved_windows` snapshot on every query. It deduplicates by dataset,
+query family, metric set, dimension set, windows, permission scope, and result
+shape. It computes `contract_signature` from the complete serialized contract
+body before adding the signature. `_build_capability_plans()` returns the
+structured `minimum_readiness` and `degradation_policy` mappings from reviewed
+capability contracts; plans remain only on `AnalysisCompileOutcome`.
 
 - [ ] **Step 5: 将新 outcome 挂到 CompiledGraph，保留兼容 projection**
 
@@ -1039,10 +1208,20 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         )
         metric = MetricBinding("paid_amount", "metric:paid_amount@1", "paid_order_success", "sum(paid_amount_ngn)", "sum", ("paid_amount_ngn",), ("window_id",))
         contract = QueryContract(
-            "query:run:baseline:1", "daily_metric_baselines", ("snapshot:paid:1",),
-            (metric,), (), windows, (),
-            ResultShape(("window_id", "window_role", "observation_key", "paid_amount"), ("window_id", "observation_key"), ("window_id", "observation_key"), tuple(item.window_id for item in windows)),
-            ("required_windows", "unique_key"), "analyst", "interactive_aggregate", "signature",
+            query_contract_id="query:run:baseline:1",
+            analysis_contract_ref="analysis:run:1",
+            query_intent="daily_metric_baselines",
+            dataset_snapshot_refs=("snapshot:paid:1",),
+            metric_bindings=(metric,),
+            dimension_bindings=(),
+            window_refs=tuple(item.window_id for item in windows),
+            resolved_windows=windows,
+            filters=(),
+            result_shape=ResultShape(("window_id", "window_role", "observation_key", "paid_amount"), ("window_id", "observation_key"), ("window_id", "observation_key"), tuple(item.window_id for item in windows)),
+            completeness_assertions=("required_windows", "unique_key"),
+            permission_scope="analyst",
+            workload_class="interactive_aggregate",
+            contract_signature="signature",
         )
         snapshot = DatasetSnapshot("snapshot:paid:1", "paid_order_success", "paid_success", "2026-07-04", "schema", ("business_date_lagos", "paid_amount_ngn"), "contract", ("analyst",), "2026-07-05T00:00:00Z", "active")
 
@@ -1058,7 +1237,7 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-Extend `tests/phase4/test_clickhouse_revenue_rows.py` with a fake client test asserting query parameters/settings reach the client and `QueryResultEnvelope` preserves provider stats.
+Extend `tests/phase4/test_clickhouse_revenue_rows.py` with a fake client test asserting query parameters/settings reach the client and `QueryResultEnvelope` preserves provider stats plus `rows_ref`, `row_count`, and `completeness_report_ref`.
 
 - [ ] **Step 2: 运行测试并确认失败**
 
@@ -1108,10 +1287,10 @@ class CompiledQuery:
 def compile_clickhouse_query(contract: QueryContract, snapshots: Mapping[str, DatasetSnapshot]) -> CompiledQuery:
     snapshot = _single_snapshot(contract, snapshots)
     date_expression = _date_expression(snapshot.dataset_id)
-    parameters = _window_parameters(contract.windows)
+    parameters = _window_parameters(contract.resolved_windows)
     window_tuples = ", ".join(
         f"(%(window_id_{index})s, %(window_role_{index})s, toDate(%(start_{index})s), toDate(%(end_{index})s))"
-        for index, _ in enumerate(contract.windows)
+        for index, _ in enumerate(contract.resolved_windows)
     )
     dimensions = [binding.source_field for binding in contract.dimension_bindings]
     select_dimensions = [f"{_quote_identifier(field)} AS {_quote_identifier(field)}" for field in dimensions]
@@ -1141,7 +1320,14 @@ Implement dedicated branches for `payment_attempt`, `time_bucket_scan`, `data_qu
 
 - [ ] **Step 5: 实现 executor envelope and compatibility wrapper**
 
-`ClickHouseQueryExecutor.execute()` validates SQL with `validate_select_only(..., aggregate=True)`, calls `ClickHouseRuntime.aggregate()`, derives observed schema/windows/grain, and returns one `QueryResultEnvelope`. It generates `result:<query_hash>:<query_contract_signature_prefix>` only after successful execution.
+`ClickHouseQueryExecutor.execute()` validates SQL with
+`validate_select_only(..., aggregate=True)`, calls `ClickHouseRuntime.aggregate()`,
+derives observed schema/windows/grain, persists aggregate rows behind `rows_ref`,
+and returns one `QueryResultEnvelope` with explicit `row_count` and
+`completeness_report_ref`. The in-process `rows` payload remains aggregate-only
+and is excluded from `to_dict()`. The executor generates
+`result:<query_hash>:<query_contract_signature_prefix>` only after successful
+execution.
 
 Update `ClickHouseRevenueRows` to delegate typed contracts to the executor. Keep the old `build_clickhouse_query_specs()` path only when `compiler_runtime_plan.query_contracts` is absent. Mark legacy query results with `contract_mode="legacy"`; they cannot satisfy the new completeness acceptance in Task 11.
 
