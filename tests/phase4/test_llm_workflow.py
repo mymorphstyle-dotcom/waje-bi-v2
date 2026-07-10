@@ -20,8 +20,6 @@ from bi_agent.runtime.langgraph_workflow import (
     _execute_capabilities,
     _execute_joint_attribution,
     _final_business_summary_fallback,
-    _final_summary_has_unsupported_wording,
-    _final_summary_has_unsupported_material_claim,
     _final_summary_needs_display_repair,
     _legacy_quality_with_final_answer_audit,
     _local_coverage_answerable_reason,
@@ -1862,7 +1860,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertNotIn("定因果", claims[0]["text"])
         self.assertIn("原因定论", claims[0]["text"])
 
-    def test_final_summary_display_repair_rejects_audit_jargon_and_overstrong_wording(self):
+    def test_final_summary_display_repair_preserves_complete_numeric_claim_slots(self):
         claim = {
             "text": "Q2 相比 Q1 在 2026-01-01..2026-06-30 观察到：日均付费金额提升 15.0%，方向命中率 100.0%，1 个可比周期。",
             "numbers": {
@@ -1905,7 +1903,7 @@ class LLMWorkflowTest(unittest.TestCase):
             "需要注意：不能外推为长期稳定规律。"
         )
 
-        self.assertTrue(_final_summary_needs_display_repair(summary, state))
+        self.assertFalse(_final_summary_needs_display_repair(summary, state))
 
     def test_final_summary_display_repair_accepts_compact_percent_text(self):
         claim = {
@@ -1950,7 +1948,7 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertFalse(_final_summary_needs_display_repair(summary, state))
 
-    def test_final_summary_display_repair_rejects_degraded_boundary_drift(self):
+    def test_final_summary_display_repair_preserves_complete_degraded_summary(self):
         state = {
             "intent": {
                 "pattern_family": "intra_period",
@@ -1972,7 +1970,7 @@ class LLMWorkflowTest(unittest.TestCase):
             "需要注意：建议延长至全年或多年，或补充合同条款后再看。"
         )
 
-        self.assertTrue(_final_summary_needs_display_repair(summary, state))
+        self.assertFalse(_final_summary_needs_display_repair(summary, state))
 
     def test_final_summary_display_repair_rejects_materiality_ratio_threshold_drift(self):
         state = {
@@ -2767,24 +2765,14 @@ class LLMWorkflowTest(unittest.TestCase):
                 if task == "final_answer_audit":
                     self.calls.append(task)
                     self.audit_count += 1
-                    if self.audit_count < 3:
-                        output = {
-                            "display_status": "ready_with_warnings",
-                            "hard_blockers": [],
-                            "repairable_warnings": ["missing_required_summary_markers"],
-                            "retry_instruction": "重新输出完整业务总结。",
-                            "business_audit_summary": "答案只有状态说明，需要重写。",
-                            "display_summary": "答案只有状态说明，需要重写。",
-                        }
-                    else:
-                        output = {
-                            "display_status": "ready",
-                            "hard_blockers": [],
-                            "repairable_warnings": [],
-                            "retry_instruction": "",
-                            "business_audit_summary": "答案满足展示边界。",
-                            "display_summary": "答案满足展示边界。",
-                        }
+                    output = {
+                        "display_status": "ready_with_warnings",
+                        "hard_blockers": [],
+                        "repairable_warnings": ["unsupported_material_claim"],
+                        "retry_instruction": "把无证据的确定性结论改成候选判断。",
+                        "business_audit_summary": "主结论里有一处证据边界过强。",
+                        "display_summary": "主结论里有一处证据边界过强。",
+                    }
                     return FakeLLMResult(
                         output,
                         {
@@ -2837,7 +2825,15 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(fake.calls.count("final_business_summary"), 3)
         self.assertEqual(fake.calls.count("final_answer_audit"), 3)
         self.assertIn("这是第二次修复", fake.summary_inputs[2]["final_answer_retry_instruction"])
-        self.assertEqual(result.answer_package["quality_gate"]["display_status"], "ready")
+        self.assertFalse(result.answer_package["quality_gate"]["blocks_display"])
+        self.assertEqual(
+            result.answer_package["quality_gate"]["display_status"],
+            "ready_with_warnings",
+        )
+        self.assertEqual(
+            result.answer_package["quality_gate"]["repairable_warnings"],
+            ["unsupported_material_claim"],
+        )
         self.assertIn("我对问题的理解是", result.answer_package["final_answer"])
 
     def test_local_final_summary_display_warning_triggers_retry_even_when_audit_is_ready(self):
@@ -5393,65 +5389,21 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertNotIn("due to", summary["claims"][0]["text"])
         self.assertFalse(result.answer_package["admin_audit"]["verifier"]["warnings"])
 
-    def test_final_summary_allows_causal_question_wording_without_published_cause(self):
+    def test_final_summary_display_repair_ignores_cautious_evidence_gaps(self):
         state = {
             "intent": {"pattern_family": "custom_baseline"},
-            "evidence": [
-                {
-                    "evidence_ref": "event_evidence:inline",
-                    "evidence_type": "insufficient_evidence",
-                    "typed_payload": {},
-                }
-            ],
-            "draft_claims": [
-                {
-                    "text": "活动窗口证据只能作为候选机制检查。",
-                    "evidence_refs": ["event_evidence:inline"],
-                    "numbers": {},
-                }
-            ],
+            "evidence": [],
+            "evidence_brief": {"limitations": ["insufficient_comparable_periods"]},
         }
         summary = (
-            "我对问题的理解是：你想判断活动是否导致付费金额变化。\n"
-            "分析脉络：我检查了事件窗口和付费金额变化。\n"
-            "关键发现：目前只能看到事件窗口和指标变化的对应关系。\n"
-            "最终结论：当前证据不能把活动写成已证明原因。\n"
-            "需要注意：还需要补充事件和投放证据。"
+            "我对问题的理解是：你想判断活动是否影响付费金额变化。\n"
+            "分析脉络：我检查了现有指标变化与活动窗口。\n"
+            "关键发现：现有材料不足以形成稳定判断。\n"
+            "最终结论：当前证据不足，不能确认活动带来了付费金额变化。\n"
+            "需要注意：结论仅用于后续排查，仍需补充相关证据。"
         )
 
-        self.assertFalse(_final_summary_has_unsupported_wording(summary, state))
-        self.assertTrue(
-            _final_summary_has_unsupported_material_claim(
-                summary.replace("不能把活动写成已证明原因", "活动导致了付费金额变化"),
-                state,
-            )
-        )
-
-    def test_final_summary_records_material_claim_not_generic_wording_warning(self):
-        state = {
-            "intent": {"pattern_family": "custom_baseline"},
-            "evidence": [
-                {
-                    "evidence_ref": "event_evidence:inline",
-                    "evidence_type": "insufficient_evidence",
-                    "typed_payload": {},
-                }
-            ],
-            "draft_claims": [
-                {
-                    "text": "活动窗口证据只能作为候选机制检查。",
-                    "evidence_refs": ["event_evidence:inline"],
-                    "numbers": {},
-                }
-            ],
-        }
-
-        self.assertTrue(
-            _final_summary_has_unsupported_material_claim("最终结论：活动导致了付费金额变化。", state)
-        )
-        self.assertFalse(
-            _final_summary_has_unsupported_wording("最终结论：活动导致了付费金额变化。", state)
-        )
+        self.assertFalse(_final_summary_needs_display_repair(summary, state))
 
     def _run_q2_q1_joint_attribution_workflow(self):
         fake = FakeLLMClient(

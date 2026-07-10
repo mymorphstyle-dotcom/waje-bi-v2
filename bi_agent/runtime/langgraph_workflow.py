@@ -49,7 +49,6 @@ from bi_agent.runtime.exploration_budget import default_budget, record_capabilit
 from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
 from bi_agent.runtime.llm_prompts import build_prompt
 from bi_agent.runtime.sql_safety import validate_select_only
-from bi_agent.runtime.wording import CAUSAL_WORDING, SINGLE_PERIOD_CONFIDENCE
 
 
 NON_RETRYABLE_FAILURE_TYPES = frozenset(
@@ -3965,7 +3964,6 @@ def _with_local_final_summary_repair_warnings(
     repairable_display_warnings = {
         "missing_required_summary_markers",
         "internal_visible_token",
-        "unsupported_material_claim",
         "missing_pattern_evidence",
         "missing_driver_claim",
         "missing_primary_claim",
@@ -4577,8 +4575,6 @@ def _final_summary_display_repair_reasons(text: Any, state: WorkflowState) -> li
         reasons.append("missing_required_summary_markers")
     if _has_internal_visible_token(value):
         reasons.append("internal_visible_token")
-    if _final_summary_has_unsupported_material_claim(value, state):
-        reasons.append("unsupported_material_claim")
     claims = state.get("draft_claims") or []
     if not claims and _pattern_evidence(state):
         if not _final_summary_covers_pattern_evidence(value, state):
@@ -4666,84 +4662,6 @@ def _preferred_final_claim(claims: Sequence[dict[str, Any]]) -> dict[str, Any]:
         if _is_joint_claim(claim):
             return claim
     return claims[0]
-
-
-def _final_summary_has_unsupported_wording(text: str, state: WorkflowState) -> bool:
-    return False
-
-
-def _final_summary_has_unsupported_material_claim(text: str, state: WorkflowState) -> bool:
-    if any(
-        token in text
-        for token in (
-            "语义审计",
-            "硬验证",
-            "硬校验",
-            "verifier",
-            "方向命中率",
-            "重要性命中率",
-            "单用户/单订单",
-        )
-    ):
-        return True
-    if _has_materiality_data_volume_drift(text, state):
-        return True
-    if _has_materiality_ratio_threshold_drift(text):
-        return True
-    if _has_unsupported_comparable_period_drift(text, state):
-        return True
-    if _final_summary_missing_limitation_reason(text, state):
-        return True
-    if _repair_path_invents_fixed_future_window(text):
-        return True
-    if any(token in text for token in ("全年或多年", "合同条款")):
-        return True
-    if _single_period_pattern(state) and any(
-        token in text for token in ("证据充分", "充分支持", "可靠结论")
-    ):
-        return True
-    if _single_period_pattern(state) and SINGLE_PERIOD_CONFIDENCE.search(text):
-        return True
-    if _has_positive_causal_wording(text):
-        evidence_by_ref = _evidence_by_ref(state.get("evidence", []))
-        refs = tuple((state.get("draft_claims") or [{}])[0].get("evidence_refs", ()))
-        return not any(
-            evidence_by_ref.get(ref, {}).get("evidence_type") == "causal_evidence"
-            for ref in refs
-        )
-    return False
-
-
-def _final_summary_missing_limitation_reason(text: str, state: WorkflowState) -> bool:
-    limitations = tuple(state.get("evidence_brief", {}).get("limitations", ()))
-    if not limitations:
-        return False
-    if "insufficient_comparable_periods" in limitations and "可比周期" not in text:
-        return True
-    if "no_comparable_periods" in limitations and "可比周期" not in text:
-        return True
-    if "weak_direction" in limitations and "方向" not in text:
-        return True
-    if "below_materiality_floor" in limitations and not any(
-        token in text for token in ("重要性阈值", "变化幅度")
-    ):
-        return True
-    return False
-
-
-def _has_positive_causal_wording(text: str) -> bool:
-    for sentence in re.split(r"[。；;.!?？\n]+", text):
-        if not CAUSAL_WORDING.search(sentence):
-            continue
-        if any(
-            marker in sentence
-            for marker in ("不能", "无法", "不可", "不支持", "缺乏", "没有", "暂不")
-        ):
-            continue
-        if any(marker in sentence for marker in ("是否", "是不是", "有没有", "能否", "能不能")):
-            continue
-        return True
-    return False
 
 
 def _final_business_summary_fallback(state: WorkflowState) -> str:
