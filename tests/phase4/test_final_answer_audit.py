@@ -120,6 +120,26 @@ class FinalAnswerAuditTest(unittest.TestCase):
             ["pattern:primary"],
         )
 
+    def test_audit_ignores_rejected_claim_refs_and_uses_brief_evidence(self):
+        llm = _CapturingAuditLLM()
+        state = _audit_state(llm)
+        state["verifier"] = {"errors": [{"code": "number_mismatch", "claim_index": 0}]}
+        state["draft_claims"] = [
+            {"text": "被拒绝的结论。", "evidence_refs": ["claim:rejected"]}
+        ]
+        state["evidence_brief"] = {"evidence_refs": ["brief:fallback"]}
+        state["evidence"] = [
+            {"evidence_ref": "claim:rejected", "typed_payload": {"amount": 999}},
+            {"evidence_ref": "brief:fallback", "typed_payload": {"amount": 100}},
+        ]
+
+        _final_answer_audit(state)
+
+        self.assertEqual(
+            [item["evidence_ref"] for item in llm.payload["evidence_envelopes"]],
+            ["brief:fallback"],
+        )
+
     def test_warning_audit_does_not_block_display(self):
         audit = normalize_final_answer_audit(
             {

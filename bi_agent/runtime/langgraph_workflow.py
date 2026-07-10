@@ -4071,7 +4071,7 @@ def _final_answer_audit_evidence_envelopes(state: WorkflowState) -> list[dict[st
             if isinstance(item, Mapping) and item.get("evidence_ref")
         ]
     )
-    claims = _verified_claims(state) or state.get("draft_claims", ())
+    claims = _verified_claims(state)
     refs = [
         str(ref)
         for claim in claims
