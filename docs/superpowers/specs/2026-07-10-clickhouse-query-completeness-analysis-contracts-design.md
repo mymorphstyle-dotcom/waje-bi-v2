@@ -591,7 +591,7 @@ The latest common current watermark across paid orders, market dashboard, gamepl
 - `as_of`: `2026-06-03T12:00:00+01:00`
 - target day: `2026-06-02`
 - previous day: `2026-06-01`
-- rolling seven complete days: `2026-05-25` through `2026-06-01`
+- rolling seven complete days: `2026-05-26` through `2026-06-01`
 - same weekday last week: `2026-05-26`
 - recurring-pattern history: `2026-01-01` through `2026-06-02`
 - anomaly and high-value reference history: `2026-05-03` through `2026-06-01`
