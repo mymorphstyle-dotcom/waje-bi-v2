@@ -2728,6 +2728,12 @@ def _generate_degraded_explanation(state: WorkflowState) -> WorkflowState:
     }
     output = _invoke_llm(state, "degraded_explanation", explanation_payload)
     state["final_explanation"] = _sanitize_terminal_explanation(output, state, "degraded")
+    rejected_answer = bool(state.get("verifier", {}).get("errors")) or str(
+        state.get("retry_context", {}).get("failure_type") or ""
+    ) in {"semantic_audit", "verifier"}
+    if rejected_answer:
+        state["draft_claims"] = []
+        state["answer_text"] = str(state["final_explanation"].get("explanation") or "")
     state["verifier"] = {"status": "terminal_explanation", "errors": [], "warnings": []}
     if "evidence" not in state:
         state["evidence"] = []

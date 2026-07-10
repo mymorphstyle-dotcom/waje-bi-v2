@@ -5375,6 +5375,45 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(retry["failure_type"], "verifier")
         self.assertIn("number_mismatch", retry["failure_reason"])
 
+    def test_degraded_answer_replaces_claim_rejected_after_repair(self):
+        rejected_claim = {
+            "text": "这里保留了错误数字 990.0%。",
+            "evidence_refs": ["pattern_scan:intra_period"],
+            "numbers": {"median_uplift": 9.9},
+            "scope": "full_sample",
+            "time_window": "2024-01..2026-05",
+        }
+        fake = FakeLLMClient(
+            {
+                "answer_synthesis": {
+                    "answer_text": "这里保留了错误数字 990.0%。",
+                    "claims": [rejected_claim],
+                },
+                "answer_repair": {
+                    "answer_text": "修复后仍保留错误数字 990.0%。",
+                    "claims": [rejected_claim],
+                },
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "verifier-repair-degrades-safely",
+                    "llm_client": fake,
+                }
+            )
+
+        self.assertIn("degraded_explanation", fake.calls)
+        self.assertEqual(result.answer_package["admin_audit"]["verifier"]["errors"], [])
+        self.assertNotIn("990.0%", result.answer_package["final_answer"])
+        claims = result.answer_package["sections"][0]["payload"]["claims"]
+        self.assertEqual(claims[0]["claim_strength"], "insufficient")
+        audit_input = _llm_input_payload(result.answer_package, "final_answer_audit")
+        self.assertEqual(audit_input["verified_claims"][0]["claim_strength"], "insufficient")
+        self.assertNotIn("median_uplift", audit_input["verified_claims"][0]["numbers"])
+
     def test_causal_gap_wording_is_weakened_before_verifier(self):
         fake = FakeLLMClient(
             {
