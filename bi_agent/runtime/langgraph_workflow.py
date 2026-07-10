@@ -3166,8 +3166,11 @@ def _legacy_quality_with_final_answer_audit(
         and not final_answer_audit.get("repairable_warnings")
     ):
         quality["business_insight_present"] = True
+        quality["verified_claim_preserved"] = True
         quality["issues"] = [
-            issue for issue in quality["issues"] if issue != "missing_business_insight"
+            issue
+            for issue in quality["issues"]
+            if issue not in {"missing_business_insight", "missing_verified_claim"}
         ]
     return quality
 

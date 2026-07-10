@@ -5670,10 +5670,10 @@ class LLMWorkflowTest(unittest.TestCase):
             {
                 "direct_answer": True,
                 "has_verified_claims": True,
-                "verified_claim_preserved": True,
+                "verified_claim_preserved": False,
                 "business_insight_present": False,
                 "followups_one_intent": True,
-                "issues": ["missing_business_insight"],
+                "issues": ["missing_verified_claim", "missing_business_insight"],
             },
             {
                 "display_status": "ready",
@@ -5684,17 +5684,40 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertTrue(quality["business_insight_present"])
+        self.assertTrue(quality["verified_claim_preserved"])
+        self.assertNotIn("missing_verified_claim", quality["issues"])
         self.assertNotIn("missing_business_insight", quality["issues"])
+
+    def test_llm_final_audit_can_clear_local_missing_verified_claim_warning(self):
+        quality = _legacy_quality_with_final_answer_audit(
+            {
+                "direct_answer": True,
+                "has_verified_claims": True,
+                "verified_claim_preserved": False,
+                "business_insight_present": True,
+                "followups_one_intent": True,
+                "issues": ["missing_verified_claim"],
+            },
+            {
+                "display_status": "ready",
+                "hard_blockers": [],
+                "repairable_warnings": [],
+                "blocks_display": False,
+            },
+        )
+
+        self.assertTrue(quality["verified_claim_preserved"])
+        self.assertNotIn("missing_verified_claim", quality["issues"])
 
     def test_llm_final_audit_keeps_business_insight_warning_when_audit_flags_it(self):
         quality = _legacy_quality_with_final_answer_audit(
             {
                 "direct_answer": True,
                 "has_verified_claims": True,
-                "verified_claim_preserved": True,
+                "verified_claim_preserved": False,
                 "business_insight_present": False,
                 "followups_one_intent": True,
-                "issues": ["missing_business_insight"],
+                "issues": ["missing_verified_claim", "missing_business_insight"],
             },
             {
                 "display_status": "ready_with_warnings",
@@ -5705,6 +5728,8 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertFalse(quality["business_insight_present"])
+        self.assertFalse(quality["verified_claim_preserved"])
+        self.assertIn("missing_verified_claim", quality["issues"])
         self.assertIn("missing_business_insight", quality["issues"])
 
 
