@@ -195,6 +195,24 @@ class FinalAnswerAuditTest(unittest.TestCase):
         )
         self.assertEqual(audit["retry_instruction"], "补一句业务排查方向。")
 
+    def test_unknown_status_and_hard_blocker_become_contract_mismatch(self):
+        audit = normalize_final_answer_audit(
+            {
+                "display_status": "ready_no_warnings",
+                "hard_blockers": ["发现一条可能冲突的结论"],
+                "repairable_warnings": [],
+                "retry_instruction": "",
+                "business_audit_summary": "审计输出未遵守协议。",
+            }
+        )
+
+        self.assertEqual(audit["display_status"], "ready_with_warnings")
+        self.assertFalse(audit["blocks_display"])
+        self.assertEqual(
+            audit["repairable_warnings"],
+            ["final_answer_audit_contract_mismatch"],
+        )
+
     def test_unknown_wording_warning_keeps_supported_warning_and_contract_mismatch(self):
         audit = normalize_final_answer_audit(
             {

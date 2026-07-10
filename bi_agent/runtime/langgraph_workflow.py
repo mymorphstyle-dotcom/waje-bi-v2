@@ -3871,12 +3871,19 @@ def normalize_final_answer_audit(output: Mapping[str, Any]) -> dict[str, Any]:
         "missing_driver_claim",
         "missing_primary_claim",
     }
+    allowed_statuses = {"ready", "ready_with_warnings", "hard_blocked"}
     status = str(output.get("display_status") or "ready_with_warnings")
-    if status not in {"ready", "ready_with_warnings", "hard_blocked"}:
+    contract_mismatch = status not in allowed_statuses
+    if contract_mismatch:
         status = "ready_with_warnings"
-    hard_blockers = [
+    raw_hard_blockers = [
         code
         for code in dict.fromkeys(str(item) for item in output.get("hard_blockers") or ())
+        if code
+    ]
+    hard_blockers = [
+        code
+        for code in raw_hard_blockers
         if code in allowed_hard_blockers
     ]
     raw_warnings = [
@@ -3889,7 +3896,9 @@ def normalize_final_answer_audit(output: Mapping[str, Any]) -> dict[str, Any]:
         for code in raw_warnings
         if code in allowed_warnings
     ]
-    if any(code not in allowed_warnings for code in raw_warnings):
+    if contract_mismatch or any(
+        code not in allowed_hard_blockers for code in raw_hard_blockers
+    ) or any(code not in allowed_warnings for code in raw_warnings):
         warnings.append("final_answer_audit_contract_mismatch")
     audit = {
         "display_status": status,
