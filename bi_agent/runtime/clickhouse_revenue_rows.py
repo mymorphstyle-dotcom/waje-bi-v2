@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import os
 from typing import Any, Mapping, Optional, Sequence
 
 from bi_agent.runtime.analysis_contracts import (
     DimensionBinding,
+    JoinExpectation,
     MetricBinding,
     QueryContract,
     QueryResultEnvelope,
+    ReconciliationBinding,
     ResolvedWindow,
     ResultShape,
 )
@@ -556,6 +559,19 @@ def _query_contracts(value: Any) -> tuple[QueryContract, ...]:
 
 
 def _query_contract_from_mapping(item: Mapping[str, Any]) -> QueryContract:
+    task5_fields = (
+        "query_role_ref",
+        "reconciliation_binding",
+        "join_expectation",
+    )
+    missing_task5_fields = tuple(
+        field for field in task5_fields if field not in item
+    )
+    if missing_task5_fields:
+        raise ValueError(
+            "legacy_query_contract_projection_unsupported:missing:"
+            + ",".join(missing_task5_fields)
+        )
     _require_keys(
         item,
         (
@@ -574,6 +590,9 @@ def _query_contract_from_mapping(item: Mapping[str, Any]) -> QueryContract:
             "workload_class",
             "contract_signature",
             "query_parameters",
+            "query_role_ref",
+            "reconciliation_binding",
+            "join_expectation",
         ),
         path="query_contract",
     )
@@ -658,6 +677,70 @@ def _query_contract_from_mapping(item: Mapping[str, Any]) -> QueryContract:
                 path="query_contract.query_parameters",
             )
         ),
+        query_role_ref=_strict_string(
+            item["query_role_ref"],
+            path="query_contract.query_role_ref",
+            allow_empty=True,
+        ),
+        reconciliation_binding=_reconciliation_binding_from_value(
+            item["reconciliation_binding"]
+        ),
+        join_expectation=_join_expectation_from_value(item["join_expectation"]),
+    )
+
+
+def _reconciliation_binding_from_value(
+    value: Any,
+) -> ReconciliationBinding | None:
+    if value is None:
+        return None
+    path = "query_contract.reconciliation_binding"
+    item = _strict_mapping(value, path=path)
+    _require_keys(
+        item,
+        ("reference_query_role_ref", "reference_contract_signature"),
+        path=path,
+    )
+    return ReconciliationBinding(
+        reference_query_role_ref=_strict_string(
+            item["reference_query_role_ref"],
+            path=f"{path}.reference_query_role_ref",
+        ),
+        reference_contract_signature=_strict_string(
+            item["reference_contract_signature"],
+            path=f"{path}.reference_contract_signature",
+        ),
+    )
+
+
+def _join_expectation_from_value(value: Any) -> JoinExpectation | None:
+    if value is None:
+        return None
+    path = "query_contract.join_expectation"
+    item = _strict_mapping(value, path=path)
+    _require_keys(
+        item,
+        (
+            "cardinality",
+            "audit_fields",
+            "max_duplicate_keys",
+            "max_unmatched_rows",
+        ),
+        path=path,
+    )
+    return JoinExpectation(
+        cardinality=_strict_string(
+            item["cardinality"], path=f"{path}.cardinality"
+        ),
+        audit_fields=_strict_string_sequence(
+            item["audit_fields"], path=f"{path}.audit_fields"
+        ),
+        max_duplicate_keys=_strict_int(
+            item["max_duplicate_keys"], path=f"{path}.max_duplicate_keys"
+        ),
+        max_unmatched_rows=_strict_int(
+            item["max_unmatched_rows"], path=f"{path}.max_unmatched_rows"
+        ),
     )
 
 
@@ -678,6 +761,8 @@ def _metric_binding_from_mapping(value: Any, *, index: int) -> MetricBinding:
             "denominator_metric",
             "zero_denominator_policy",
             "claim_types",
+            "reconciliation_tolerance",
+            "reconciliation_strategy",
         ),
         path=path,
     )
@@ -711,6 +796,14 @@ def _metric_binding_from_mapping(value: Any, *, index: int) -> MetricBinding:
         ),
         claim_types=_strict_string_sequence(
             item["claim_types"], path=f"{path}.claim_types"
+        ),
+        reconciliation_tolerance=_strict_non_negative_number(
+            item["reconciliation_tolerance"],
+            path=f"{path}.reconciliation_tolerance",
+        ),
+        reconciliation_strategy=_strict_string(
+            item["reconciliation_strategy"],
+            path=f"{path}.reconciliation_strategy",
         ),
     )
 
@@ -851,6 +944,15 @@ def _strict_int(value: Any, *, path: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"{path}:integer_required")
     return value
+
+
+def _strict_non_negative_number(value: Any, *, path: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{path}:number_required")
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(f"{path}:non_negative_number_required")
+    return number
 
 
 def _require_keys(

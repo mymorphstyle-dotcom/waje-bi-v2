@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from bi_agent.runtime.analysis_contracts import (
     DimensionBinding,
+    JoinExpectation,
     MetricBinding,
     QueryContract,
     ResolvedWindow,
@@ -87,6 +88,14 @@ def metric(dataset_id="paid_order_success", expression=None):
                 "segment_contribution_or_mix_shift",
             )
         ),
+        reconciliation_tolerance=(
+            0.0 if dataset_id == "payment_attempt" else 0.01
+        ),
+        reconciliation_strategy=(
+            "unsupported_non_additive"
+            if dataset_id == "payment_attempt"
+            else "additive_sum"
+        ),
     )
 
 
@@ -139,6 +148,18 @@ def contract(
     )
     resolved = windows()
     required_fields = ["window_id", "window_role", "observation_key"]
+    required_fields.extend(
+        {
+            "time_bucket_scan": ("calendar_week", "weekday", "month_phase"),
+            "data_quality_probe": ("source_row_count",),
+            "event_context_probe": ("event_count",),
+            "high_value_scan": (
+                "high_value_threshold",
+                "high_value_amount",
+                "high_value_paid_users",
+            ),
+        }.get(query_intent, ())
+    )
     required_fields.extend(item.metric_id for item in selected_metrics)
     required_fields.extend(item.dimension_id for item in dimensions)
     grain = ["window_id", "observation_key", *(item.dimension_id for item in dimensions)]
@@ -180,6 +201,21 @@ def contract(
             if query_parameters is not None
             else reviewed_parameters
         ),
+        join_expectation=(
+            JoinExpectation(
+                cardinality="many_to_one",
+                audit_fields=(
+                    "__join_input_rows",
+                    "__join_output_rows",
+                    "__join_duplicate_keys",
+                    "__join_unmatched_rows",
+                ),
+                max_duplicate_keys=0,
+                max_unmatched_rows=0,
+            )
+            if query_intent == "high_value_scan"
+            else None
+        ),
     )
     return replace(unsigned, contract_signature=query_contract_signature(unsigned))
 
@@ -193,6 +229,14 @@ def resigned(base, **changes):
 
 
 class ClickHouseQueryCompilerTest(unittest.TestCase):
+    def test_event_context_keeps_reviewed_count_with_metric_projection(self):
+        compiled = compile_clickhouse_query(
+            contract(query_intent="event_context_probe"),
+            {"snapshot:paid_order_success:1": snapshot()},
+        )
+
+        self.assertIn("count() AS `event_count`", compiled.sql_text)
+
     def test_rejects_high_value_dimensions_outside_reviewed_threshold_grain(self):
         base = contract(
             query_intent="high_value_scan",
@@ -314,6 +358,27 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                 base,
                 {selected_snapshot.snapshot_ref: selected_snapshot.to_dict()},
             )
+
+    def test_rejects_invalid_direct_metric_reconciliation_tolerance(self):
+        base = contract()
+        for invalid in (-0.01, float("nan"), True, "0.01"):
+            invalid_binding = replace(
+                base.metric_bindings[0],
+                reconciliation_tolerance=invalid,
+            )
+            invalid_contract = resigned(
+                base,
+                metric_bindings=(invalid_binding,),
+            )
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                (TypeError, ValueError),
+                "invalid_query_contract_runtime_type:"
+                "metric_bindings.reconciliation_tolerance",
+            ):
+                compile_clickhouse_query(
+                    invalid_contract,
+                    {"snapshot:paid_order_success:1": snapshot()},
+                )
 
     def test_rejects_invalid_snapshot_metadata_before_compilation(self):
         base = contract()
@@ -685,6 +750,19 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         final_select = compiled.sql_text.rsplit("SELECT", 1)[-1].split("FROM", 1)[0]
         self.assertNotIn("user_id", final_select)
         self.assertNotIn("order_id", final_select)
+        self.assertIn("LEFT JOIN thresholds", compiled.sql_text)
+        self.assertIn("pre_join_audit AS (", compiled.sql_text)
+        self.assertIn("right_key_audit AS (", compiled.sql_text)
+        self.assertIn("joined_rows AS (", compiled.sql_text)
+        self.assertIn("count() AS `join_input_rows`", compiled.sql_text)
+        self.assertIn("count() AS `__join_output_rows`", compiled.sql_text)
+        self.assertIn("right_key_multiplicity", compiled.sql_text)
+        self.assertNotIn("toUInt64(0) AS `__join_duplicate_keys`", compiled.sql_text)
+        self.assertIn("AS `__join_input_rows`", compiled.sql_text)
+        self.assertIn("AS `__join_output_rows`", compiled.sql_text)
+        self.assertIn("AS `__join_duplicate_keys`", compiled.sql_text)
+        self.assertIn("AS `__join_unmatched_rows`", compiled.sql_text)
+        self.assertEqual(compiled.settings["join_use_nulls"], 1)
 
     def test_rejects_unvalidated_physical_table(self):
         with self.assertRaisesRegex(ValueError, "invalid_physical_table"):

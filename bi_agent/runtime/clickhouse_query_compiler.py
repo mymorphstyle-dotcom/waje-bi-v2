@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from functools import lru_cache
+import math
 from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
@@ -10,8 +11,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bi_agent.runtime.analysis_contracts import (
     DimensionBinding,
+    JoinExpectation,
     MetricBinding,
     QueryContract,
+    ReconciliationBinding,
     ResolvedWindow,
     ResultShape,
     query_contract_signature,
@@ -128,10 +131,13 @@ def compile_clickhouse_query(
             filter_sql=filter_sql,
         )
 
+    settings = {"result_overflow_mode": "throw", "readonly": 2}
+    if contract.join_expectation is not None:
+        settings["join_use_nulls"] = 1
     return CompiledQuery(
         sql_text=sql_text,
         parameters=parameters,
-        settings={"result_overflow_mode": "throw", "readonly": 2},
+        settings=settings,
         query_contract_ref=contract.query_contract_id,
     )
 
@@ -176,7 +182,6 @@ def _compile_grouped_query(
     intent_selects, intent_groups = _intent_selects(
         contract.query_intent,
         date_expression=date_expression,
-        has_metrics=bool(metrics),
     )
     select_parts = (
         "tupleElement(analysis_window, 1) AS `window_id`",
@@ -242,6 +247,11 @@ def _compile_high_value_query(
         "max(`threshold_cutoff`) AS `high_value_threshold`",
         "sumIf(`user_metric_value`, `is_high_value`) AS `high_value_amount`",
         "countIf(`is_high_value`) AS `high_value_paid_users`",
+        "max(`join_input_rows`) AS `__join_input_rows`",
+        "count() AS `__join_output_rows`",
+        "sum(greatest(toInt64(`right_key_multiplicity`) - 1, 0)) "
+        "AS `__join_duplicate_keys`",
+        "countIf(`threshold_cutoff` IS NULL) AS `__join_unmatched_rows`",
     )
     return "\n".join(
         (
@@ -263,6 +273,13 @@ def _compile_high_value_query(
             "  WHERE " + "\n    AND ".join(predicates),
             "  GROUP BY " + ", ".join((*partition_fields, "`user_id`")),
             "),",
+            "pre_join_audit AS (",
+            "  SELECT",
+            "    " + ",\n    ".join(partition_fields) + ",",
+            "    count() AS `join_input_rows`",
+            "  FROM user_totals",
+            "  GROUP BY " + partition,
+            "),",
             "thresholds AS (",
             "  SELECT",
             "    " + ",\n    ".join(partition_fields) + ",",
@@ -271,18 +288,29 @@ def _compile_high_value_query(
             "  FROM user_totals",
             "  GROUP BY " + partition,
             "),",
-            "classified AS (",
+            "right_key_audit AS (",
+            "  SELECT",
+            "    " + ",\n    ".join(partition_fields) + ",",
+            "    count() AS `right_key_multiplicity`",
+            "  FROM thresholds",
+            "  GROUP BY " + partition,
+            "),",
+            "joined_rows AS (",
             "  SELECT",
             "    user_totals.* ,",
             "    thresholds.`threshold_cutoff` AS `threshold_cutoff`,",
+            "    coalesce(right_key_audit.`right_key_multiplicity`, toUInt64(0)) "
+            "AS `right_key_multiplicity`,",
             "    user_totals.`user_metric_value` >= "
             "thresholds.`threshold_cutoff` AS `is_high_value`",
             "  FROM user_totals",
-            "  INNER JOIN thresholds USING (" + partition + ")",
+            "  LEFT JOIN thresholds USING (" + partition + ")",
+            "  LEFT JOIN right_key_audit USING (" + partition + ")",
             ")",
             "SELECT",
             _indented(final_select),
-            "FROM classified",
+            "FROM joined_rows",
+            "LEFT JOIN pre_join_audit USING (" + partition + ")",
             "GROUP BY " + partition,
         )
     )
@@ -292,7 +320,6 @@ def _intent_selects(
     query_intent: str,
     *,
     date_expression: str,
-    has_metrics: bool,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     if query_intent == "time_bucket_scan":
         return (
@@ -309,7 +336,7 @@ def _intent_selects(
     if query_intent == "data_quality_probe":
         return (("count() AS `source_row_count`",), ())
     if query_intent == "event_context_probe":
-        return (("count() AS `event_count`",) if not has_metrics else (), ())
+        return (("count() AS `event_count`",), ())
     return (), ()
 
 
@@ -367,6 +394,39 @@ def _validate_runtime_types(
     )
     if not isinstance(contract.query_parameters, Mapping):
         raise TypeError("invalid_query_contract_runtime_type:query_parameters")
+    if not isinstance(contract.query_role_ref, str):
+        raise TypeError("invalid_query_contract_runtime_type:query_role_ref")
+    if contract.reconciliation_binding is not None:
+        if not isinstance(contract.reconciliation_binding, ReconciliationBinding):
+            raise TypeError(
+                "invalid_query_contract_runtime_type:reconciliation_binding"
+            )
+        _require_runtime_string(
+            contract.reconciliation_binding.reference_query_role_ref,
+            "reconciliation_binding.reference_query_role_ref",
+        )
+        _require_runtime_string(
+            contract.reconciliation_binding.reference_contract_signature,
+            "reconciliation_binding.reference_contract_signature",
+        )
+    if contract.join_expectation is not None:
+        if not isinstance(contract.join_expectation, JoinExpectation):
+            raise TypeError(
+                "invalid_query_contract_runtime_type:join_expectation"
+            )
+        if contract.join_expectation.cardinality not in {
+            "one_to_one",
+            "many_to_one",
+        }:
+            raise ValueError("invalid_join_expectation_cardinality")
+        _require_runtime_string_tuple(
+            contract.join_expectation.audit_fields,
+            "join_expectation.audit_fields",
+        )
+        for field_name in ("max_duplicate_keys", "max_unmatched_rows"):
+            value = getattr(contract.join_expectation, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"invalid_join_expectation:{field_name}")
 
     if not isinstance(snapshots, Mapping):
         raise TypeError("invalid_snapshots_runtime_type")
@@ -405,6 +465,32 @@ def _validate_metric_binding_types(binding: MetricBinding) -> None:
         binding.claim_types,
         "metric_bindings.claim_types",
     )
+    tolerance = binding.reconciliation_tolerance
+    if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)):
+        raise TypeError(
+            "invalid_query_contract_runtime_type:"
+            "metric_bindings.reconciliation_tolerance"
+        )
+    if not math.isfinite(float(tolerance)) or tolerance < 0:
+        raise ValueError(
+            "invalid_query_contract_runtime_type:"
+            "metric_bindings.reconciliation_tolerance"
+        )
+    if binding.reconciliation_strategy not in {
+        "additive_sum",
+        "exact_additive_count",
+        "ratio_from_components",
+        "unsupported_non_additive",
+    }:
+        raise ValueError(
+            "invalid_query_contract_runtime_type:"
+            "metric_bindings.reconciliation_strategy"
+        )
+    if (
+        binding.reconciliation_strategy == "ratio_from_components"
+        and (not binding.numerator_metric or not binding.denominator_metric)
+    ):
+        raise ValueError("ratio_reconciliation_components_required")
 
 
 def _validate_dimension_binding_types(binding: DimensionBinding) -> None:
@@ -804,6 +890,11 @@ def _verify_reviewed_query_shape(
         raise ValueError(
             f"reviewed_query_parameters_mismatch:{contract.query_intent}"
         )
+    expected_join = _reviewed_join_expectation(reviewed)
+    if contract.join_expectation != expected_join:
+        raise ValueError(
+            f"reviewed_join_expectation_mismatch:{contract.query_intent}"
+        )
     dimension_ids = tuple(item.dimension_id for item in contract.dimension_bindings)
     expected_shape = ResultShape(
         required_fields=_dedupe(
@@ -855,6 +946,11 @@ def _verify_reviewed_bindings(
                 reviewed.get("zero_denominator_policy") or "null"
             ),
             claim_types=_string_tuple(reviewed.get("claim_types")),
+            reconciliation_tolerance=_reviewed_reconciliation_tolerance(reviewed),
+            reconciliation_strategy=str(
+                reviewed.get("reconciliation_strategy")
+                or "unsupported_non_additive"
+            ),
         )
         if not _safe_contract_expression(
             binding.expression,
@@ -894,6 +990,47 @@ def _verify_reviewed_bindings(
             raise ValueError(
                 f"reviewed_dimension_binding_mismatch:{binding.dimension_id}"
             )
+
+
+def _reviewed_reconciliation_tolerance(reviewed: Mapping[str, Any]) -> float:
+    value = reviewed.get("reconciliation_tolerance", 0.0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("invalid_metric_reconciliation_tolerance")
+    tolerance = float(value)
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise ValueError("invalid_metric_reconciliation_tolerance")
+    return tolerance
+
+
+def _reviewed_join_expectation(
+    reviewed: Mapping[str, Any],
+) -> JoinExpectation | None:
+    value = reviewed.get("join_expectation")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("invalid_reviewed_join_expectation")
+    try:
+        expectation = JoinExpectation(
+            cardinality=str(value["cardinality"]),
+            audit_fields=_string_tuple(value["audit_fields"]),
+            max_duplicate_keys=value["max_duplicate_keys"],
+            max_unmatched_rows=value["max_unmatched_rows"],
+        )
+    except KeyError as exc:
+        raise ValueError("invalid_reviewed_join_expectation") from exc
+    if (
+        expectation.cardinality not in {"one_to_one", "many_to_one"}
+        or not expectation.audit_fields
+        or isinstance(expectation.max_duplicate_keys, bool)
+        or not isinstance(expectation.max_duplicate_keys, int)
+        or expectation.max_duplicate_keys < 0
+        or isinstance(expectation.max_unmatched_rows, bool)
+        or not isinstance(expectation.max_unmatched_rows, int)
+        or expectation.max_unmatched_rows < 0
+    ):
+        raise ValueError("invalid_reviewed_join_expectation")
+    return expectation
 
 
 def _safe_contract_expression(

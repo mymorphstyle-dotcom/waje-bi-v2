@@ -56,6 +56,8 @@ class MetricBinding:
     denominator_metric: str = ""
     zero_denominator_policy: str = "null"
     claim_types: tuple[str, ...] = ()
+    reconciliation_tolerance: float = 0.0
+    reconciliation_strategy: str = "unsupported_non_additive"
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,20 @@ class ResultShape:
 
 
 @dataclass(frozen=True)
+class ReconciliationBinding:
+    reference_query_role_ref: str
+    reference_contract_signature: str
+
+
+@dataclass(frozen=True)
+class JoinExpectation:
+    cardinality: str
+    audit_fields: tuple[str, ...]
+    max_duplicate_keys: int
+    max_unmatched_rows: int
+
+
+@dataclass(frozen=True)
 class QueryContract:
     query_contract_id: str
     analysis_contract_ref: str
@@ -95,6 +111,9 @@ class QueryContract:
     workload_class: str
     contract_signature: str
     query_parameters: Mapping[str, Any] = field(default_factory=dict)
+    query_role_ref: str = ""
+    reconciliation_binding: ReconciliationBinding | None = None
+    join_expectation: JoinExpectation | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -113,6 +132,8 @@ _QUERY_CONTRACT_SEMANTIC_FIELDS = (
     "permission_scope",
     "workload_class",
     "query_parameters",
+    "reconciliation_binding",
+    "join_expectation",
 )
 
 
@@ -144,7 +165,11 @@ def _contract_field(
     if isinstance(value, Mapping):
         if field_name in value:
             return value[field_name]
-        if field_name == "query_parameters":
+        if field_name in {
+            "query_parameters",
+            "reconciliation_binding",
+            "join_expectation",
+        }:
             return default
         raise ValueError(f"query_contract_semantic_field_missing:{field_name}")
     return getattr(value, field_name)
@@ -171,6 +196,7 @@ class CapabilityInputSlot:
     accepted_completeness: tuple[str, ...]
     required_fields: tuple[str, ...]
     required_window_ids: tuple[str, ...]
+    validation_query_contract_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -227,6 +253,7 @@ class QueryResultEnvelope:
     source_snapshot_refs: tuple[str, ...] = ()
     provider_stats: Mapping[str, Any] = field(default_factory=dict)
     failure_reason: str = ""
+    execution_attempt_ref: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -238,6 +265,7 @@ class QueryResultEnvelope:
 class CompletenessReport:
     report_ref: str
     query_contract_ref: str
+    result_ref: str
     completeness_status: str
     analysis_readiness: str
     assertion_results: tuple[Mapping[str, Any], ...]

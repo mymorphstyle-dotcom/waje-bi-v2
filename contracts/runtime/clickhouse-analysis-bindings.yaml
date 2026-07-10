@@ -30,6 +30,8 @@ metrics:
     aggregation: sum
     required_fields: [paid_amount_ngn]
     grain: [window_id]
+    reconciliation_tolerance: 0.01
+    reconciliation_strategy: additive_sum
     claim_types: [comparative_change, formula_component_contribution, segment_contribution_or_mix_shift]
   paid_users:
     contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
@@ -38,6 +40,7 @@ metrics:
     aggregation: distinct_count
     required_fields: [user_id]
     grain: [window_id]
+    reconciliation_strategy: unsupported_non_additive
   paid_orders:
     contract_ref: contracts/sources/paid-order-detail.source.yaml@0.2
     dataset_id: paid_order_success
@@ -45,6 +48,7 @@ metrics:
     aggregation: distinct_count
     required_fields: [order_id]
     grain: [window_id]
+    reconciliation_strategy: exact_additive_count
   first_paid_users:
     contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
     dataset_id: paid_order_success
@@ -52,6 +56,7 @@ metrics:
     aggregation: distinct_count_if
     required_fields: [user_id, is_first_payment]
     grain: [window_id]
+    reconciliation_strategy: unsupported_non_additive
   paid_frequency:
     contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
     dataset_id: paid_order_success
@@ -59,6 +64,9 @@ metrics:
     aggregation: ratio
     required_fields: [order_id, user_id]
     grain: [window_id]
+    numerator_metric: paid_orders
+    denominator_metric: paid_users
+    reconciliation_strategy: ratio_from_components
   avg_order_amount:
     contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
     dataset_id: paid_order_success
@@ -66,6 +74,9 @@ metrics:
     aggregation: ratio
     required_fields: [paid_amount_ngn, order_id]
     grain: [window_id]
+    numerator_metric: paid_amount
+    denominator_metric: paid_orders
+    reconciliation_strategy: ratio_from_components
   payment_success_rate:
     contract_ref: contracts/backlog/missing-contracts.yaml#payment_status_and_dedup_contract
     dataset_id: payment_attempt
@@ -73,6 +84,7 @@ metrics:
     aggregation: ratio
     required_fields: [订单id, 支付状态, 支付发起时间]
     grain: [window_id]
+    reconciliation_strategy: unsupported_non_additive
 
 dimensions:
   channel: {contract_ref: contracts/dimensions/dimensions.yaml#channel, dataset_id: paid_order_success, source_field: channel, allowed_grains: [day, window_id]}
@@ -85,19 +97,24 @@ query_shapes:
   daily_metric_baselines: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
   component_driver_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
   payment_success_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  dimension_contribution_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  joint_candidate_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  time_bucket_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  data_quality_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
-  event_context_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  dimension_contribution_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: independent}
+  joint_candidate_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: joint}
+  time_bucket_scan: {required_fields: [window_id, window_role, observation_key, calendar_week, weekday, month_phase], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  data_quality_probe: {required_fields: [window_id, window_role, observation_key, source_row_count], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  event_context_probe: {required_fields: [window_id, window_role, observation_key, event_count], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
   high_value_scan:
-    required_fields: [window_id, window_role, observation_key]
+    required_fields: [window_id, window_role, observation_key, high_value_threshold, high_value_amount, high_value_paid_users]
     unique_key: [window_id, observation_key]
     grain: [window_id, observation_key]
     query_parameters:
       threshold_quantile: 0.95
       threshold_reference: within_window_user_paid_amount
       aggregation_grain: [window_id, observation_key, user_id]
+    join_expectation:
+      cardinality: many_to_one
+      audit_fields: [__join_input_rows, __join_output_rows, __join_duplicate_keys, __join_unmatched_rows]
+      max_duplicate_keys: 0
+      max_unmatched_rows: 0
 
 capability_inputs:
   compare_periods:

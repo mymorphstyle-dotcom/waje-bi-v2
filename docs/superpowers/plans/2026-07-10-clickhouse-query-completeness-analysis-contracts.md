@@ -1500,7 +1500,7 @@ git commit -m "feat: execute typed clickhouse query contracts"
 - Produces: `validate_query_set(contracts, results, reports) -> tuple[CompletenessReport, ...]`.
 - Produces: `plan_query_repair(contract, report, attempted_signatures) -> QueryRepairDecision`.
 
-- [ ] **Step 1: 写覆盖根因的失败测试**
+- [x] **Step 1: 写覆盖根因的失败测试**
 
 Create `tests/phase4/test_query_completeness.py` with these tests:
 
@@ -1542,7 +1542,7 @@ class QueryCompletenessTest(unittest.TestCase):
 
 The test module includes concrete builders returning the Task 1 dataclasses; do not mock the validator itself.
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```bash
 python3 -m unittest tests.phase4.test_query_completeness -v
@@ -1550,7 +1550,7 @@ python3 -m unittest tests.phase4.test_query_completeness -v
 
 Expected: FAIL on missing modules.
 
-- [ ] **Step 3: 实现 assertion-based completeness validator**
+- [x] **Step 3: 实现 assertion-based completeness validator**
 
 `validate_query_result()` runs these assertions in order and records each result:
 
@@ -1588,7 +1588,7 @@ def _statuses(assertions):
 
 `validate_query_set()` adds `dimension_total_reconciliation`, `join_cardinality`, and `paired_target_baseline` reports. Tolerance comes from the metric contract, defaulting to absolute `0.01` for currency totals and exact equality for counts.
 
-- [ ] **Step 4: 实现 repair planner and loop prevention**
+- [x] **Step 4: 实现 repair planner and loop prevention**
 
 Create `query_repair.py`:
 
@@ -1618,7 +1618,61 @@ def plan_query_repair(contract, report, attempted_signatures):
 
 `retry_same` is available only for transient ClickHouse transport/service errors and uses the centralized ClickHouse adapter retry policy. All other retries require a changed contract signature.
 
-- [ ] **Step 5: 运行 Task 5 验证**
+Task 5 implementation correction: a successful zero-row result is `empty` and
+blocked, while provider overflow remains `truncated`; every completeness report
+reuses the envelope report ref and links the exact result ref. Reconciliation
+tolerance is a versioned metric binding that participates in the query signature,
+with reviewed `0.01` for paid-amount totals and exact default comparison for
+counts. Aggregate validation accepts only fields declared by the reviewed
+`ResultShape`, and result rows must match the resolved window role and half-open
+date interval before contributing to complete-day coverage. Query-set
+reconciliation only uses dimension and total reports already classified
+`complete`/`ready`. Transient provider transport failures are the sole path that
+may retry an already attempted signature; contract, source, permission, sample,
+shape, and coverage failures carry their exact report reasons into recompile,
+clarify, or degrade decisions.
+
+Task 5 review correction: ClickHouse runtime failure categories now survive the
+runtime -> executor -> validator -> repair chain. Failed execution skips
+row/window assertions, confirmed provider truncation retains `truncated`, and a
+same-signature retry requires a pure transient transport/service failure.
+Dimension queries carry a signed reconciliation binding to a compiler-generated
+aggregate companion with exact analysis, filter, permission, window, snapshot,
+metric, and workload scope checks. Metric bindings declare one reviewed
+reconciliation strategy (`additive_sum`, `exact_additive_count`,
+`ratio_from_components`, or `unsupported_non_additive`); ratio validation uses
+its bound components and standalone validation rejects invalid strategy or
+tolerance values. Reviewed join expectations are typed, signed, compiled into
+audited SQL projections, and require input/output, duplicate-key, and unmatched
+coverage statistics. Reusable rows content refs derive from query hash,
+contract signature, and snapshot refs; result and completeness refs additionally
+bind the query contract ref and execution-attempt ref so runs and retries cannot
+collide. The completeness validator remains a Task 5 library boundary;
+orchestration into ConversationAgentCore and Gateway remains assigned to Task 10.
+
+Task 5 second-review correction: a segment query shape declares independent
+dimension topology, producing one primary query and exact capability input slot
+per contracted dimension. Each slot carries its aggregate companion only through
+`validation_query_contract_refs`; reviewed joint-candidate shapes retain their
+combined dimension stage. High-value join SQL records pre-join input rows,
+post-join output rows, right-key multiplicity, duplicate keys, and unmatched rows
+from query results; the executor never copies the expected cardinality into
+observed provider stats. `exact_additive_count` rejects booleans and fractional
+numbers at result validation. Task 4 serialized projections are explicitly
+rejected at the legacy schema boundary because no pre-Task-5 typed query
+contracts were persisted.
+
+Task 5 third-review correction: the ClickHouse provider `query_id` includes a
+length-safe hash of `execution_attempt_ref`, so concurrent executions and
+same-signature retries cannot share the provider identity. A dimension primary
+with `ReconciliationBinding` remains `partial`/`blocked` after standalone
+validation with a typed pending reconciliation assertion. `validate_query_set()`
+replaces that pending assertion only after the exact signed companion is
+complete/ready and reconciliation passes; successful promotion records the
+validation query, result, report, and snapshot refs in report coverage. Missing,
+mismatched, incomplete, or failed companions retain the hard block.
+
+- [x] **Step 5: 运行 Task 5 验证**
 
 ```bash
 python3 -m unittest tests.phase4.test_query_completeness -v
@@ -1627,7 +1681,7 @@ python3 -m pytest tests/phase4/test_clickhouse_query_compiler.py tests/phase4/te
 
 Expected: all tests PASS.
 
-- [ ] **Step 6: 提交 Task 5**
+- [x] **Step 6: 提交 Task 5**
 
 ```bash
 git add bi_agent/runtime/query_completeness.py bi_agent/runtime/query_repair.py bi_agent/runtime/query_executor.py tests/phase4/test_query_completeness.py
@@ -1690,6 +1744,64 @@ class CapabilityExecutionTest(unittest.TestCase):
         self.assertEqual(bound.status, "degraded")
         self.assertIn("missing_optional_slot:payment_success", bound.reasons)
 
+    def test_dimension_slot_requires_exact_reconciliation_dependency(self):
+        plan = segment_plan(
+            primary_query_ref="query:channel:1",
+            validation_query_ref="query:channel-total:1",
+        )
+        bound = bind_capability_inputs(
+            plan,
+            results={
+                "query:channel:1": complete_result("query:channel:1"),
+            },
+            reports={
+                "query:channel:1": standalone_pending_dimension_report(
+                    "query:channel:1"
+                ),
+            },
+        )
+        self.assertEqual(bound.status, "blocked")
+        self.assertEqual(
+            bound.reasons,
+            ("missing_validation_query:dimension_contribution_scan:channel",),
+        )
+
+    def test_reconciled_dimension_slot_preserves_validation_provenance(self):
+        bound = bind_capability_inputs(
+            segment_plan(
+                primary_query_ref="query:channel:1",
+                validation_query_ref="query:channel-total:1",
+            ),
+            results=exact_reconciled_dimension_results(),
+            reports=exact_reconciled_query_set_reports(),
+        )
+        self.assertEqual(bound.status, "ready")
+        self.assertEqual(
+            bound.validation_query_contract_refs,
+            ("query:channel-total:1",),
+        )
+        self.assertEqual(
+            bound.validation_result_refs,
+            ("result:channel-total:1",),
+        )
+        self.assertEqual(
+            bound.validation_completeness_report_refs,
+            ("complete:channel-total:1",),
+        )
+
+    def test_optional_validation_failure_uses_degradation_policy(self):
+        bound = bind_capability_inputs(
+            driver_plan_with_optional_validated_slot(),
+            results=complete_required_and_optional_results(),
+            reports=required_ready_optional_validation_not_ready_reports(),
+        )
+        self.assertEqual(bound.status, "degraded")
+        self.assertIn(
+            "validation_report_not_ready:payment_success",
+            bound.reasons,
+        )
+        self.assertIn("component_drivers", bound.rows_by_slot)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -1718,6 +1830,10 @@ class BoundCapabilityInput:
     result_refs: tuple[str, ...]
     completeness_report_refs: tuple[str, ...]
     source_snapshot_refs: tuple[str, ...]
+    validation_query_contract_refs: tuple[str, ...]
+    validation_result_refs: tuple[str, ...]
+    validation_completeness_report_refs: tuple[str, ...]
+    validation_source_snapshot_refs: tuple[str, ...]
 
 
 def bind_capability_inputs(plan, *, results, reports):
@@ -1727,20 +1843,37 @@ def bind_capability_inputs(plan, *, results, reports):
     result_refs = []
     report_refs = []
     snapshot_refs = []
+    validation_query_refs = []
+    validation_result_refs = []
+    validation_report_refs = []
+    validation_snapshot_refs = []
+    required_match_failed = False
     for slot in (*plan.required_input_slots, *plan.optional_input_slots):
-        matched = _match_exact_slot(slot, results, reports)
+        matched, match_reason = _match_exact_slot_with_validation_dependencies(
+            slot,
+            results,
+            reports,
+        )
         if matched is None:
-            prefix = "missing_required_slot" if slot.required else "missing_optional_slot"
-            reasons.append(f"{prefix}:{slot.slot_id}")
+            required_match_failed = required_match_failed or slot.required
+            if match_reason:
+                reasons.append(match_reason)
+            else:
+                prefix = "missing_required_slot" if slot.required else "missing_optional_slot"
+                reasons.append(f"{prefix}:{slot.slot_id}")
             continue
-        result, report = matched
+        result, report, validation_dependencies = matched
         rows_by_slot[slot.slot_id] = tuple(result.rows)
         query_refs.append(result.query_contract_ref)
         result_refs.append(result.result_ref)
         report_refs.append(report.report_ref)
         snapshot_refs.extend(result.source_snapshot_refs)
-    missing_required = any(reason.startswith("missing_required_slot:") for reason in reasons)
-    status = "blocked" if missing_required else "degraded" if reasons else "ready"
+        for validation_result, validation_report in validation_dependencies:
+            validation_query_refs.append(validation_result.query_contract_ref)
+            validation_result_refs.append(validation_result.result_ref)
+            validation_report_refs.append(validation_report.report_ref)
+            validation_snapshot_refs.extend(validation_result.source_snapshot_refs)
+    status = "blocked" if required_match_failed else "degraded" if reasons else "ready"
     return BoundCapabilityInput(
         capability_id=plan.capability_id,
         status=status,
@@ -1750,10 +1883,31 @@ def bind_capability_inputs(plan, *, results, reports):
         result_refs=tuple(dict.fromkeys(result_refs)),
         completeness_report_refs=tuple(dict.fromkeys(report_refs)),
         source_snapshot_refs=tuple(dict.fromkeys(snapshot_refs)),
+        validation_query_contract_refs=tuple(dict.fromkeys(validation_query_refs)),
+        validation_result_refs=tuple(dict.fromkeys(validation_result_refs)),
+        validation_completeness_report_refs=tuple(dict.fromkeys(validation_report_refs)),
+        validation_source_snapshot_refs=tuple(dict.fromkeys(validation_snapshot_refs)),
     )
 ```
 
-`_match_exact_slot()` only accepts query refs explicitly listed in the slot, report completeness listed in `accepted_completeness`, required fields present in every row, and required windows present. It never scans unrelated results.
+`_match_exact_slot_with_validation_dependencies()` only accepts primary query
+refs explicitly listed in the slot, report completeness listed in
+`accepted_completeness`, required fields present in every row, and required
+windows present. It must also consume every exact ref in
+`slot.validation_query_contract_refs`: each dependency result/report pair must
+be present, complete/ready, internally ref-consistent, and snapshot-bound. For a
+primary carrying `ReconciliationBinding`, the primary report must contain one
+passed query-set `dimension_total_reconciliation` assertion whose coverage
+provenance matches the exact validation query/result/report/snapshot refs. A
+standalone pending report, a missing dependency, or any provenance mismatch is
+blocked. The binder never scans unrelated results or infers a companion by
+intent. The matcher returns a typed reason such as
+`missing_validation_query:<slot_id>`, `validation_report_not_ready:<slot_id>`,
+or `validation_provenance_mismatch:<slot_id>`; the binder preserves that reason
+instead of collapsing validation failures into a generic missing-slot result.
+Requiredness comes from the typed slot, so any failed match for a required slot
+is blocked regardless of the reason text; status logic must not infer
+requiredness from string prefixes.
 
 - [ ] **Step 4: 扩展 evidence envelope and asset signature**
 

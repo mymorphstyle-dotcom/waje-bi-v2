@@ -35,6 +35,116 @@ def snapshot(dataset_id, table, watermark):
 
 
 class AnalysisContractCompilerTest(unittest.TestCase):
+    def test_segment_queries_are_independent_and_companions_are_validation_only(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-segment-companion",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "requested_dimensions": ["channel", "region"],
+                "claim_intents": ["segment_contribution_or_mix_shift"],
+            },
+            accepted_capabilities=("segment_contribution",),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        dimension_queries = tuple(
+            query for query in outcome.query_contracts if query.dimension_bindings
+        )
+        self.assertEqual(len(dimension_queries), 2)
+        self.assertEqual(
+            {
+                tuple(binding.dimension_id for binding in query.dimension_bindings)
+                for query in dimension_queries
+            },
+            {("channel",), ("region",)},
+        )
+        companion_refs = set()
+        for dimension_query in dimension_queries:
+            binding = dimension_query.reconciliation_binding
+            self.assertIsNotNone(binding)
+            companion = next(
+                query
+                for query in outcome.query_contracts
+                if query.query_role_ref == binding.reference_query_role_ref
+            )
+            self.assertFalse(companion.dimension_bindings)
+            self.assertEqual(
+                binding.reference_contract_signature,
+                companion.contract_signature,
+            )
+            self.assertEqual(
+                dimension_query.contract_signature,
+                query_contract_signature(dimension_query),
+            )
+            companion_refs.add(companion.query_contract_id)
+        segment_slots = outcome.capability_plans[0].required_input_slots
+        self.assertEqual(len(segment_slots), 2)
+        self.assertEqual(
+            {
+                slot.query_contract_refs[0]
+                for slot in segment_slots
+            },
+            {query.query_contract_id for query in dimension_queries},
+        )
+        self.assertEqual(
+            {
+                ref
+                for slot in segment_slots
+                for ref in slot.validation_query_contract_refs
+            },
+            companion_refs,
+        )
+        queries_by_ref = {
+            query.query_contract_id: query for query in dimension_queries
+        }
+        for slot in segment_slots:
+            self.assertEqual(len(slot.query_contract_refs), 1)
+            primary = queries_by_ref[slot.query_contract_refs[0]]
+            self.assertEqual(
+                slot.required_fields,
+                primary.result_shape.required_fields,
+            )
+            self.assertEqual(len(slot.validation_query_contract_refs), 1)
+
+    def test_joint_candidate_query_keeps_reviewed_dimension_combination(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-joint-candidate",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "requested_dimensions": ["channel", "region"],
+                "claim_intents": ["candidate_driver"],
+            },
+            accepted_capabilities=("joint_attribution",),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        joint = next(
+            query
+            for query in outcome.query_contracts
+            if query.query_intent == "joint_candidate_scan"
+            and query.dimension_bindings
+        )
+        self.assertEqual(
+            tuple(binding.dimension_id for binding in joint.dimension_bindings),
+            ("channel", "region"),
+        )
+
     def test_high_value_query_uses_reviewed_parameters_in_shared_signature(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
@@ -67,6 +177,16 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 ),
             },
         )
+        self.assertTrue(
+            {
+                "high_value_threshold",
+                "high_value_amount",
+                "high_value_paid_users",
+            }.issubset(query.result_shape.required_fields)
+        )
+        self.assertEqual(query.join_expectation.cardinality, "many_to_one")
+        self.assertEqual(query.join_expectation.max_duplicate_keys, 0)
+        self.assertEqual(query.join_expectation.max_unmatched_rows, 0)
         self.assertEqual(query.contract_signature, query_contract_signature(query))
 
     def test_explicit_claim_outside_capability_ceiling_is_rejected(self):
@@ -311,6 +431,46 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         self.assertNotEqual(first.contract_signature, filtered.contract_signature)
         self.assertNotEqual(first.contract_signature, snapshot_changed.contract_signature)
         self.assertNotEqual(first.contract_signature, binding_changed.contract_signature)
+
+    def test_metric_reconciliation_tolerance_is_bound_and_signed(self):
+        base_payload = load_contract(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        changed_payload = load_contract(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        changed_payload["metrics"]["paid_amount"][
+            "reconciliation_tolerance"
+        ] = 0.25
+
+        base = self._compile_compare_with_registry(
+            RuntimeContractRegistry(base_payload)
+        ).query_contracts[0]
+        changed = self._compile_compare_with_registry(
+            RuntimeContractRegistry(changed_payload)
+        ).query_contracts[0]
+
+        self.assertEqual(base.metric_bindings[0].reconciliation_tolerance, 0.01)
+        self.assertEqual(changed.metric_bindings[0].reconciliation_tolerance, 0.25)
+        self.assertNotEqual(base.contract_signature, changed.contract_signature)
+
+    def test_invalid_metric_reconciliation_strategy_blocks_binding(self):
+        payload = load_contract(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        payload["metrics"]["paid_amount"][
+            "reconciliation_strategy"
+        ] = "average_the_totals"
+
+        outcome = self._compile_compare_with_registry(
+            RuntimeContractRegistry(payload)
+        )
+
+        self.assertFalse(outcome.query_contracts)
+        self.assertIn(
+            "metric:paid_amount:invalid:reconciliation_strategy",
+            {gap.gap_id for gap in outcome.analysis_contract.contract_gaps},
+        )
 
     def test_workload_class_participates_in_dedupe(self):
         payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")

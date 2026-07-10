@@ -36,6 +36,7 @@ class ClickHouseQueryResult:
     query_hash: str = ""
     query_id: str = ""
     provider_stats: Mapping[str, Any] = field(default_factory=dict)
+    execution_attempt_ref: str = ""
 
 
 class _RequiredQueryKwargUnsupported(Exception):
@@ -115,6 +116,7 @@ class ClickHouseRuntime:
         *,
         parameters: Mapping[str, Any] | None = None,
         settings: Mapping[str, Any] | None = None,
+        execution_attempt_ref: str = "",
     ) -> ClickHouseQueryResult:
         aggregate_settings = dict(settings or {})
         aggregate_settings["result_overflow_mode"] = "throw"
@@ -124,6 +126,7 @@ class ClickHouseRuntime:
             aggregate=True,
             parameters=parameters,
             settings=aggregate_settings,
+            execution_attempt_ref=execution_attempt_ref,
         )
 
     def _execute_allowlisted(
@@ -141,11 +144,15 @@ class ClickHouseRuntime:
         aggregate: bool = False,
         parameters: Mapping[str, Any] | None = None,
         settings: Mapping[str, Any] | None = None,
+        execution_attempt_ref: str = "",
     ) -> ClickHouseQueryResult:
         validation = validate_select_only(sql, aggregate=aggregate)
         if not validation.ok:
             return ClickHouseQueryResult(
-                ok=False, reason=validation.reason, query_hash=validation.query_hash
+                ok=False,
+                reason=validation.reason,
+                query_hash=validation.query_hash,
+                execution_attempt_ref=execution_attempt_ref,
             )
         query_hash = audit_query_hash(sql, parameters)
         return self._execute(
@@ -154,6 +161,7 @@ class ClickHouseRuntime:
             query_hash=query_hash,
             parameters=parameters,
             settings=settings,
+            execution_attempt_ref=execution_attempt_ref,
         )
 
     def _execute(
@@ -164,9 +172,14 @@ class ClickHouseRuntime:
         query_hash: str = "",
         parameters: Mapping[str, Any] | None = None,
         settings: Mapping[str, Any] | None = None,
+        execution_attempt_ref: str = "",
     ) -> ClickHouseQueryResult:
         if not self.configured():
-            return ClickHouseQueryResult(ok=False, reason="runtime_binding_failed")
+            return ClickHouseQueryResult(
+                ok=False,
+                reason="runtime_binding_failed",
+                execution_attempt_ref=execution_attempt_ref,
+            )
 
         try:
             client = self._get_client()
@@ -183,15 +196,17 @@ class ClickHouseRuntime:
                 query_hash=query_hash,
                 query_id=query_id,
                 provider_stats={"unsupported_kwarg": exc.kwarg},
+                execution_attempt_ref=execution_attempt_ref,
             )
         except TypeError:
             raise
-        except Exception:
+        except Exception as exc:
             return ClickHouseQueryResult(
                 ok=False,
-                reason="clickhouse_query_failed",
+                reason=_clickhouse_failure_reason(exc),
                 query_hash=query_hash,
                 query_id=query_id,
+                execution_attempt_ref=execution_attempt_ref,
             )
 
         provider_stats = _provider_stats(
@@ -206,6 +221,7 @@ class ClickHouseRuntime:
                 query_hash=query_hash,
                 query_id=query_id,
                 provider_stats=provider_stats,
+                execution_attempt_ref=execution_attempt_ref,
             )
         return ClickHouseQueryResult(
             ok=True,
@@ -213,6 +229,7 @@ class ClickHouseRuntime:
             query_hash=query_hash,
             query_id=query_id,
             provider_stats=provider_stats,
+            execution_attempt_ref=execution_attempt_ref,
         )
 
     def _get_client(self) -> Any:
@@ -309,6 +326,30 @@ def _provider_result_truncated(provider_stats: Mapping[str, Any]) -> bool:
         if str(provider_stats.get(key) or "").casefold() == "break":
             return True
     return provider_stats.get("truncated") is True
+
+
+def _clickhouse_failure_reason(error: Exception) -> str:
+    if isinstance(error, (ConnectionError, TimeoutError)):
+        return f"transient_clickhouse:{_exception_category(error)}"
+    class_name = type(error).__name__.casefold()
+    if any(
+        token in class_name
+        for token in (
+            "connection",
+            "network",
+            "operational",
+            "socket",
+            "timeout",
+            "transport",
+        )
+    ):
+        return f"transient_clickhouse:{_exception_category(error)}"
+    return "clickhouse_query_failed"
+
+
+def _exception_category(error: Exception) -> str:
+    name = type(error).__name__
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).casefold()
 
 
 def audit_query_hash(sql: str, parameters: Mapping[str, Any] | None) -> str:

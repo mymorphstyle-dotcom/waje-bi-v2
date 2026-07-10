@@ -37,7 +37,15 @@ class FakeRuntime:
             query_id=f"describe:{table_name}",
         )
 
-    def aggregate(self, sql, query_id):
+    def aggregate(
+        self,
+        sql,
+        query_id,
+        *,
+        parameters=None,
+        settings=None,
+        execution_attempt_ref="",
+    ):
         self.calls.append((sql, query_id))
         rows = self.rows_by_query_id.get(query_id, self.rows)
         return ClickHouseQueryResult(
@@ -46,6 +54,7 @@ class FakeRuntime:
             rows=rows,
             query_hash=f"hash-{query_id}",
             query_id=query_id,
+            execution_attempt_ref=execution_attempt_ref,
         )
 
 
@@ -81,6 +90,151 @@ class FakeResultClient:
 
 
 class ClickHouseRevenueRowsTest(unittest.TestCase):
+    def test_execution_refs_are_attempt_scoped_while_rows_content_is_reusable(self):
+        client = FakeParameterizedClient()
+        executor = ClickHouseQueryExecutor(ClickHouseRuntime(client=client))
+        selected_snapshot = snapshot()
+        selected_contract = contract()
+
+        first = executor.execute(
+            selected_contract,
+            {selected_snapshot.snapshot_ref: selected_snapshot},
+            execution_attempt_ref="attempt:run-a:1",
+        )
+        second = executor.execute(
+            selected_contract,
+            {selected_snapshot.snapshot_ref: selected_snapshot},
+            execution_attempt_ref="attempt:run-a:2",
+        )
+        other_run = executor.execute(
+            resigned(selected_contract, query_contract_id="query:run-b:1"),
+            {selected_snapshot.snapshot_ref: selected_snapshot},
+            execution_attempt_ref="attempt:run-a:1",
+        )
+
+        self.assertEqual(first.execution_attempt_ref, "attempt:run-a:1")
+        self.assertEqual(second.execution_attempt_ref, "attempt:run-a:2")
+        self.assertNotEqual(first.result_ref, second.result_ref)
+        self.assertNotEqual(
+            first.completeness_report_ref,
+            second.completeness_report_ref,
+        )
+        self.assertEqual(first.rows_ref, second.rows_ref)
+        self.assertNotEqual(first.result_ref, other_run.result_ref)
+        self.assertEqual(first.rows_ref, other_run.rows_ref)
+        provider_query_ids = tuple(
+            str(kwargs["query_id"]) for _, kwargs in client.calls
+        )
+        self.assertEqual(len(provider_query_ids), 3)
+        self.assertEqual(len(set(provider_query_ids)), 3)
+        self.assertEqual(
+            tuple(item.query_id for item in (first, second, other_run)),
+            provider_query_ids,
+        )
+
+    def test_failed_execution_refs_are_unique_per_attempt(self):
+        executor = ClickHouseQueryExecutor(
+            ClickHouseRuntime(client=FakeParameterizedClient())
+        )
+        selected_snapshot = snapshot()
+        invalid = replace(contract(), contract_signature="tampered")
+
+        first = executor.execute(
+            invalid,
+            {selected_snapshot.snapshot_ref: selected_snapshot},
+            execution_attempt_ref="attempt:failure:1",
+        )
+        second = executor.execute(
+            invalid,
+            {selected_snapshot.snapshot_ref: selected_snapshot},
+            execution_attempt_ref="attempt:failure:2",
+        )
+
+        self.assertEqual(first.execution_status, "blocked")
+        self.assertEqual(second.execution_status, "blocked")
+        self.assertNotEqual(first.result_ref, second.result_ref)
+        self.assertNotEqual(
+            first.completeness_report_ref,
+            second.completeness_report_ref,
+        )
+        self.assertEqual(first.rows_ref, second.rows_ref)
+
+    def test_default_execution_attempt_refs_are_unique(self):
+        client = FakeParameterizedClient()
+        executor = ClickHouseQueryExecutor(ClickHouseRuntime(client=client))
+        selected_snapshot = snapshot()
+
+        first = executor.execute(
+            contract(),
+            {selected_snapshot.snapshot_ref: selected_snapshot},
+        )
+        second = executor.execute(
+            contract(),
+            {selected_snapshot.snapshot_ref: selected_snapshot},
+        )
+
+        self.assertTrue(first.execution_attempt_ref.startswith("attempt:"))
+        self.assertTrue(second.execution_attempt_ref.startswith("attempt:"))
+        self.assertNotEqual(first.execution_attempt_ref, second.execution_attempt_ref)
+        self.assertNotEqual(first.result_ref, second.result_ref)
+
+    def test_high_value_adapter_extracts_reviewed_join_audit_statistics(self):
+        result = type(
+            "HighValueJoinAuditResult",
+            (),
+            {
+                "column_names": (
+                    "window_id",
+                    "window_role",
+                    "observation_key",
+                    "paid_amount",
+                    "high_value_threshold",
+                    "high_value_amount",
+                    "high_value_paid_users",
+                    "__join_input_rows",
+                    "__join_output_rows",
+                    "__join_duplicate_keys",
+                    "__join_unmatched_rows",
+                ),
+                "result_rows": (
+                    (
+                        "target_day",
+                        "target",
+                        "2026-06-02",
+                        120.0,
+                        10.0,
+                        80.0,
+                        4,
+                        10,
+                        12,
+                        2,
+                        0,
+                    ),
+                ),
+                "summary": {"read_rows": 10},
+                "query_id": "high-value-audit",
+            },
+        )()
+        executor = ClickHouseQueryExecutor(
+            ClickHouseRuntime(client=FakeResultClient(result))
+        )
+        selected_snapshot = snapshot()
+
+        envelope = executor.execute(
+            contract(query_intent="high_value_scan"),
+            {selected_snapshot.snapshot_ref: selected_snapshot},
+        )
+
+        self.assertEqual(envelope.execution_status, "succeeded")
+        self.assertEqual(envelope.provider_stats["join_input_rows"], 10)
+        self.assertEqual(envelope.provider_stats["join_output_rows"], 12)
+        self.assertEqual(envelope.provider_stats["join_duplicate_keys"], 2)
+        self.assertEqual(envelope.provider_stats["join_unmatched_rows"], 0)
+        self.assertNotIn("join_cardinality", envelope.provider_stats)
+        self.assertFalse(
+            any(key.startswith("__join_") for key in envelope.rows[0])
+        )
+
     def test_executor_blocks_invalid_direct_nested_runtime_type(self):
         client = FakeParameterizedClient()
         executor = ClickHouseQueryExecutor(ClickHouseRuntime(client=client))
@@ -124,8 +278,9 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
                 )
                 self.assertEqual(envelope.execution_status, "blocked")
                 self.assertIn(reason, envelope.failure_reason)
-                self.assertEqual(envelope.result_ref, "")
-                self.assertEqual(envelope.rows_ref, "")
+                self.assertTrue(envelope.result_ref)
+                self.assertTrue(envelope.rows_ref)
+                self.assertTrue(envelope.completeness_report_ref)
 
     def test_observed_grain_contains_only_expected_keys_present_in_every_row(self):
         result = type(
@@ -183,9 +338,44 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         self.assertEqual(envelope.execution_status, "blocked")
         self.assertEqual(
             envelope.failure_reason,
-            "raw_identifier_output_rejected:user_id",
+            "unreviewed_output_field_rejected:user_id",
         )
-        self.assertEqual(envelope.result_ref, "")
+
+    def test_arbitrary_unreviewed_output_field_is_blocked(self):
+        result = type(
+            "UnreviewedFieldResult",
+            (),
+            {
+                "column_names": (
+                    "window_id",
+                    "window_role",
+                    "observation_key",
+                    "paid_amount",
+                    "invented_score",
+                ),
+                "result_rows": (
+                    ("target_day", "target", "2026-06-02", 120.0, 99),
+                ),
+                "summary": {"read_rows": 1},
+                "query_id": "unreviewed-field",
+            },
+        )()
+        executor = ClickHouseQueryExecutor(
+            ClickHouseRuntime(client=FakeResultClient(result))
+        )
+        dataset_snapshot = snapshot()
+
+        envelope = executor.execute(
+            contract(),
+            {dataset_snapshot.snapshot_ref: dataset_snapshot},
+        )
+
+        self.assertEqual(envelope.execution_status, "blocked")
+        self.assertEqual(
+            envelope.failure_reason,
+            "unreviewed_output_field_rejected:invented_score",
+        )
+        self.assertTrue(envelope.result_ref)
 
     def test_rows_store_ref_is_audit_complete_and_reads_are_isolated(self):
         rows_store = AggregateRowsStore()
@@ -205,7 +395,7 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         self.assertIn(query_contract.contract_signature[:16], rows_ref)
         self.assertEqual(rows_store.get(rows_ref)[0]["nested"]["value"], 1)
 
-    def test_result_and_rows_refs_share_the_same_audit_identity(self):
+    def test_result_and_report_share_execution_identity_separate_from_rows_content(self):
         executor = ClickHouseQueryExecutor(
             ClickHouseRuntime(client=FakeParameterizedClient())
         )
@@ -217,6 +407,10 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         )
 
         self.assertEqual(
+            envelope.result_ref.removeprefix("result:"),
+            envelope.completeness_report_ref.removeprefix("completeness:"),
+        )
+        self.assertNotEqual(
             envelope.rows_ref.removeprefix("rows:"),
             envelope.result_ref.removeprefix("result:"),
         )
@@ -290,6 +484,42 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
                 self.assertIn("invalid_typed_query_contract_projection", plan.reason)
                 self.assertFalse(result.ok)
                 self.assertEqual(result.contract_mode, "typed")
+
+    def test_task4_serialized_projection_is_rejected_at_explicit_schema_boundary(self):
+        provider = ClickHouseRevenueRows(
+            runtime=ClickHouseRuntime(client=FakeParameterizedClient()),
+            snapshots={snapshot().snapshot_ref: snapshot()},
+        )
+        legacy_projection = contract().to_dict()
+        for field in (
+            "query_role_ref",
+            "reconciliation_binding",
+            "join_expectation",
+        ):
+            legacy_projection.pop(field)
+        legacy_projection["metric_bindings"][0].pop(
+            "reconciliation_tolerance"
+        )
+        legacy_projection["metric_bindings"][0].pop(
+            "reconciliation_strategy"
+        )
+
+        plan = provider.plan(
+            {
+                "run_id": "run-legacy-task4-projection",
+                "compiler_runtime_plan": {
+                    "query_contracts": (legacy_projection,),
+                },
+            },
+            {"time_window": "yesterday"},
+            ("compare_periods",),
+        )
+
+        self.assertEqual(plan.contract_mode, "typed")
+        self.assertIn(
+            "legacy_query_contract_projection_unsupported",
+            plan.reason,
+        )
 
     def test_typed_projection_rejects_invalid_snapshots_and_unknown_nested_keys(self):
         unexpected_binding_key = contract().to_dict()

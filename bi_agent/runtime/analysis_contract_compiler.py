@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+import math
 from typing import Any, Iterable, Mapping
 
 from bi_agent.runtime.analysis_contracts import (
@@ -10,8 +11,10 @@ from bi_agent.runtime.analysis_contracts import (
     CapabilityInputSlot,
     ContractGap,
     DimensionBinding,
+    JoinExpectation,
     MetricBinding,
     QueryContract,
+    ReconciliationBinding,
     ResolvedWindow,
     ResultShape,
     query_contract_signature,
@@ -514,6 +517,33 @@ def _bind_metrics(
                 )
             )
             continue
+        reconciliation_tolerance = _reconciliation_tolerance(contract)
+        if reconciliation_tolerance is None:
+            gaps.append(
+                _contract_gap(
+                    gap_type="contract_partial",
+                    gap_id=f"metric:{metric_id}:invalid:reconciliation_tolerance",
+                    dataset_id=dataset_id,
+                    affected_capabilities=affected_capabilities,
+                    repair_options=("repair_metric_binding",),
+                )
+            )
+            continue
+        reconciliation_strategy = _reconciliation_strategy(
+            contract,
+            reconciliation_tolerance,
+        )
+        if reconciliation_strategy is None:
+            gaps.append(
+                _contract_gap(
+                    gap_type="contract_partial",
+                    gap_id=f"metric:{metric_id}:invalid:reconciliation_strategy",
+                    dataset_id=dataset_id,
+                    affected_capabilities=affected_capabilities,
+                    repair_options=("repair_metric_binding",),
+                )
+            )
+            continue
         bindings.append(
             MetricBinding(
                 metric_id=metric_id,
@@ -529,9 +559,46 @@ def _bind_metrics(
                     contract.get("zero_denominator_policy") or "null"
                 ),
                 claim_types=_mapping_values(contract, "claim_types"),
+                reconciliation_tolerance=reconciliation_tolerance,
+                reconciliation_strategy=reconciliation_strategy,
             )
         )
     return tuple(bindings), tuple(gaps)
+
+
+def _reconciliation_tolerance(contract: Mapping[str, Any]) -> float | None:
+    value = contract.get("reconciliation_tolerance", 0.0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    tolerance = float(value)
+    if not math.isfinite(tolerance) or tolerance < 0:
+        return None
+    return tolerance
+
+
+def _reconciliation_strategy(
+    contract: Mapping[str, Any],
+    tolerance: float,
+) -> str | None:
+    strategy = str(
+        contract.get("reconciliation_strategy")
+        or "unsupported_non_additive"
+    )
+    if strategy not in {
+        "additive_sum",
+        "exact_additive_count",
+        "ratio_from_components",
+        "unsupported_non_additive",
+    }:
+        return None
+    if strategy == "exact_additive_count" and tolerance != 0:
+        return None
+    if strategy == "ratio_from_components" and (
+        not str(contract.get("numerator_metric") or "")
+        or not str(contract.get("denominator_metric") or "")
+    ):
+        return None
+    return strategy
 
 
 def _bind_dimensions(
@@ -837,6 +904,16 @@ def _build_query_contracts(
     query_owners: list[set[str]] = []
     seen: dict[str, int] = {}
 
+    def record_logical(logical: dict[str, Any], owner: str) -> None:
+        dedupe_key = query_contract_signature(logical)
+        existing_index = seen.get(dedupe_key)
+        if existing_index is None:
+            seen[dedupe_key] = len(logical_queries)
+            logical_queries.append(logical)
+            query_owners.append({owner})
+            return
+        query_owners[existing_index].add(owner)
+
     for capability_id in accepted_capabilities:
         capability = _registry_entry(registry.capability_inputs, capability_id)
         if capability is None:
@@ -883,7 +960,7 @@ def _build_query_contracts(
                     sorted(dataset_metrics, key=lambda item: item.metric_id)
                 )
                 include_dimensions = str(capability.get("dimension_mode") or "") == "requested"
-                query_dimensions = tuple(
+                requested_dimensions = tuple(
                     sorted(
                         (
                             item
@@ -893,44 +970,88 @@ def _build_query_contracts(
                         key=lambda item: item.dimension_id,
                     )
                 )
-                if include_dimensions and not query_dimensions:
+                if include_dimensions and not requested_dimensions:
                     continue
-                result_shape = _result_shape(
-                    normalized_metrics,
-                    query_dimensions,
-                    window_refs,
-                    query_shape,
+                dimension_topology = str(
+                    query_shape.get("dimension_topology") or "joint"
                 )
-                logical = {
-                    "analysis_contract_ref": analysis_contract_id,
-                    "query_intent": query_family,
-                    "dataset_snapshot_refs": (snapshot.snapshot_ref,),
-                    "metric_bindings": normalized_metrics,
-                    "dimension_bindings": query_dimensions,
-                    "window_refs": window_refs,
-                    "resolved_windows": windows,
-                    "filters": filters,
-                    "result_shape": result_shape,
-                    "completeness_assertions": (
-                        "required_fields_present",
-                        "required_windows_complete",
-                        "unique_result_grain",
-                        "source_snapshot_matches_contract",
-                    ),
-                    "permission_scope": permission_scope,
-                    "workload_class": str(
-                        capability.get("workload_class") or "interactive_aggregate"
-                    ),
-                    "query_parameters": _query_parameters(query_shape),
-                }
-                dedupe_key = query_contract_signature(logical)
-                existing_index = seen.get(dedupe_key)
-                if existing_index is None:
-                    seen[dedupe_key] = len(logical_queries)
-                    logical_queries.append(logical)
-                    query_owners.append({capability_id})
+                if dimension_topology == "independent":
+                    dimension_groups = tuple(
+                        (dimension,) for dimension in requested_dimensions
+                    )
+                elif dimension_topology == "joint":
+                    dimension_groups = (requested_dimensions,)
                 else:
-                    query_owners[existing_index].add(capability_id)
+                    continue
+                for query_dimensions in dimension_groups:
+                    result_shape = _result_shape(
+                        normalized_metrics,
+                        query_dimensions,
+                        window_refs,
+                        query_shape,
+                    )
+                    logical: dict[str, Any] = {
+                        "analysis_contract_ref": analysis_contract_id,
+                        "query_intent": query_family,
+                        "dataset_snapshot_refs": (snapshot.snapshot_ref,),
+                        "metric_bindings": normalized_metrics,
+                        "dimension_bindings": query_dimensions,
+                        "window_refs": window_refs,
+                        "resolved_windows": windows,
+                        "filters": filters,
+                        "result_shape": result_shape,
+                        "completeness_assertions": (
+                            "required_fields_present",
+                            "required_windows_complete",
+                            "unique_result_grain",
+                            "source_snapshot_matches_contract",
+                        ),
+                        "permission_scope": permission_scope,
+                        "workload_class": str(
+                            capability.get("workload_class")
+                            or "interactive_aggregate"
+                        ),
+                        "query_parameters": _query_parameters(query_shape),
+                        "query_role_ref": "",
+                        "reconciliation_binding": None,
+                        "join_expectation": _join_expectation(query_shape),
+                    }
+                    if query_dimensions:
+                        companion_shape_contract = _registry_entry(
+                            registry.query_shape,
+                            "daily_metric_baselines",
+                        )
+                        if companion_shape_contract is None:
+                            continue
+                        companion = {
+                            **logical,
+                            "query_intent": "daily_metric_baselines",
+                            "dimension_bindings": (),
+                            "result_shape": _result_shape(
+                                normalized_metrics,
+                                (),
+                                window_refs,
+                                companion_shape_contract,
+                            ),
+                            "query_parameters": _query_parameters(
+                                companion_shape_contract
+                            ),
+                            "reconciliation_binding": None,
+                            "join_expectation": _join_expectation(
+                                companion_shape_contract
+                            ),
+                        }
+                        companion_signature = query_contract_signature(companion)
+                        companion_role_ref = f"query-role:{companion_signature}"
+                        companion["query_role_ref"] = companion_role_ref
+                        record_logical(companion, capability_id)
+                        logical["reconciliation_binding"] = ReconciliationBinding(
+                            reference_query_role_ref=companion_role_ref,
+                            reference_contract_signature=companion_signature,
+                        )
+                    logical_signature = query_contract_signature(logical)
+                    logical["query_role_ref"] = f"query-role:{logical_signature}"
+                    record_logical(logical, capability_id)
 
     contracts = []
     refs_by_capability: dict[str, list[str]] = {
@@ -984,35 +1105,71 @@ def _build_capability_plans(
         required_slots = []
         optional_slots = []
         for query_family in _mapping_values(contract, "query_families"):
-            matching = tuple(
+            primary_queries = tuple(
                 query
                 for query in query_contracts
                 if query.query_contract_id in owned_query_refs
                 and query.query_intent == query_family
             )
             required = query_family not in optional_families
-            slot = CapabilityInputSlot(
-                slot_id=query_family,
-                query_contract_refs=tuple(
-                    query.query_contract_id for query in matching
-                ),
-                required=required,
-                accepted_completeness=accepted_completeness,
-                required_fields=_dedupe(
-                    field
-                    for query in matching
-                    for field in query.result_shape.required_fields
-                ),
-                required_window_ids=_dedupe(
-                    required_windows
-                    or tuple(
-                        window_id
-                        for query in matching
-                        for window_id in query.result_shape.required_window_ids
-                    )
-                ),
+            slot_primaries: tuple[QueryContract | None, ...] = (
+                primary_queries or (None,)
             )
-            (required_slots if required else optional_slots).append(slot)
+            for primary in slot_primaries:
+                companion_role = (
+                    primary.reconciliation_binding.reference_query_role_ref
+                    if primary is not None
+                    and primary.reconciliation_binding is not None
+                    else ""
+                )
+                validation_queries = tuple(
+                    query
+                    for query in query_contracts
+                    if query.query_contract_id in owned_query_refs
+                    and companion_role
+                    and query.query_role_ref == companion_role
+                )
+                dimension_suffix = "+".join(
+                    item.dimension_id
+                    for item in (
+                        primary.dimension_bindings if primary is not None else ()
+                    )
+                )
+                slot_id = (
+                    query_family
+                    if len(slot_primaries) == 1
+                    else (
+                        f"{query_family}:"
+                        f"{dimension_suffix or primary.query_contract_id}"
+                    )
+                )
+                slot = CapabilityInputSlot(
+                    slot_id=slot_id,
+                    query_contract_refs=(
+                        (primary.query_contract_id,)
+                        if primary is not None
+                        else ()
+                    ),
+                    required=required,
+                    accepted_completeness=accepted_completeness,
+                    required_fields=(
+                        tuple(primary.result_shape.required_fields)
+                        if primary is not None
+                        else ()
+                    ),
+                    required_window_ids=_dedupe(
+                        required_windows
+                        or (
+                            primary.result_shape.required_window_ids
+                            if primary is not None
+                            else ()
+                        )
+                    ),
+                    validation_query_contract_refs=tuple(
+                        query.query_contract_id for query in validation_queries
+                    ),
+                )
+                (required_slots if required else optional_slots).append(slot)
         capability_ref = str(
             contract.get("contract_ref")
             or f"{registry.source_ref}#capability_inputs.{capability_id}"
@@ -1267,6 +1424,35 @@ def _registry_entry(accessor: Any, item_id: str) -> dict[str, Any] | None:
         return accessor(item_id)
     except KeyError:
         return None
+
+
+def _join_expectation(query_shape: Mapping[str, Any]) -> JoinExpectation | None:
+    value = query_shape.get("join_expectation")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("query_shape_join_expectation_must_be_mapping")
+    audit_fields = _mapping_values(value, "audit_fields")
+    cardinality = str(value.get("cardinality") or "")
+    max_duplicate_keys = value.get("max_duplicate_keys")
+    max_unmatched_rows = value.get("max_unmatched_rows")
+    if (
+        cardinality not in {"one_to_one", "many_to_one"}
+        or not audit_fields
+        or isinstance(max_duplicate_keys, bool)
+        or not isinstance(max_duplicate_keys, int)
+        or max_duplicate_keys < 0
+        or isinstance(max_unmatched_rows, bool)
+        or not isinstance(max_unmatched_rows, int)
+        or max_unmatched_rows < 0
+    ):
+        raise ValueError("invalid_query_shape_join_expectation")
+    return JoinExpectation(
+        cardinality=cardinality,
+        audit_fields=audit_fields,
+        max_duplicate_keys=max_duplicate_keys,
+        max_unmatched_rows=max_unmatched_rows,
+    )
 
 
 def _query_parameters(query_shape: Mapping[str, Any]) -> dict[str, Any]:
