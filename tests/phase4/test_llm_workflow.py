@@ -1972,7 +1972,7 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertFalse(_final_summary_needs_display_repair(summary, state))
 
-    def test_final_summary_display_repair_rejects_materiality_ratio_threshold_drift(self):
+    def test_final_summary_display_repair_requires_complete_pattern_evidence_slots(self):
         state = {
             "intent": {
                 "pattern_family": "intra_period",
@@ -2007,12 +2007,17 @@ class LLMWorkflowTest(unittest.TestCase):
         summary = (
             "我对问题的理解是：你想判断月初是否高于月中和月末。\n"
             "分析脉络：我按月份对比月初和其他阶段。\n"
-            "关键发现：中位下降 7.1%，方向一致比例 26.7%，达到重要性阈值的比例 10.0%。\n"
-            "最终结论：达到重要性阈值的比例10%，低于3%阈值，当前证据不支持该假设。\n"
-            "需要注意：方向一致性不足，变化幅度未达到当前重要性阈值。"
+            "关键发现：中位下降 7.1%，方向一致比例 26.7%。\n"
+            "最终结论：当前证据不支持该假设。\n"
+            "需要注意：仍需保留当前证据边界。"
         )
 
         self.assertTrue(_final_summary_needs_display_repair(summary, state))
+        complete_summary = summary.replace(
+            "方向一致比例 26.7%。",
+            "方向一致比例 26.7%，30 个可比周期。",
+        )
+        self.assertFalse(_final_summary_needs_display_repair(complete_summary, state))
 
     def test_degraded_final_summary_fallback_uses_business_language(self):
         summary = _final_business_summary_fallback(
@@ -2731,17 +2736,14 @@ class LLMWorkflowTest(unittest.TestCase):
                     self.calls.append(task)
                     payload = _input_payload(messages)
                     self.summary_inputs.append(payload)
-                    if len(self.summary_inputs) < 3:
-                        summary_text = "已生成最终业务总结。"
-                    else:
-                        summary_text = (
-                            "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
-                            "分析脉络：我检查了目标窗口、基线窗口和证据边界。\n"
-                            "关键发现：当前证据能把排查方向收敛到周期内付费金额模式。\n"
-                            "最终结论：已验证结论是：2024-01..2026-05 的周期内付费金额模式中位提升 20.0%，"
-                            "方向一致比例 100.0%，覆盖 29 个可比周期。\n"
-                            "需要注意：机制证据暂不可用，还不能直接说这是唯一原因或已被因果证明。"
-                        )
+                    summary_text = (
+                        "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
+                        "分析脉络：我检查了目标窗口、基线窗口和证据边界。\n"
+                        "关键发现：当前证据能把排查方向收敛到周期内付费金额模式。\n"
+                        "最终结论：活动是付费金额变化的因果原因，2024-01..2026-05 的周期内付费金额模式中位提升 20.0%，"
+                        "方向一致比例 100.0%，覆盖 29 个可比周期。\n"
+                        "需要注意：机制证据暂不可用，仍需补充独立对照证据。"
+                    )
                     return FakeLLMResult(
                         {"summary_text": summary_text},
                         {
@@ -2834,7 +2836,17 @@ class LLMWorkflowTest(unittest.TestCase):
             result.answer_package["quality_gate"]["repairable_warnings"],
             ["unsupported_material_claim"],
         )
-        self.assertIn("我对问题的理解是", result.answer_package["final_answer"])
+        self.assertIn("活动是付费金额变化的因果原因", result.answer_package["final_answer"])
+        audit_outputs = [
+            call["structured_output"]
+            for call in result.answer_package["admin_audit"]["llm_calls"]
+            if call["task"] == "final_answer_audit"
+        ]
+        self.assertEqual(len(audit_outputs), 3)
+        self.assertEqual(
+            audit_outputs[-1]["repairable_warnings"],
+            ["unsupported_material_claim"],
+        )
 
     def test_local_final_summary_display_warning_triggers_retry_even_when_audit_is_ready(self):
         class ReadyAuditBadFirstSummaryLLM(FakeLLMClient):

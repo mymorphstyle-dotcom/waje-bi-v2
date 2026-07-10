@@ -454,7 +454,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertNotIn("方向命中率", summary)
         self.assertNotIn("周期内付费金额模式在 2024-01..2026-05 观察到", summary)
 
-    def test_final_business_summary_repairs_custom_baseline_limit_reason(self):
+    def test_final_business_summary_does_not_create_local_material_claim_warning(self):
         fake = FakeLLMClient(
             {
                 "next_action": {
@@ -498,7 +498,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
 
         self.assertEqual(result.status, "draft")
         self.assertIsNotNone(result.answer_package)
-        self.assertIn(
+        self.assertNotIn(
             "unsupported_material_claim",
             result.answer_package["quality_gate"]["final_summary_display_warnings"],
         )

@@ -3035,10 +3035,7 @@ def _final_business_summary(state: WorkflowState) -> WorkflowState:
     except WorkflowFailure as exc:
         if not _is_timeout_failure(exc) or not state.get("answer_text"):
             raise
-        state["final_business_summary"] = _normalize_visible_business_text(
-            _weaken_unsupported_causal_wording(state["answer_text"]),
-            state,
-        )
+        state["final_business_summary"] = state["answer_text"]
         state["final_summary_display_warnings"] = sorted(
             {*state.get("final_summary_display_warnings", []), "final_summary_timeout"}
         )
@@ -3989,13 +3986,7 @@ def _apply_final_business_summary_output(
     state: WorkflowState,
     output: Mapping[str, Any],
 ) -> None:
-    state["final_business_summary"] = _weaken_unsupported_causal_wording(
-        _final_business_summary_text(output)
-    )
-    state["final_business_summary"] = _normalize_visible_business_text(
-        state["final_business_summary"],
-        state,
-    )
+    state["final_business_summary"] = _final_business_summary_text(output)
     state["final_summary_display_warnings"] = _final_summary_display_repair_reasons(
         state["final_business_summary"],
         state,
@@ -4055,6 +4046,7 @@ def _final_answer_audit(state: WorkflowState) -> dict[str, Any]:
                     "final_summary_display_warnings", ()
                 ),
                 "evidence_brief": state.get("evidence_brief", {}),
+                "evidence_envelopes": _final_answer_audit_evidence_envelopes(state),
             },
         )
     )
@@ -4069,6 +4061,32 @@ def _final_answer_audit(state: WorkflowState) -> dict[str, Any]:
     elif audit["repairable_warnings"] and audit["display_status"] == "ready":
         audit["display_status"] = "ready_with_warnings"
     return audit
+
+
+def _final_answer_audit_evidence_envelopes(state: WorkflowState) -> list[dict[str, Any]]:
+    evidence_by_ref = _evidence_by_ref(
+        [
+            dict(item)
+            for item in state.get("evidence", ())
+            if isinstance(item, Mapping) and item.get("evidence_ref")
+        ]
+    )
+    claims = _verified_claims(state) or state.get("draft_claims", ())
+    refs = [
+        str(ref)
+        for claim in claims
+        if isinstance(claim, Mapping)
+        for ref in claim.get("evidence_refs", ())
+    ]
+    if not refs:
+        evidence_brief = state.get("evidence_brief", {})
+        if isinstance(evidence_brief, Mapping):
+            refs = [str(ref) for ref in evidence_brief.get("evidence_refs", ())]
+    return [
+        to_jsonable(evidence_by_ref[ref])
+        for ref in dict.fromkeys(refs)
+        if ref in evidence_by_ref
+    ]
 
 
 def _local_final_answer_hard_blockers(state: WorkflowState) -> list[str]:
