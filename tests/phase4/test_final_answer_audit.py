@@ -213,6 +213,23 @@ class FinalAnswerAuditTest(unittest.TestCase):
             ["final_answer_audit_contract_mismatch"],
         )
 
+    def test_falsy_status_values_become_contract_mismatch(self):
+        for status in (None, "", 0, False):
+            with self.subTest(status=status):
+                audit = normalize_final_answer_audit(
+                    {
+                        "display_status": status,
+                        "hard_blockers": [],
+                        "repairable_warnings": [],
+                    }
+                )
+
+                self.assertEqual(audit["display_status"], "ready_with_warnings")
+                self.assertEqual(
+                    audit["repairable_warnings"],
+                    ["final_answer_audit_contract_mismatch"],
+                )
+
     def test_unknown_wording_warning_keeps_supported_warning_and_contract_mismatch(self):
         audit = normalize_final_answer_audit(
             {

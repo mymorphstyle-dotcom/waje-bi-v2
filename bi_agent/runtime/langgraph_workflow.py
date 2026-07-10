@@ -3872,7 +3872,7 @@ def normalize_final_answer_audit(output: Mapping[str, Any]) -> dict[str, Any]:
         "missing_primary_claim",
     }
     allowed_statuses = {"ready", "ready_with_warnings", "hard_blocked"}
-    status = str(output.get("display_status") or "ready_with_warnings")
+    status = str(output.get("display_status"))
     contract_mismatch = status not in allowed_statuses
     if contract_mismatch:
         status = "ready_with_warnings"
