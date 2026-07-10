@@ -385,6 +385,21 @@ def _compiled(
     node_status: str = "accepted",
     runtime_plan: Optional[dict] = None,
 ) -> CompiledGraph:
+    plan = runtime_plan or {}
+    analysis_contract = plan.get("analysis_contract")
+    analysis_contract = (
+        dict(analysis_contract) if isinstance(analysis_contract, Mapping) else {}
+    )
+    query_contracts = tuple(
+        dict(item)
+        for item in plan.get("query_contracts") or ()
+        if isinstance(item, Mapping)
+    )
+    capability_execution_plans = tuple(
+        dict(item)
+        for item in plan.get("capability_execution_plans") or ()
+        if isinstance(item, Mapping)
+    )
     return CompiledGraph(
         status=status,
         accepted_nodes=tuple(
@@ -403,7 +418,10 @@ def _compiled(
             rejected_or_degraded=rejected_or_degraded,
             records=records,
         ),
-        runtime_plan=runtime_plan or {},
+        runtime_plan=plan,
+        analysis_contract=analysis_contract,
+        query_contracts=query_contracts,
+        capability_execution_plans=capability_execution_plans,
     )
 
 

@@ -1,0 +1,327 @@
+contract_version: "1"
+artifact: clickhouse_analysis_runtime_bindings
+business_timezone: Africa/Lagos
+
+datasets:
+  paid_order_success:
+    date_field: business_date_lagos
+    required_fields: [business_date_lagos]
+  payment_attempt:
+    date_expression: "toDate(toTimeZone(fromUnixTimestamp64Milli(toInt64OrZero(`支付发起时间`)), 'Africa/Lagos'))"
+    required_fields: [支付发起时间]
+  market_dashboard:
+    date_field: business_date
+    required_fields: [business_date]
+  gameplay:
+    date_field: business_date
+    required_fields: [business_date]
+  external_event:
+    date_field: event_start_date
+    required_fields: [event_start_date]
+  internal_operation_event:
+    date_field: event_start_date
+    required_fields: [event_start_date]
+
+metrics:
+  paid_amount:
+    contract_ref: contracts/metrics/paid-amount.metric.yaml@0.1
+    dataset_id: paid_order_success
+    expression: sum(paid_amount_ngn)
+    aggregation: sum
+    required_fields: [paid_amount_ngn]
+    grain: [window_id]
+    claim_types: [comparative_change, formula_component_contribution, segment_contribution_or_mix_shift]
+  paid_users:
+    contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
+    dataset_id: paid_order_success
+    expression: uniqExact(user_id)
+    aggregation: distinct_count
+    required_fields: [user_id]
+    grain: [window_id]
+  paid_orders:
+    contract_ref: contracts/sources/paid-order-detail.source.yaml@0.2
+    dataset_id: paid_order_success
+    expression: uniqExact(order_id)
+    aggregation: distinct_count
+    required_fields: [order_id]
+    grain: [window_id]
+  first_paid_users:
+    contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
+    dataset_id: paid_order_success
+    expression: "uniqExactIf(user_id, is_first_payment = '1')"
+    aggregation: distinct_count_if
+    required_fields: [user_id, is_first_payment]
+    grain: [window_id]
+  paid_frequency:
+    contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
+    dataset_id: paid_order_success
+    expression: "uniqExact(order_id) / nullIf(uniqExact(user_id), 0)"
+    aggregation: ratio
+    required_fields: [order_id, user_id]
+    grain: [window_id]
+  avg_order_amount:
+    contract_ref: contracts/backlog/missing-contracts.yaml#component_contracts
+    dataset_id: paid_order_success
+    expression: "sum(paid_amount_ngn) / nullIf(uniqExact(order_id), 0)"
+    aggregation: ratio
+    required_fields: [paid_amount_ngn, order_id]
+    grain: [window_id]
+  payment_success_rate:
+    contract_ref: contracts/backlog/missing-contracts.yaml#payment_status_and_dedup_contract
+    dataset_id: payment_attempt
+    expression: "uniqExactIf(`订单id`, `支付状态` = 'pay_success') / nullIf(uniqExact(`订单id`), 0)"
+    aggregation: ratio
+    required_fields: [订单id, 支付状态, 支付发起时间]
+    grain: [window_id]
+
+dimensions:
+  channel: {contract_ref: contracts/dimensions/dimensions.yaml#channel, dataset_id: paid_order_success, source_field: channel, allowed_grains: [day, window_id]}
+  payment_method: {contract_ref: contracts/dimensions/dimensions.yaml#payment_method, dataset_id: paid_order_success, source_field: payment_method, allowed_grains: [day, window_id]}
+  region: {contract_ref: contracts/dimensions/dimensions.yaml#region, dataset_id: paid_order_success, source_field: region, allowed_grains: [day, window_id]}
+  device_brand: {contract_ref: contracts/dimensions/dimensions.yaml#device_brand, dataset_id: paid_order_success, source_field: device_brand, allowed_grains: [day, window_id]}
+  gameplay: {contract_ref: contracts/dimensions/dimensions.yaml#gameplay, dataset_id: gameplay, source_field: gameplay, allowed_grains: [day, channel]}
+
+query_shapes:
+  daily_metric_baselines: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  component_driver_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  payment_success_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  dimension_contribution_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  joint_candidate_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  time_bucket_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  data_quality_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  event_context_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+  high_value_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key]}
+
+capability_inputs:
+  compare_periods:
+    query_families: [daily_metric_baselines]
+    required_metrics: [paid_amount]
+    required_windows: [target_day]
+    supported_claim_types: [comparative_change]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: directional
+  rolling_window_compare:
+    query_families: [daily_metric_baselines]
+    required_metrics: [paid_amount]
+    required_windows: [target_day, rolling_7_day_baseline]
+    supported_claim_types: [baseline_stability, comparative_change]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: directional
+  driver_decomposition:
+    query_families: [component_driver_scan, payment_success_scan]
+    optional_query_families: [payment_success_scan]
+    query_family_metrics:
+      component_driver_scan: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
+      payment_success_scan: [payment_success_rate]
+    required_metrics: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
+    optional_metrics: [payment_success_rate]
+    supported_claim_types: [formula_component_contribution]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, missing_optional_input: omit_optional_component, incomplete_input: degrade_claim}
+    supported_evidence_types: [accounting_contribution]
+    maximum_claim_strength: quantified_contribution
+  segment_contribution:
+    query_families: [dimension_contribution_scan]
+    required_metrics: [paid_amount]
+    dimension_mode: requested
+    supported_claim_types: [segment_contribution_or_mix_shift]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: quantified_contribution
+  joint_attribution:
+    query_families: [joint_candidate_scan]
+    required_metrics: [paid_amount]
+    dimension_mode: requested
+    supported_claim_types: [segment_contribution_or_mix_shift]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: candidate_driver
+  pattern_scan:
+    query_families: [time_bucket_scan]
+    required_metrics: [paid_amount]
+    supported_claim_types: [recurring_pattern_existence]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: recurring_pattern
+  data_quality_profile:
+    query_families: [data_quality_probe]
+    required_metrics: [paid_amount]
+    supported_claim_types: [contract_coverage_and_trust_boundary]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
+    degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: report_limitation}
+    supported_evidence_types: [insufficient]
+    maximum_claim_strength: trust_boundary
+  event_evidence:
+    query_families: [event_context_probe]
+    required_metrics: []
+    source_mode: requested_context_sources
+    supported_claim_types: [candidate_mechanism]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_candidate_impact, incomplete_input: context_only}
+    supported_evidence_types: [candidate_mechanism]
+    maximum_claim_strength: candidate_mechanism
+  high_value_user_contribution:
+    query_families: [high_value_scan]
+    required_metrics: [paid_amount]
+    supported_claim_types: [candidate_driver, concentration]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: candidate_driver
+  answer_verify:
+    query_families: []
+    required_metrics: []
+    supported_claim_types: []
+    minimum_readiness: {required_slots: none, accepted_completeness: []}
+    degradation_policy: {missing_required_input: block_unverified_claim}
+    supported_evidence_types: []
+    maximum_claim_strength: verifier_only
+  data_quality_check:
+    query_families: [data_quality_probe]
+    required_metrics: [paid_amount]
+    supported_claim_types: [contract_coverage_and_trust_boundary]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
+    degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: report_limitation}
+    supported_evidence_types: [insufficient]
+    maximum_claim_strength: trust_boundary
+  formula_decompose:
+    query_families: [component_driver_scan]
+    required_metrics: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
+    supported_claim_types: [formula_component_contribution]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [accounting_contribution]
+    maximum_claim_strength: quantified_contribution
+  outlier_contribution:
+    query_families: [daily_metric_baselines]
+    required_metrics: [paid_amount]
+    supported_claim_types: [external_shock_candidate_or_anomaly, comparative_change]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: candidate_driver
+  outlier_scan:
+    query_families: [daily_metric_baselines]
+    required_metrics: [paid_amount]
+    supported_claim_types: [external_shock_candidate_or_anomaly]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: anomaly_candidate
+  segment_bridge:
+    query_families: [dimension_contribution_scan]
+    required_metrics: [paid_amount]
+    dimension_mode: requested
+    supported_claim_types: [segment_contribution_or_mix_shift]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: quantified_contribution
+  user_mix_contribution:
+    query_families: [dimension_contribution_scan]
+    required_metrics: [paid_amount]
+    dimension_mode: requested
+    supported_claim_types: [candidate_driver, mix_shift, contribution]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: candidate_driver
+  metric_coverage_profile:
+    query_families: [data_quality_probe]
+    required_metrics: [paid_amount]
+    supported_claim_types: [contract_coverage_and_trust_boundary]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
+    degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: report_limitation}
+    supported_evidence_types: [insufficient]
+    maximum_claim_strength: trust_boundary
+  metric_timeseries:
+    query_families: [daily_metric_baselines]
+    required_metrics: [paid_amount]
+    supported_claim_types: [comparative_change, recurring_pattern_existence]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: directional
+  compare_period_phases:
+    query_families: [time_bucket_scan]
+    required_metrics: [paid_amount]
+    supported_claim_types: [recurring_pattern_existence]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: recurring_pattern
+  weekday_calendar_compare:
+    query_families: [time_bucket_scan]
+    required_metrics: [paid_amount]
+    supported_claim_types: [recurring_pattern_existence]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: recurring_pattern
+  event_window_compare:
+    query_families: [event_context_probe]
+    required_metrics: []
+    source_mode: requested_context_sources
+    supported_claim_types: [business_object_candidate_impact, candidate_mechanism]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_candidate_impact, incomplete_input: context_only}
+    supported_evidence_types: [candidate_mechanism]
+    maximum_claim_strength: candidate_mechanism
+  component_contribution:
+    query_families: [component_driver_scan]
+    required_metrics: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
+    supported_claim_types: [formula_component_contribution]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [accounting_contribution]
+    maximum_claim_strength: quantified_contribution
+  segment_breakdown:
+    query_families: [dimension_contribution_scan]
+    required_metrics: [paid_amount]
+    dimension_mode: requested
+    supported_claim_types: [segment_contribution_or_mix_shift]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: quantified_contribution
+  segment_shift_compare:
+    query_families: [dimension_contribution_scan]
+    required_metrics: [paid_amount]
+    dimension_mode: requested
+    supported_claim_types: [segment_contribution_or_mix_shift]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: quantified_contribution
+  candidate_dimension_screen:
+    query_families: [joint_candidate_scan]
+    required_metrics: [paid_amount]
+    dimension_mode: requested
+    supported_claim_types: [segment_contribution_or_mix_shift]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: candidate_driver
+  change_point_scan:
+    query_families: [daily_metric_baselines]
+    required_metrics: [paid_amount]
+    supported_claim_types: [external_shock_candidate_or_anomaly, comparative_change]
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
+    supported_evidence_types: [statistical_association]
+    maximum_claim_strength: anomaly_candidate
+  evidence_reduce:
+    query_families: []
+    required_metrics: []
+    supported_claim_types: [comparative_change, recurring_pattern_existence]
+    minimum_readiness: {required_slots: none, accepted_completeness: []}
+    degradation_policy: {missing_required_input: block_reduced_claim}
+    supported_evidence_types: []
+    maximum_claim_strength: reducer_only

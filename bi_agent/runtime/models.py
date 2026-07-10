@@ -40,3 +40,6 @@ class CompiledGraph:
     accepted_nodes: tuple[GraphNode, ...]
     mutations: MutationLedger
     runtime_plan: dict[str, Any] = field(default_factory=dict)
+    analysis_contract: dict[str, Any] = field(default_factory=dict)
+    query_contracts: tuple[dict[str, Any], ...] = ()
+    capability_execution_plans: tuple[dict[str, Any], ...] = ()

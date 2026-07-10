@@ -27,21 +27,30 @@ class DatasetCatalog:
         self._snapshots = tuple(snapshots)
 
     def resolve(self, dataset_id: str, *, as_of: datetime, permission_scope: str) -> DatasetSnapshot:
+        eligible = [
+            candidate
+            for candidate in self.as_of_candidates(dataset_id, as_of=as_of)
+            if permission_scope in candidate[1].permission_scopes
+        ]
+        if not eligible:
+            raise KeyError(f"dataset_snapshot_unavailable:{dataset_id}")
+        return max(eligible, key=lambda candidate: (candidate[0], candidate[1].snapshot_ref))[1]
+
+    def as_of_candidates(
+        self,
+        dataset_id: str,
+        *,
+        as_of: datetime,
+    ) -> tuple[tuple[datetime, DatasetSnapshot], ...]:
         as_of_utc = _aware_utc(as_of, field="as_of")
         eligible = []
         for item in self._snapshots:
-            if (
-                item.dataset_id != dataset_id
-                or item.status != "active"
-                or permission_scope not in item.permission_scopes
-            ):
+            if item.dataset_id != dataset_id or item.status != "active":
                 continue
             loaded_at_utc = _parse_datetime(item.loaded_at)
             if loaded_at_utc <= as_of_utc:
                 eligible.append((loaded_at_utc, item))
-        if not eligible:
-            raise KeyError(f"dataset_snapshot_unavailable:{dataset_id}")
-        return max(eligible, key=lambda candidate: (candidate[0], candidate[1].snapshot_ref))[1]
+        return tuple(eligible)
 
     def common_watermark(self, dataset_ids: tuple[str, ...]) -> date:
         watermarks = []

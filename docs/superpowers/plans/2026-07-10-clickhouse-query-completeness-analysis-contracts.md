@@ -857,7 +857,12 @@ from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 def snapshot(dataset_id, table, watermark):
     return DatasetSnapshot(
         f"snapshot:{dataset_id}:1", dataset_id, table, watermark, f"schema:{dataset_id}",
-        ("business_date_lagos", "paid_amount_ngn", "user_id", "order_id", "channel", "payment_method"),
+        (
+            "business_date_lagos", "business_date", "event_start_date",
+            "paid_amount_ngn", "user_id", "order_id", "channel", "payment_method",
+            "region", "device_brand", "gameplay", "is_first_payment",
+            "订单id", "支付状态", "支付发起时间",
+        ),
         f"contract:{dataset_id}@1", ("analyst",), "2026-06-03T00:00:00+00:00", "active",
     )
 
@@ -877,7 +882,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "requested_components": ["paid_users", "first_paid_users", "paid_frequency", "avg_order_amount", "payment_success_rate"],
                 "requested_dimensions": [],
                 "baselines": ["previous_day", "rolling_7_day_baseline", "same_weekday_last_week"],
-                "claim_intents": ["change_explanation", "driver_ranking"],
+                "claim_intents": ["comparative_change", "formula_component_contribution"],
             },
             accepted_capabilities=("compare_periods", "driver_decomposition", "answer_verify"),
             catalog=catalog,
@@ -966,6 +971,8 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
+The Task 3 suite also locks: explicit claim ceiling rejection; dataset execution-contract validation for missing/empty/dual date sources and non-empty required fields; valid `date_field` and `date_expression` paths; dataset date/metric/dimension snapshot schema closure; run-independent canonical signatures and filter/snapshot/binding/workload sensitivity; dynamic public + canonical capability binding coverage; typed unsupported/duplicate window advisory gaps; precise payment/event/target-only dependency owners; and future-vs-eligible permission classification.
+
 - [ ] **Step 2: 运行测试并确认失败**
 
 ```bash
@@ -986,16 +993,22 @@ business_timezone: Africa/Lagos
 datasets:
   paid_order_success:
     date_field: business_date_lagos
+    required_fields: [business_date_lagos]
   payment_attempt:
     date_expression: "toDate(toTimeZone(fromUnixTimestamp64Milli(toInt64OrZero(`支付发起时间`)), 'Africa/Lagos'))"
+    required_fields: [支付发起时间]
   market_dashboard:
     date_field: business_date
+    required_fields: [business_date]
   gameplay:
     date_field: business_date
+    required_fields: [business_date]
   external_event:
     date_field: event_start_date
+    required_fields: [event_start_date]
   internal_operation_event:
     date_field: event_start_date
+    required_fields: [event_start_date]
 
 metrics:
   paid_amount:
@@ -1076,11 +1089,11 @@ capability_inputs:
     supported_claim_types: []
 ```
 
-The implementation must load this YAML with `load_contract()` and reject missing sections or duplicate ids.
+The implementation must load this YAML with `load_contract()` and reject missing sections or duplicate ids. The reviewed artifact also carries `query_shapes` keyed by query family so `ResultShape` is contract-driven; daily observation shapes include `window_id`, `window_role`, and `observation_key`, with `observation_key` in the unique key and grain. Runtime bindings cover every id from `public_capability_ids()` plus canonical legacy graph aliases. Coverage tests derive this set dynamically from the canonical registries.
 
 - [ ] **Step 4: 实现 registry 和 compiler**
 
-Create `RuntimeContractRegistry` with `metric()`, `dimension()`, `capability_inputs()`, and `dataset()` accessors that return copied mappings. Implement `compile_analysis_contract()` with this sequence:
+Create `RuntimeContractRegistry` with `metric()`, `dimension()`, `capability_inputs()`, and `dataset()` accessors that return copied mappings. Explicit proposal claim intents remain advisory: the compiler intersects them with the union of accepted capability `supported_claim_types`; no-query verifier/reducer contracts with empty claim support do not expand that ceiling. Unsupported explicit intents produce typed gaps and never enter `AnalysisContract.claim_intents`; when none remain, `unbound_claim_intent` keeps resolver attribution non-empty. Implicit binding then uses accepted capability claim types, metric claim types only when capability contracts provide none, then a typed unbound gap. `maximum_claim_strength` stays a plan/verifier boundary and is never interpreted as a claim type.
 
 ```python
 @dataclass(frozen=True)
@@ -1101,16 +1114,38 @@ def _bind_claim_intents(
         for value in proposal.get("claim_intents") or ()
         if str(value).strip()
     ))
-    if explicit:
-        return explicit, ()
-
-    inferred = []
+    capability_inferred = []
     for capability_id in accepted_capabilities:
         capability_contract = registry.capability_inputs(capability_id)
-        inferred.extend(capability_contract.get("supported_claim_types") or ())
+        capability_inferred.extend(capability_contract.get("supported_claim_types") or ())
+    capability_ceiling = tuple(dict.fromkeys(
+        str(value).strip() for value in capability_inferred if str(value).strip()
+    ))
+    if explicit:
+        accepted = tuple(value for value in explicit if value in capability_ceiling)
+        unsupported = tuple(value for value in explicit if value not in capability_ceiling)
+        gaps = tuple(
+            ContractGap(
+                gap_type="contract_partial",
+                gap_id=f"claim_intent:{value}:unsupported",
+                affected_capabilities=accepted_capabilities or ("analysis_contract",),
+                affected_claim_types=(value,),
+                owner="contract_owner",
+                repair_options=("choose_supported_claim_intent", "clarify_claim_intent"),
+                requires_clarification=True,
+            )
+            for value in unsupported
+        )
+        return accepted or ("unbound_claim_intent",), gaps
+    if capability_ceiling:
+        return capability_ceiling, ()
+
+    metric_inferred = []
     for binding in metric_bindings:
-        inferred.extend(binding.claim_types)
-    accepted = tuple(dict.fromkeys(str(value).strip() for value in inferred if str(value).strip()))
+        metric_inferred.extend(binding.claim_types)
+    accepted = tuple(dict.fromkeys(
+        str(value).strip() for value in metric_inferred if str(value).strip()
+    ))
     if accepted:
         return accepted, ()
 
@@ -1133,17 +1168,32 @@ def _bind_claim_intents(
 
 
 def compile_analysis_contract(...):
-    required_dataset_ids = _required_dataset_ids(proposal, accepted_capabilities, registry)
-    snapshots, source_gaps = _resolve_snapshots(required_dataset_ids, catalog, as_of, permission_scope)
-    metric_bindings, metric_gaps = _bind_metrics(proposal, accepted_capabilities, registry, snapshots)
-    dimension_bindings, dimension_gaps = _bind_dimensions(proposal, registry, snapshots)
+    dependencies = _build_dependency_index(proposal, accepted_capabilities, registry)
+    required_dataset_ids = dependencies.dataset_ids
+    executable_dataset_ids, dataset_contract_gaps = _validate_dataset_contracts(
+        required_dataset_ids, registry, dependencies.dataset_owners,
+    )
+    snapshots, source_gaps = _resolve_snapshots(
+        executable_dataset_ids, catalog, registry, as_of, permission_scope,
+        dependencies.dataset_owners,
+    )
+    snapshots, dataset_schema_gaps = _validate_snapshot_schemas(
+        snapshots, registry, dependencies.dataset_owners,
+    )
+    metric_bindings, metric_gaps = _bind_metrics(
+        dependencies.metric_ids, registry, snapshots, dependencies.metric_owners,
+    )
+    dimension_bindings, dimension_gaps = _bind_dimensions(
+        dependencies.dimension_ids, proposal, registry, permission_scope,
+        snapshots, dependencies.dimension_owners,
+    )
     accepted_claim_intents, claim_intent_gaps = _bind_claim_intents(
         proposal,
         accepted_capabilities,
         metric_bindings,
         registry,
     )
-    resolution = resolve_revenue_windows(
+    resolution = _resolve_advisory_windows(
         target_semantic=str(proposal.get("target_semantic") or "yesterday"),
         baselines=tuple(proposal.get("baselines") or ()),
         as_of=as_of,
@@ -1153,15 +1203,24 @@ def compile_analysis_contract(...):
         affected_claim_types=accepted_claim_intents,
     )
     analysis_contract_id = f"analysis:{run_id}:1"
-    query_contracts = _build_query_contracts(
+    query_contracts, query_refs_by_capability = _build_query_contracts(
         run_id, analysis_contract_id, accepted_capabilities, proposal, snapshots, resolution.windows,
         metric_bindings, dimension_bindings, registry, permission_scope,
     )
-    capability_plans = _build_capability_plans(accepted_capabilities, query_contracts, registry)
+    capability_plans = _build_capability_plans(
+        accepted_capabilities, query_contracts, query_refs_by_capability, registry
+    )
+    capability_input_gaps = _reconcile_capability_inputs(
+        accepted_capabilities, proposal, resolution.windows, dimension_bindings,
+        capability_plans, registry,
+    )
     gaps = tuple((
         *source_gaps,
+        *dataset_contract_gaps,
+        *dataset_schema_gaps,
         *metric_gaps,
         *dimension_gaps,
+        *capability_input_gaps,
         *claim_intent_gaps,
         *resolution.gaps,
     ))
@@ -1185,13 +1244,14 @@ def compile_analysis_contract(...):
     return AnalysisCompileOutcome(analysis, query_contracts, capability_plans)
 ```
 
+`_build_dependency_index()` is the single source for required metric ids and reverse metric/dimension/dataset capability owners. Source, metric, dimension, and schema gaps use only those owners; target-only dependencies use `analysis_contract`. Before catalog resolution, `_validate_dataset_contracts()` requires a non-empty field collection and exactly one non-empty string `date_field` or `date_expression`; missing, empty, invalid, or dual date sources produce a typed `contract_partial` gap owned by `contract_owner` and prevent that dataset from entering executable snapshot/query contracts. Expression dependencies remain explicitly declared in `required_fields`; the compiler never parses SQL to guess them. `DatasetCatalog.as_of_candidates()` applies active + `loaded_at <= as_of` before permission classification, so future snapshots never create a false `permission_blocked` gap. Dataset `required_fields`, metric `required_fields`, and dimension `source_field` are checked against the resolved snapshot schema; invalid snapshots/bindings cannot produce query refs.
+
+`_resolve_advisory_windows()` converts only `unsupported_target_semantic`, `unsupported_baseline`, and `duplicate_baseline` into typed clarification gaps with empty windows/queries; unrelated resolver failures still raise.
+
 `_build_query_contracts()` sets `analysis_contract_ref`, `window_refs`, and an
-immutable `resolved_windows` snapshot on every query. It deduplicates by dataset,
-query family, metric set, dimension set, windows, permission scope, and result
-shape. It computes `contract_signature` from the complete serialized contract
-body before adding the signature. `_build_capability_plans()` returns the
+immutable `resolved_windows` snapshot on every query. One canonical semantic body covers query intent, snapshot refs, full metric/dimension bindings, windows, filters, result shape, completeness assertions, permission scope, and workload class while excluding `query_contract_id` and `analysis_contract_ref`. Its hash is both the dedupe key and `contract_signature`, so equivalent contracts keep the same signature across run ids. The default workload class is `interactive_aggregate`; reviewed YAML may override it. Dedupe retains capability ownership for every query ref. `_build_capability_plans()` binds query refs by both capability ownership and query family and returns the
 structured `minimum_readiness` and `degradation_policy` mappings from reviewed
-capability contracts; plans remain only on `AnalysisCompileOutcome`.
+capability contracts; plans remain only on `AnalysisCompileOutcome`. `_reconcile_capability_inputs()` compares required windows, context sources, dimensions, and required query slots with the compiled result and emits typed gaps instead of leaving an accepted capability with silently empty or semantically invalid inputs.
 
 - [ ] **Step 5: 将新 outcome 挂到 CompiledGraph，保留兼容 projection**
 

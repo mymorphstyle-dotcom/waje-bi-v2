@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import asdict, is_dataclass
 import hashlib
 import json
 from typing import Any
@@ -65,6 +66,9 @@ def build_revenue_runtime_plan(
     graph = tuple(dict.fromkeys(str(node) for node in accepted_graph))
     axes = tuple(dict.fromkeys(str(axis) for axis in diagnostic_axes))
     normalized_context = dict(bound_context or {})
+    analysis_contract, query_contracts, capability_execution_plans = _contract_projection(
+        normalized_context
+    )
     windows = _windows(normalized_context)
     baselines = _baselines(normalized_context, axes, question_text)
     scope = _scope(normalized_context)
@@ -146,7 +150,48 @@ def build_revenue_runtime_plan(
         "asset_inputs_used": reusable_assets,
         "asset_row_inputs": reusable_asset_rows,
         "asset_reuse_contract": reuse_contract,
+        "analysis_contract": analysis_contract,
+        "query_contracts": query_contracts,
+        "capability_execution_plans": capability_execution_plans,
     }
+
+
+def _contract_projection(
+    bound_context: Mapping[str, Any],
+) -> tuple[dict[str, Any], tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    outcome = bound_context.get("analysis_compile_outcome")
+    if outcome is not None:
+        analysis = _projection_dict(getattr(outcome, "analysis_contract", None))
+        queries = _projection_rows(getattr(outcome, "query_contracts", ()))
+        plans = _projection_rows(getattr(outcome, "capability_plans", ()))
+        return analysis, queries, plans
+    return (
+        _projection_dict(bound_context.get("analysis_contract")),
+        _projection_rows(bound_context.get("query_contracts") or ()),
+        _projection_rows(bound_context.get("capability_execution_plans") or ()),
+    )
+
+
+def _projection_rows(value: Any) -> tuple[dict[str, Any], ...]:
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes, Mapping)):
+        return tuple(
+            projected
+            for item in value
+            if (projected := _projection_dict(item))
+        )
+    return ()
+
+
+def _projection_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        projected = to_dict()
+        return dict(projected) if isinstance(projected, Mapping) else {}
+    if is_dataclass(value):
+        return asdict(value)
+    return {}
 
 
 def _windows(bound_context: Mapping[str, Any]) -> dict[str, Any]:
