@@ -256,6 +256,21 @@ def compile_graph(
             prior_assets=prior_analysis_assets,
         )
 
+    if obligation_error:
+        accepted = _order_capabilities(_dedupe(known_requested), diagnostic_axes)
+        return _compiled(
+            status="degraded",
+            target_metric=target_metric,
+            accepted=accepted,
+            proposed=proposed_graph,
+            rejected_or_degraded=_dedupe(
+                (*unknown, *unsupported_for_family, question_family)
+            ),
+            records=records,
+            node_status="degraded",
+            runtime_plan=make_runtime_plan(accepted),
+        )
+
     if question_family == "pattern_explanation":
         accepted = _dedupe((*known_requested, *REQUIRED_PATTERN_PATHS))
         accepted = _order_capabilities(accepted, diagnostic_axes)
@@ -295,26 +310,6 @@ def compile_graph(
 
     if explicit_requested and known_requested:
         accepted = _order_capabilities(_dedupe(known_requested), diagnostic_axes)
-        if obligation_error:
-            return _compiled(
-                status="degraded",
-                target_metric=target_metric,
-                accepted=accepted,
-                proposed=proposed_graph,
-                rejected_or_degraded=_dedupe(
-                    (*unknown, *unsupported_for_family, question_family)
-                ),
-                records=(
-                    *records,
-                    MutationRecord(
-                        action="degraded",
-                        capability=question_family,
-                        reason="obligation_conflict",
-                    ),
-                ),
-                node_status="degraded",
-                runtime_plan=make_runtime_plan(accepted),
-            )
         return _compiled(
             status="accepted" if not unknown and not unsupported_for_family else "degraded",
             target_metric=target_metric,

@@ -866,13 +866,88 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         second = workflow_module.reconcile_analysis_route(first[0], first[1], intent, registry)
 
-        self.assertEqual(first, second)
+        self.assertEqual(first[0], second[0])
+        self.assertEqual(second[1]["obligation_resolution"]["mutations"], [])
         self.assertNotIn("question_text", first[1]["obligation_resolution"])
         self.assertTrue(
             {"segment_contribution", "joint_attribution", "answer_verify"}.issubset(
                 first[0]
             )
         )
+
+    def test_reconciliation_records_only_actual_metric_context_and_obligation_additions(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        intent = {
+            "question_family": "anomaly_or_black_swan_review",
+            "question_families": ["anomaly_or_black_swan_review"],
+            "target_metric": "active_users",
+        }
+        route = {
+            "analysis_requirements": {
+                "target_metrics": ["active_users"],
+                "baselines": ["previous_day"],
+                "context_sources": ["external_event"],
+            }
+        }
+
+        first = workflow_module.reconcile_analysis_route((), route, intent, registry)
+        mutations = first[1]["obligation_resolution"]["mutations"]
+
+        self.assertEqual(
+            [(item["capability"], item["reason"]) for item in mutations],
+            [
+                ("market_health_compare", "metric_coverage_required"),
+                ("event_evidence", "context_coverage_required"),
+                ("data_quality_profile", "obligation_required"),
+                ("outlier_scan", "obligation_required"),
+            ],
+        )
+        second = workflow_module.reconcile_analysis_route(
+            first[0], first[1], intent, registry
+        )
+        self.assertEqual(second[0], first[0])
+        self.assertEqual(second[1]["obligation_resolution"]["mutations"], [])
+
+    def test_every_public_family_obligation_conflict_opens_clarification(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        tags = (
+            "driver_focus", "change_explanation", "pattern_attribution",
+            "event_impact", "revenue_health", "factor_topk", "anomaly",
+            "multi_baseline", "evidence_quality",
+        )
+        for family in registry.question_family_ids:
+            tag = next(
+                candidate for candidate in tags
+                if family not in registry.diagnostic_obligation(candidate)[
+                    "supported_question_families"
+                ]
+            )
+            requested, route = workflow_module.reconcile_analysis_route(
+                ("data_quality_profile",),
+                {"analysis_requirements": {"diagnostic_tags": [tag]}},
+                {
+                    "question_family": family,
+                    "question_families": [family],
+                    "target_metric": "paid_amount",
+                },
+                registry,
+            )
+            state = {"route_material_conflicts": (), "boundary_decision": {}}
+            workflow_module._consume_obligation_route_conflict(state, route)
+            with self.subTest(family=family, tag=tag):
+                self.assertEqual(requested, ("data_quality_profile",))
+                self.assertEqual(route["obligation_resolution"]["status"], "conflict")
+                self.assertEqual(
+                    state["boundary_decision"]["boundary_status"], "needs_question"
+                )
 
     def test_all_diagnostic_tags_reconcile_from_registry_contracts(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry

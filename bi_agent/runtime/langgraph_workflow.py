@@ -1473,9 +1473,28 @@ def reconcile_analysis_route(
     intent: Mapping[str, Any],
     registry: RuntimeContractRegistry,
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
+    original_requested = tuple(requested)
     requested, output = _reconcile_route_input_capabilities(
         requested, route, intent, registry
     )
+    input_mutations = []
+    original_set = set(original_requested)
+    for capability in requested:
+        if capability in original_set:
+            continue
+        contract = registry.capability_inputs(capability)
+        input_mutations.append(
+            {
+                "action": "auto_added",
+                "capability": capability,
+                "reason": (
+                    "context_coverage_required"
+                    if str(contract.get("source_mode") or "")
+                    == "requested_context_sources"
+                    else "metric_coverage_required"
+                ),
+            }
+        )
     requirements = dict(output.get("analysis_requirements") or {})
     bound_context = dict(intent)
     bound_context["analysis_requirements"] = requirements
@@ -1493,12 +1512,16 @@ def reconcile_analysis_route(
             "status": "conflict",
             "error": error,
             "mutations": [
-                {
+                *input_mutations,
+                *[
+                    {
                     "action": "rejected",
                     "capability": tag,
                     "reason": "obligation_conflict",
-                }
-                for tag in request.diagnostic_tags or (request.question_families[0],)
+                    }
+                    for tag in request.diagnostic_tags
+                    or (request.question_families[0],)
+                ],
             ],
         }
         return requested, output
@@ -1508,6 +1531,20 @@ def reconcile_analysis_route(
         *resolution.conditional_capabilities,
     )
     reconciled = tuple(dict.fromkeys((*requested, *obligations)))
+    requested_set = set(requested)
+    obligation_mutations = [
+        {
+            "action": "auto_added",
+            "capability": capability,
+            "reason": (
+                "obligation_conditional"
+                if capability in resolution.conditional_capabilities
+                else "obligation_required"
+            ),
+        }
+        for capability in obligations
+        if capability not in requested_set
+    ]
     output["obligation_resolution"] = {
         "status": "resolved",
         "required_capabilities": list(resolution.required_capabilities),
@@ -1515,18 +1552,7 @@ def reconcile_analysis_route(
         "minimum_publishable_evidence": list(
             resolution.minimum_publishable_evidence
         ),
-        "mutations": [
-            {
-                "action": "auto_added",
-                "capability": capability,
-                "reason": (
-                    "obligation_conditional"
-                    if capability in resolution.conditional_capabilities
-                    else "obligation_required"
-                ),
-            }
-            for capability in obligations
-        ],
+        "mutations": [*input_mutations, *obligation_mutations],
     }
     return reconciled, output
 

@@ -78,6 +78,47 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
                 )
                 self.assertTrue(expected.issubset(compiled.mutations.accepted_graph))
 
+    def test_all_public_families_fail_closed_for_incompatible_diagnostics(self):
+        runtime_registry = RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        )
+        diagnostic_tags = (
+            "driver_focus", "change_explanation", "pattern_attribution",
+            "event_impact", "revenue_health", "factor_topk", "anomaly",
+            "multi_baseline", "evidence_quality",
+        )
+        for family in runtime_registry.question_family_ids:
+            tag = next(
+                candidate
+                for candidate in diagnostic_tags
+                if family not in runtime_registry.diagnostic_obligation(candidate)[
+                    "supported_question_families"
+                ]
+            )
+            with self.subTest(family=family, tag=tag):
+                compiled = compile_graph(
+                    question_family=family,
+                    question_families=(family,),
+                    target_metric="paid_amount",
+                    requested_nodes=("data_quality_profile",),
+                    bound_context={
+                        "analysis_requirements": {"diagnostic_tags": [tag]}
+                    },
+                    runtime_registry=runtime_registry,
+                )
+                self.assertEqual(compiled.status, "degraded")
+                self.assertTrue(
+                    set(compiled.mutations.accepted_graph).isdisjoint(
+                        compiled.mutations.rejected_or_degraded
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        record.reason == "obligation_conflict"
+                        for record in compiled.mutations.records
+                    )
+                )
+
     def test_paraphrases_with_identical_typed_intent_compile_to_same_graph(self):
         kwargs = {
             "question_family": "paid_amount_change_explanation",
