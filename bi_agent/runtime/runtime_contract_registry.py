@@ -463,7 +463,11 @@ def _validate_obligations(payload: Mapping[str, Any]) -> None:
         "missing_contract_owner",
         "degradation_policy",
     }
-    diagnostic_fields = {"required_capabilities", "condition"}
+    diagnostic_fields = {
+        "required_capabilities",
+        "condition",
+        "supported_question_families",
+    }
     for family, contract in payload["question_family_obligations"].items():
         _validate_obligation_mapping(contract, family_fields, str(family))
         required = _validate_capability_list(
@@ -515,6 +519,29 @@ def _validate_obligations(payload: Mapping[str, Any]) -> None:
         _validate_capability_references(
             contract["required_capabilities"], public, configured, str(tag)
         )
+        supported_families = _validate_nonempty_string_list(
+            contract["supported_question_families"],
+            str(tag),
+            error_prefix="runtime_diagnostic_question_families",
+        )
+        unknown_families = supported_families - set(
+            payload["question_family_obligations"]
+        )
+        if unknown_families:
+            raise ValueError(
+                f"runtime_diagnostic_unknown_family:{tag}:"
+                f"{','.join(sorted(unknown_families))}"
+            )
+        for capability in contract["required_capabilities"]:
+            card_families = set(
+                get_capability_card(capability).supported_question_families
+            )
+            incompatible = supported_families - card_families
+            if incompatible:
+                raise ValueError(
+                    f"runtime_diagnostic_unsupported_family:{tag}:{capability}:"
+                    f"{','.join(sorted(incompatible))}"
+                )
         referenced.update(contract["required_capabilities"])
     if referenced != public:
         missing = public - referenced
@@ -557,14 +584,31 @@ def _validate_capability_list(
     *,
     required: bool = False,
 ) -> set[str]:
-    if not isinstance(values, list) or any(
-        type(value) is not str or not value.strip() for value in values
-    ):
-        raise ValueError(f"runtime_obligation_capabilities_empty:{item_id}")
+    if not isinstance(values, list):
+        raise ValueError(f"runtime_obligation_capabilities_invalid_type:{item_id}")
+    if any(type(value) is not str or not value.strip() for value in values):
+        raise ValueError(f"runtime_obligation_capability_blank:{item_id}")
     if required and not values:
         raise ValueError(f"runtime_obligation_capabilities_empty:{item_id}")
     if len(values) != len(set(values)):
         raise ValueError(f"runtime_obligation_capabilities_duplicate:{item_id}")
+    return set(values)
+
+
+def _validate_nonempty_string_list(
+    values: Any,
+    item_id: str,
+    *,
+    error_prefix: str,
+) -> set[str]:
+    if not isinstance(values, list):
+        raise ValueError(f"{error_prefix}_invalid_type:{item_id}")
+    if not values:
+        raise ValueError(f"{error_prefix}_empty:{item_id}")
+    if any(type(value) is not str or not value.strip() for value in values):
+        raise ValueError(f"{error_prefix}_blank:{item_id}")
+    if len(values) != len(set(values)):
+        raise ValueError(f"{error_prefix}_duplicate:{item_id}")
     return set(values)
 
 

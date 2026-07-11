@@ -72,10 +72,26 @@ def resolve_analysis_obligations(
                 conditional.extend(rule["add"])
     for tag in request.diagnostic_tags:
         contract = registry.diagnostic_obligation(tag)
+        if not set(request.question_families).issubset(
+            set(contract["supported_question_families"])
+        ):
+            raise ValueError(
+                f"diagnostic_question_family_incompatible:{tag}:"
+                f"{','.join(request.question_families)}"
+            )
         if obligation_condition_matches(contract["condition"], request):
             required.extend(contract["required_capabilities"])
     ordered_required = registry.order_capabilities(required)
-    ordered_conditional = registry.order_capabilities(conditional)
+    required_set = set(ordered_required)
+    ordered_conditional = registry.order_capabilities(
+        capability for capability in conditional if capability not in required_set
+    )
+    conditional_set = set(ordered_conditional)
+    ordered_independent = registry.order_capabilities(
+        capability
+        for capability in independent
+        if capability not in required_set and capability not in conditional_set
+    )
     mutations = tuple(
         {"action": "obligation_required", "capability": capability}
         for capability in (*ordered_required, *ordered_conditional)
@@ -83,7 +99,7 @@ def resolve_analysis_obligations(
     return ObligationResolution(
         required_capabilities=ordered_required,
         conditional_capabilities=ordered_conditional,
-        independent_capabilities=registry.order_capabilities(independent),
+        independent_capabilities=ordered_independent,
         minimum_publishable_evidence=tuple(dict.fromkeys(evidence)),
         mutations=mutations,
     )

@@ -480,15 +480,42 @@ question_family_obligations:
     degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
 
 diagnostic_obligations:
-  driver_focus: {required_capabilities: [driver_decomposition], condition: components_present}
-  change_explanation: {required_capabilities: [driver_decomposition], condition: components_present}
-  pattern_attribution: {required_capabilities: [candidate_dimension_screen], condition: dimensions_present}
-  event_impact: {required_capabilities: [event_evidence], condition: event_context_requested}
-  revenue_health: {required_capabilities: [user_mix_contribution, high_value_user_contribution], condition: components_present}
-  factor_topk: {required_capabilities: [segment_contribution, joint_attribution], condition: dimensions_present}
-  anomaly: {required_capabilities: [outlier_scan, outlier_contribution], condition: anomaly_review_requested}
-  multi_baseline: {required_capabilities: [compare_periods, rolling_window_compare], condition: baselines_present}
-  evidence_quality: {required_capabilities: [data_quality_profile], condition: trust_review_requested}
+  driver_focus:
+    required_capabilities: [driver_decomposition]
+    condition: components_present
+    supported_question_families: [paid_amount_change_explanation]
+  change_explanation:
+    required_capabilities: [driver_decomposition]
+    condition: components_present
+    supported_question_families: [paid_amount_change_explanation, custom_baseline_comparison]
+  pattern_attribution:
+    required_capabilities: [candidate_dimension_screen]
+    condition: dimensions_present
+    supported_question_families: [pattern_explanation, segment_or_factor_attribution]
+  event_impact:
+    required_capabilities: [event_evidence]
+    condition: event_context_requested
+    supported_question_families: [business_object_impact_review]
+  revenue_health:
+    required_capabilities: [user_mix_contribution, high_value_user_contribution]
+    condition: components_present
+    supported_question_families: [paid_amount_change_explanation, segment_or_factor_attribution]
+  factor_topk:
+    required_capabilities: [segment_contribution, joint_attribution]
+    condition: dimensions_present
+    supported_question_families: [paid_amount_change_explanation, segment_or_factor_attribution]
+  anomaly:
+    required_capabilities: [outlier_scan, outlier_contribution]
+    condition: anomaly_review_requested
+    supported_question_families: [anomaly_or_black_swan_review]
+  multi_baseline:
+    required_capabilities: [compare_periods, rolling_window_compare]
+    condition: baselines_present
+    supported_question_families: [paid_amount_change_explanation, pattern_explanation]
+  evidence_quality:
+    required_capabilities: [data_quality_profile]
+    condition: trust_review_requested
+    supported_question_families: [data_quality_or_evidence_review, segment_or_factor_attribution, anomaly_or_black_swan_review]
 
 capability_inputs:
   gameplay_activity_context:

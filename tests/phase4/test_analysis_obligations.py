@@ -209,6 +209,147 @@ class AnalysisObligationsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "runtime_obligation_unsupported_family"):
             RuntimeContractRegistry(payload)
 
+    def test_resolution_classes_are_disjoint_and_mutations_are_unique_after_merge(self):
+        result = resolve_analysis_obligations(
+            ObligationRequest(
+                question_families=(
+                    "custom_baseline_comparison",
+                    "business_object_impact_review",
+                ),
+                diagnostic_tags=(),
+                target_metrics=("paid_amount",),
+                requested_dimensions=(),
+                baselines=("previous_day",),
+                context_sources=(),
+                claim_intents=(),
+            ),
+            RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+        )
+        required = set(result.required_capabilities)
+        conditional = set(result.conditional_capabilities)
+        independent = set(result.independent_capabilities)
+        self.assertIn("compare_periods", required)
+        self.assertNotIn("compare_periods", conditional)
+        self.assertFalse(required & conditional)
+        self.assertFalse(required & independent)
+        self.assertFalse(conditional & independent)
+        mutation_capabilities = tuple(item["capability"] for item in result.mutations)
+        self.assertEqual(len(mutation_capabilities), len(set(mutation_capabilities)))
+
+    def test_diagnostic_required_capability_wins_over_family_conditional(self):
+        result = resolve_analysis_obligations(
+            ObligationRequest(
+                question_families=("anomaly_or_black_swan_review",),
+                diagnostic_tags=("anomaly",),
+                target_metrics=("paid_amount",),
+                requested_dimensions=(),
+                baselines=(),
+                context_sources=(),
+                claim_intents=("external_shock_candidate_or_anomaly",),
+            ),
+            RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+        )
+        self.assertIn("outlier_contribution", result.required_capabilities)
+        self.assertNotIn("outlier_contribution", result.conditional_capabilities)
+
+    def test_conditional_merge_deduplicates_capability_and_mutation(self):
+        result = resolve_analysis_obligations(
+            ObligationRequest(
+                question_families=(
+                    "revenue_health_review",
+                    "data_quality_or_evidence_review",
+                ),
+                diagnostic_tags=(),
+                target_metrics=("paid_amount",),
+                requested_dimensions=(),
+                baselines=(),
+                context_sources=(),
+                claim_intents=("contract_coverage_and_trust_boundary",),
+            ),
+            RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+        )
+        self.assertEqual(
+            result.conditional_capabilities.count("source_reconciliation"), 1
+        )
+        self.assertEqual(
+            sum(
+                item["capability"] == "source_reconciliation"
+                for item in result.mutations
+            ),
+            1,
+        )
+
+    def test_every_diagnostic_declares_compatible_question_families(self):
+        payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)
+        for tag, contract in payload["diagnostic_obligations"].items():
+            with self.subTest(tag=tag):
+                families = contract["supported_question_families"]
+                self.assertTrue(families)
+                for capability in contract["required_capabilities"]:
+                    supported = get_capability_card(
+                        capability
+                    ).supported_question_families
+                    self.assertTrue(set(families).issubset(set(supported)))
+
+    def test_registry_rejects_diagnostic_family_incompatible_with_capability(self):
+        payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)
+        payload["diagnostic_obligations"]["factor_topk"][
+            "supported_question_families"
+        ].append("pattern_explanation")
+        with self.assertRaisesRegex(ValueError, "runtime_diagnostic_unsupported_family"):
+            RuntimeContractRegistry(payload)
+
+    def test_resolver_rejects_diagnostic_for_incompatible_question_family(self):
+        request = ObligationRequest(
+            question_families=("paid_amount_change_explanation",),
+            diagnostic_tags=("event_impact",),
+            target_metrics=("paid_amount",),
+            requested_dimensions=(),
+            baselines=(),
+            context_sources=("external_event",),
+            claim_intents=(),
+        )
+        with self.assertRaisesRegex(ValueError, "diagnostic_question_family_incompatible"):
+            resolve_analysis_obligations(
+                request,
+                RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+            )
+
+    def test_resolver_rejects_diagnostic_when_any_composite_family_is_incompatible(self):
+        request = ObligationRequest(
+            question_families=(
+                "business_object_impact_review",
+                "paid_amount_change_explanation",
+            ),
+            diagnostic_tags=("event_impact",),
+            target_metrics=("paid_amount",),
+            requested_dimensions=(),
+            baselines=(),
+            context_sources=("external_event",),
+            claim_intents=(),
+        )
+        with self.assertRaisesRegex(ValueError, "diagnostic_question_family_incompatible"):
+            resolve_analysis_obligations(
+                request,
+                RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+            )
+
+    def test_capability_list_errors_distinguish_type_blank_and_empty(self):
+        payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)
+        cases = (
+            ("invalid_type", "answer_verify", "runtime_obligation_capabilities_invalid_type"),
+            ("blank", [""], "runtime_obligation_capability_blank"),
+            ("empty", [], "runtime_obligation_capabilities_empty"),
+        )
+        for label, value, error in cases:
+            with self.subTest(label=label):
+                changed = deepcopy(payload)
+                changed["diagnostic_obligations"]["factor_topk"][
+                    "required_capabilities"
+                ] = value
+                with self.assertRaisesRegex(ValueError, error):
+                    RuntimeContractRegistry(changed)
+
 
 if __name__ == "__main__":
     unittest.main()
