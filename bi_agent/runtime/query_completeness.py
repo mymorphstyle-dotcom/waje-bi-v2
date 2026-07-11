@@ -190,7 +190,11 @@ def validate_query_set(
         base_assertions = tuple(
             assertion
             for assertion in report.assertion_results
-            if assertion["assertion"] != "dimension_total_reconciliation"
+            if assertion["assertion"]
+            not in {
+                "dimension_total_reconciliation",
+                "overall_channel_reconciliation",
+            }
         )
         assertion_results = (*base_assertions, *set_assertions)
         status = report.completeness_status
@@ -682,8 +686,9 @@ def _pending_reconciliation_assertion(
     if not contract.dimension_bindings or contract.reconciliation_binding is None:
         return None
     binding = contract.reconciliation_binding
+    assertion_name = _reconciliation_assertion_name(contract)
     return _assertion(
-        "dimension_total_reconciliation",
+        assertion_name,
         (
             "dimension_total_reconciliation_pending:"
             f"{binding.reference_query_role_ref}",
@@ -699,17 +704,21 @@ def _pending_reconciliation_assertion(
 def _report_pending_reconciliation_only(
     report: CompletenessReport,
 ) -> bool:
+    reconciliation_names = {
+        "dimension_total_reconciliation",
+        "overall_channel_reconciliation",
+    }
     pending_assertions = tuple(
         assertion
         for assertion in report.assertion_results
-        if assertion["assertion"] == "dimension_total_reconciliation"
+        if assertion["assertion"] in reconciliation_names
     )
     if len(pending_assertions) != 1 or pending_assertions[0]["passed"]:
         return False
     if any(
         not assertion["passed"]
         for assertion in report.assertion_results
-        if assertion["assertion"] != "dimension_total_reconciliation"
+        if assertion["assertion"] not in reconciliation_names
     ):
         return False
     return bool(report.failure_reasons) and all(
@@ -774,9 +783,10 @@ def _dimension_total_assertion(
     results: Sequence[QueryResultEnvelope],
     reports: Sequence[CompletenessReport],
 ) -> Mapping[str, Any]:
+    assertion_name = _reconciliation_assertion_name(contract)
     if not contract.dimension_bindings or contract.reconciliation_binding is None:
         return _assertion(
-            "dimension_total_reconciliation", (), details={"applicable": False}
+            assertion_name, (), details={"applicable": False}
         )
 
     standalone_ready = (
@@ -785,7 +795,7 @@ def _dimension_total_assertion(
     ) or _report_pending_reconciliation_only(report)
     if not standalone_ready:
         return _assertion(
-            "dimension_total_reconciliation",
+            assertion_name,
             (
                 "dimension_result_incomplete:"
                 f"{contract.query_contract_id}:"
@@ -812,7 +822,7 @@ def _dimension_total_assertion(
     )
     if reference_reasons:
         return _assertion(
-            "dimension_total_reconciliation",
+            assertion_name,
             reference_reasons,
             details=validation_details,
         )
@@ -824,7 +834,7 @@ def _dimension_total_assertion(
         or total_report.analysis_readiness != "ready"
     ):
         return _assertion(
-            "dimension_total_reconciliation",
+            assertion_name,
             (
                 "dimension_total_reference_incomplete:"
                 f"{total_contract.query_contract_id}:"
@@ -895,7 +905,7 @@ def _dimension_total_assertion(
         }
     )
     return _assertion(
-        "dimension_total_reconciliation",
+        assertion_name,
         reasons,
         details=validation_details,
     )
@@ -1176,16 +1186,20 @@ def _total_reference(
     candidate = reference[0]
     if candidate.contract_signature != binding.reference_contract_signature:
         return reference, ("dimension_total_reference_signature_mismatch",)
+    overall_channel = (
+        _reconciliation_assertion_name(contract)
+        == "overall_channel_reconciliation"
+    )
     scope_fields = (
         "analysis_contract_ref",
         "filters",
         "permission_scope",
         "window_refs",
         "resolved_windows",
-        "dataset_snapshot_refs",
-        "metric_bindings",
         "workload_class",
     )
+    if not overall_channel:
+        scope_fields = (*scope_fields, "dataset_snapshot_refs", "metric_bindings")
     mismatches = tuple(
         f"dimension_total_scope_mismatch:{field_name}"
         for field_name in scope_fields
@@ -1195,7 +1209,17 @@ def _total_reference(
         mismatches = (*mismatches, "dimension_total_scope_mismatch:dimensions")
     if candidate.query_intent != "daily_metric_baselines":
         mismatches = (*mismatches, "dimension_total_scope_mismatch:query_intent")
+    if overall_channel and tuple(
+        item.metric_id for item in candidate.metric_bindings
+    ) != tuple(item.metric_id for item in contract.metric_bindings):
+        mismatches = (*mismatches, "dimension_total_scope_mismatch:metric_ids")
     return (reference, _dedupe(mismatches)) if mismatches else (reference, ())
+
+
+def _reconciliation_assertion_name(contract: QueryContract) -> str:
+    if "overall_channel_reconciliation" in contract.completeness_assertions:
+        return "overall_channel_reconciliation"
+    return "dimension_total_reconciliation"
 
 
 def _metric_values(

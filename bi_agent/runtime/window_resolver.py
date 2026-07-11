@@ -8,6 +8,13 @@ from zoneinfo import ZoneInfo
 from bi_agent.runtime.analysis_contracts import ContractGap, ResolvedWindow
 
 
+CURRENT_DATA_BASELINES = (
+    "previous_day",
+    "rolling_7_day_baseline",
+    "same_weekday_last_week",
+)
+
+
 @dataclass(frozen=True)
 class WindowResolution:
     windows: tuple[ResolvedWindow, ...]

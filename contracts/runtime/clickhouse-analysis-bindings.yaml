@@ -50,9 +50,11 @@ metric_business_labels:
 datasets:
   paid_order_success:
     date_field: business_date_lagos
+    schema_contract_ref: contracts/sources/paid-order-detail.source.yaml@0.3#storage_boundary.clean_schema
     requires_release: true
     release_membership: {policy: exact_dataset_set, dataset_ids: [paid_order_success]}
     required_fields: [business_date_lagos]
+    schema_fields: [order_id, user_id, business_date_lagos, payment_completed_ms, payment_started_ms, paid_amount_ngn, currency, is_new_user, is_first_payment, channel, payment_method, country, region, city, device_brand, device_model, os, network_type, registered_at, first_paid_at, payment_latency_seconds, raw_date]
   payment_attempt:
     date_expression: "toDate(toTimeZone(fromUnixTimestamp64Milli(toInt64OrZero(`支付发起时间`)), 'Africa/Lagos'))"
     required_fields: [支付发起时间]

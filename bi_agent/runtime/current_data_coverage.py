@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import date, datetime
 from typing import Any, Mapping
 
 from bi_agent.runtime.analysis_contracts import (
     DimensionBinding,
     MetricBinding,
     QueryContract,
+    ReconciliationBinding,
     ResolvedWindow,
     ResultShape,
     query_contract_signature,
@@ -19,14 +21,12 @@ from bi_agent.runtime.dataset_catalog import (
 )
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from bi_agent.runtime.query_completeness import CURRENT_DATA_ASSERTIONS
-
-
-_WINDOWS = (
-    ResolvedWindow("target_day", "target", "target day", "2026-06-02", "2026-06-03", "Africa/Lagos", "daily_total", 1, "2026-06-02"),
-    ResolvedWindow("previous_day", "baseline", "previous day", "2026-06-01", "2026-06-02", "Africa/Lagos", "daily_total", 1, "2026-06-01"),
-    ResolvedWindow("rolling_7_day_baseline", "baseline", "rolling seven days", "2026-05-26", "2026-06-02", "Africa/Lagos", "mean_of_complete_days", 7, "2026-06-01"),
-    ResolvedWindow("same_weekday_last_week", "baseline", "same weekday last week", "2026-05-26", "2026-05-27", "Africa/Lagos", "daily_total", 1, "2026-05-26"),
+from bi_agent.runtime.window_resolver import (
+    CURRENT_DATA_BASELINES,
+    resolve_revenue_windows,
 )
+
+
 _COMPLETENESS = CURRENT_DATA_ASSERTIONS
 
 
@@ -65,19 +65,32 @@ def current_data_coverage_cases(
     registry: RuntimeContractRegistry,
 ) -> tuple[CurrentDataCoverageCase, ...]:
     """Enumerate reviewed current-data paths and retain unclosed paths as gaps."""
-    supported_specs = (
-        ("market-overall", ("market_dashboard",), "paid_amount", (), "daily_metric_baselines", "directional"),
-        ("market-channel", ("market_dashboard", "market_dashboard_channel"), "paid_amount", ("channel",), "channel_context_probe", "directional"),
-        ("gameplay-overall", ("gameplay",), "player_bet_amount", ("gameplay",), "gameplay_activity_probe", "candidate_mechanism"),
-        ("gameplay-channel", ("gameplay", "gameplay_channel"), "player_bet_amount", ("gameplay",), "gameplay_activity_probe", "candidate_mechanism"),
-        ("external-event", ("external_event",), "", (), "event_context_probe", "candidate_mechanism"),
-        ("internal-event", ("internal_operation_event",), "", (), "event_context_probe", "candidate_mechanism"),
-        ("paid-success", ("paid_order_success",), "paid_amount", (), "daily_metric_baselines", "directional"),
+    adapter_pairs = tuple(
+        sorted(
+            (metric_id, dataset_id)
+            for metric_id in registry.metric_ids
+            for dataset_id in registry.metric_sources(metric_id)
+        )
     )
-    cases = [
-        _supported_case(registry, *spec)
-        for spec in supported_specs
-    ]
+    cases = [_adapter_case(registry, *pair) for pair in adapter_pairs]
+
+    for dataset_id in registry.dataset_ids:
+        dataset = registry.dataset(dataset_id)
+        schema = set(str(item) for item in dataset.get("schema_fields", ()))
+        if {"event_id", "event_start_date", "source_family"} <= schema:
+            cases.append(
+                _supported_case(
+                    registry,
+                    f"context:{dataset_id}:event_context_probe",
+                    (dataset_id,),
+                    "",
+                    (),
+                    "event_context_probe",
+                    "candidate_mechanism",
+                )
+            )
+
+    cases = _bind_overall_channel_reconciliation(cases)
 
     supported_families = {case.query_family for case in cases}
     obligation_families = {
@@ -93,7 +106,9 @@ def current_data_coverage_cases(
                 metric_ids=(),
                 dimension_ids=(),
                 query_family=query_family,
-                required_window_ids=tuple(window.window_id for window in _WINDOWS),
+        required_window_ids=tuple(
+            window.window_id for window in _coverage_windows(registry)
+        ),
                 expected_state="degraded",
                 claim_ceiling="insufficient",
                 gap_type="schema_backed_query_adapter_missing",
@@ -101,32 +116,99 @@ def current_data_coverage_cases(
             )
         )
 
-    covered_sources = {dataset for case in cases for dataset in case.dataset_ids}
-    registered_sources = {
-        dataset_id
-        for metric_id in registry.metric_ids
-        for dataset_id in registry.metric_sources(metric_id)
-    }
-    for dataset_id in sorted(registered_sources - covered_sources):
-        cases.append(
-            CurrentDataCoverageCase(
-                case_id=f"gap:source:{dataset_id}",
-                dataset_ids=(dataset_id,),
-                metric_ids=tuple(
-                    metric_id
-                    for metric_id in registry.metric_ids
-                    if dataset_id in registry.metric_sources(metric_id)
-                ),
-                dimension_ids=(),
-                query_family="payment_success_scan" if dataset_id == "payment_attempt" else "data_quality_probe",
-                required_window_ids=tuple(window.window_id for window in _WINDOWS),
-                expected_state="degraded",
-                claim_ceiling="insufficient",
-                gap_type="active_source_schema_not_reviewed",
-                owner="source_contract_owner",
-            )
+    return tuple(sorted(cases, key=lambda case: case.case_id))
+
+
+def _adapter_case(
+    registry: RuntimeContractRegistry,
+    metric_id: str,
+    dataset_id: str,
+) -> CurrentDataCoverageCase:
+    metric = registry.metric(metric_id, dataset_id=dataset_id)
+    dataset = registry.dataset(dataset_id)
+    schema_fields = tuple(str(item) for item in dataset.get("schema_fields", ()))
+    required_fields = tuple(str(item) for item in metric.get("required_fields", ()))
+    missing = tuple(sorted(set(required_fields) - set(schema_fields)))
+    query_family, dimension_ids = _adapter_query_family(registry, metric_id, dataset_id)
+    case_id = f"adapter:{metric_id}:{dataset_id}:{query_family}"
+    if missing:
+        return CurrentDataCoverageCase(
+            case_id=case_id,
+            dataset_ids=(dataset_id,),
+            metric_ids=(metric_id,),
+            dimension_ids=dimension_ids,
+            query_family=query_family,
+            required_window_ids=tuple(
+                window.window_id for window in _coverage_windows(registry)
+            ),
+            expected_state="degraded",
+            claim_ceiling="insufficient",
+            gap_type="source_schema_mismatch",
+            owner="source_contract_owner",
+            source_fields=required_fields,
         )
-    return tuple(cases)
+    return _supported_case(
+        registry,
+        case_id,
+        (dataset_id,),
+        metric_id,
+        dimension_ids,
+        query_family,
+        str(metric.get("maximum_claim_strength") or "directional"),
+    )
+
+
+def _adapter_query_family(
+    registry: RuntimeContractRegistry,
+    metric_id: str,
+    dataset_id: str,
+) -> tuple[str, tuple[str, ...]]:
+    if dataset_id == "payment_attempt":
+        return "payment_success_scan", ()
+    if dataset_id == "market_dashboard_channel":
+        return "channel_context_probe", ("channel",)
+    if dataset_id in {"gameplay", "gameplay_channel"}:
+        return "gameplay_activity_probe", ("gameplay",)
+    return "daily_metric_baselines", ()
+
+
+def _bind_overall_channel_reconciliation(
+    cases: list[CurrentDataCoverageCase],
+) -> list[CurrentDataCoverageCase]:
+    by_pair = {
+        (case.metric_ids[0], case.dataset_ids[0]): case
+        for case in cases
+        if len(case.metric_ids) == 1 and len(case.dataset_ids) == 1
+    }
+    pairs = (
+        ("market_dashboard", "market_dashboard_channel"),
+        ("gameplay", "gameplay_channel"),
+    )
+    output = []
+    for case in cases:
+        replacement = case
+        if case.expected_state == "supported" and case.metric_ids:
+            for overall_dataset, channel_dataset in pairs:
+                if case.dataset_ids != (channel_dataset,):
+                    continue
+                overall = by_pair.get((case.metric_ids[0], overall_dataset))
+                if overall is None or overall.expected_state != "supported":
+                    continue
+                contract = replace(
+                    case.query_contract,
+                    reconciliation_binding=ReconciliationBinding(
+                        reference_query_role_ref=overall.query_contract.query_role_ref,
+                        reference_contract_signature=overall.query_contract.contract_signature,
+                    ),
+                    contract_signature="",
+                )
+                contract = replace(
+                    contract,
+                    contract_signature=query_contract_signature(contract),
+                )
+                replacement = replace(case, query_contract=contract)
+        output.append(replacement)
+    return output
 
 
 def _supported_case(
@@ -145,7 +227,7 @@ def _supported_case(
         for dimension_id in dimension_ids
     )
     shape_contract = registry.query_shape(query_family)
-    windows = _WINDOWS
+    windows = _coverage_windows(registry)
     required_fields = _dedupe(
         (*tuple(shape_contract["required_fields"]), *(item.metric_id for item in metrics), *dimension_ids)
     )
@@ -176,6 +258,7 @@ def _supported_case(
         workload_class="bounded_readonly",
         contract_signature="",
         query_parameters=dict(shape_contract.get("query_parameters") or {}),
+        query_role_ref=f"current-data-role:{case_id}",
         join_expectation=None,
     )
     contract = replace(contract, contract_signature=query_contract_signature(contract))
@@ -187,7 +270,10 @@ def _supported_case(
         )
     )
     if not source_fields:
-        source_fields = tuple(str(item) for item in registry.dataset(query_dataset).get("schema_fields", ()))
+        source_fields = tuple(
+            str(item)
+            for item in registry.dataset(query_dataset).get("required_fields", ())
+        )
     return CurrentDataCoverageCase(
         case_id=case_id,
         dataset_ids=dataset_ids,
@@ -248,17 +334,17 @@ def _snapshots(
         dataset = registry.dataset(dataset_id)
         fingerprint = f"{index + 1:064x}"
         schema_fields = tuple(dataset.get("schema_fields") or ())
-        if dataset_id == query_dataset:
-            schema_fields = _dedupe(
-                (*schema_fields, *dataset.get("required_fields", ()), *(field for item in metrics for field in item.required_fields), *(item.source_field for item in dimensions))
-            )
         prefix = str(dataset.get("physical_table_prefix") or "")
         members.append(
             DatasetSnapshot(
                 snapshot_ref=f"snapshot:current-data:{dataset_id}", dataset_id=dataset_id,
                 physical_table=(f"{prefix}{fingerprint[:16]}" if prefix else f"analytics.{dataset_id}"),
                 watermark="2026-06-02", schema_fingerprint=fingerprint,
-                schema_fields=schema_fields, contract_ref=f"runtime-dataset:{dataset_id}",
+                schema_fields=schema_fields,
+                contract_ref=str(
+                    dataset.get("schema_contract_ref")
+                    or f"runtime-dataset:{dataset_id}"
+                ),
                 permission_scopes=("analyst",), loaded_at="2026-06-03T00:00:00Z", status="active",
                 evidence_state="claim_ready", reconciliation_status=("matched" if len(release_dataset_ids) > 1 else "not_applicable"),
                 reconciliation_ref=(f"reconciliation:{'-'.join(release_dataset_ids)}" if len(release_dataset_ids) > 1 else ""),
@@ -281,3 +367,17 @@ def _snapshots(
 
 def _dedupe(values: tuple[Any, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(item) for item in values))
+
+
+def _coverage_windows(
+    registry: RuntimeContractRegistry,
+) -> tuple[ResolvedWindow, ...]:
+    return resolve_revenue_windows(
+        target_semantic="2026-06-02",
+        baselines=CURRENT_DATA_BASELINES,
+        as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+        timezone_name=registry.business_timezone,
+        dataset_watermarks={"coverage": date.fromisoformat("2026-06-02")},
+        affected_capabilities=(),
+        affected_claim_types=(),
+    ).windows

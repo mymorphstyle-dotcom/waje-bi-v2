@@ -41,6 +41,7 @@ from bi_agent.runtime.query_audit import query_audit_refs
 from bi_agent.runtime.query_audit import query_rows_ref
 from bi_agent.runtime.query_completeness import (
     ASSERTIONS,
+    CURRENT_DATA_ASSERTIONS,
     _event_recurrence_occurs_in_window,
     validate_query_result as _validate_query_result,
     validate_query_set,
@@ -505,6 +506,7 @@ class QueryCompletenessTest(unittest.TestCase):
                 datetime.fromisoformat("2026-12-26").date(),
             )
         )
+
         self.assertTrue(
             _event_recurrence_occurs_in_window(
                 row,
@@ -1279,6 +1281,106 @@ class QueryCompletenessTest(unittest.TestCase):
         self.assertTrue(assertion["passed"])
         self.assertEqual(assertion["details"]["tolerance"], 0.01)
         self.assertEqual(dimension_report.completeness_status, "complete")
+
+    def test_overall_channel_reconciliation_executes_match_mismatch_and_partial(self):
+        overall = baseline_contract(query_id="query:overall:closure")
+        channel = bind_dimension_reference(
+            baseline_contract(
+                query_id="query:channel:closure",
+                dimensions=(channel_dimension(),),
+            ),
+            overall,
+        )
+        channel = replace(
+            channel,
+            query_intent="channel_context_probe",
+            completeness_assertions=CURRENT_DATA_ASSERTIONS,
+        )
+        overall_rows = complete_rows(target=100.0, baseline=80.0)
+        scenarios = (
+            (
+                "match",
+                (
+                    {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 60.0},
+                    {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "B", "paid_amount": 40.0},
+                    {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 50.0},
+                    {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "B", "paid_amount": 30.0},
+                ),
+                "complete",
+                "ready",
+            ),
+            (
+                "mismatch",
+                (
+                    {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 99.0},
+                    {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 80.0},
+                ),
+                "partial",
+                "blocked",
+            ),
+        )
+        for label, channel_rows, status, readiness in scenarios:
+            with self.subTest(label=label):
+                reports = validate_query_set(
+                    (overall, channel),
+                    (
+                        successful_result(overall, rows=overall_rows),
+                        successful_result(channel, rows=channel_rows),
+                    ),
+                    (
+                        validate_query_result(overall, successful_result(overall, rows=overall_rows), paid_snapshot()),
+                        validate_query_result(channel, successful_result(channel, rows=channel_rows), paid_snapshot()),
+                    ),
+                )
+                assertion = next(
+                    item
+                    for item in reports[1].assertion_results
+                    if item["assertion"] == "overall_channel_reconciliation"
+                )
+                self.assertEqual(reports[1].completeness_status, status)
+                self.assertEqual(reports[1].analysis_readiness, readiness)
+                self.assertEqual(assertion["passed"], label == "match")
+
+        missing_reference = validate_query_set(
+            (channel,),
+            (successful_result(channel, rows=scenarios[0][1]),),
+            (
+                validate_query_result(
+                    channel,
+                    successful_result(channel, rows=scenarios[0][1]),
+                    paid_snapshot(),
+                ),
+            ),
+        )[0]
+        self.assertEqual(missing_reference.completeness_status, "partial")
+        self.assertEqual(missing_reference.analysis_readiness, "blocked")
+        self.assertTrue(
+            any(
+                reason.startswith("dimension_total_reference_missing:")
+                for reason in missing_reference.failure_reasons
+            )
+        )
+
+        incomplete_overall_rows = (overall_rows[1],)
+        reports = validate_query_set(
+            (overall, channel),
+            (
+                successful_result(overall, rows=incomplete_overall_rows),
+                successful_result(channel, rows=scenarios[0][1]),
+            ),
+            (
+                validate_query_result(overall, successful_result(overall, rows=incomplete_overall_rows), paid_snapshot()),
+                validate_query_result(channel, successful_result(channel, rows=scenarios[0][1]), paid_snapshot()),
+            ),
+        )
+        self.assertEqual(reports[1].completeness_status, "partial")
+        self.assertEqual(reports[1].analysis_readiness, "blocked")
+        self.assertTrue(
+            any(
+                reason.startswith("dimension_total_reference_incomplete:")
+                for reason in reports[1].failure_reasons
+            )
+        )
 
     def test_count_reconciliation_is_exact_by_default(self):
         total_contract = baseline_contract(

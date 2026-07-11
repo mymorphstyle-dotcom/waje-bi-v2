@@ -1227,6 +1227,11 @@ def _verify_reviewed_query_shape(
     reviewed_parameters = _freeze_contract_value(
         reviewed.get("query_parameters") or {}
     )
+    source_field_policy = str(reviewed.get("source_field_policy") or "")
+    if source_field_policy not in {"", "metric_bindings"}:
+        raise ValueError(
+            f"reviewed_source_field_policy_invalid:{contract.query_intent}"
+        )
     if _freeze_contract_value(contract.query_parameters) != reviewed_parameters:
         raise ValueError(
             f"reviewed_query_parameters_mismatch:{contract.query_intent}"

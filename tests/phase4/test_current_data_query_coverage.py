@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 
 from bi_agent.runtime.current_data_coverage import current_data_coverage_cases
 from bi_agent.runtime.clickhouse_query_compiler import compile_clickhouse_query
@@ -6,6 +7,7 @@ from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
 )
+from bi_agent.runtime.contracts import load_contract
 
 
 class CurrentDataQueryCoverageTest(unittest.TestCase):
@@ -74,13 +76,18 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
         }
         self.assertTrue(obligation_families <= {case.query_family for case in cases})
 
-        supported_pairs = {
-            tuple(case.dataset_ids)
+        supported_datasets = {
+            case.dataset_ids[0]
             for case in cases
-            if case.expected_state == "supported"
+            if case.expected_state == "supported" and len(case.dataset_ids) == 1
         }
-        self.assertIn(("market_dashboard", "market_dashboard_channel"), supported_pairs)
-        self.assertIn(("gameplay", "gameplay_channel"), supported_pairs)
+        self.assertTrue(
+            {"market_dashboard", "market_dashboard_channel"}
+            <= supported_datasets
+        )
+        self.assertTrue(
+            {"gameplay", "gameplay_channel"} <= supported_datasets
+        )
 
         covered_windows = {
             window_id for case in cases for window_id in case.required_window_ids
@@ -93,6 +100,110 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
                 "rolling_7_day_baseline",
                 "same_weekday_last_week",
             },
+        )
+
+    def test_generated_set_exactly_covers_every_registered_metric_adapter_pair(self):
+        registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+        expected = {
+            (metric_id, dataset_id)
+            for metric_id in registry.metric_ids
+            for dataset_id in registry.metric_sources(metric_id)
+        }
+        cases = current_data_coverage_cases(registry)
+        actual = {
+            (metric_id, dataset_id)
+            for case in cases
+            for metric_id in case.metric_ids
+            for dataset_id in case.dataset_ids
+            if dataset_id in registry.metric_sources(metric_id)
+        }
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(len(expected), 18)
+        self.assertEqual(
+            tuple(case.case_id for case in cases),
+            tuple(sorted(case.case_id for case in cases)),
+        )
+        self.assertEqual(
+            len(cases),
+            len({case.case_id for case in cases}),
+        )
+
+    def test_new_registered_adapter_pair_is_generated_without_case_code(self):
+        payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
+        payload["metrics"]["profit"]["source_adapters"] = {
+            "market_dashboard_channel": {
+                **payload["metrics"]["profit"],
+                "contract_ref": "contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.profit",
+            }
+        }
+        payload["metrics"]["profit"]["source_adapters"][
+            "market_dashboard_channel"
+        ].pop("source_adapters", None)
+        cases = current_data_coverage_cases(RuntimeContractRegistry(payload))
+
+        generated = next(
+            case
+            for case in cases
+            if case.metric_ids == ("profit",)
+            and case.dataset_ids == ("market_dashboard_channel",)
+        )
+        self.assertEqual(generated.expected_state, "supported")
+        self.assertEqual(generated.query_family, "channel_context_probe")
+
+    def test_missing_reviewed_source_schema_field_degrades_adapter_pair(self):
+        payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
+        payload["datasets"]["paid_order_success"]["schema_fields"].remove(
+            "paid_amount_ngn"
+        )
+        cases = current_data_coverage_cases(RuntimeContractRegistry(payload))
+        paid_amount = next(
+            case
+            for case in cases
+            if case.metric_ids == ("paid_amount",)
+            and case.dataset_ids == ("paid_order_success",)
+        )
+
+        self.assertEqual(paid_amount.expected_state, "degraded")
+        self.assertEqual(paid_amount.gap_type, "source_schema_mismatch")
+
+    def test_source_field_policy_is_closed_and_reviewed(self):
+        payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
+        payload["query_shapes"]["daily_metric_baselines"][
+            "source_field_policy"
+        ] = "invent_fields"
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "runtime_query_shape_source_field_policy:daily_metric_baselines",
+        ):
+            RuntimeContractRegistry(payload)
+
+    def test_channel_case_references_generated_overall_contract(self):
+        registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+        cases = current_data_coverage_cases(registry)
+        overall = next(
+            case
+            for case in cases
+            if case.metric_ids == ("paid_amount",)
+            and case.dataset_ids == ("market_dashboard",)
+        )
+        channel = next(
+            case
+            for case in cases
+            if case.metric_ids == ("paid_amount",)
+            and case.dataset_ids == ("market_dashboard_channel",)
+        )
+
+        binding = channel.query_contract.reconciliation_binding
+        self.assertIsNotNone(binding)
+        self.assertEqual(
+            binding.reference_query_role_ref,
+            overall.query_contract.query_role_ref,
+        )
+        self.assertEqual(
+            binding.reference_contract_signature,
+            overall.query_contract.contract_signature,
         )
 
     def test_paid_success_never_uses_gameplay_aliases_or_payment_attempt_fields(self):

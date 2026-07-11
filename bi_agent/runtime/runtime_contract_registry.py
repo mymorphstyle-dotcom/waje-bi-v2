@@ -453,6 +453,14 @@ def _validate_query_shapes(value: Any) -> None:
             raise ValueError(
                 f"runtime_query_shape_source_fields:{query_family}"
             )
+        source_field_policy = shape.get("source_field_policy")
+        if source_field_policy is not None and source_field_policy not in {
+            "metric_bindings",
+        }:
+            raise ValueError(
+                "runtime_query_shape_source_field_policy:"
+                f"{query_family}:{source_field_policy}"
+            )
 
 
 def _validate_obligations(payload: Mapping[str, Any]) -> None:
