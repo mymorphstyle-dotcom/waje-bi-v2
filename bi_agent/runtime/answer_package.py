@@ -122,6 +122,9 @@ def build_answer_package(
     context_assumptions: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
+    accepted_assumptions = tuple(
+        dict(item) for item in context_assumptions if isinstance(item, Mapping)
+    )
     semantic_audit = {} if semantic_audit is None else semantic_audit
     final_explanation = {} if final_explanation is None else final_explanation
     coverage_interpretation = (
@@ -163,6 +166,7 @@ def build_answer_package(
             "semantic_audit": semantic_audit,
             "quality_gate": quality_gate,
         },
+        accepted_assumptions=accepted_assumptions,
     )
     source_verifier_warnings = tuple(verifier.get("warnings") or ())
     accepted_claim_indexes = tuple(verifier.get("accepted_claim_indexes") or ())
@@ -209,6 +213,7 @@ def build_answer_package(
                 ),
                 sources=sources,
                 permission_context=context_owner.get("permission_context") or {},
+                accepted_assumptions=accepted_assumptions,
             )
             supplied_context_ref = str(
                 context_owner.get("manifest_id") or context_manifest_ref or ""
@@ -267,6 +272,7 @@ def build_answer_package(
                     "semantic_audit": semantic_audit,
                     "quality_gate": quality_gate,
                 },
+                accepted_assumptions=accepted_assumptions,
             )
             if (
                 projected_verifier.get("status")
@@ -356,7 +362,7 @@ def build_answer_package(
         "accepted_graph_metadata": canonical_value(
             compiler_runtime_plan.get("graph_metadata") or {}
         ),
-        "context_assumptions": canonical_value(context_assumptions),
+        "context_assumptions": canonical_value(accepted_assumptions),
         "final_answer": final_business_summary or answer_text,
         "follow_up_questions": list(follow_up_questions),
         "quality_gate": quality_gate,
@@ -542,6 +548,11 @@ def reverify_answer_package_for_delivery(
             "semantic_audit": candidate.get("semantic_audit"),
             "quality_gate": candidate.get("quality_gate"),
         },
+        accepted_assumptions=tuple(
+            dict(item)
+            for item in candidate.get("context_assumptions") or ()
+            if isinstance(item, Mapping)
+        ),
     )
     reported_admin = candidate.get("admin_audit")
     reported = (
@@ -1879,6 +1890,15 @@ def _project_client_answer_package(
         "context_manifest_ref": _safe_ref(
             candidate.get("context_manifest_ref")
         ),
+        "context_assumptions": to_jsonable(
+            candidate.get("context_assumptions") or ()
+        ),
+        "accepted_degradation_choice": to_jsonable(
+            candidate.get("accepted_degradation_choice") or {}
+        ),
+        "accepted_graph_metadata": to_jsonable(
+            candidate.get("accepted_graph_metadata") or {}
+        ),
         "final_answer": final_answer,
         "follow_up_questions": [],
         "quality_gate": quality_gate,
@@ -2215,6 +2235,7 @@ def verify_answer_package(
     runtime_registry: RuntimeContractRegistry | None = None,
     release_resolver: DatasetReleaseResolver | None = None,
     delivery_text: Any = None,
+    accepted_assumptions: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     evidence_by_ref = {item.get("evidence_ref"): item for item in evidence}
     errors = []
@@ -2424,6 +2445,7 @@ def verify_answer_package(
         "warnings": warnings,
         "accepted_claim_indexes": accepted_claim_indexes,
         "rejected_claim_indexes": rejected_claim_indexes,
+        "accepted_assumptions": to_jsonable(accepted_assumptions),
     }
 
 

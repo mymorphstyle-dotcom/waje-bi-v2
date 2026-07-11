@@ -1854,6 +1854,8 @@ def _context_manifest_from_row(row: Any) -> ContextManifest:
         permission_context=dict(payload.get("permission_context") or {}),
         analysis_assets=list(payload.get("analysis_assets") or []),
         accepted_assumptions=list(payload.get("accepted_assumptions") or []),
+        contract_versions=dict(payload.get("contract_versions") or {}),
+        schema_fingerprint=str(payload.get("schema_fingerprint") or ""),
         created_at=payload.get("created_at"),
         can_support_claims=bool(payload.get("can_support_claims", _field(row, "can_support_claims", 3))),
     )

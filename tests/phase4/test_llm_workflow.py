@@ -16,6 +16,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _answer_quality_gate,
     _accept_analysis_route,
     _build_answer_package_from_state,
+    _compiler_bound_context,
     build_available_evidence_brief,
     _apply_reused_dimension_scan_input,
     _apply_query_gap_action_to_route,
@@ -301,6 +302,7 @@ class LLMWorkflowTest(unittest.TestCase):
             **choice,
             "choice_id": "wait_for_event_source",
             "business_label": "等待事件来源。",
+            "action_kind": "wait_for_source",
         }
         alternate_state["request"]["accepted_degradation_choice"] = alternate_choice
         alternate_state["request"]["context_manifest"]["accepted_assumptions"] = [
@@ -339,6 +341,20 @@ class LLMWorkflowTest(unittest.TestCase):
             ["accepted_degradation_choice"],
             choice,
         )
+
+    def test_compiler_permission_scope_falls_back_without_accepted_choice(self):
+        context = _compiler_bound_context(
+            {
+                "intent": {"scope": "full_sample"},
+                "request": {
+                    "permission_context": {"role": "viewer"},
+                    "context_manifest": {"accepted_assumptions": []},
+                },
+            }
+        )
+
+        self.assertEqual(context["permission_scope"], "viewer")
+        self.assertNotIn("accepted_degradation_choice", context)
 
     def test_persisted_query_gap_keeps_waiting_terminal_status(self):
         compiled = compile_graph(

@@ -172,7 +172,12 @@ class ConversationRuntime:
             owner_scope,
             combined_prior_assets,
             pending_clarification_id if intent_name == "clarification_answer" else "",
-            accepted_assumptions=(accepted_degradation_choice,),
+            accepted_assumptions=(
+                (accepted_degradation_choice,)
+                if isinstance(accepted_degradation_choice, Mapping)
+                and accepted_degradation_choice
+                else ()
+            ),
         )
         memory_proposals = self._memory_proposals(
             thread_id,

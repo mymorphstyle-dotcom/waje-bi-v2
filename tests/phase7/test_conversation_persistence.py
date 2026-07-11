@@ -223,6 +223,44 @@ class ConversationPersistenceTest(unittest.TestCase):
         self.assertIs(loaded.sources[0]["can_support_claim"], True)
         self.assertIs(loaded.claim_use_policy["requires_evidence_ref"], True)
 
+    def test_context_manifest_all_fields_round_trip_in_memory_and_postgres(self):
+        manifest = ContextManifest(
+            manifest_id="manifest-roundtrip-all",
+            thread_id="thread-roundtrip",
+            turn_id="turn-roundtrip",
+            topic_id="topic-roundtrip",
+            sources=[{"type": "policy", "ref": "source-1", "can_support_claim": False}],
+            claim_use_policy={"requires_evidence_ref": True},
+            snapshot_version="snapshot-v2",
+            permission_context={"role": "analyst"},
+            analysis_assets=[{"asset_id": "asset-1"}],
+            accepted_assumptions=[{"action_kind": "omit_unavailable_context"}],
+            contract_versions={"runtime": "v2", "semantic": "v3"},
+            schema_fingerprint="schema:sha256:abc",
+            created_at="2026-07-12T00:00:00+00:00",
+        )
+        expected = manifest.to_dict()
+
+        memory = InMemoryConversationStore()
+        memory.save_context_manifest(manifest)
+        self.assertEqual(
+            memory.list_context_manifests("thread-roundtrip")[0].to_dict(),
+            expected,
+        )
+
+        row = {
+            "manifest_id": manifest.manifest_id,
+            "thread_id": manifest.thread_id,
+            "turn_id": manifest.turn_id,
+            "can_support_claims": manifest.can_support_claims,
+            "items": expected,
+        }
+        postgres = PostgresConversationStore(FakeConnection(rows=[row]))
+        self.assertEqual(
+            postgres.list_context_manifests("thread-roundtrip")[0].to_dict(),
+            expected,
+        )
+
     def test_context_manifest_partial_claim_policy_keeps_defaults(self):
         manifest = ContextManifest(
             manifest_id="manifest-partial-policy",

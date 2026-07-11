@@ -32,6 +32,7 @@ def build_context_manifest_record(
     topic_id: str,
     sources: Sequence[Mapping[str, Any]],
     permission_context: Mapping[str, Any] | None = None,
+    accepted_assumptions: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     if not run_id or not thread_id or not topic_id:
         raise EvidenceIntegrityError("context_manifest_owner_missing")
@@ -45,6 +46,9 @@ def build_context_manifest_record(
             "topic_id": topic_id,
             "sources": normalized_sources,
             "permission_context": dict(permission_context or {}),
+            "accepted_assumptions": [
+                dict(item) for item in accepted_assumptions if isinstance(item, Mapping)
+            ],
             "can_support_claims": True,
         }
     )
@@ -167,6 +171,7 @@ def build_verified_claim_record(
 def validate_context_manifest_record(record: Mapping[str, Any]) -> None:
     expected_keys = {
         "run_id", "thread_id", "topic_id", "sources", "permission_context",
+        "accepted_assumptions",
         "can_support_claims", "manifest_id", "manifest_digest",
     }
     if set(record) != expected_keys:
@@ -177,6 +182,7 @@ def validate_context_manifest_record(record: Mapping[str, Any]) -> None:
         topic_id=str(record.get("topic_id") or ""),
         sources=record.get("sources") or (),
         permission_context=record.get("permission_context") or {},
+        accepted_assumptions=record.get("accepted_assumptions") or (),
     )
     if canonical_value(record) != canonical_value(rebuilt):
         raise EvidenceIntegrityError("context_manifest_integrity_invalid")

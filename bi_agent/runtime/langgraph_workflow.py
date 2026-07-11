@@ -37,6 +37,7 @@ from bi_agent.runtime.answer_package import (
     build_answer_package,
     reverify_answer_package_for_delivery,
 )
+from bi_agent.runtime.analysis_assets import material_assumption_digest
 from bi_agent.runtime.analysis_runtime import (
     AnswerPackageBuildContext,
     AnalysisRuntimeRequest,
@@ -4083,8 +4084,11 @@ def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
             )
     elif request.get("as_of") not in (None, ""):
         context["as_of"] = str(request.get("as_of"))
-    if request.get("role"):
-        context["permission_scope"] = str(request.get("role"))
+    permission_role = request.get("role") or (
+        request.get("permission_context") or {}
+    ).get("role")
+    if permission_role:
+        context["permission_scope"] = str(permission_role)
     if isinstance(request.get("contract_versions"), Mapping):
         context["contract_versions"] = {
             str(key): str(value)
@@ -4113,14 +4117,9 @@ def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
     accepted_choice = request.get("accepted_degradation_choice") or {}
     if isinstance(accepted_choice, Mapping) and accepted_choice:
         versions = dict(context.get("contract_versions") or {})
-        versions["accepted_degradation_choice"] = sha256(
-            json.dumps(
-                to_jsonable(accepted_choice),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
+        assumption_digest = material_assumption_digest(accepted_choice)
+        if assumption_digest:
+            versions["accepted_degradation_choice"] = assumption_digest
         context["contract_versions"] = versions
         context["accepted_degradation_choice"] = dict(accepted_choice)
         permission_context = manifest.get("permission_context")

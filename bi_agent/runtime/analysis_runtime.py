@@ -669,6 +669,16 @@ class AnalysisRuntime:
                 permission_context=(
                     build_context.context_owner.get("permission_context") or {}
                 ),
+                accepted_assumptions=tuple(
+                    dict(item)
+                    for item in (
+                        (request.get("context_manifest") or {}).get(
+                            "accepted_assumptions"
+                        )
+                        or ()
+                    )
+                    if isinstance(item, Mapping)
+                ),
             )
             for manifest in evidence_manifests:
                 manifest["context_manifest_ref"] = context["manifest_id"]

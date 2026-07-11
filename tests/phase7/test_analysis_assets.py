@@ -17,6 +17,8 @@ from bi_agent.runtime.analysis_assets import (
     merge_analysis_assets,
     reusable_dimension_scan_inputs as _reusable_dimension_scan_inputs,
     _reuse_contract_signature,
+    canonical_material_assumption,
+    material_assumption_digest,
 )
 from bi_agent.runtime.langgraph_workflow import (
     WorkflowRunResult,
@@ -105,6 +107,39 @@ def verified_reuse_fixture(
 
 
 class AnalysisAssetsTest(unittest.TestCase):
+    def test_material_assumption_digest_ignores_display_lineage_and_tracks_boundaries(self):
+        first = {
+            "option": "continue_degraded",
+            "action_kind": "omit_unavailable_context",
+            "affected_capabilities": ["event_evidence", "paid_driver"],
+            "dataset_id": "external_event",
+            "claim_ceiling": "observed",
+            "source_run_id": "run-1",
+            "business_label": "保留大盘证据继续。",
+            "display_text": "first",
+            "created_at": "2026-07-12T00:00:00Z",
+        }
+        same_semantics = {
+            **first,
+            "affected_capabilities": ["paid_driver", "event_evidence"],
+            "source_run_id": "run-2",
+            "business_label": "继续，但省略事件来源。",
+            "display_text": "second",
+            "created_at": "2026-07-13T00:00:00Z",
+        }
+        changed_boundary = {**same_semantics, "claim_ceiling": "insufficient"}
+
+        self.assertNotIn("source_run_id", canonical_material_assumption(first))
+        self.assertNotIn("business_label", canonical_material_assumption(first))
+        self.assertEqual(
+            material_assumption_digest(first),
+            material_assumption_digest(same_semantics),
+        )
+        self.assertNotEqual(
+            material_assumption_digest(first),
+            material_assumption_digest(changed_boundary),
+        )
+
     def test_reuse_rejects_each_authority_signature_dimension_mismatch(self):
         windows = {
             "target_day": {

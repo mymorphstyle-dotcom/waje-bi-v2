@@ -15,6 +15,7 @@ from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     RowsPayloadLoader,
     RuntimeEvidenceResolver,
+    canonical_digest,
     canonical_rows_hash,
     runtime_evidence_record_integrity_errors,
 )
@@ -1642,3 +1643,45 @@ def _asset_identity_payload(asset: Mapping[str, Any]) -> dict[str, Any]:
         for key, value in asset.items()
         if key not in {"asset_id", "created_at", "recorded_at", "source_run_id"}
     }
+_MATERIAL_ASSUMPTION_SCALAR_FIELDS = (
+    "option",
+    "value",
+    "action_kind",
+    "obligation_id",
+    "obligation_decision",
+    "degradation_decision",
+    "dataset_id",
+    "claim_ceiling",
+    "target_semantic",
+    "scope",
+)
+_MATERIAL_ASSUMPTION_LIST_FIELDS = (
+    "affected_capabilities",
+    "affected_datasets",
+    "affected_claim_types",
+)
+
+
+def canonical_material_assumption(choice: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep only stable fields that can change execution or claim boundaries."""
+
+    if not isinstance(choice, Mapping) or not choice:
+        return {}
+    canonical: dict[str, Any] = {}
+    for field in _MATERIAL_ASSUMPTION_SCALAR_FIELDS:
+        value = choice.get(field)
+        if value not in (None, "", (), [], {}):
+            canonical[field] = to_jsonable(value)
+    for field in _MATERIAL_ASSUMPTION_LIST_FIELDS:
+        raw = choice.get(field) or ()
+        if isinstance(raw, (str, bytes)):
+            raw = (raw,)
+        values = sorted({str(item) for item in raw if str(item)})
+        if values:
+            canonical[field] = values
+    return canonical
+
+
+def material_assumption_digest(choice: Mapping[str, Any]) -> str:
+    canonical = canonical_material_assumption(choice)
+    return canonical_digest(canonical) if canonical else ""

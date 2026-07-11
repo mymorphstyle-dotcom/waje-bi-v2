@@ -15,6 +15,7 @@ from bi_agent.runtime.answer_package import (
     _render_authority_facts,
     build_answer_package,
     collect_visible_limitations,
+    reverify_answer_package_for_delivery,
     verify_answer_package,
 )
 from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_value
@@ -23,6 +24,37 @@ from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
 
 
 class AgentCoreBridgeTest(unittest.TestCase):
+    def test_answer_verifier_and_authority_manifest_receive_exact_accepted_assumptions(self):
+        choice = {
+            "action_kind": "omit_unavailable_context",
+            "affected_capabilities": ["event_evidence"],
+            "degradation_decision": "continue_without_event_source",
+        }
+        with patch(
+            "bi_agent.runtime.answer_package.verify_answer_package",
+            wraps=verify_answer_package,
+        ) as verifier_spy:
+            package, context, _ = _verified_delivery_package(
+                run_id="run-verifier-assumptions",
+                accepted_assumptions=(choice,),
+            )
+            delivered = reverify_answer_package_for_delivery(
+                package,
+                evidence_resolver=context["evidence_resolver"],
+                rows_loader=context["rows_loader"],
+                runtime_registry=context["runtime_registry"],
+                release_resolver=context["release_resolver"],
+            )
+
+        self.assertGreaterEqual(verifier_spy.call_count, 3)
+        for call in verifier_spy.call_args_list:
+            self.assertEqual(call.kwargs["accepted_assumptions"], (choice,))
+        self.assertEqual(
+            package["admin_audit"]["context_manifest"]["accepted_assumptions"],
+            [choice],
+        )
+        self.assertEqual(delivered["context_assumptions"], [choice])
+
     def test_agent_core_passes_and_persists_fixed_analysis_clock(self):
         captured = {}
         fixed_context = {
@@ -311,6 +343,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )
 
         self.assertEqual(first["status"], "waiting_for_clarification")
+        self.assertEqual(captured[0]["context_manifest"]["accepted_assumptions"], [])
         self.assertEqual(resumed["status"], "completed")
         self.assertIsNone(resumed.get("clarification"))
         self.assertEqual(resumed["topic_id"], first["topic_id"])
@@ -3707,6 +3740,7 @@ def _verified_delivery_package(
     claim_dimensions=None,
     channel="A",
     claim_selector_mode="",
+    accepted_assumptions=(),
 ):
     from bi_agent.runtime.claim_provenance import (
         build_trusted_claim_provenance_record,
@@ -3931,6 +3965,7 @@ def _verified_delivery_package(
             memory_refs=("memory:test",),
             reuse_decisions=({"source_ref": "asset:test", "decision": "reuse"},),
         ),
+        context_assumptions=accepted_assumptions,
     )
     return package, context, claim_text
 
