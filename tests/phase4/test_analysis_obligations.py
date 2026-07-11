@@ -38,6 +38,20 @@ class AnalysisObligationsTest(unittest.TestCase):
             ):
                 self.assertIn(family, get_capability_card(capability).supported_question_families)
 
+    def test_obligation_registry_covers_every_public_capability(self):
+        registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+        referenced = set()
+        for family in registry.question_family_ids:
+            contract = registry.question_family_obligation(family)
+            referenced.update(contract["required_capabilities"])
+            referenced.update(contract["independent_capabilities"])
+            for rule in contract["conditional_rules"]:
+                referenced.update(rule["add"])
+        payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)
+        for contract in payload["diagnostic_obligations"].values():
+            referenced.update(contract["required_capabilities"])
+        self.assertEqual(referenced, set(public_capability_ids()))
+
     def test_resolver_adds_contract_required_and_conditional_capabilities(self):
         result = resolve_analysis_obligations(
             ObligationRequest(
@@ -114,6 +128,86 @@ class AnalysisObligationsTest(unittest.TestCase):
                 request,
                 RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
             )
+
+    def test_registry_rejects_duplicate_empty_and_contradictory_capability_classes(self):
+        payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)
+        mutations = {
+            "duplicate": lambda item: item["required_capabilities"].append(
+                item["required_capabilities"][0]
+            ),
+            "empty_required": lambda item: item.update(required_capabilities=[]),
+            "required_independent_overlap": lambda item: item[
+                "independent_capabilities"
+            ].append(item["required_capabilities"][0]),
+            "conditional_required_overlap": lambda item: item[
+                "conditional_rules"
+            ][0]["add"].append(item["required_capabilities"][0]),
+            "conditional_independent_overlap": lambda item: item[
+                "conditional_rules"
+            ][0]["add"].append(item["independent_capabilities"][0]),
+            "conditional_cross_rule_duplicate": lambda item: item[
+                "conditional_rules"
+            ][1]["add"].append(item["conditional_rules"][0]["add"][0]),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                changed = deepcopy(payload)
+                mutate(changed["question_family_obligations"]["pattern_explanation"])
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "runtime_obligation_(capabilities_duplicate|capabilities_empty|classification_conflict)",
+                ):
+                    RuntimeContractRegistry(changed)
+
+    def test_registry_rejects_invalid_publishability_and_degradation_contracts(self):
+        payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)
+        mutations = {
+            "empty_evidence": lambda item: item.update(minimum_publishable_evidence=[]),
+            "duplicate_evidence": lambda item: item["minimum_publishable_evidence"].append(
+                item["minimum_publishable_evidence"][0]
+            ),
+            "blank_evidence": lambda item: item.update(minimum_publishable_evidence=[""]),
+            "blank_owner": lambda item: item.update(missing_contract_owner=""),
+            "missing_degradation_key": lambda item: item.update(
+                degradation_policy={"missing_required_input": "explicit_gap"}
+            ),
+            "extra_degradation_key": lambda item: item["degradation_policy"].update(
+                unexpected="fallback"
+            ),
+            "blank_degradation_value": lambda item: item["degradation_policy"].update(
+                missing_required_input=""
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                changed = deepcopy(payload)
+                mutate(changed["question_family_obligations"]["pattern_explanation"])
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "runtime_obligation_(evidence_invalid|owner_invalid|degradation_policy_invalid)",
+                ):
+                    RuntimeContractRegistry(changed)
+
+    def test_order_capabilities_rejects_unknown_reference(self):
+        registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+        with self.assertRaisesRegex(ValueError, "runtime_obligation_unknown_capability"):
+            registry.order_capabilities(("answer_verify", "unreviewed_capability"))
+
+    def test_registry_rejects_incomplete_public_capability_coverage(self):
+        payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)
+        payload["question_family_obligations"]["pattern_explanation"][
+            "required_capabilities"
+        ].remove("evidence_reduce")
+        with self.assertRaisesRegex(ValueError, "runtime_obligation_capability_coverage"):
+            RuntimeContractRegistry(payload)
+
+    def test_registry_rejects_capability_unsupported_by_question_family(self):
+        payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)
+        payload["question_family_obligations"]["pattern_explanation"][
+            "required_capabilities"
+        ].append("market_health_compare")
+        with self.assertRaisesRegex(ValueError, "runtime_obligation_unsupported_family"):
+            RuntimeContractRegistry(payload)
 
 
 if __name__ == "__main__":

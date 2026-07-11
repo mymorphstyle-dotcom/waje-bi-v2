@@ -9,7 +9,7 @@ from typing import Any, Mapping
 import yaml
 
 from bi_agent.runtime.analysis_contracts import DIMENSION_PRESENCE_POLICIES
-from bi_agent.runtime.capability_registry import public_capability_ids
+from bi_agent.runtime.capability_registry import get_capability_card, public_capability_ids
 from bi_agent.runtime.contracts import load_contract
 
 
@@ -43,6 +43,12 @@ _OBLIGATION_CONDITIONS = frozenset(
         "anomaly_review_requested",
         "trust_review_requested",
     }
+)
+_PUBLISHABLE_EVIDENCE = frozenset(
+    {"verified_observation", "verified_trust_boundary"}
+)
+_DEGRADATION_POLICY_FIELDS = frozenset(
+    {"missing_required_input", "missing_optional_input"}
 )
 _REQUIRED_CLAIM_STRENGTHS = frozenset(
     {
@@ -140,6 +146,12 @@ class RuntimeContractRegistry:
 
     def order_capabilities(self, capabilities: Any) -> tuple[str, ...]:
         requested = set(str(item) for item in capabilities)
+        unknown = requested - set(public_capability_ids())
+        if unknown:
+            raise ValueError(
+                "runtime_obligation_unknown_capability:order:"
+                f"{','.join(sorted(unknown))}"
+            )
         return tuple(item for item in public_capability_ids() if item in requested)
 
     @property
@@ -442,6 +454,7 @@ def _validate_query_shapes(value: Any) -> None:
 def _validate_obligations(payload: Mapping[str, Any]) -> None:
     public = set(public_capability_ids())
     configured = set(payload["capability_inputs"])
+    referenced: set[str] = set()
     family_fields = {
         "required_capabilities",
         "conditional_rules",
@@ -453,25 +466,62 @@ def _validate_obligations(payload: Mapping[str, Any]) -> None:
     diagnostic_fields = {"required_capabilities", "condition"}
     for family, contract in payload["question_family_obligations"].items():
         _validate_obligation_mapping(contract, family_fields, str(family))
+        required = _validate_capability_list(
+            contract["required_capabilities"], str(family), required=True
+        )
+        independent = _validate_capability_list(
+            contract["independent_capabilities"], str(family)
+        )
+        if required & independent:
+            _raise_classification_conflict(str(family), required & independent)
         _validate_capability_references(
             (*contract["required_capabilities"], *contract["independent_capabilities"]),
             public,
             configured,
             str(family),
         )
+        family_capabilities = required | independent
         rules = contract["conditional_rules"]
         if not isinstance(rules, list):
             raise ValueError(f"runtime_obligation_conditional_rules_invalid:{family}")
+        conditional: set[str] = set()
         for rule in rules:
             if not isinstance(rule, Mapping) or set(rule) != {"condition", "add"}:
                 raise ValueError(f"runtime_obligation_conditional_rule_invalid:{family}")
             _validate_obligation_condition(rule["condition"], str(family))
+            added = _validate_capability_list(rule["add"], str(family), required=True)
+            conflict = added & (required | independent | conditional)
+            if conflict:
+                _raise_classification_conflict(str(family), conflict)
+            conditional.update(added)
+            family_capabilities.update(added)
             _validate_capability_references(rule["add"], public, configured, str(family))
+        for capability in family_capabilities:
+            supported_families = get_capability_card(
+                capability
+            ).supported_question_families
+            if str(family) not in supported_families:
+                raise ValueError(
+                    f"runtime_obligation_unsupported_family:{family}:{capability}"
+                )
+        referenced.update(family_capabilities)
+        _validate_publishability_contract(contract, str(family))
     for tag, contract in payload["diagnostic_obligations"].items():
         _validate_obligation_mapping(contract, diagnostic_fields, str(tag))
         _validate_obligation_condition(contract["condition"], str(tag))
+        _validate_capability_list(
+            contract["required_capabilities"], str(tag), required=True
+        )
         _validate_capability_references(
             contract["required_capabilities"], public, configured, str(tag)
+        )
+        referenced.update(contract["required_capabilities"])
+    if referenced != public:
+        missing = public - referenced
+        extra = referenced - public
+        raise ValueError(
+            "runtime_obligation_capability_coverage:"
+            f"missing={','.join(sorted(missing))}:extra={','.join(sorted(extra))}"
         )
 
 
@@ -499,6 +549,57 @@ def _validate_capability_references(
     for capability in values:
         if capability not in public or capability not in configured:
             raise ValueError(f"runtime_obligation_unknown_capability:{item_id}:{capability}")
+
+
+def _validate_capability_list(
+    values: Any,
+    item_id: str,
+    *,
+    required: bool = False,
+) -> set[str]:
+    if not isinstance(values, list) or any(
+        type(value) is not str or not value.strip() for value in values
+    ):
+        raise ValueError(f"runtime_obligation_capabilities_empty:{item_id}")
+    if required and not values:
+        raise ValueError(f"runtime_obligation_capabilities_empty:{item_id}")
+    if len(values) != len(set(values)):
+        raise ValueError(f"runtime_obligation_capabilities_duplicate:{item_id}")
+    return set(values)
+
+
+def _raise_classification_conflict(item_id: str, capabilities: set[str]) -> None:
+    raise ValueError(
+        f"runtime_obligation_classification_conflict:{item_id}:"
+        f"{','.join(sorted(capabilities))}"
+    )
+
+
+def _validate_publishability_contract(contract: Mapping[str, Any], item_id: str) -> None:
+    evidence = contract["minimum_publishable_evidence"]
+    if (
+        not isinstance(evidence, list)
+        or not evidence
+        or any(
+            type(value) is not str or value not in _PUBLISHABLE_EVIDENCE
+            for value in evidence
+        )
+        or len(evidence) != len(set(evidence))
+    ):
+        raise ValueError(f"runtime_obligation_evidence_invalid:{item_id}")
+    owner = contract["missing_contract_owner"]
+    if type(owner) is not str or not owner.strip():
+        raise ValueError(f"runtime_obligation_owner_invalid:{item_id}")
+    degradation = contract["degradation_policy"]
+    if (
+        not isinstance(degradation, Mapping)
+        or set(degradation) != _DEGRADATION_POLICY_FIELDS
+        or any(
+            type(value) is not str or not value.strip()
+            for value in degradation.values()
+        )
+    ):
+        raise ValueError(f"runtime_obligation_degradation_policy_invalid:{item_id}")
 
 
 def _validate_obligation_condition(value: Any, item_id: str) -> None:
