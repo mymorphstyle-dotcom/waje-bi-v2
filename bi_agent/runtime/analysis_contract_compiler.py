@@ -1706,11 +1706,16 @@ def _scope_gaps(
                 for capability_id in capabilities
                 for claim_type in claim_types_by_capability.get(capability_id, ())
             )
+        scoped_claim_types = (
+            claim_types
+            if claim_types_by_capability is not None
+            else claim_types or affected_claim_types
+        )
         scoped.append(
             replace(
                 gap,
                 affected_capabilities=capabilities,
-                affected_claim_types=claim_types or affected_claim_types,
+                affected_claim_types=scoped_claim_types,
             )
         )
     return tuple(scoped)

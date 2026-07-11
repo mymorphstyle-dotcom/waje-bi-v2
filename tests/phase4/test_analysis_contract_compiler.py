@@ -216,6 +216,47 @@ def _market_dashboard_snapshots():
 
 
 class AnalysisContractCompilerTest(unittest.TestCase):
+    def test_source_gap_keeps_empty_claim_scope_when_capability_claims_are_disjoint(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        cases = (
+            (
+                "event_evidence",
+                {"requested_context_sources": ["external_event"]},
+                "external_event",
+                "comparative_change",
+            ),
+            (
+                "gameplay_activity_context",
+                {
+                    "metric_dataset_overrides": {"player_bet_amount": "gameplay"},
+                },
+                "gameplay",
+                "candidate_mechanism",
+            ),
+        )
+        for capability_id, proposal, dataset_id, unrelated_claim in cases:
+            with self.subTest(capability_id=capability_id):
+                outcome = _compile_analysis_contract(
+                    run_id=f"run-disjoint-claim-{capability_id}",
+                    proposal={**proposal, "claim_intents": [unrelated_claim]},
+                    accepted_capabilities=(capability_id,),
+                    catalog=DatasetCatalog(()),
+                    registry=registry,
+                    as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+                    permission_scope="analyst",
+                )
+
+                gap = next(
+                    item
+                    for item in outcome.analysis_contract.contract_gaps
+                    if item.dataset_id == dataset_id
+                )
+                self.assertEqual(gap.affected_capabilities, (capability_id,))
+                self.assertEqual(gap.affected_claim_types, ())
+                self.assertNotIn(unrelated_claim, gap.affected_claim_types)
+
     def test_unsigned_required_release_is_source_unbound(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"

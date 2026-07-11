@@ -103,6 +103,33 @@ class _SlotMatch:
     ]
 
 
+def capability_plan_has_executable_query_contracts(
+    plan: CapabilityExecutionPlan,
+    available_query_contract_refs: set[str],
+) -> bool:
+    required_slots = tuple(plan.required_input_slots)
+    if not required_slots:
+        return False
+    for slot in required_slots:
+        primary_refs = (
+            tuple(slot.get("query_contract_refs") or ())
+            if isinstance(slot, Mapping)
+            else slot.query_contract_refs
+        )
+        validation_refs = (
+            tuple(slot.get("validation_query_contract_refs") or ())
+            if isinstance(slot, Mapping)
+            else slot.validation_query_contract_refs
+        )
+        if len(primary_refs) != 1:
+            return False
+        if primary_refs[0] not in available_query_contract_refs:
+            return False
+        if any(ref not in available_query_contract_refs for ref in validation_refs):
+            return False
+    return True
+
+
 def bind_capability_inputs(
     plan: CapabilityExecutionPlan,
     *,

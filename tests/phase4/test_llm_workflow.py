@@ -1933,7 +1933,12 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         outcome = SimpleNamespace(
             analysis_contract=analysis_contract,
-            query_contracts=(SimpleNamespace(to_dict=lambda: {"query": "ready"}),),
+            query_contracts=(
+                SimpleNamespace(
+                    query_contract_id="query:ready",
+                    to_dict=lambda: {"query": "ready"},
+                ),
+            ),
             capability_plans=(
                 SimpleNamespace(
                     capability_id="market_health_compare",
@@ -2035,6 +2040,63 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertFalse(
             analysis_outcome_requires_preexecution_clarification(optional_only)
         )
+
+    def test_partially_bound_required_slots_are_not_executable_ready(self):
+        from types import SimpleNamespace
+
+        gap = SimpleNamespace(
+            requires_clarification=True,
+            affected_capabilities=("segment_contribution",),
+            to_dict=lambda: {
+                "requires_clarification": True,
+                "affected_capabilities": ["segment_contribution"],
+            },
+        )
+        outcome = SimpleNamespace(
+            analysis_contract=SimpleNamespace(contract_gaps=(gap,)),
+            query_contracts=(
+                SimpleNamespace(query_contract_id="query:segment:bound"),
+            ),
+            capability_plans=(
+                SimpleNamespace(
+                    capability_id="segment_contribution",
+                    required_input_slots=(
+                        {
+                            "required": True,
+                            "query_contract_refs": ("query:segment:bound",),
+                        },
+                        {
+                            "required": True,
+                            "query_contract_refs": (),
+                        },
+                    ),
+                    optional_input_slots=(),
+                ),
+            ),
+        )
+
+        self.assertFalse(analysis_outcome_has_executable_ready_capability(outcome))
+        self.assertTrue(analysis_outcome_requires_preexecution_clarification(outcome))
+
+        class ExecutorMustNotRun:
+            def execute(self, *args, **kwargs):
+                raise AssertionError("partial_required_plan_must_stop_preexecution")
+
+        runtime = object.__new__(AnalysisRuntime)
+        runtime.executor = ExecutorMustNotRun()
+        runtime._catalog_provider = lambda: SimpleNamespace(snapshots=lambda: ())
+        runtime._compile_with_catalog = lambda request, catalog: outcome
+        runtime._authority_records = lambda compiled, results, bound, **kwargs: {}
+        result = runtime.execute(
+            AnalysisRuntimeRequest.create(
+                run_id="run-partial-required-plan",
+                proposal={"target_metrics": ["paid_amount"]},
+                accepted_graph=("segment_contribution",),
+                as_of="2026-06-03T12:00:00+01:00",
+                permission_scope="analyst",
+            )
+        )
+        self.assertEqual(result.query_results, ())
 
     def test_nonclarification_outcome_does_not_swallow_legacy_compile_error(self):
         from types import SimpleNamespace

@@ -20,6 +20,7 @@ from bi_agent.runtime.analysis_contracts import (
 from bi_agent.runtime.capability_execution import (
     BoundCapabilityInput,
     bind_capability_inputs,
+    capability_plan_has_executable_query_contracts,
 )
 from bi_agent.runtime.claim_provenance import (
     build_context_manifest_record,
@@ -244,26 +245,18 @@ def analysis_outcome_requires_route_clarification(
 def analysis_outcome_has_executable_ready_capability(
     outcome: AnalysisCompileOutcome,
 ) -> bool:
-    for plan in outcome.capability_plans:
-        for slot in plan.required_input_slots:
-            required = (
-                bool(slot.get("required", True))
-                if isinstance(slot, Mapping)
-                else bool(slot.required)
-            )
-            query_refs = (
-                tuple(slot.get("query_contract_refs") or ())
-                if isinstance(slot, Mapping)
-                else slot.query_contract_refs
-            )
-            validation_refs = (
-                tuple(slot.get("validation_query_contract_refs") or ())
-                if isinstance(slot, Mapping)
-                else slot.validation_query_contract_refs
-            )
-            if required and (query_refs or validation_refs):
-                return True
-    return False
+    available_refs = {
+        str(
+            contract.get("query_contract_id")
+            if isinstance(contract, Mapping)
+            else contract.query_contract_id
+        )
+        for contract in outcome.query_contracts
+    }
+    return any(
+        capability_plan_has_executable_query_contracts(plan, available_refs)
+        for plan in outcome.capability_plans
+    )
 
 
 def analysis_outcome_requires_preexecution_clarification(
