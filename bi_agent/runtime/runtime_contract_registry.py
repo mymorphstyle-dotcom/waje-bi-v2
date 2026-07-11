@@ -136,6 +136,10 @@ class RuntimeContractRegistry:
     def question_family_ids(self) -> tuple[str, ...]:
         return tuple(self._payload["question_family_obligations"])
 
+    @property
+    def capability_ids(self) -> tuple[str, ...]:
+        return tuple(self._payload["capability_inputs"])
+
     def question_family_obligation(self, question_family: str) -> dict[str, Any]:
         return self._entry(
             "question_family_obligations", question_family, "question_family_obligation"

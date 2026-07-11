@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import date
 import unittest
 from unittest.mock import patch
 
@@ -42,6 +43,13 @@ def compile_clickhouse_query(contract, snapshots, **kwargs):
     resolver = kwargs.pop("release_resolver", None)
     snapshots = dict(snapshots)
     first = next(iter(snapshots.values()), None)
+    if isinstance(first, DatasetSnapshot):
+        try:
+            date.fromisoformat(first.watermark)
+        except (TypeError, ValueError):
+            return _compile_clickhouse_query(contract, snapshots, **kwargs)
+        if not first.schema_fingerprint or ";" in first.physical_table:
+            return _compile_clickhouse_query(contract, snapshots, **kwargs)
     if (
         resolver is None
         and isinstance(first, DatasetSnapshot)
@@ -49,12 +57,14 @@ def compile_clickhouse_query(contract, snapshots, **kwargs):
         and first.dataset_id not in {"market_dashboard", "market_dashboard_channel"}
     ):
         table_names = {
+            "paid_order_success": "analytics.paid_success",
             "gameplay": "gameplay_daily__a1a1a1a1a1a1a1a1",
             "gameplay_channel": "gameplay_channel_daily__b2b2b2b2b2b2b2b2",
             "external_event": "business_events__c3c3c3c3c3c3c3c3",
             "internal_operation_event": "business_events__d4d4d4d4d4d4d4d4",
         }
         schema_fingerprints = {
+            "paid_order_success": "e5" * 32,
             "gameplay": "a1" * 32,
             "gameplay_channel": "b2" * 32,
             "external_event": "c3" * 32,
@@ -76,12 +86,17 @@ def compile_clickhouse_query(contract, snapshots, **kwargs):
                 physical_table=table_names[member_dataset],
                 schema_fingerprint=schema_fingerprints[member_dataset],
                 schema_fields=tuple(
-                    canonical_registry.dataset(member_dataset)["schema_fields"]
+                    canonical_registry.dataset(member_dataset).get("schema_fields")
+                    or first.schema_fields
                 ),
                 logical_snapshot_id=f"{first.dataset_id}-logical",
                 load_revision=f"{first.dataset_id}-load:sha256:reviewed",
                 rows_content_hash=("a" if member_dataset == first.dataset_id else "b") * 64,
-                evidence_state="context_only",
+                evidence_state=(
+                    "claim_ready"
+                    if member_dataset == "paid_order_success"
+                    else "context_only"
+                ),
                 reconciliation_status="not_applicable",
             )
             members.append(member)

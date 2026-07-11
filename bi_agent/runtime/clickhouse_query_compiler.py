@@ -107,12 +107,13 @@ def compile_clickhouse_query(
     contract: QueryContract,
     snapshots: Mapping[str, DatasetSnapshot],
     *,
+    registry: RuntimeContractRegistry | None = None,
     release_resolver: DatasetReleaseResolver | None = None,
 ) -> CompiledQuery:
     return _compile_clickhouse_query_with_registry(
         contract,
         snapshots,
-        registry=_runtime_registry(),
+        registry=registry or _runtime_registry(),
         release_resolver=release_resolver,
     )
 

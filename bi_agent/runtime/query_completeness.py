@@ -45,6 +45,11 @@ ASSERTIONS = (
     "aggregate_only",
 )
 
+CURRENT_DATA_ASSERTIONS = (
+    *ASSERTIONS,
+    "overall_channel_reconciliation",
+)
+
 _JOIN_AUDIT_FIELDS = (
     "__join_input_rows",
     "__join_output_rows",
@@ -1260,6 +1265,7 @@ def _statuses(
         "complete_window_days",
         "unique_key",
         "dimension_total_reconciliation",
+        "overall_channel_reconciliation",
         "join_cardinality",
         "paired_target_baseline",
     }:
