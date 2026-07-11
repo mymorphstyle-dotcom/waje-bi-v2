@@ -112,6 +112,11 @@ def _review_payload(
         "obligation_coverage": obligation,
         "dataset_coverage": supplied_coverage.get("dataset_coverage") or {},
         "runtime_correctness": runtime,
+        "hard_acceptance": supplied_coverage.get("hard_acceptance") or {
+            "runtime_passed": all(runtime.values()),
+            "obligation_passed": False,
+            "passed": False,
+        },
         "answer_quality": quality,
         "quality_scores_block_display": False,
         "final_answer_audit_coverage": {

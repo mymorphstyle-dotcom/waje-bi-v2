@@ -88,10 +88,13 @@ def test_obligation_review_resolves_contract_and_reports_typed_gaps():
             "excluded_inputs": {
                 "payment_attempt": "missing_contract",
             },
-            "observed_dataset_states": {
-                "paid_order_success": "executable",
-                "payment_attempt": "source_unbound",
-            },
+            "allowed_claim_ceiling": "directional",
+            "terminal_boundary": "contract_allowed_partial",
+        },
+        "status": "completed",
+        "runtime_authority": {
+            "query_executions": [{"dataset_id": "paid_order_success", "execution_status": "succeeded", "completeness_status": "complete"}],
+            "contract_gaps": [{"dataset_id": "payment_attempt", "gap_type": "missing_contract"}],
         },
     }
 
@@ -118,8 +121,11 @@ def test_obligation_review_fails_missing_current_data_obligation():
                 "question_family": "data_quality_or_evidence_review",
                 "target_metrics": ["paid_amount"],
                 "expected_dataset_states": {"paid_order_success": "executable"},
-                "observed_dataset_states": {},
+                "allowed_claim_ceiling": "directional",
+                "terminal_boundary": "verified_answer",
             },
+            "status": "completed",
+            "runtime_authority": {},
         },
         registry,
     )
@@ -128,6 +134,134 @@ def test_obligation_review_fails_missing_current_data_obligation():
         "paid_order_success:executable"
     ]
     assert review["hard_acceptance_passed"] is False
+
+
+@pytest.mark.parametrize(
+    ("boundary", "gaps", "claim_strength", "status", "passed"),
+    [
+        ("verified_answer", [], "observed", "completed", True),
+        ("verified_answer", [], "strong", "completed", False),
+        ("permission_blocked", [{"dataset_id": "market_dashboard_channel", "gap_type": "permission_blocked"}], "insufficient", "completed", True),
+        ("permission_blocked", [], "insufficient", "completed", False),
+        ("contract_allowed_partial", [{"dataset_id": "gameplay_channel", "gap_type": "contract_partial"}], "context_only", "completed", True),
+        ("contract_allowed_partial", [], "context_only", "completed", False),
+    ],
+)
+def test_obligation_review_enforces_claim_ceiling_and_terminal_boundary(
+    boundary, gaps, claim_strength, status, passed
+):
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    dataset = "market_dashboard_channel" if boundary == "permission_blocked" else "gameplay_channel"
+    expected_state = "permission_blocked" if boundary == "permission_blocked" else "contract_partial"
+    if boundary == "verified_answer":
+        dataset, expected_state = "paid_order_success", "executable"
+    turn = {
+        "status": status,
+        "accepted_graph": ["data_quality_profile", "answer_verify", "metric_coverage_profile"],
+        "scenario": {
+            "question_family": "data_quality_or_evidence_review",
+            "target_metrics": ["paid_amount"],
+            "allowed_claim_ceiling": "directional",
+            "terminal_boundary": boundary,
+            "expected_dataset_states": {dataset: expected_state},
+            "excluded_inputs": ({dataset: gaps[0]["gap_type"]} if gaps else {}),
+        },
+        "runtime_authority": {
+            "query_executions": ([{"dataset_id": dataset, "execution_status": "succeeded", "completeness_status": "complete"}] if boundary == "verified_answer" else []),
+            "contract_gaps": gaps,
+            "verified_claims": [{"claim_strength": claim_strength}],
+        },
+    }
+    review = review_case_obligations(turn, registry)
+    assert review["claim_ceiling_passed"] is (claim_strength != "strong")
+    assert review["terminal_boundary_passed"] is passed if claim_strength != "strong" else review["terminal_boundary_passed"]
+    assert review["hard_acceptance_passed"] is passed
+
+
+def test_runtime_observation_does_not_copy_expected_and_requires_excluded_gap():
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    base = {
+        "status": "completed",
+        "accepted_graph": ["data_quality_profile"],
+        "scenario": {
+            "question_family": "business_object_impact_review",
+            "target_metrics": ["paid_amount"],
+            "expected_dataset_states": {"gameplay_channel": "contract_partial"},
+            "excluded_inputs": {"gameplay_channel": "contract_partial"},
+            "allowed_claim_ceiling": "candidate_mechanism",
+            "terminal_boundary": "contract_allowed_partial",
+        },
+        "runtime_authority": {"contract_gaps": []},
+    }
+    review = review_case_obligations(base, registry)
+    assert review["observed_dataset_states"] == {}
+    assert review["missing_current_data_obligations"] == ["gameplay_channel:contract_partial"]
+    assert review["missing_expected_typed_gaps"] == ["gameplay_channel:contract_partial"]
+    assert review["hard_acceptance_passed"] is False
+
+
+def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
+    from tools.phase7.run_live_conversation_system_test import _coverage_summary
+
+    turns = [
+        {
+            "topic_id": "topic-1",
+            "resumed_topic_id": "topic-1",
+            "resumed_status": "completed",
+            "scenario": {"clarification_resume": "required"},
+            "obligation_review": {"hard_acceptance_passed": True, "clarification_resume_passed": True},
+            "real_clickhouse_review": {"runtime_correctness": {"all_required_queries_complete": True, "all_capabilities_bound": True, "all_claims_traceable": True}},
+        },
+        {
+            "topic_id": "topic-1",
+            "prior_topic_id": "topic-1",
+            "scenario": {"reuse": "required"},
+            "runtime_authority": {"reuse_decisions": [{"decision": "reuse"}]},
+            "obligation_review": {"hard_acceptance_passed": True, "reuse_passed": True},
+            "real_clickhouse_review": {"runtime_correctness": {"all_required_queries_complete": True, "all_capabilities_bound": True, "all_claims_traceable": True}},
+        },
+        {"topic_id": "topic-2", "resumed_topic_id": "topic-2", "resumed_status": "completed", "scenario": {}},
+    ]
+    summary = _coverage_summary(turns)
+    assert summary["clarification_resume"] == {"required": 1, "passed": 1}
+    assert summary["reuse_coverage"] == {"required": 1, "passed": 1}
+    turns[0]["resumed_status"] = "failed"
+    turns[0]["obligation_review"]["hard_acceptance_passed"] = False
+    turns[1]["runtime_authority"]["reuse_decisions"][0]["decision"] = "rerun"
+    turns[1]["obligation_review"]["hard_acceptance_passed"] = False
+    failed = _coverage_summary(turns)
+    assert failed["clarification_resume"] == {"required": 1, "passed": 0}
+    assert failed["reuse_coverage"] == {"required": 1, "passed": 0}
+
+
+def test_cli_case_selection_rejects_conflicts_cross_suite_and_unknown():
+    from tools.phase7.run_live_conversation_system_test import resolve_cli_cases
+
+    with pytest.raises(ValueError, match="eval_cli_source_conflict"):
+        resolve_cli_cases("fixed-eight", "custom.yaml", None)
+    with pytest.raises(ValueError, match="eval_case_not_in_suite"):
+        resolve_cli_cases("fixed-eight", None, "platform_paid_amount_change")
+    with pytest.raises(ValueError, match="eval_case_unknown"):
+        resolve_cli_cases(None, "evals/phase7/conversation_scenarios.yaml", "absent")
+
+
+def test_cli_selection_error_is_typed_and_nonzero(capsys):
+    from tools.phase7.run_live_conversation_system_test import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--suite", "fixed-eight", "--case", "platform_paid_amount_change"])
+    assert exc.value.code == 2
+    payload = json.loads(capsys.readouterr().err)
+    assert payload == {
+        "ok": False,
+        "error_code": "eval_case_not_in_suite",
+        "owner": "eval_operator",
+        "impact": "no evaluation cases were executed",
+    }
 
 
 class Releases:

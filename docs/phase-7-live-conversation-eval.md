@@ -12,6 +12,13 @@ only by typed scenario requirements. Excluded inputs are expected typed gaps;
 an absent current-data obligation is a hard failure. Expected model prose and
 sentence-fragment assertions are outside the contract.
 
+Observed dataset states, claim strength, claim ceiling, and terminal outcome
+come from each turn's internal runtime authority chain. The evaluator does not
+copy expected states into observed results. Expected excluded inputs must be
+present as matching typed runtime gaps. `--cases` is a legacy explicit-file
+mode and cannot be combined with `--suite`; unknown, cross-suite, and empty
+case selections return a typed nonzero error before Core initialization.
+
 The production revenue-diagnostics evaluation runs the eight reviewed business
 questions with a fixed analysis clock. Every initial turn and clarification
 resume receives the same context:
@@ -93,6 +100,10 @@ Each case writes separate `.raw.json`, `.runtime-review.json`,
 `.quality-review.json`, and `.coverage-summary.json` views alongside the
 combined compatibility artifact. Obligation and runtime findings determine
 hard acceptance. Quality scores remain advisory.
+The runtime view includes both the ClickHouse review and obligation review for
+every turn. Clarification coverage counts only declared clarification cases
+that complete on the original topic. Reuse coverage additionally requires an
+exact persisted `reuse` decision and inherited topic continuity.
 
 Review either artifact and optionally compare it with a baseline:
 
