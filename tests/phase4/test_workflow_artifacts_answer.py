@@ -492,6 +492,26 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertEqual(by_id["duplicate_order_contract_missing"]["status"], "data_absent")
         self.assertTrue(all(item["status"] != "unknown" for item in diagnostics))
 
+    def test_multi_family_compiler_keeps_typed_gap_descriptors_unique(self):
+        compiled = compile_graph(
+            question_family="business_object_impact_review",
+            question_families=(
+                "business_object_impact_review",
+                "data_quality_or_evidence_review",
+            ),
+            target_metric="paid_amount",
+            requested_nodes=("data_quality_profile", "event_evidence", "answer_verify"),
+            question_text="复核活动事件影响，并检查支付状态和重复订单证据。",
+        )
+
+        gaps = compiled.runtime_plan["row_shapes"][0]["contract_gaps"]
+        ids = [item["gap_id"] for item in gaps]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn("event_context_contract_missing", ids)
+        self.assertIn("payment_status_contract_missing", ids)
+        self.assertIn("duplicate_order_contract_missing", ids)
+        self.assertTrue(all(item.get("fields") or item.get("required_fields") for item in gaps))
+
     def test_answer_package_keeps_causal_audit_in_admin_audit_only(self):
         package = build_answer_package(
             run_id="causal-audit-package",
@@ -1044,13 +1064,15 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
 
         payload = _llm_input_payload(result.answer_package, "final_business_summary")
 
-        self.assertEqual(
-            payload["intent"]["question_families"],
-            ["paid_amount_change_explanation", "segment_or_factor_attribution"],
-        )
+        families = payload["intent"]["question_families"]
+        self.assertEqual(families[:2], [
+            "paid_amount_change_explanation",
+            "segment_or_factor_attribution",
+        ])
+        self.assertEqual(families.count("custom_baseline_comparison"), 1)
         self.assertEqual(
             [item["label"] for item in payload["business_threads"]],
-            ["付费金额变化解释", "分群或因素归因"],
+            ["付费金额变化解释", "分群或因素归因", "自定义基线对比"],
         )
 
     def test_final_business_summary_allows_negated_attribution_boundary(self):

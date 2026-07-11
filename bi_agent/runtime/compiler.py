@@ -169,6 +169,17 @@ def compile_graph(
         bound_context=bound_context or {},
     )
     diagnostic_axes = obligation_request.diagnostic_tags
+    runtime_plan_axes = _dedupe(
+        (
+            *diagnostic_axes,
+            *_revenue_diagnostic_axes(
+                question_text=question_text,
+                question_family=question_family,
+                pattern_family=pattern_family,
+                requested_nodes=base_proposed_graph,
+            ),
+        )
+    )
     try:
         obligation_resolution = resolve_analysis_obligations(
             obligation_request, runtime_registry
@@ -250,7 +261,7 @@ def compile_graph(
         return build_revenue_runtime_plan(
             target_metric=target_metric,
             accepted_graph=accepted,
-            diagnostic_axes=diagnostic_axes,
+            diagnostic_axes=runtime_plan_axes,
             question_text=question_text,
             bound_context=bound_context,
             prior_assets=prior_analysis_assets,

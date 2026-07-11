@@ -1255,6 +1255,10 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             resume.get("selected_query_gap_action") or {},
             RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
         )
+        accepted_choice = dict(resume.get("accepted_degradation_choice") or {})
+        if accepted_choice:
+            output["accepted_degradation_choice"] = accepted_choice
+            state["intent"]["accepted_degradation_choice"] = accepted_choice
         state["analysis_route"] = {**output, "requested_nodes": requested}
         state["intent"]["requested_nodes"] = requested
         return state
@@ -4703,8 +4707,12 @@ def _generate_degraded_explanation(state: WorkflowState) -> WorkflowState:
         state.get("retry_context", {}).get("failure_type") or ""
     ) in {"semantic_audit", "verifier"}
     if rejected_answer:
-        state["draft_claims"] = []
-        state["answer_text"] = str(state["final_explanation"].get("explanation") or "")
+        preserved_claims = _preserved_authority_claims(state)
+        state["draft_claims"] = preserved_claims
+        if not preserved_claims:
+            state["answer_text"] = str(
+                state["final_explanation"].get("explanation") or ""
+            )
     state["verifier"] = {"status": "terminal_explanation", "errors": [], "warnings": []}
     if "evidence" not in state:
         state["evidence"] = []
@@ -5599,8 +5607,21 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         / state["run_id"]
         / "answer_package.json"
     )
+    accepted_degradation_choice = dict(
+        request.get("accepted_degradation_choice")
+        or (request.get("clarification_resume_context") or {}).get(
+            "accepted_degradation_choice"
+        )
+        or {}
+    )
+    context_request = {**request, "run_id": state["run_id"]}
+    if accepted_degradation_choice:
+        context_request["permission_context"] = {
+            **dict(request.get("permission_context") or {}),
+            "accepted_degradation_choice": accepted_degradation_choice,
+        }
     build_context = AnswerPackageBuildContext.create(
-        request={**request, "run_id": state["run_id"]},
+        request=context_request,
         artifact_path=artifact_path,
     )
     contract_gap_diagnostics = state.get("contract_gap_diagnostics")
@@ -5657,6 +5678,8 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         repair_attempts=request.get("repair_decisions")
         or state.get("query_repair_decisions")
         or (),
+        available_evidence_brief=state.get("available_evidence_brief") or {},
+        accepted_degradation_choice=accepted_degradation_choice,
     )
 
 
@@ -6060,6 +6083,18 @@ def _final_business_summary_payload(
     retry_instruction: str = "",
 ) -> dict[str, Any]:
     contract_gap_diagnostics = _refresh_contract_gap_diagnostics(state)
+    available_evidence_brief = build_available_evidence_brief(
+        verified_claims=_verified_claims_for_available_evidence_brief(state),
+        capability_bindings=state.get("capability_bindings")
+        or state.get("request", {}).get("capability_bindings")
+        or state.get("request", {}).get("capability_execution_plans")
+        or (),
+        contract_gaps=contract_gap_diagnostics,
+        obligation_resolution=state.get("analysis_route", {}).get(
+            "obligation_resolution", {}
+        ),
+    )
+    state["available_evidence_brief"] = available_evidence_brief
     return {
         "intent": state.get("intent", {}),
         "confirmed_understanding": state.get("confirmed_understanding", {}),
@@ -6069,6 +6104,7 @@ def _final_business_summary_payload(
             else ()
         ),
         "evidence_brief": state.get("evidence_brief", {}),
+        "available_evidence_brief": available_evidence_brief,
         "evidence_interpretation": state.get("evidence_interpretation", {}),
         "answer_text": state.get("answer_text", ""),
         "claims": state.get("draft_claims", []),
@@ -6081,6 +6117,91 @@ def _final_business_summary_payload(
         "checkpoint_summary": _checkpoint_summary(state),
         "business_threads": _business_threads(state),
         "final_answer_retry_instruction": retry_instruction,
+        "accepted_degradation_choice": dict(
+            state.get("request", {}).get("accepted_degradation_choice") or {}
+        ),
+    }
+
+
+def _verified_claims_for_available_evidence_brief(
+    state: WorkflowState,
+) -> tuple[dict[str, Any], ...]:
+    explicit = state.get("verified_claims") or state.get("authority_verified_claims")
+    if explicit:
+        return tuple(dict(item) for item in explicit if isinstance(item, Mapping))
+    if state.get("verifier", {}).get("errors"):
+        return ()
+    if not state.get("run_id") or "checkpoint_events" not in state:
+        return ()
+    package = _build_answer_package_from_state(state)
+    verifier = package.get("admin_audit", {}).get("verifier", {})
+    if verifier.get("status") not in {"passed", "passed_with_warnings"}:
+        return ()
+    return tuple(
+        dict(item)
+        for item in package.get("admin_audit", {}).get("verified_claims", ())
+        if isinstance(item, Mapping)
+    )
+
+
+def build_available_evidence_brief(
+    *,
+    verified_claims: Sequence[Mapping[str, Any]],
+    capability_bindings: Sequence[Mapping[str, Any]],
+    contract_gaps: Sequence[Mapping[str, Any]],
+    obligation_resolution: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project the authority-backed facts and scoped limits allowed into synthesis."""
+
+    required_claim_fields = (
+        "claim_ref",
+        "context_manifest_ref",
+        "evidence_refs",
+        "result_refs",
+        "artifact_refs",
+        "memory_refs",
+        "reuse_decisions",
+        "provenance_record_ref",
+    )
+    claims = [
+        dict(item)
+        for item in verified_claims
+        if isinstance(item, Mapping)
+        and all(item.get(field) for field in required_claim_fields)
+    ]
+    gaps = [dict(item) for item in contract_gaps if isinstance(item, Mapping)]
+    return {
+        "verified_claims": claims,
+        "verified_capabilities": sorted(
+            {
+                str(item.get("capability_id") or "")
+                for item in capability_bindings
+                if isinstance(item, Mapping)
+                and item.get("status") in {"ready", "degraded"}
+                and item.get("capability_id")
+            }
+        ),
+        "unresolved_obligations": [
+            str(item)
+            for item in obligation_resolution.get("unresolved", ())
+            if str(item)
+        ],
+        "scoped_gaps": gaps,
+        "omitted_factors": list(
+            dict.fromkeys(
+                str(item.get("dataset_id") or item.get("gap_id") or "")
+                for item in gaps
+                if item.get("dataset_id") or item.get("gap_id")
+            )
+        ),
+        "business_next_actions": list(
+            dict.fromkeys(
+                str(action)
+                for item in gaps
+                for action in item.get("repair_options", ())
+                if str(action)
+            )
+        ),
     }
 
 

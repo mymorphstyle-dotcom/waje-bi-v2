@@ -202,6 +202,16 @@ class ConversationRuntime:
                         prior_clarification,
                         user_message,
                     )
+                    accepted_degradation_choice = (
+                        {
+                            **selected_query_gap_action,
+                            "source_run_id": open_clarification.run_id,
+                        }
+                        if selected_query_gap_action
+                        and str(selected_query_gap_action.get("action_kind") or "")
+                        not in {"wait_for_source", "user_redirect"}
+                        else {}
+                    )
                     clarification_resume_context = {
                         "resume_run_id": open_clarification.run_id,
                         "question": str(prior_request.get("question") or ""),
@@ -213,6 +223,7 @@ class ConversationRuntime:
                         "material_slots": dict(prior_request.get("material_slots") or {}),
                         "clarification": prior_clarification,
                         "selected_query_gap_action": selected_query_gap_action,
+                        "accepted_degradation_choice": accepted_degradation_choice,
                     }
             run_request = ConversationRunRequest(
                 thread_id=thread_id,

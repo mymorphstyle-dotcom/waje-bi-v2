@@ -328,6 +328,7 @@ def verified_dimension_scan_asset(
         )
     capability = registry.capability_inputs("segment_contribution")
     authority = RuntimeEvidenceAuthority()
+    authority.release_resolver = release_resolver
     query_record = _record_query_execution(
         authority,
         contract,

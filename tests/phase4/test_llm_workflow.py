@@ -15,6 +15,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _answer_quality_gate,
     _accept_analysis_route,
     _build_answer_package_from_state,
+    build_available_evidence_brief,
     _apply_reused_dimension_scan_input,
     _apply_query_gap_action_to_route,
     _capability_path_labels,
@@ -45,6 +46,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _question_family_values,
     normalize_final_answer_audit,
     _generate_query_gap_clarification,
+    _generate_degraded_explanation,
     _group_query_gap_actions,
     _preserved_authority_claims,
     _persist_clarification,
@@ -147,6 +149,97 @@ def _llm_input_payload(answer_package, task):
 
 
 class LLMWorkflowTest(unittest.TestCase):
+    def test_degraded_route_preserves_ready_authority_claim_when_other_sources_are_unbound(self):
+        claim = {
+            "text": "大盘付费金额下降 8%。",
+            "claim_type": "period_change",
+            "claim_strength": "observed",
+            "scope": "全市场",
+            "time_window": "昨天",
+            "evidence_refs": ["evidence:market:1"],
+        }
+        state = {
+            "run_id": "run-partial-authority",
+            "request": {"run_mode": "production", "analysis_contract": {}},
+            "intent": {"scope": "全市场", "time_window": "昨天"},
+            "draft_claims": [claim],
+            "answer_text": "大盘付费金额下降 8%，payment_attempt 与事件来源仍未绑定。",
+            "evidence": [{
+                "evidence_ref": "evidence:market:1",
+                "binding_manifest_ref": "binding:market:1",
+                "input_status": "ready",
+                "supported_claim_types": ["period_change"],
+                "strength": "observed",
+                "maximum_claim_strength": "directional",
+            }],
+            "verifier": {"errors": [{"code": "source_unbound"}]},
+            "retry_context": {"failure_type": "verifier"},
+            "evidence_brief": {},
+        }
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._invoke_terminal_explanation",
+            return_value={
+                "status": "degraded",
+                "explanation": "payment_attempt 与事件来源仍未绑定。",
+                "owner": "data_owner",
+                "repair_path": "绑定来源后补充归因。",
+            },
+        ):
+            _generate_degraded_explanation(state)
+
+        self.assertEqual(state["draft_claims"], [claim])
+        self.assertIn("下降 8%", state["answer_text"])
+        self.assertIn("payment_attempt", state["final_explanation"]["explanation"])
+
+    def test_available_evidence_brief_projects_only_verified_authority_and_scoped_gaps(self):
+        brief = build_available_evidence_brief(
+            verified_claims=(
+                {
+                    "claim_ref": "claim:market:1",
+                    "text": "大盘付费金额下降 8%。",
+                    "evidence_refs": ["evidence:market:1"],
+                    "result_refs": ["result:market:1"],
+                    "artifact_refs": ["artifact:market:1"],
+                    "memory_refs": ["memory:market:1"],
+                    "context_manifest_ref": "context:market:1",
+                    "reuse_decisions": [{"source_ref": "source:market:1", "result_ref": "result:market:1", "decision": "reuse"}],
+                    "provenance_record_ref": "trusted:market:1",
+                },
+                {
+                    "claim_ref": "claim:untrusted:1",
+                    "text": "untrusted",
+                    "evidence_refs": [],
+                },
+            ),
+            capability_bindings=(
+                {"capability_id": "market_compare", "status": "ready"},
+                {"capability_id": "paid_driver", "status": "degraded"},
+                {"capability_id": "event_evidence", "status": "blocked"},
+            ),
+            contract_gaps=(
+                {
+                    "gap_id": "gap:paid:1",
+                    "dataset_id": "payment_attempt",
+                    "affected_capabilities": ["paid_driver"],
+                    "repair_options": ["绑定 payment_attempt 来源"],
+                },
+            ),
+            obligation_resolution={"unresolved": ["event_evidence_required"]},
+        )
+
+        self.assertEqual(
+            [claim["claim_ref"] for claim in brief["verified_claims"]],
+            ["claim:market:1"],
+        )
+        self.assertEqual(
+            brief["verified_capabilities"],
+            ["market_compare", "paid_driver"],
+        )
+        self.assertEqual(brief["omitted_factors"], ["payment_attempt"])
+        self.assertEqual(
+            brief["unresolved_obligations"], ["event_evidence_required"]
+        )
+
     def test_persisted_query_gap_keeps_waiting_terminal_status(self):
         compiled = compile_graph(
             question_family="custom_baseline_comparison",

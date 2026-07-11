@@ -1007,6 +1007,10 @@ def evaluate_dimension_scan_reuse(
             expected_contract.get(key)
         ):
             return context_only(f"reuse_signature_mismatch:{key}")
+    if str(contract.get("completeness_status") or "") != str(
+        expected_contract.get("completeness_status") or ""
+    ):
+        return context_only("reuse_signature_mismatch:completeness_status")
     if str(contract.get("contract_signature") or "") != str(
         expected_contract.get("contract_signature") or ""
     ):

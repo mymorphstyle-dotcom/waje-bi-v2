@@ -339,6 +339,13 @@ class AgentCoreBridgeTest(unittest.TestCase):
             ["action_kind"],
             "omit_unavailable_context",
         )
+        accepted = captured[1]["accepted_degradation_choice"]
+        self.assertEqual(accepted["choice_id"], "use_complete_day")
+        self.assertEqual(accepted["source_run_id"], "run-query-gap-original")
+        self.assertEqual(
+            captured[1]["clarification_resume_context"]["accepted_degradation_choice"],
+            accepted,
+        )
 
     def test_recommended_wait_action_stays_waiting_without_running_workflow_again(self):
         calls = []

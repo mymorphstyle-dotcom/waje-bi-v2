@@ -177,6 +177,11 @@ class ConversationAgentCore:
         )
         if clarification_choice:
             request["clarification_choice"] = clarification_choice
+        accepted_degradation_choice = dict(
+            resume_context.get("accepted_degradation_choice") or {}
+        )
+        if accepted_degradation_choice:
+            request["accepted_degradation_choice"] = accepted_degradation_choice
         if self.row_provider is not None:
             request["row_provider"] = self.row_provider
         if self.evidence_resolver is not None:

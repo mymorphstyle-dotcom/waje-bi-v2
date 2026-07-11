@@ -117,6 +117,8 @@ def build_answer_package(
     context_manifest: Optional[Mapping[str, Any]] = None,
     trusted_claim_provenance_records: Sequence[Mapping[str, Any]] = (),
     trusted_claim_provenance_record: Optional[Mapping[str, Any]] = None,
+    available_evidence_brief: Optional[Mapping[str, Any]] = None,
+    accepted_degradation_choice: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
     semantic_audit = {} if semantic_audit is None else semantic_audit
@@ -127,6 +129,12 @@ def build_answer_package(
     clarification_outcome = (
         {} if clarification_outcome is None else clarification_outcome
     )
+    accepted_degradation_choice = dict(accepted_degradation_choice or {})
+    if accepted_degradation_choice:
+        clarification_outcome = {
+            **dict(clarification_outcome),
+            "accepted_degradation_choice": accepted_degradation_choice,
+        }
     causal_audit = {} if causal_audit is None else causal_audit
     causal_evidence_dossier = (
         {} if causal_evidence_dossier is None else causal_evidence_dossier
@@ -326,7 +334,11 @@ def build_answer_package(
         "context_manifest": verified_manifest,
         "verified_claims": canonical_value(published_claims),
         "trusted_claim_provenance_records": canonical_value(trusted_records),
+        "accepted_degradation_choice": canonical_value(accepted_degradation_choice),
     }
+
+    evidence_brief = dict(available_evidence_brief or {})
+    evidence_brief["verified_claims"] = canonical_value(published_claims)
 
     package = {
         "run_id": run_id,
@@ -335,7 +347,11 @@ def build_answer_package(
         "snapshot_id": snapshot_id,
         "permission_scope": permission_scope,
         "context_manifest_ref": str(verified_manifest.get("manifest_id") or ""),
-        "reuse_decisions": [],
+        "reuse_decisions": canonical_value(
+            trusted_records[0].get("reuse_decisions") if trusted_records else ()
+        ),
+        "available_evidence_brief": evidence_brief,
+        "accepted_degradation_choice": accepted_degradation_choice,
         "final_answer": final_business_summary or answer_text,
         "follow_up_questions": list(follow_up_questions),
         "quality_gate": quality_gate,

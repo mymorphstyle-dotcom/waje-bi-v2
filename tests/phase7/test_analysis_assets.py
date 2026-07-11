@@ -32,6 +32,7 @@ def _authority_kwargs(evidence_resolver=None):
         return {}
     return {
         "rows_loader": evidence_resolver.rows_loader,
+        "release_resolver": evidence_resolver.release_resolver,
         "runtime_registry": RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
         ),
@@ -104,6 +105,69 @@ def verified_reuse_fixture(
 
 
 class AnalysisAssetsTest(unittest.TestCase):
+    def test_reuse_rejects_each_authority_signature_dimension_mismatch(self):
+        windows = {
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            }
+        }
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=({"window_id": "target_day", "amount": 10, "channel": "A"},),
+            contract_versions={"metric": "v1"},
+            schema_fingerprint="schema:v1",
+        )
+        mismatches = {
+            "contract_signature": (
+                {"contract_versions": {"metric": "v2"}},
+                "reuse_signature_mismatch:contract_versions",
+            ),
+            "source_release": (
+                {"snapshot_version": "release:v2"},
+                "reuse_signature_mismatch:snapshot_version",
+            ),
+            "window": ({
+                "resolved_windows": {
+                    "target_day": {
+                        "start_inclusive": "2026-06-01",
+                        "end_exclusive": "2026-06-03",
+                        "timezone": "Africa/Lagos",
+                    }
+                }
+            }, "reuse_signature_mismatch:resolved_windows"),
+            "permission": (
+                {"permission_scope": "viewer"},
+                "reuse_signature_mismatch:permission_scope",
+            ),
+            "schema": (
+                {"schema_fingerprint": "schema:v2"},
+                "reuse_signature_mismatch:schema_fingerprint",
+            ),
+            "completeness": (
+                {"completeness_status": "partial"},
+                "reuse_signature_mismatch:completeness_status",
+            ),
+        }
+
+        for dimension, (mutation, expected_reason) in mismatches.items():
+            with self.subTest(dimension=dimension):
+                expected = {**contract, **mutation}
+                expected["contract_signature"] = _reuse_contract_signature(expected)
+                evaluated = evaluate_dimension_scan_reuse(
+                    asset,
+                    expected_contract=expected,
+                    now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+                    evidence_resolver=resolver,
+                )
+                self.assertEqual(
+                    evaluated["reuse_decision"]["decision"], "context_only"
+                )
+                self.assertEqual(
+                    evaluated["reuse_decision"]["reason"], expected_reason
+                )
+
     def test_report_alias_overwrite_does_not_change_bound_asset_truth(self):
         contract, asset, resolver = verified_reuse_fixture(
             resolved_windows={
