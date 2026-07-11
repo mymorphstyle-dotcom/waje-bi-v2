@@ -1,0 +1,146 @@
+schema_version: "phase7-platform-current-data-v1"
+expectation_policy: structured_contracts_only
+conversation_cases:
+  - id: platform_paid_amount_change
+    group: platform_current_data
+    turns:
+      - user: "昨天付费金额为什么变了？先按昨天和前一天比，再看主要指标。"
+        scenario:
+          question_family: paid_amount_change_explanation
+          target_metrics: [paid_amount]
+          baselines: [previous_day]
+          required_capabilities: []
+          expected_dataset_states:
+            paid_order_success: executable
+            market_dashboard: executable
+          observed_dataset_states: {}
+          allowed_claim_ceiling: directional
+          terminal_boundary: verified_answer
+
+  - id: platform_pattern_channel
+    group: platform_current_data
+    turns:
+      - user: "最近的收入波动有没有固定节奏，哪个渠道更明显？"
+        scenario:
+          question_family: pattern_explanation
+          target_metrics: [paid_amount]
+          baselines: [rolling_7_day_baseline]
+          requested_dimensions: [channel]
+          required_capabilities: []
+          expected_dataset_states:
+            market_dashboard_channel: executable
+          observed_dataset_states: {}
+          allowed_claim_ceiling: directional
+          terminal_boundary: verified_answer
+
+  - id: platform_business_object_partial
+    group: platform_current_data
+    turns:
+      - user: "昨天玩法活跃和付费变化能对上吗？现有数据能支持到哪就说到哪。"
+        scenario:
+          question_family: business_object_impact_review
+          target_metrics: [paid_amount]
+          context_sources: [gameplay]
+          required_capabilities: [gameplay_activity_context]
+          expected_dataset_states:
+            gameplay: executable
+            gameplay_channel: contract_partial
+          observed_dataset_states: {}
+          excluded_inputs:
+            gameplay_channel: missing_contract
+          allowed_claim_ceiling: candidate_mechanism
+          terminal_boundary: contract_allowed_partial
+
+  - id: platform_revenue_health
+    group: platform_current_data
+    turns:
+      - user: "现在收入结构健康吗？把经营盘和订单口径能核对的部分一起看。"
+        scenario:
+          question_family: revenue_health_review
+          target_metrics: [paid_amount]
+          claim_intents: [contract_coverage_and_trust_boundary]
+          required_capabilities: []
+          expected_dataset_states:
+            paid_order_success: executable
+            market_dashboard: executable
+          observed_dataset_states: {}
+          allowed_claim_ceiling: directional
+          terminal_boundary: verified_answer
+
+  - id: platform_segment_permission
+    group: platform_current_data
+    turns:
+      - user: "按渠道拆昨天的收入贡献；如果我没有对应权限，请明确告诉我缺口。"
+        scenario:
+          question_family: segment_or_factor_attribution
+          target_metrics: [paid_amount]
+          requested_dimensions: [channel]
+          required_capabilities: []
+          expected_dataset_states:
+            market_dashboard_channel: permission_blocked
+          observed_dataset_states: {}
+          excluded_inputs:
+            market_dashboard_channel: permission_blocked
+          allowed_claim_ceiling: insufficient
+          terminal_boundary: permission_blocked
+
+  - id: platform_anomaly_event
+    group: platform_current_data
+    turns:
+      - user: "昨天有没有异常波动，和已记录的外部事件在时间上重合吗？"
+        scenario:
+          question_family: anomaly_or_black_swan_review
+          target_metrics: [paid_amount]
+          claim_intents: [external_shock_candidate_or_anomaly]
+          context_sources: [external_event]
+          required_capabilities: []
+          expected_dataset_states:
+            paid_order_success: executable
+            external_event: executable
+          observed_dataset_states: {}
+          allowed_claim_ceiling: candidate_mechanism
+          terminal_boundary: verified_answer
+
+  - id: platform_baseline_reuse
+    group: platform_current_data
+    turns:
+      - user: "先比较昨天和近 7 日均值的付费金额。"
+        scenario:
+          question_family: custom_baseline_comparison
+          target_metrics: [paid_amount]
+          baselines: [rolling_7_day_baseline]
+          required_capabilities: []
+          expected_dataset_states:
+            paid_order_success: executable
+          observed_dataset_states: {}
+          allowed_claim_ceiling: directional
+          terminal_boundary: verified_answer
+      - user: "沿用刚才的口径，再和上周同日比一下。"
+        scenario:
+          question_family: custom_baseline_comparison
+          target_metrics: [paid_amount]
+          baselines: [same_weekday_last_week]
+          required_capabilities: []
+          expected_dataset_states:
+            paid_order_success: executable
+          observed_dataset_states: {}
+          allowed_claim_ceiling: directional
+          terminal_boundary: verified_answer
+          reuse: required
+
+  - id: platform_quality_clarification_resume
+    group: platform_current_data
+    turns:
+      - user: "帮我确认这批收入证据够不够，我说的这批先按你推荐的时间口径。"
+        clarification_response: "接受推荐时间口径继续。"
+        scenario:
+          question_family: data_quality_or_evidence_review
+          target_metrics: [paid_amount]
+          claim_intents: [contract_coverage_and_trust_boundary]
+          required_capabilities: []
+          expected_dataset_states:
+            paid_order_success: executable
+          observed_dataset_states: {}
+          allowed_claim_ceiling: verified_observation
+          terminal_boundary: verified_answer
+          clarification_resume: required

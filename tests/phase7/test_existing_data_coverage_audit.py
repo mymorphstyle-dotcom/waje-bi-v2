@@ -13,6 +13,123 @@ from bi_agent.runtime.runtime_contract_registry import (
 )
 
 
+def test_platform_suite_covers_public_families_current_roles_and_boundaries():
+    from tools.phase7.run_live_conversation_system_test import load_cases
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    cases = load_cases("evals/phase7/existing_data_coverage_scenarios.yaml")
+    scenarios = [turn for case in cases for turn in case["turns"]]
+
+    assert {turn["scenario"]["question_family"] for turn in scenarios} == set(
+        registry.question_family_ids
+    )
+    assert {
+        "paid_order_success",
+        "market_dashboard",
+        "market_dashboard_channel",
+        "gameplay",
+        "gameplay_channel",
+        "external_event",
+    } <= {
+        dataset
+        for turn in scenarios
+        for dataset in turn["scenario"]["expected_dataset_states"]
+    }
+    boundary_types = {
+        turn["scenario"].get("terminal_boundary") for turn in scenarios
+    }
+    assert {"permission_blocked", "contract_allowed_partial"} <= boundary_types
+    assert any(turn["scenario"].get("reuse") == "required" for turn in scenarios)
+    assert any(
+        turn["scenario"].get("clarification_resume") == "required"
+        for turn in scenarios
+    )
+    assert not any(
+        "final_answer_contains" in turn.get("expect", {})
+        for turn in scenarios
+    )
+
+
+def test_suite_selector_keeps_fixed_eight_and_platform_tracks_distinct():
+    from tools.phase7.run_live_conversation_system_test import load_suite_cases
+
+    fixed = load_suite_cases("fixed-eight")
+    platform = load_suite_cases("platform-current-data")
+
+    assert [case["id"] for case in fixed] == [
+        "paid_amount_revenue_diagnostics_8_question_set"
+    ]
+    assert len(fixed[0]["turns"]) == 8
+    assert {case["group"] for case in platform} == {"platform_current_data"}
+
+
+def test_obligation_review_resolves_contract_and_reports_typed_gaps():
+    from tools.phase7.run_live_conversation_system_test import (
+        review_case_obligations,
+    )
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    turn = {
+        "accepted_graph": [
+            "data_quality_profile",
+            "driver_decomposition",
+            "compare_periods",
+            "answer_verify",
+        ],
+        "scenario": {
+            "question_family": "paid_amount_change_explanation",
+            "target_metrics": ["paid_amount"],
+            "baselines": ["previous_day"],
+            "required_capabilities": [],
+            "expected_dataset_states": {
+                "paid_order_success": "executable",
+                "payment_attempt": "source_unbound",
+            },
+            "excluded_inputs": {
+                "payment_attempt": "missing_contract",
+            },
+            "observed_dataset_states": {
+                "paid_order_success": "executable",
+                "payment_attempt": "source_unbound",
+            },
+        },
+    }
+
+    review = review_case_obligations(turn, registry)
+
+    assert review["missing_required_capabilities"] == []
+    assert review["expected_typed_gaps"] == {
+        "payment_attempt": "missing_contract"
+    }
+    assert review["missing_current_data_obligations"] == []
+    assert "final_answer_contains" not in review
+
+
+def test_obligation_review_fails_missing_current_data_obligation():
+    from tools.phase7.run_live_conversation_system_test import (
+        review_case_obligations,
+    )
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    review = review_case_obligations(
+        {
+            "accepted_graph": ["data_quality_profile", "answer_verify"],
+            "scenario": {
+                "question_family": "data_quality_or_evidence_review",
+                "target_metrics": ["paid_amount"],
+                "expected_dataset_states": {"paid_order_success": "executable"},
+                "observed_dataset_states": {},
+            },
+        },
+        registry,
+    )
+
+    assert review["missing_current_data_obligations"] == [
+        "paid_order_success:executable"
+    ]
+    assert review["hard_acceptance_passed"] is False
+
+
 class Releases:
     def __init__(self, records):
         self.records = {record.release_ref: record for record in records}

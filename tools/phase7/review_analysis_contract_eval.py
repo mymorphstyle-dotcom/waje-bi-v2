@@ -100,8 +100,17 @@ def _review_payload(
             for marker in item["answer_quality"]["risk_markers"]
         }
     )
+    supplied_coverage = payload.get("coverage_summary") or {}
+    obligation = supplied_coverage.get("obligation_coverage") or {
+        "required": 0,
+        "executed": 0,
+        "degraded": 0,
+        "missing": 0,
+    }
     return {
         "case_id": str(payload.get("case_id") or ""),
+        "obligation_coverage": obligation,
+        "dataset_coverage": supplied_coverage.get("dataset_coverage") or {},
         "runtime_correctness": runtime,
         "answer_quality": quality,
         "quality_scores_block_display": False,
@@ -114,6 +123,14 @@ def _review_payload(
                 item["final_answer_audit_status"] != "available"
                 for item in turn_reviews
             ),
+        },
+        "clarification_resume": supplied_coverage.get("clarification_resume") or {
+            "required": 0,
+            "resumed": 0,
+        },
+        "reuse_coverage": supplied_coverage.get("reuse_coverage") or {
+            "required": 0,
+            "same_topic": 0,
         },
         "turns": turn_reviews,
     }

@@ -2430,7 +2430,12 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertTrue(
             all(turn["expect"]["topic_relation"] == "inherit" for turn in case["turns"][1:])
         )
-        self.assertTrue(all(turn["expect"].get("major_nodes") for turn in case["turns"]))
+        self.assertTrue(
+            all(turn["scenario"].get("required_capabilities") for turn in case["turns"])
+        )
+        self.assertTrue(
+            all("major_nodes" not in turn["expect"] for turn in case["turns"])
+        )
 
     def test_live_harness_rejects_claim_refs_without_traceable_source(self):
         from tools.phase7.run_live_conversation_system_test import _expectation_review
@@ -3436,7 +3441,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 else:
                     os.environ["WAJE_LLM_MODEL"] = old_model
 
-    def test_live_harness_reads_quality_gate_for_strict_mode(self):
+    def test_live_harness_reports_quality_gate_without_blocking_acceptance(self):
         from tools.phase7.run_live_conversation_system_test import (
             _strict_quality_failed,
             _quality_review,
@@ -3480,7 +3485,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
             },
         )
         self.assertFalse(_strict_quality_failed({"quality_review": review}))
-        self.assertTrue(
+        self.assertFalse(
             _strict_quality_failed({"quality_review": {**review, "blocks_display": True}})
         )
 

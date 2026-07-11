@@ -1,4 +1,16 @@
-# Phase 7 fixed-window live conversation evaluation
+# Phase 7 dual-track live conversation evaluation
+
+The evaluator has two explicit suites. `fixed-eight` preserves the reviewed
+eight business questions and their fixed clock. `platform-current-data` uses a
+question-family matrix that covers every public family, every current dataset
+role, permission denial, contract-allowed partial evidence, result reuse, and
+clarification resume on the original topic.
+
+Both suites use real user wording with structured expectations. Required
+capabilities are resolved from the canonical obligation registry and augmented
+only by typed scenario requirements. Excluded inputs are expected typed gaps;
+an absent current-data obligation is a hard failure. Expected model prose and
+sentence-fragment assertions are outside the contract.
 
 The production revenue-diagnostics evaluation runs the eight reviewed business
 questions with a fixed analysis clock. Every initial turn and clarification
@@ -57,15 +69,30 @@ Run the fixed case twice with real services:
 
 ```bash
 python3 tools/phase7/run_live_conversation_system_test.py \
+  --suite fixed-eight \
   --case paid_amount_revenue_diagnostics_8_question_set \
   --real-llm --real-clickhouse --strict-quality \
   --artifact-dir artifacts/phase7/live-conversation-fixed-analysis-contracts-run-1
 
 python3 tools/phase7/run_live_conversation_system_test.py \
+  --suite fixed-eight \
   --case paid_amount_revenue_diagnostics_8_question_set \
   --real-llm --real-clickhouse --strict-quality \
   --artifact-dir artifacts/phase7/live-conversation-fixed-analysis-contracts-run-2
 ```
+
+Run the platform matrix with:
+
+```bash
+python3 tools/phase7/run_live_conversation_system_test.py \
+  --suite platform-current-data --real-llm --real-clickhouse --strict-quality \
+  --artifact-dir artifacts/phase7/platform-current-data
+```
+
+Each case writes separate `.raw.json`, `.runtime-review.json`,
+`.quality-review.json`, and `.coverage-summary.json` views alongside the
+combined compatibility artifact. Obligation and runtime findings determine
+hard acceptance. Quality scores remain advisory.
 
 Review either artifact and optionally compare it with a baseline:
 

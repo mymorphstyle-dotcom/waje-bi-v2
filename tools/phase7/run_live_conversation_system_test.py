@@ -17,11 +17,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bi_agent.conversation.agent_core import ConversationAgentCore
+from bi_agent.runtime.analysis_obligations import (
+    ObligationRequest,
+    resolve_analysis_obligations,
+)
 from bi_agent.runtime.claim_provenance import (
     validate_trusted_claim_provenance_record,
     validate_verified_claim_record,
 )
 from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_value
+from bi_agent.runtime.runtime_contract_registry import (
+    CANONICAL_RUNTIME_BINDINGS_PATH,
+    RuntimeContractRegistry,
+)
 
 
 def load_cases(path: str) -> list[dict[str, Any]]:
@@ -36,6 +44,17 @@ def select_cases(cases: list[dict[str, Any]], case_id: str | None) -> list[dict[
     if not case_id:
         return cases
     return [case for case in cases if case["id"] == case_id]
+
+
+def load_suite_cases(suite: str) -> list[dict[str, Any]]:
+    if suite == "fixed-eight":
+        return select_cases(
+            load_cases("evals/phase7/conversation_scenarios.yaml"),
+            "paid_amount_revenue_diagnostics_8_question_set",
+        )
+    if suite == "platform-current-data":
+        return load_cases("evals/phase7/existing_data_coverage_scenarios.yaml")
+    raise ValueError(f"unknown_eval_suite:{suite}")
 
 
 def load_env_file(path: str = ".env") -> list[str]:
@@ -163,6 +182,93 @@ def _automatic_clarification_response(result: Mapping[str, Any]) -> str:
 def _review_expectations(turn: dict[str, Any], turn_record: dict[str, Any]) -> dict[str, Any]:
     effective = _effective_result(turn_record)
     return _expectation_review(turn, turn_record, effective, effective.get("accepted_graph") or [])
+
+
+def review_case_obligations(
+    turn_record: Mapping[str, Any],
+    registry: RuntimeContractRegistry,
+) -> dict[str, Any]:
+    """Review executable obligations without constraining answer wording."""
+    scenario = turn_record.get("scenario") or {}
+    if not isinstance(scenario, Mapping):
+        raise ValueError("scenario_expectation_invalid")
+    family = str(scenario.get("question_family") or "")
+    request = ObligationRequest(
+        question_families=(family,) if family else (),
+        diagnostic_tags=tuple(scenario.get("diagnostic_tags") or ()),
+        target_metrics=tuple(scenario.get("target_metrics") or ()),
+        requested_dimensions=tuple(scenario.get("requested_dimensions") or ()),
+        baselines=tuple(scenario.get("baselines") or ()),
+        context_sources=tuple(scenario.get("context_sources") or ()),
+        claim_intents=tuple(scenario.get("claim_intents") or ()),
+    )
+    resolution = resolve_analysis_obligations(request, registry)
+    required = tuple(
+        dict.fromkeys(
+            (*resolution.required_capabilities,
+             *resolution.conditional_capabilities,
+             *(str(item) for item in scenario.get("required_capabilities") or ()))
+        )
+    )
+    actual = {
+        str(item)
+        for item in turn_record.get("accepted_graph") or ()
+        if str(item)
+    }
+    missing_capabilities = [item for item in required if item not in actual]
+    expected_states = scenario.get("expected_dataset_states") or {}
+    observed_states = scenario.get("observed_dataset_states") or {}
+    if not isinstance(expected_states, Mapping) or not isinstance(observed_states, Mapping):
+        raise ValueError("dataset_state_expectation_invalid")
+    excluded = scenario.get("excluded_inputs") or {}
+    if not isinstance(excluded, Mapping):
+        raise ValueError("excluded_input_expectation_invalid")
+    missing_data = [
+        f"{dataset_id}:{state}"
+        for dataset_id, state in expected_states.items()
+        if dataset_id not in excluded and observed_states.get(dataset_id) != state
+    ]
+    mismatched_gaps = [
+        f"{dataset_id}:{gap_type}"
+        for dataset_id, gap_type in excluded.items()
+        if dataset_id not in expected_states
+    ]
+    clarification_required = scenario.get("clarification_resume") == "required"
+    clarification_passed = (
+        not clarification_required
+        or bool(turn_record.get("resumed_status"))
+        and turn_record.get("resumed_topic_id") == turn_record.get("topic_id")
+    )
+    reuse_required = scenario.get("reuse") == "required"
+    reuse_passed = (
+        not reuse_required
+        or bool(turn_record.get("prior_topic_id"))
+        and turn_record.get("topic_id") == turn_record.get("prior_topic_id")
+    )
+    hard_passed = (
+        not missing_capabilities
+        and not missing_data
+        and not mismatched_gaps
+        and clarification_passed
+        and reuse_passed
+    )
+    return {
+        "question_family": family,
+        "required_capabilities": list(required),
+        "conditional_capabilities": list(resolution.conditional_capabilities),
+        "minimum_publishable_evidence": list(resolution.minimum_publishable_evidence),
+        "allowed_claim_ceiling": scenario.get("allowed_claim_ceiling"),
+        "terminal_boundary": scenario.get("terminal_boundary"),
+        "missing_required_capabilities": missing_capabilities,
+        "expected_dataset_states": dict(expected_states),
+        "observed_dataset_states": dict(observed_states),
+        "expected_typed_gaps": dict(excluded),
+        "missing_current_data_obligations": missing_data,
+        "invalid_typed_gaps": mismatched_gaps,
+        "clarification_resume_passed": clarification_passed,
+        "reuse_passed": reuse_passed,
+        "hard_acceptance_passed": hard_passed,
+    }
 
 
 def _expectation_review(
@@ -330,7 +436,9 @@ def _strict_quality_failed(turn_record: dict[str, Any]) -> bool:
         return True
     if expectation.get("claim_support_policy_passed") is False:
         return True
-    return bool(review.get("blocks_display"))
+    # Answer-quality findings stay visible in their own review artifact. They
+    # do not decide suite acceptance; runtime and obligation contracts do.
+    return False
 
 
 def _real_clickhouse_review(
@@ -1011,6 +1119,10 @@ def _case_output(
 ) -> dict[str, Any]:
     final_result = _effective_result(turns[-1]) if turns else {}
     expectation_failed = any(not turn["expectation_review"]["passed"] for turn in turns)
+    obligation_failed = any(
+        (turn.get("obligation_review") or {}).get("hard_acceptance_passed") is False
+        for turn in turns
+    )
     strict_quality_failed = any(turn.get("strict_quality_failed") for turn in turns)
     real_clickhouse_review = _aggregate_real_clickhouse_review(
         turns,
@@ -1041,7 +1153,7 @@ def _case_output(
         "status": status
         or (
             "failed"
-            if expectation_failed or strict_quality_failed or real_clickhouse_failed
+            if expectation_failed or obligation_failed or strict_quality_failed or real_clickhouse_failed
             else "passed"
         ),
         "strict_quality": strict_quality,
@@ -1059,7 +1171,75 @@ def _case_output(
         "accepted_graph": final_result.get("accepted_graph") or [],
         "llm_calls": final_result.get("llm_calls", []),
         "quality_review": final_result.get("quality_review"),
+        "coverage_summary": _coverage_summary(turns),
         "turns": turns,
+    }
+
+
+def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
+    obligations = [
+        turn.get("obligation_review") or {}
+        for turn in turns
+        if turn.get("obligation_review")
+    ]
+    required = sum(len(item.get("required_capabilities") or ()) for item in obligations)
+    missing = sum(len(item.get("missing_required_capabilities") or ()) for item in obligations)
+    datasets: dict[str, dict[str, int]] = {}
+    for item in obligations:
+        for dataset_id, state in (item.get("expected_dataset_states") or {}).items():
+            states = datasets.setdefault(str(dataset_id), {})
+            states[str(state)] = states.get(str(state), 0) + 1
+    return {
+        "obligation_coverage": {
+            "required": required,
+            "executed": required - missing,
+            "degraded": sum(len(item.get("expected_typed_gaps") or {}) for item in obligations),
+            "missing": missing + sum(
+                len(item.get("missing_current_data_obligations") or ()) for item in obligations
+            ),
+        },
+        "dataset_coverage": datasets,
+        "runtime_correctness": {
+            key: bool(turns) and all(
+                ((turn.get("real_clickhouse_review") or {}).get("runtime_correctness") or {}).get(key)
+                is True
+                for turn in turns
+            )
+            for key in (
+                "all_required_queries_complete",
+                "all_capabilities_bound",
+                "all_claims_traceable",
+            )
+        },
+        "answer_quality": {
+            "blocking": False,
+            "warning_count": sum(
+                len((turn.get("quality_review") or {}).get("quality_warnings") or ())
+                for turn in turns
+            ),
+        },
+        "final_answer_audit_coverage": {
+            "reviewed": sum(bool(turn.get("quality_review")) for turn in turns),
+            "total": len(turns),
+        },
+        "clarification_resume": {
+            "required": sum(
+                (turn.get("scenario") or {}).get("clarification_resume") == "required"
+                for turn in turns
+            ),
+            "resumed": sum(bool(turn.get("resumed_status")) for turn in turns),
+        },
+        "reuse_coverage": {
+            "required": sum(
+                (turn.get("scenario") or {}).get("reuse") == "required"
+                for turn in turns
+            ),
+            "same_topic": sum(
+                bool(turn.get("resumed_topic_id"))
+                and turn.get("resumed_topic_id") == turn.get("topic_id")
+                for turn in turns
+            ),
+        },
     }
 
 
@@ -1073,6 +1253,24 @@ def _write_case_artifact(
         json.dumps(output, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    views = {
+        "raw": output,
+        "runtime-review": {
+            "case_id": case_id,
+            "runtime_correctness": output.get("coverage_summary", {}).get("runtime_correctness", {}),
+            "turns": [turn.get("real_clickhouse_review") for turn in output.get("turns", [])],
+        },
+        "quality-review": {
+            "case_id": case_id,
+            "answer_quality": output.get("coverage_summary", {}).get("answer_quality", {}),
+            "turns": [turn.get("quality_review") for turn in output.get("turns", [])],
+        },
+        "coverage-summary": output.get("coverage_summary", {}),
+    }
+    for suffix, payload in views.items():
+        (artifact_dir / f"{case_id}.{suffix}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
 
 def run_case(
@@ -1088,6 +1286,7 @@ def run_case(
     analysis_context = dict(case.get("analysis_context") or {})
     required_datasets = tuple(case.get("required_datasets") or ())
     turns: list[dict[str, Any]] = []
+    prior_topic_id: str | None = None
     for index, turn in enumerate(case["turns"], start=1):
         result = core.run_message(
             thread_id=thread_id,
@@ -1111,6 +1310,8 @@ def run_case(
             "quality_review": _quality_review(answer_package),
             "clarification": result.get("clarification"),
             "artifact_path": result.get("artifact_path"),
+            "scenario": dict(turn.get("scenario") or {}),
+            "prior_topic_id": prior_topic_id,
         }
         current = result
         clarification_resumes: list[dict[str, Any]] = []
@@ -1161,10 +1362,23 @@ def run_case(
             required_datasets=required_datasets,
             analysis_context=analysis_context,
         )
+        if turn_record["scenario"]:
+            scenario = turn_record["scenario"]
+            observed = dict(scenario.get("observed_dataset_states") or {})
+            if not real_clickhouse:
+                observed.update(scenario.get("expected_dataset_states") or {})
+            for dataset_id in turn_record["real_clickhouse_review"].get("observed_datasets") or ():
+                observed.setdefault(dataset_id, "executable")
+            scenario["observed_dataset_states"] = observed
+            turn_record["obligation_review"] = review_case_obligations(
+                turn_record,
+                RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+            )
         turn_record["strict_quality_failed"] = bool(
             strict_quality and _strict_quality_failed(turn_record)
         )
         turns.append(turn_record)
+        prior_topic_id = _effective_result(turn_record).get("topic_id")
         _write_case_artifact(
             artifact_dir,
             case["id"],
@@ -1192,7 +1406,12 @@ def run_case(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cases", default="evals/phase7/conversation_scenarios.yaml")
+    parser.add_argument(
+        "--suite",
+        choices=("fixed-eight", "platform-current-data"),
+        default="fixed-eight",
+    )
+    parser.add_argument("--cases")
     parser.add_argument("--case")
     parser.add_argument("--artifact-dir")
     parser.add_argument("--real-llm", action="store_true")
@@ -1206,7 +1425,8 @@ def main() -> None:
         real_llm=args.real_llm,
         real_clickhouse=args.real_clickhouse,
     )
-    selected = select_cases(load_cases(args.cases), args.case)
+    cases = load_cases(args.cases) if args.cases else load_suite_cases(args.suite)
+    selected = select_cases(cases, args.case)
     try:
         core = ConversationAgentCore.from_environment(
             real_llm=args.real_llm,
