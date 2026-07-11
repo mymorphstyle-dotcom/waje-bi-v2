@@ -1,5 +1,7 @@
 from dataclasses import replace
 from datetime import datetime
+import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,6 +82,7 @@ def test_coverage_audit_reports_current_and_excluded_cells():
         "permission_blocked", "snapshot_unavailable_as_of",
     ]
     assert audit["cells"]["market_health_compare:market_dashboard"]["state"] == "executable"
+    assert audit["cells"]["source_reconciliation:market_dashboard"]["state"] == "contract_partial"
     assert audit["cells"]["event_evidence:external_event"]["state"] == "executable"
     assert audit["cells"]["driver_decomposition:payment_attempt"]["state"] == "source_unbound"
     excluded = audit["cells"]["event_evidence:internal_operation_event"]
@@ -109,6 +112,9 @@ def test_coverage_audit_distinguishes_permission_future_and_partial_contract():
     )
     assert audit["cells"]["market_health_compare:market_dashboard"]["state"] == "permission_blocked"
     assert audit["cells"]["event_evidence:external_event"]["state"] == "snapshot_unavailable_as_of"
+    future = audit["cells"]["event_evidence:external_event"]
+    assert "advance the audit as_of" in future["next_action"]
+    assert "publish" not in future["next_action"]
 
 
 def test_coverage_audit_fails_closed_on_release_integrity():
@@ -121,3 +127,111 @@ def test_coverage_audit_fails_closed_on_release_integrity():
     )
     with pytest.raises(ValueError, match="coverage_release_integrity"):
         audit_existing_data_coverage(registry, snapshots, releases, datetime.fromisoformat("2026-06-03T12:00:00+01:00"), "analyst")
+
+
+class EmptyStore:
+    def runtime_evidence_resolver(self):
+        return object()
+
+    def list_dataset_snapshots(self):
+        return ()
+
+
+def test_cli_writes_structurally_valid_source_unbound_artifact(tmp_path):
+    from tools.phase7.audit_existing_data_coverage import run_audit
+
+    output = tmp_path / "coverage.json"
+    result = run_audit(SimpleNamespace(
+        as_of="2026-06-03T12:00:00+01:00",
+        permission_scope="analyst",
+        out=str(output),
+    ), store=EmptyStore())
+    artifact = json.loads(output.read_text())
+    assert result == {"ok": True, "artifact": str(output), "summary": artifact["summary"]}
+    assert artifact["cells"]["driver_decomposition:payment_attempt"]["state"] == "source_unbound"
+
+
+def test_cli_maps_credential_bearing_resolver_failure_without_disclosure(tmp_path, capsys):
+    from tools.phase7.audit_existing_data_coverage import main
+
+    secret = "postgresql://alice:password@secret-db.internal/waje"
+
+    class BrokenStore:
+        def runtime_evidence_resolver(self):
+            return object()
+
+        def list_dataset_snapshots(self):
+            raise RuntimeError(f"connection failed {secret} SELECT * FROM private")
+
+    code = main(
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(tmp_path / "coverage.json")],
+        store_factory=lambda: BrokenStore(),
+    )
+    captured = capsys.readouterr()
+    assert code == 1
+    payload = json.loads(captured.err)
+    assert payload == {
+        "error_code": "coverage_database_unavailable",
+        "impact": "current coverage authority could not be read",
+        "ok": False,
+        "owner": "runtime_operations_owner",
+    }
+    assert secret not in captured.err
+    assert "secret-db" not in captured.err
+    assert "SELECT" not in captured.err
+
+
+def test_cli_maps_hard_release_integrity_failure_nonzero(tmp_path, capsys):
+    from tools.phase7.audit_existing_data_coverage import main
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    snapshots, _ = authority_inputs(registry)
+
+    class BrokenAuthorityStore(EmptyStore):
+        def list_dataset_snapshots(self):
+            return snapshots
+
+        def resolve_dataset_release(self, release_ref):
+            raise RuntimeError("postgresql://user:password@host/db")
+
+    code = main(
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(tmp_path / "coverage.json")],
+        store_factory=lambda: BrokenAuthorityStore(),
+    )
+    payload = json.loads(capsys.readouterr().err)
+    assert code == 1
+    assert payload["error_code"] == "coverage_release_authority_invalid"
+    assert "password" not in json.dumps(payload)
+
+
+def test_cli_maps_contract_integrity_failure_nonzero(tmp_path, capsys, monkeypatch):
+    from tools.phase7 import audit_existing_data_coverage as cli
+
+    def fail_contract(*args, **kwargs):
+        raise ValueError("contract query SELECT secret_password")
+
+    monkeypatch.setattr(cli.RuntimeContractRegistry, "from_path", fail_contract)
+    code = cli.main(
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(tmp_path / "coverage.json")],
+        store_factory=lambda: EmptyStore(),
+    )
+    payload = json.loads(capsys.readouterr().err)
+    assert code == 1
+    assert payload["error_code"] == "coverage_runtime_contract_invalid"
+    assert "SELECT" not in json.dumps(payload)
+    assert "password" not in json.dumps(payload)
+
+
+def test_cli_maps_artifact_path_failure_without_echoing_path(tmp_path, capsys):
+    from tools.phase7.audit_existing_data_coverage import main
+
+    secret_path = tmp_path / "secret-password-output"
+    secret_path.mkdir()
+    code = main(
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(secret_path)],
+        store_factory=lambda: EmptyStore(),
+    )
+    payload = json.loads(capsys.readouterr().err)
+    assert code == 1
+    assert payload["error_code"] == "coverage_artifact_write_failed"
+    assert str(secret_path) not in json.dumps(payload)

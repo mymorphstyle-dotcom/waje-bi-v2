@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 import sys
+from typing import Any, Callable
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,38 +20,104 @@ from bi_agent.runtime.runtime_contract_registry import (
 )
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Audit current runtime data coverage")
-    parser.add_argument("--as-of", required=True)
-    parser.add_argument("--permission-scope", required=True)
-    parser.add_argument("--out", required=True)
-    args = parser.parse_args()
+class CoverageCLIError(Exception):
+    def __init__(self, error_code: str, owner: str, impact: str) -> None:
+        super().__init__(error_code)
+        self.error_code = error_code
+        self.owner = owner
+        self.impact = impact
+
+
+def run_audit(args: argparse.Namespace, *, store: Any) -> dict[str, Any]:
     try:
         as_of = datetime.fromisoformat(args.as_of)
-        store = PostgresConversationStore.from_env()
+    except (TypeError, ValueError) as exc:
+        raise CoverageCLIError(
+            "coverage_request_invalid", "audit_operator", "the coverage audit request is invalid"
+        ) from exc
+    try:
+        registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    except Exception as exc:
+        raise CoverageCLIError(
+            "coverage_runtime_contract_invalid",
+            "analysis_contract_owner",
+            "the reviewed runtime contract could not be loaded or validated",
+        ) from exc
+    try:
         store.runtime_evidence_resolver()
+        snapshots = store.list_dataset_snapshots()
+    except Exception as exc:
+        raise CoverageCLIError(
+            "coverage_database_unavailable",
+            "runtime_operations_owner",
+            "current coverage authority could not be read",
+        ) from exc
+    try:
         audit = audit_existing_data_coverage(
-            RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
-            snapshot_records=store.list_dataset_snapshots(),
+            registry,
+            snapshot_records=snapshots,
             release_resolver=store,
             as_of=as_of,
             permission_scope=args.permission_scope,
         )
-        output = Path(args.out)
+    except Exception as exc:
+        raise CoverageCLIError(
+            "coverage_release_authority_invalid",
+            "data_operations_owner",
+            "snapshot or release authority failed integrity validation",
+        ) from exc
+    output = Path(args.out)
+    try:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(
             json.dumps(audit, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
         )
-        print(json.dumps({"artifact": str(output), "summary": audit["summary"]}, sort_keys=True))
+    except (OSError, TypeError, ValueError) as exc:
+        raise CoverageCLIError(
+            "coverage_artifact_write_failed",
+            "runtime_operations_owner",
+            "the local coverage artifact could not be written",
+        ) from exc
+    return {"ok": True, "artifact": str(output), "summary": audit["summary"]}
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    store_factory: Callable[[], Any] = PostgresConversationStore.from_env,
+) -> int:
+    parser = argparse.ArgumentParser(description="Audit current runtime data coverage")
+    parser.add_argument("--as-of", required=True)
+    parser.add_argument("--permission-scope", required=True)
+    parser.add_argument("--out", required=True)
+    args = parser.parse_args(argv)
+    store = None
+    try:
+        try:
+            store = store_factory()
+        except Exception as exc:
+            raise CoverageCLIError(
+                "coverage_database_unavailable",
+                "runtime_operations_owner",
+                "current coverage authority could not be read",
+            ) from exc
+        result = run_audit(args, store=store)
+        print(json.dumps(result, sort_keys=True))
         return 0
-    except Exception as exc:
-        print(f"coverage audit failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+    except CoverageCLIError as exc:
+        print(json.dumps({
+            "ok": False,
+            "error_code": exc.error_code,
+            "owner": exc.owner,
+            "impact": exc.impact,
+        }, sort_keys=True), file=sys.stderr)
         return 1
     finally:
-        store = locals().get("store")
-        if store is not None:
-            store.connection.close()
+        connection = getattr(store, "connection", None)
+        close = getattr(connection, "close", None)
+        if callable(close):
+            close()
 
 
 if __name__ == "__main__":

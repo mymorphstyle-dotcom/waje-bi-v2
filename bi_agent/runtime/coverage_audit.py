@@ -199,6 +199,11 @@ def _owner(state, dataset_id):
 
 
 def _impact(state, capability, dataset):
+    if state == "snapshot_unavailable_as_of":
+        return (
+            f"no authoritative {dataset} release was visible at the audit as_of; "
+            f"{capability} cannot be assessed for that transaction-time boundary"
+        )
     return "current capability path is executable" if state == "executable" else f"{capability} cannot publish at its configured claim ceiling from {dataset}"
 
 
@@ -209,6 +214,10 @@ def _next_action(state, dataset, permission_scope):
         "source_unbound": f"publish an authoritative {dataset} snapshot release",
         "contract_partial": f"complete the reviewed query contract for {dataset}",
         "permission_blocked": f"grant or select a release visible to {permission_scope}",
-        "snapshot_unavailable_as_of": f"publish or select a {dataset} release valid at the audit as_of",
+        "snapshot_unavailable_as_of": (
+            f"select an existing {dataset} release with loaded_at at or before the audit as_of; "
+            "if current coverage is intended, advance the audit as_of to the current authority visible time; "
+            "otherwise record that no historical authority exists"
+        ),
     }
     return actions[state]
