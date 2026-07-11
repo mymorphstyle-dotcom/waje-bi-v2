@@ -243,6 +243,7 @@ git commit -m "feat: define analysis capability obligations"
 **Files:**
 - Create: `tools/data/register_existing_paid_success_snapshot.py`
 - Create: `tests/phase4/test_paid_success_snapshot_registration.py`
+- Modify: `contracts/runtime/clickhouse-analysis-bindings.yaml` to declare `paid_order_success` as a required-release dataset with the canonical single-member `exact_dataset_set` authority contract.
 - Modify: `contracts/sources/paid-order-detail.source.yaml` only if the live inspection proves a reviewed field list or checksum is missing; do not change accepted business semantics.
 - Reuse: `tools/data/source_loader_common.py`
 - Reuse: `bi_agent/conversation/postgres_store.py`
@@ -252,6 +253,7 @@ git commit -m "feat: define analysis capability obligations"
 - Produces `ExistingPaidSuccessInspection`, `inspect_existing_paid_success()`, `build_paid_success_snapshot_payload()`, and `register_existing_paid_success_snapshot()`.
 - Produces `PaidSuccessRegistrationResult(release_ref, snapshot_refs, dataset_ids, authority_record_ref)`.
 - Produces one `paid_order_success` DatasetSnapshot and one immutable atomic release; it does not create payment-attempt coverage.
+- The canonical release validator accepts exactly the single `paid_order_success` member and fails closed for a missing or extra member.
 
 - [ ] **Step 1: Write failing inspection and publication tests**
 
@@ -285,6 +287,12 @@ def test_registration_publishes_one_atomic_release_without_payment_attempt(self)
     result = register_existing_paid_success_snapshot(store, valid_inspection())
     self.assertEqual(result.dataset_ids, ("paid_order_success",))
     self.assertNotIn("payment_attempt", store.dataset_snapshots)
+
+def test_paid_success_canonical_release_membership_is_single_member_and_exact(self):
+    self.assertEqual(
+        canonical_dataset_release_members("paid_order_success"),
+        ("paid_order_success",),
+    )
 ```
 
 - [ ] **Step 2: Run tests and confirm red**
@@ -296,7 +304,16 @@ def test_registration_publishes_one_atomic_release_without_payment_attempt(self)
 
 Expected: FAIL with missing registration module.
 
-- [ ] **Step 3: Implement read-only ClickHouse inspection**
+- [ ] **Step 3: Complete the canonical paid-success release authority contract**
+
+Declare `paid_order_success` with `requires_release: true` and
+`release_membership: {policy: exact_dataset_set, dataset_ids: [paid_order_success]}`
+using the existing canonical release schema. This corrects the original plan,
+which invoked the release validator without defining membership for this
+dataset. Keep `payment_attempt` outside the release; this task does not create
+or imply attempt coverage.
+
+- [ ] **Step 4: Implement read-only ClickHouse inspection**
 
 The implementation issues aggregate-only queries for schema, row count, min/max
 business date, null critical fields, amount bounds, and duplicate dedup keys.
@@ -324,7 +341,7 @@ class ExistingPaidSuccessInspection:
 `rows_content_hash` must come from deterministic aggregate fingerprints over the
 existing fact table; the tool must not read 41 million rows into Python.
 
-- [ ] **Step 4: Build and publish the immutable snapshot**
+- [ ] **Step 5: Build and publish the immutable snapshot**
 
 Build a complete payload compatible with existing release authority:
 
@@ -367,7 +384,7 @@ Use `dataset_snapshot_release_lock()`, validate the payloads before writing, and
 call `publish_dataset_snapshot_release()` once. Re-running an identical release
 is idempotent; any immutable-field drift fails.
 
-- [ ] **Step 5: Add CLI dry-run and publish modes**
+- [ ] **Step 6: Add CLI dry-run and publish modes**
 
 CLI arguments:
 
@@ -382,7 +399,7 @@ CLI arguments:
 Dry-run prints only non-secret validation metadata. Publish requires
 `WAJE_RUNTIME_DATABASE_URL` and exits nonzero on any validation failure.
 
-- [ ] **Step 6: Run tests and available real dry-run**
+- [ ] **Step 7: Run tests and available real dry-run**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -399,7 +416,7 @@ set -a; source /Users/luka/work/waje-bi-v2/.env; set +a
 
 Expected: tests pass; live dry-run either reports `ready_to_publish=true` or records exact mismatch, owner `payment_contract_owner`, and impact. Do not publish after a failed dry-run.
 
-- [ ] **Step 7: Publish after a passing dry-run, review, and commit**
+- [ ] **Step 8: Publish after a passing dry-run, review, and commit**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 tools/data/register_existing_paid_success_snapshot.py \
@@ -409,6 +426,7 @@ Expected: tests pass; live dry-run either reports `ready_to_publish=true` or rec
   --load-revision accepted-20260705 --publish
 git add tools/data/register_existing_paid_success_snapshot.py \
   tests/phase4/test_paid_success_snapshot_registration.py \
+  contracts/runtime/clickhouse-analysis-bindings.yaml \
   contracts/sources/paid-order-detail.source.yaml
 git commit -m "feat: register existing paid success authority"
 ```

@@ -313,7 +313,7 @@ class ConversationPersistenceTest(unittest.TestCase):
         store.save_dataset_snapshot(
             {
                 "snapshot_ref": "snapshot:paid_order:1",
-                "dataset_id": "paid_order_success",
+                "dataset_id": "legacy_paid_order",
                 "physical_table": "paid_order_success_clean_20240101_20260704",
                 "watermark": "2026-07-04",
                 "schema_fingerprint": "schema-1",
@@ -331,13 +331,13 @@ class ConversationPersistenceTest(unittest.TestCase):
 
     def test_in_memory_store_lists_dataset_snapshots_by_dataset(self):
         store = InMemoryConversationStore()
-        first = _dataset_snapshot_payload("snapshot:paid_order:1", "paid_order_success")
+        first = _dataset_snapshot_payload("snapshot:paid_order:1", "legacy_paid_order")
         second = _dataset_snapshot_payload("snapshot:attempt:1", "payment_attempt")
 
         store.save_dataset_snapshot(first)
         store.save_dataset_snapshot(second)
 
-        self.assertEqual(store.list_dataset_snapshots("paid_order_success"), (first,))
+        self.assertEqual(store.list_dataset_snapshots("legacy_paid_order"), (first,))
         self.assertEqual(store.list_dataset_snapshots(), (first, second))
 
     def test_postgres_store_lists_dataset_snapshot_payloads_by_dataset(self):
@@ -372,7 +372,7 @@ class ConversationPersistenceTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "execute failed"):
             store.save_dataset_snapshot(
-                _dataset_snapshot_payload("snapshot:paid_order:1", "paid_order_success")
+                _dataset_snapshot_payload("snapshot:paid_order:1", "legacy_paid_order")
             )
 
         self.assertEqual(connection.commits, 0)
@@ -384,7 +384,7 @@ class ConversationPersistenceTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "commit failed"):
             store.save_dataset_snapshot(
-                _dataset_snapshot_payload("snapshot:paid_order:1", "paid_order_success")
+                _dataset_snapshot_payload("snapshot:paid_order:1", "legacy_paid_order")
             )
 
         self.assertEqual(connection.commits, 0)
@@ -395,7 +395,7 @@ class ConversationPersistenceTest(unittest.TestCase):
         store = PostgresConversationStore(connection)
         original = _dataset_snapshot_payload("snapshot:paid_order:1", "legacy_paid_order")
         store.save_dataset_snapshot(original)
-        payload = _dataset_snapshot_payload("snapshot:paid_order:1", "paid_order_success")
+        payload = _dataset_snapshot_payload("snapshot:paid_order:1", "legacy_paid_order_v2")
         payload.update(
             {
                 "physical_table": "paid_order_success_clean_20260705",
@@ -444,7 +444,7 @@ class ConversationPersistenceTest(unittest.TestCase):
     def test_in_memory_store_replaces_the_full_snapshot_for_a_reused_ref(self):
         store = InMemoryConversationStore()
         original = _dataset_snapshot_payload("snapshot:paid_order:1", "legacy_paid_order")
-        replacement = _dataset_snapshot_payload("snapshot:paid_order:1", "paid_order_success")
+        replacement = _dataset_snapshot_payload("snapshot:paid_order:1", "legacy_paid_order_v2")
         replacement["schema_fingerprint"] = "replacement-schema"
 
         store.save_dataset_snapshot(original)
@@ -574,7 +574,7 @@ class ConversationPersistenceTest(unittest.TestCase):
 
     def test_in_memory_snapshot_payloads_are_isolated_at_every_boundary(self):
         store = InMemoryConversationStore()
-        payload = _dataset_snapshot_payload("snapshot:paid_order:1", "paid_order_success")
+        payload = _dataset_snapshot_payload("snapshot:paid_order:1", "legacy_paid_order")
 
         store.save_dataset_snapshot(payload)
         payload["schema_fields"].append("input_mutation")

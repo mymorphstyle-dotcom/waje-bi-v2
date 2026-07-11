@@ -50,6 +50,8 @@ metric_business_labels:
 datasets:
   paid_order_success:
     date_field: business_date_lagos
+    requires_release: true
+    release_membership: {policy: exact_dataset_set, dataset_ids: [paid_order_success]}
     required_fields: [business_date_lagos]
   payment_attempt:
     date_expression: "toDate(toTimeZone(fromUnixTimestamp64Milli(toInt64OrZero(`支付发起时间`)), 'Africa/Lagos'))"

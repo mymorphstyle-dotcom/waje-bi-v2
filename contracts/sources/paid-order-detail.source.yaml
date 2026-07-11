@@ -1,4 +1,4 @@
-contract_version: "0.2"
+contract_version: "0.3"
 source_id: paid_order_detail_20240101_20260704
 business_name: 付费订单明细真实数据源合同
 review_status: accepted_current_snapshot_2026-07-05
@@ -8,6 +8,7 @@ business_evidence_state: quantifiable
 source_file:
   path: /Users/luka/Downloads/dapan_pay_data.zip
   bytes: 2747935872
+  sha256: d27df6f2a79029e360d82da74c30413c2c842c820e0bfbc85e5afcf129787ae6
   encoding: utf-8
   rows_profiled: 75984922
   columns_profiled: 23
@@ -52,6 +53,29 @@ storage_boundary:
   analytical_database: waje_bi
   raw_table: paid_order_detail_raw_20240101_20260704
   clean_table: paid_order_success_clean_20240101_20260704
+  clean_schema:
+    - {name: order_id, type: String}
+    - {name: user_id, type: String}
+    - {name: business_date_lagos, type: Date}
+    - {name: payment_completed_ms, type: Int64}
+    - {name: payment_started_ms, type: "Nullable(String)"}
+    - {name: paid_amount_ngn, type: Float64}
+    - {name: currency, type: String}
+    - {name: is_new_user, type: String}
+    - {name: is_first_payment, type: String}
+    - {name: channel, type: "Nullable(String)"}
+    - {name: payment_method, type: String}
+    - {name: country, type: "Nullable(String)"}
+    - {name: region, type: "Nullable(String)"}
+    - {name: city, type: "Nullable(String)"}
+    - {name: device_brand, type: "Nullable(String)"}
+    - {name: device_model, type: "Nullable(String)"}
+    - {name: os, type: "Nullable(String)"}
+    - {name: network_type, type: "Nullable(String)"}
+    - {name: registered_at, type: "Nullable(String)"}
+    - {name: first_paid_at, type: "Nullable(String)"}
+    - {name: payment_latency_seconds, type: "Nullable(String)"}
+    - {name: raw_date, type: String}
   daily_summary_table: paid_order_success_daily_20240101_20260704
   latest_key_helper_table: paid_order_success_latest_key_20240101_20260704
   metadata_table: load_metadata_20240101_20260704
