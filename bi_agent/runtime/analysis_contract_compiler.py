@@ -37,6 +37,15 @@ class AnalysisCompileOutcome:
 
 
 @dataclass(frozen=True)
+class CapabilityDependencySet:
+    capability_id: str
+    metric_ids: tuple[str, ...]
+    dimension_ids: tuple[str, ...]
+    dataset_ids: tuple[str, ...]
+    context_source_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class _DependencyIndex:
     metric_ids: tuple[str, ...]
     dimension_ids: tuple[str, ...]
@@ -62,6 +71,9 @@ def compile_analysis_contract(
 ) -> AnalysisCompileOutcome:
     capabilities = _dedupe(accepted_capabilities)
     dependencies = _build_dependency_index(proposal, capabilities, registry)
+    capability_dependencies = _capability_dependency_sets(
+        proposal, capabilities, dependencies
+    )
     required_dataset_ids = dependencies.dataset_ids
     capability_gaps = _capability_contract_gaps(capabilities, registry)
     executable_dataset_ids, dataset_contract_gaps = _validate_dataset_contracts(
@@ -140,6 +152,7 @@ def compile_analysis_contract(
         dimension_bindings,
         registry,
         permission_scope,
+        capability_dependencies,
     )
     capability_plans = _build_capability_plans(
         capabilities,
@@ -170,6 +183,9 @@ def compile_analysis_contract(
         ),
         affected_capabilities=affected_capabilities,
         affected_claim_types=accepted_claim_intents,
+        claim_types_by_capability=_claim_types_by_capability(
+            capabilities, accepted_claim_intents, registry
+        ),
     )
     gaps = _merge_contract_gaps(
         (
@@ -223,6 +239,59 @@ def _required_metric_ids(
             if metric_id in explicitly_requested
         )
     return _dedupe(metric_ids)
+
+
+def _capability_dependency_sets(
+    proposal: Mapping[str, Any],
+    accepted_capabilities: tuple[str, ...],
+    dependencies: _DependencyIndex,
+) -> tuple[CapabilityDependencySet, ...]:
+    requested_context = set(_values(proposal, "requested_context_sources"))
+    return tuple(
+        CapabilityDependencySet(
+            capability_id=capability_id,
+            metric_ids=tuple(
+                metric_id
+                for metric_id, owners in dependencies.metric_owners.items()
+                if capability_id in owners
+            ),
+            dimension_ids=tuple(
+                dimension_id
+                for dimension_id, owners in dependencies.dimension_owners.items()
+                if capability_id in owners
+            ),
+            dataset_ids=tuple(
+                dataset_id
+                for dataset_id, owners in dependencies.dataset_owners.items()
+                if capability_id in owners
+            ),
+            context_source_ids=tuple(
+                dataset_id
+                for dataset_id, owners in dependencies.dataset_owners.items()
+                if capability_id in owners and dataset_id in requested_context
+            ),
+        )
+        for capability_id in accepted_capabilities
+    )
+
+
+def _claim_types_by_capability(
+    capabilities: tuple[str, ...],
+    accepted_claim_intents: tuple[str, ...],
+    registry: RuntimeContractRegistry,
+) -> dict[str, tuple[str, ...]]:
+    accepted = set(accepted_claim_intents)
+    return {
+        capability_id: tuple(
+            claim_type
+            for claim_type in _mapping_values(
+                _registry_entry(registry.capability_inputs, capability_id) or {},
+                "supported_claim_types",
+            )
+            if claim_type in accepted
+        )
+        for capability_id in capabilities
+    }
 
 
 def _build_dependency_index(
@@ -1121,6 +1190,7 @@ def _build_query_contracts(
     dimension_bindings: tuple[DimensionBinding, ...],
     registry: RuntimeContractRegistry,
     permission_scope: str,
+    capability_dependencies: tuple[CapabilityDependencySet, ...] = (),
 ) -> tuple[tuple[QueryContract, ...], dict[str, tuple[str, ...]]]:
     if not windows:
         return (), {
@@ -1133,6 +1203,9 @@ def _build_query_contracts(
     logical_queries: list[dict[str, Any]] = []
     query_owners: list[set[str]] = []
     seen: dict[str, int] = {}
+    dependencies_by_capability = {
+        item.capability_id: item for item in capability_dependencies
+    }
 
     def record_logical(logical: dict[str, Any], owner: str) -> None:
         dedupe_key = query_contract_signature(logical)
@@ -1148,6 +1221,13 @@ def _build_query_contracts(
         capability = _registry_entry(registry.capability_inputs, capability_id)
         if capability is None:
             continue
+        dependency_set = dependencies_by_capability.get(capability_id)
+        capability_metric_ids = (
+            set(dependency_set.metric_ids) if dependency_set is not None else None
+        )
+        capability_dataset_ids = (
+            set(dependency_set.dataset_ids) if dependency_set is not None else None
+        )
         optional_metrics = set(_mapping_values(capability, "optional_metrics"))
         family_metrics = capability.get("query_family_metrics")
         if not isinstance(family_metrics, Mapping):
@@ -1183,6 +1263,14 @@ def _build_query_contracts(
                 for binding in metric_bindings
                 if binding.metric_id == metric_id
                 and (
+                    capability_metric_ids is None
+                    or binding.metric_id in capability_metric_ids
+                )
+                and (
+                    capability_dataset_ids is None
+                    or binding.dataset_id in capability_dataset_ids
+                )
+                and (
                     query_family == "data_quality_probe"
                     or not _mapping_values(capability, "allowed_datasets")
                     or binding.dataset_id
@@ -1200,7 +1288,11 @@ def _build_query_contracts(
             if not by_dataset and capability.get("source_mode") == "requested_context_sources":
                 by_dataset = {
                     dataset_id: []
-                    for dataset_id in _values(proposal, "requested_context_sources")
+                    for dataset_id in (
+                        dependency_set.context_source_ids
+                        if dependency_set is not None
+                        else _values(proposal, "requested_context_sources")
+                    )
                 }
 
             for dataset_id, dataset_metrics in by_dataset.items():
@@ -1602,19 +1694,26 @@ def _scope_gaps(
     *,
     affected_capabilities: tuple[str, ...],
     affected_claim_types: tuple[str, ...],
+    claim_types_by_capability: Mapping[str, tuple[str, ...]] | None = None,
 ) -> tuple[ContractGap, ...]:
-    return tuple(
-        replace(
-            gap,
-            affected_capabilities=(
-                gap.affected_capabilities or affected_capabilities
-            ),
-            affected_claim_types=(
-                gap.affected_claim_types or affected_claim_types
-            ),
+    scoped = []
+    for gap in gaps:
+        capabilities = gap.affected_capabilities or affected_capabilities
+        claim_types = gap.affected_claim_types
+        if not claim_types and claim_types_by_capability is not None:
+            claim_types = _dedupe(
+                claim_type
+                for capability_id in capabilities
+                for claim_type in claim_types_by_capability.get(capability_id, ())
+            )
+        scoped.append(
+            replace(
+                gap,
+                affected_capabilities=capabilities,
+                affected_claim_types=claim_types or affected_claim_types,
+            )
         )
-        for gap in gaps
-    )
+    return tuple(scoped)
 
 
 def _merge_contract_gaps(

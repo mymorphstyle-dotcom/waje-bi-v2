@@ -175,6 +175,235 @@ def _market_dashboard_snapshots():
 
 
 class AnalysisContractCompilerTest(unittest.TestCase):
+    def test_source_isolation_preserves_unaffected_current_data_queries(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+
+        def current_snapshot(dataset_id, *, scopes=("analyst",)):
+            contract = registry.dataset(dataset_id)
+            return DatasetSnapshot(
+                snapshot_ref=f"snapshot:{dataset_id}:source-isolation",
+                dataset_id=dataset_id,
+                physical_table=f"{dataset_id}_daily__source_isolation",
+                watermark="2026-06-02",
+                schema_fingerprint=f"schema:{dataset_id}:source-isolation",
+                schema_fields=tuple(
+                    contract.get("schema_fields")
+                    or snapshot(dataset_id, dataset_id, "2026-06-02").schema_fields
+                ),
+                contract_ref=str(contract.get("contract_ref") or f"contract:{dataset_id}@1"),
+                permission_scopes=scopes,
+                loaded_at="2026-06-03T00:00:00+00:00",
+                status="active",
+                evidence_state=(
+                    "claim_ready"
+                    if dataset_id in {"market_dashboard", "paid_order_success"}
+                    else "context_only"
+                ),
+                logical_snapshot_id=f"logical:{dataset_id}",
+                load_revision=f"load:{dataset_id}:sha256:source-isolation",
+                rows_content_hash=("abcdef"[sum(map(ord, dataset_id)) % 6] * 64),
+                reconciliation_status=(
+                    "matched" if dataset_id == "market_dashboard" else "not_applicable"
+                ),
+            )
+
+        def authorized_catalog(*members):
+            records = {}
+            authorized = []
+            requested = {member.dataset_id: member for member in members}
+            families = []
+            seen_families = set()
+            for member in members:
+                family = canonical_dataset_release_members(member.dataset_id)
+                if family in seen_families:
+                    continue
+                seen_families.add(family)
+                families.append(family)
+            for family in families:
+                seed = requested[next(item for item in family if item in requested)]
+                release_members = []
+                for dataset_id in family:
+                    release_members.append(
+                        requested.get(dataset_id)
+                        or replace(
+                            current_snapshot(dataset_id),
+                            logical_snapshot_id=seed.logical_snapshot_id,
+                            load_revision=seed.load_revision,
+                            reconciliation_status="mismatch",
+                        )
+                    )
+                release_ref = dataset_snapshot_release_ref(
+                    seed.logical_snapshot_id,
+                    seed.load_revision,
+                    (member.snapshot_ref for member in release_members),
+                )
+                released = tuple(
+                    replace(member, release_ref=release_ref)
+                    for member in release_members
+                )
+                record = build_dataset_release_authority_record(
+                    tuple(
+                        {**member.to_dict(), "requires_release": True}
+                        for member in released
+                    )
+                )
+                records[record.release_ref] = record
+                authorized.extend(
+                    replace(member, authority_record_ref=record.authority_record_ref)
+                    for member in released
+                )
+
+            class Resolver:
+                def resolve_dataset_release(self, release_ref):
+                    return records[release_ref]
+
+            resolver = Resolver()
+            return DatasetCatalog(authorized, release_resolver=resolver), resolver
+
+        proposal = {
+            "question_families": ["paid_amount_change_explanation"],
+            "target_metrics": ["active_users"],
+            "requested_components": ["paid_amount"],
+            "requested_dimensions": ["gameplay"],
+            "requested_context_sources": ["external_event"],
+            "metric_dataset_overrides": {
+                "active_users": "market_dashboard",
+                "paid_amount": "paid_order_success",
+                "paid_users": "paid_order_success",
+                "paid_orders": "paid_order_success",
+                "first_paid_users": "paid_order_success",
+                "paid_frequency": "paid_order_success",
+                "avg_order_amount": "paid_order_success",
+                "player_bet_amount": "gameplay",
+            },
+            "dimension_dataset_overrides": {"gameplay": "gameplay"},
+            "baselines": ["previous_day"],
+            "claim_intents": [
+                "comparative_change",
+                "formula_component_contribution",
+                "observed_activity",
+                "candidate_mechanism",
+            ],
+            "target_semantic": "2026-06-02",
+        }
+        capabilities = (
+            "driver_decomposition",
+            "market_health_compare",
+            "gameplay_activity_context",
+            "event_evidence",
+        )
+        available = {
+            "paid_order_success": current_snapshot("paid_order_success"),
+            "market_dashboard": current_snapshot("market_dashboard"),
+            "gameplay": current_snapshot("gameplay"),
+            "external_event": current_snapshot("external_event"),
+        }
+        cases = (
+            (
+                "paid_order_success",
+                "driver_decomposition",
+                ("formula_component_contribution",),
+                {
+                    "daily_metric_baselines",
+                    "gameplay_activity_probe",
+                    "event_context_probe",
+                },
+                {"component_driver_scan"},
+            ),
+            (
+                "gameplay",
+                "gameplay_activity_context",
+                ("observed_activity", "comparative_change"),
+                {
+                    "daily_metric_baselines",
+                    "component_driver_scan",
+                    "event_context_probe",
+                },
+                {"gameplay_activity_probe"},
+            ),
+            (
+                "external_event",
+                "event_evidence",
+                ("candidate_mechanism",),
+                {
+                    "daily_metric_baselines",
+                    "component_driver_scan",
+                    "gameplay_activity_probe",
+                },
+                {"event_context_probe"},
+            ),
+        )
+        for missing_dataset, affected_capability, affected_claim, present, absent in cases:
+            with self.subTest(missing_dataset=missing_dataset):
+                catalog, resolver = authorized_catalog(
+                    *(item for key, item in available.items() if key != missing_dataset)
+                )
+                outcome = compile_analysis_contract(
+                    run_id=f"run-source-isolation-{missing_dataset}",
+                    proposal=proposal,
+                    accepted_capabilities=capabilities,
+                    catalog=catalog,
+                    registry=registry,
+                    as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+                    permission_scope="analyst",
+                    release_resolver=resolver,
+                )
+                intents = {item.query_intent for item in outcome.query_contracts}
+                self.assertTrue(
+                    present <= intents,
+                    (
+                        intents,
+                        [
+                            item.gap_id
+                            for item in outcome.analysis_contract.contract_gaps
+                        ],
+                    ),
+                )
+                self.assertTrue(absent.isdisjoint(intents))
+                gap = next(
+                    item for item in outcome.analysis_contract.contract_gaps
+                    if item.dataset_id == missing_dataset
+                )
+                self.assertEqual(gap.affected_capabilities, (affected_capability,))
+                self.assertEqual(gap.affected_claim_types, affected_claim)
+
+        restricted = {
+            **available,
+            "gameplay": current_snapshot("gameplay", scopes=("admin",)),
+        }
+        catalog, resolver = authorized_catalog(*restricted.values())
+        outcome = compile_analysis_contract(
+            run_id="run-source-isolation-permission",
+            proposal=proposal,
+            accepted_capabilities=capabilities,
+            catalog=catalog,
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+            release_resolver=resolver,
+        )
+        intents = {item.query_intent for item in outcome.query_contracts}
+        self.assertTrue(
+            {"component_driver_scan", "daily_metric_baselines", "event_context_probe"}
+            <= intents,
+            intents,
+        )
+        self.assertNotIn("gameplay_activity_probe", intents)
+        permission_gap = next(
+            item for item in outcome.analysis_contract.contract_gaps
+            if item.dataset_id == "gameplay" and item.gap_type == "permission_blocked"
+        )
+        self.assertEqual(
+            permission_gap.affected_capabilities,
+            ("gameplay_activity_context",),
+        )
+        self.assertEqual(
+            permission_gap.affected_claim_types,
+            ("observed_activity", "comparative_change"),
+        )
+
     def test_canonical_paid_release_fixture_threads_one_authority_resolver(self):
         paid = snapshot("paid_order_success", "paid", "2026-07-04")
 

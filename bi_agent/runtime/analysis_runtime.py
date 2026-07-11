@@ -218,9 +218,8 @@ def analysis_outcome_requires_preexecution_clarification(
     if not clarification_capabilities:
         return False
     materially_unbound_capabilities = set()
+    executable_capabilities = set()
     for plan in outcome.capability_plans:
-        if plan.capability_id not in clarification_capabilities:
-            continue
         for slot in plan.required_input_slots:
             required = (
                 bool(slot.get("required", True))
@@ -238,8 +237,11 @@ def analysis_outcome_requires_preexecution_clarification(
                 else slot.validation_query_contract_refs
             )
             if required and not query_refs and not validation_refs:
-                materially_unbound_capabilities.add(plan.capability_id)
-    return bool(materially_unbound_capabilities)
+                if plan.capability_id in clarification_capabilities:
+                    materially_unbound_capabilities.add(plan.capability_id)
+            elif required and (query_refs or validation_refs):
+                executable_capabilities.add(plan.capability_id)
+    return bool(materially_unbound_capabilities) and not executable_capabilities
 
 
 class AnalysisRuntime:
