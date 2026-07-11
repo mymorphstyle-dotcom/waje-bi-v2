@@ -235,3 +235,70 @@ def test_cli_maps_artifact_path_failure_without_echoing_path(tmp_path, capsys):
     assert code == 1
     assert payload["error_code"] == "coverage_artifact_write_failed"
     assert str(secret_path) not in json.dumps(payload)
+
+
+def test_cli_maps_credential_bearing_close_failure_nonzero(tmp_path, capsys):
+    from tools.phase7.audit_existing_data_coverage import main
+
+    secret = "postgresql://closer:password@close-host.internal/waje"
+
+    class Connection:
+        def close(self):
+            raise RuntimeError(f"close failed {secret} SELECT pg_terminate_backend")
+
+    store = EmptyStore()
+    store.connection = Connection()
+    code = main(
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(tmp_path / "coverage.json")],
+        store_factory=lambda: store,
+    )
+    captured = capsys.readouterr()
+    assert code == 1
+    assert json.loads(captured.err)["error_code"] == "coverage_database_close_failed"
+    assert captured.out == ""
+    assert secret not in captured.err
+    assert "close-host" not in captured.err
+    assert "SELECT" not in captured.err
+
+
+def test_cli_sanitizes_unknown_arguments_with_credentials(capsys):
+    from tools.phase7.audit_existing_data_coverage import main
+
+    secret = "postgresql://alice:password@host.internal/waje"
+    code = main(["--bogus", secret], store_factory=lambda: EmptyStore())
+    captured = capsys.readouterr()
+    assert code == 1
+    assert json.loads(captured.err) == {
+        "error_code": "coverage_cli_arguments_invalid",
+        "impact": "the coverage audit command arguments are invalid",
+        "ok": False,
+        "owner": "audit_operator",
+    }
+    assert captured.out == ""
+    assert secret not in captured.err
+    assert "host.internal" not in captured.err
+    assert "usage:" not in captured.err
+
+
+def test_cli_preserves_primary_error_when_close_also_fails(tmp_path, capsys):
+    from tools.phase7.audit_existing_data_coverage import main
+
+    class Connection:
+        def close(self):
+            raise RuntimeError("postgresql://close:password@close-host/db")
+
+    class BrokenStore(EmptyStore):
+        connection = Connection()
+
+        def list_dataset_snapshots(self):
+            raise RuntimeError("postgresql://read:password@read-host/db SELECT secret")
+
+    code = main(
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(tmp_path / "coverage.json")],
+        store_factory=lambda: BrokenStore(),
+    )
+    captured = capsys.readouterr()
+    assert code == 1
+    assert json.loads(captured.err)["error_code"] == "coverage_database_unavailable"
+    assert "password" not in captured.err
+    assert "host" not in captured.err

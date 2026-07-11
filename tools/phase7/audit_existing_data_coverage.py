@@ -28,6 +28,15 @@ class CoverageCLIError(Exception):
         self.impact = impact
 
 
+class SafeArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise CoverageCLIError(
+            "coverage_cli_arguments_invalid",
+            "audit_operator",
+            "the coverage audit command arguments are invalid",
+        )
+
+
 def run_audit(args: argparse.Namespace, *, store: Any) -> dict[str, Any]:
     try:
         as_of = datetime.fromisoformat(args.as_of)
@@ -87,13 +96,15 @@ def main(
     *,
     store_factory: Callable[[], Any] = PostgresConversationStore.from_env,
 ) -> int:
-    parser = argparse.ArgumentParser(description="Audit current runtime data coverage")
+    parser = SafeArgumentParser(description="Audit current runtime data coverage")
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--permission-scope", required=True)
     parser.add_argument("--out", required=True)
-    args = parser.parse_args(argv)
     store = None
+    result = None
+    failure = None
     try:
+        args = parser.parse_args(argv)
         try:
             store = store_factory()
         except Exception as exc:
@@ -103,21 +114,31 @@ def main(
                 "current coverage authority could not be read",
             ) from exc
         result = run_audit(args, store=store)
-        print(json.dumps(result, sort_keys=True))
-        return 0
     except CoverageCLIError as exc:
-        print(json.dumps({
-            "ok": False,
-            "error_code": exc.error_code,
-            "owner": exc.owner,
-            "impact": exc.impact,
-        }, sort_keys=True), file=sys.stderr)
-        return 1
+        failure = exc
     finally:
         connection = getattr(store, "connection", None)
         close = getattr(connection, "close", None)
         if callable(close):
-            close()
+            try:
+                close()
+            except Exception:
+                if failure is None:
+                    failure = CoverageCLIError(
+                        "coverage_database_close_failed",
+                        "runtime_operations_owner",
+                        "the coverage database connection could not be closed cleanly",
+                    )
+    if failure is not None:
+        print(json.dumps({
+            "ok": False,
+            "error_code": failure.error_code,
+            "owner": failure.owner,
+            "impact": failure.impact,
+        }, sort_keys=True), file=sys.stderr)
+        return 1
+    print(json.dumps(result, sort_keys=True))
+    return 0
 
 
 if __name__ == "__main__":
