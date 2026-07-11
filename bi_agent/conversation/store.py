@@ -47,6 +47,8 @@ class InMemoryConversationStore:
         self.dataset_snapshots: dict[str, dict[str, Any]] = {}
         self.dataset_snapshot_releases: dict[str, dict[str, Any]] = {}
         self.clarification_states: dict[str, ClarificationState] = {}
+        self.analysis_runtime_records: dict[str, dict[str, Any]] = {}
+        self.analysis_runtime_authority: dict[str, dict[str, Any]] = defaultdict(dict)
         self._audit_events: list[dict] = []
 
     @property
@@ -193,6 +195,156 @@ class InMemoryConversationStore:
                     permission_scope=package.get("permission_scope") or package.get("visibility") or "analyst",
                 )
         self.add_audit_event("answer_package_recorded", run_id=run_id, ref=run_id)
+
+    def save_analysis_runtime_records(
+        self,
+        *,
+        run_id: str,
+        analysis_contract: Mapping[str, Any],
+        query_contracts: Sequence[Any],
+        query_execution_records: Sequence[Any],
+        rows_records: Sequence[Any],
+        snapshot_records: Sequence[Any],
+        completeness_records: Sequence[Any],
+        capability_binding_records: Sequence[Any],
+        evidence_manifests: Sequence[Mapping[str, Any]],
+        context_manifests: Sequence[Mapping[str, Any]],
+        trusted_provenance_records: Sequence[Mapping[str, Any]],
+        verified_claims: Sequence[Mapping[str, Any]],
+        claim_links: Sequence[Mapping[str, Any]],
+        repair_attempts: Sequence[Mapping[str, Any]],
+    ) -> str:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_digest,
+            canonical_value,
+        )
+        from bi_agent.runtime.runtime_persistence import (
+            validate_analysis_runtime_records,
+        )
+
+        bundle = validate_analysis_runtime_records(
+            run_id=run_id,
+            analysis_contract=analysis_contract,
+            query_contracts=query_contracts,
+            query_execution_records=query_execution_records,
+            rows_records=rows_records,
+            snapshot_records=snapshot_records,
+            completeness_records=completeness_records,
+            capability_binding_records=capability_binding_records,
+            evidence_manifests=evidence_manifests,
+            context_manifests=context_manifests,
+            trusted_provenance_records=trusted_provenance_records,
+            verified_claims=verified_claims,
+            claim_links=claim_links,
+            repair_attempts=repair_attempts,
+        )
+        frozen = canonical_value(bundle)
+        digest = canonical_digest(frozen)
+        existing_publication = self.analysis_runtime_records.get(run_id)
+        if existing_publication is not None:
+            if existing_publication["digest"] == digest:
+                return "replayed"
+            raise EvidenceIntegrityError("analysis_runtime_publication_conflict")
+        entries = (
+            (
+                "analysis_contract",
+                ((bundle["analysis_contract"]["analysis_contract_id"], bundle["analysis_contract"]),),
+            ),
+            (
+                "query_contract",
+                tuple((item.query_contract_id, canonical_value(item)) for item in bundle["query_contracts"]),
+            ),
+            (
+                "query_execution_record",
+                tuple((item.record_ref, canonical_value(item)) for item in bundle["query_execution_records"]),
+            ),
+            (
+                "rows_record",
+                tuple((item.record_ref, canonical_value(item)) for item in bundle["rows_records"]),
+            ),
+            (
+                "snapshot_record",
+                tuple((item.record_ref, canonical_value(item)) for item in bundle["snapshot_records"]),
+            ),
+            (
+                "completeness_record",
+                tuple((item.record_ref, canonical_value(item)) for item in bundle["completeness_records"]),
+            ),
+            (
+                "capability_binding_record",
+                tuple((item.record_ref, canonical_value(item)) for item in bundle["capability_binding_records"]),
+            ),
+            (
+                "evidence_manifest",
+                tuple((item["evidence_ref"], item) for item in bundle["evidence_manifests"]),
+            ),
+            (
+                "context_manifest",
+                tuple((item["manifest_id"], item) for item in bundle["context_manifests"]),
+            ),
+            (
+                "claim_provenance_record",
+                tuple(
+                    (item["record_ref"], item)
+                    for item in bundle["trusted_provenance_records"]
+                ),
+            ),
+            (
+                "verified_claim",
+                tuple((item["claim_ref"], item) for item in bundle["verified_claims"]),
+            ),
+            (
+                "claim_evidence_link",
+                tuple(
+                    (f"{item['claim_ref']}\x1f{item['evidence_ref']}", item)
+                    for item in bundle["claim_links"]
+                ),
+            ),
+            (
+                "repair_attempt",
+                tuple((item["attempt_ref"], item) for item in bundle["repair_attempts"]),
+            ),
+        )
+        staged_authority = deepcopy(self.analysis_runtime_authority)
+        for kind, records in entries:
+            existing_records = staged_authority[kind]
+            for ref, payload in records:
+                existing = existing_records.get(str(ref))
+                if existing is not None and existing != canonical_value(payload):
+                    raise EvidenceIntegrityError(f"authority_ref_collision:{kind}")
+        for kind, records in entries:
+            target = staged_authority[kind]
+            for ref, payload in records:
+                target[str(ref)] = deepcopy(canonical_value(payload))
+        staged_publications = deepcopy(self.analysis_runtime_records)
+        staged_publications[run_id] = {
+            "digest": digest,
+            "payload": deepcopy(frozen),
+        }
+        staged_audits = deepcopy(self._audit_events)
+        staged_audits.append(
+            {
+                "event_type": "analysis_runtime_records_persisted",
+                "thread_id": "",
+                "topic_id": "",
+                "run_id": run_id,
+                "ref": str(bundle["analysis_contract"]["analysis_contract_id"]),
+                "payload": deepcopy(
+                    {
+                        "query_count": len(bundle["query_execution_records"]),
+                        "capability_binding_count": len(
+                            bundle["capability_binding_records"]
+                        ),
+                        "claim_link_count": len(bundle["claim_links"]),
+                    }
+                ),
+            }
+        )
+        self.analysis_runtime_authority = staged_authority
+        self.analysis_runtime_records = staged_publications
+        self._audit_events = staged_audits
+        return "published"
 
     def save_analysis_assets(
         self,

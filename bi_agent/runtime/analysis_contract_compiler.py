@@ -1411,17 +1411,10 @@ def _build_capability_plans(
                     ),
                 )
                 (required_slots if required else optional_slots).append(slot)
-        capability_ref = str(
-            contract.get("contract_ref")
-            or f"{registry.source_ref}#capability_inputs.{capability_id}"
-        )
         capability_signature = registry.capability_contract_signature(
             capability_id
         )
-        capability_ref = (
-            f"{capability_ref}|runtime_version={registry.contract_version}"
-            f"|sha256={capability_signature}"
-        )
+        capability_ref = registry.capability_contract_ref(capability_id)
         plans.append(
             CapabilityExecutionPlan(
                 capability_id=capability_id,

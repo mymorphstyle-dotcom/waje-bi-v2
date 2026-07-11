@@ -19,6 +19,7 @@ from bi_agent.runtime.evidence_authority import (
     RowsPayloadLoader,
     RuntimeEvidenceResolver,
     canonical_digest,
+    canonical_value,
     runtime_evidence_record_integrity_errors,
 )
 from bi_agent.runtime.runtime_contract_registry import (
@@ -27,6 +28,49 @@ from bi_agent.runtime.runtime_contract_registry import (
 )
 from bi_agent.runtime.dataset_catalog import DatasetReleaseResolver
 from bi_agent.runtime.wording import wording_warnings
+from bi_agent.runtime.claim_provenance import (
+    build_context_manifest_record,
+    build_trusted_claim_provenance_record,
+    build_verified_claim_record,
+    validate_context_manifest_record,
+    validate_trusted_claim_provenance_record,
+    validate_verified_claim_record,
+)
+
+
+def _verified_sources_from_claims(
+    claims: Sequence[Mapping[str, Any]],
+    evidence_by_ref: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    sources = []
+    seen = set()
+    for claim in claims:
+        for evidence_ref in claim.get("evidence_refs") or ():
+            ref = str(evidence_ref)
+            evidence = evidence_by_ref.get(ref)
+            if evidence is None:
+                raise ValueError("verified_claim_evidence_missing")
+            for source_type, source_ref in (
+                ("evidence", ref),
+                *(
+                    ("completeness", str(completeness_ref))
+                    for completeness_ref in evidence.get(
+                        "completeness_record_refs"
+                    )
+                    or ()
+                ),
+            ):
+                key = (source_type, source_ref)
+                if key not in seen:
+                    seen.add(key)
+                    sources.append(
+                        {
+                            "type": source_type,
+                            "ref": source_ref,
+                            "can_support_claim": True,
+                        }
+                    )
+    return tuple(sources)
 
 
 def build_answer_package(
@@ -64,6 +108,14 @@ def build_answer_package(
     row_query_plan: Optional[Mapping[str, Any]] = None,
     snapshot_id: str = "",
     permission_scope: str = "",
+    analysis_contract: Optional[Mapping[str, Any]] = None,
+    query_contracts: Sequence[Any] = (),
+    query_results: Sequence[Any] = (),
+    completeness_reports: Sequence[Any] = (),
+    capability_execution_plans: Sequence[Any] = (),
+    repair_attempts: Sequence[Any] = (),
+    context_manifest: Optional[Mapping[str, Any]] = None,
+    trusted_claim_provenance_records: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
     semantic_audit = {} if semantic_audit is None else semantic_audit
@@ -102,12 +154,134 @@ def build_answer_package(
             "quality_gate": quality_gate,
         },
     )
-    accepted_claim_indexes = set(verifier.get("accepted_claim_indexes") or ())
-    published_claims = tuple(
-        claim
-        for index, claim in enumerate(draft_claims)
-        if index in accepted_claim_indexes
-    )
+    source_verifier_warnings = tuple(verifier.get("warnings") or ())
+    accepted_claim_indexes = tuple(verifier.get("accepted_claim_indexes") or ())
+    evidence_by_ref = {
+        str(item.get("evidence_ref") or ""): item
+        for item in evidence
+        if item.get("evidence_ref")
+    }
+    factual_claims: tuple[dict[str, Any], ...] = ()
+    projection_errors: list[dict[str, Any]] = []
+    if accepted_claim_indexes:
+        factual_claims, projection_errors = _authority_bound_claim_projections(
+            claims=draft_claims,
+            accepted_indexes=accepted_claim_indexes,
+            evidence=evidence,
+            evidence_resolver=evidence_resolver,
+            rows_loader=rows_loader,
+            runtime_registry=runtime_registry,
+            release_resolver=release_resolver,
+        )
+        if len(factual_claims) != len(accepted_claim_indexes):
+            projection_errors.append(
+                {
+                    "code": "verified_claim_projection_cardinality_mismatch",
+                    "claim_index": -1,
+                }
+            )
+    verified_manifest: dict[str, Any] = {}
+    trusted_records: tuple[dict[str, Any], ...] = ()
+    published_claims: tuple[dict[str, Any], ...] = ()
+    if factual_claims and not projection_errors:
+        try:
+            context_owner = dict(context_manifest or {})
+            sources = _verified_sources_from_claims(factual_claims, evidence_by_ref)
+            verified_manifest = build_context_manifest_record(
+                run_id=run_id,
+                thread_id=str(
+                    context_owner.get("thread_id")
+                    or f"thread:runtime:{run_id}"
+                ),
+                topic_id=str(
+                    context_owner.get("topic_id")
+                    or f"topic:runtime:{run_id}"
+                ),
+                sources=sources,
+                permission_context=context_owner.get("permission_context") or {},
+            )
+            supplied_context_ref = str(
+                context_owner.get("manifest_id") or context_manifest_ref or ""
+            )
+            if supplied_context_ref and supplied_context_ref != verified_manifest["manifest_id"]:
+                raise ValueError("context_manifest_ref_mismatch")
+            if trusted_claim_provenance_records:
+                if len(trusted_claim_provenance_records) != len(factual_claims):
+                    raise ValueError("claim_provenance_cardinality_mismatch")
+                trusted_records = tuple(
+                    dict(to_jsonable(item))
+                    for item in trusted_claim_provenance_records
+                )
+                for item in trusted_records:
+                    validate_trusted_claim_provenance_record(item)
+                    if item["run_id"] != run_id:
+                        raise ValueError("claim_provenance_run_mismatch")
+            else:
+                trusted_records = tuple(
+                    build_trusted_claim_provenance_record(run_id=run_id)
+                    for _ in factual_claims
+                )
+            published_claims = tuple(
+                build_verified_claim_record(
+                    claim,
+                    run_id=run_id,
+                    context_manifest=verified_manifest,
+                    evidence_by_ref=evidence_by_ref,
+                    trusted_provenance=trusted,
+                )
+                for claim, trusted in zip(factual_claims, trusted_records)
+            )
+            projected_verifier = verify_answer_package(
+                draft_claims=published_claims,
+                evidence=evidence,
+                visible_limitations=visible_limitations,
+                evidence_resolver=evidence_resolver,
+                rows_loader=rows_loader,
+                runtime_registry=runtime_registry,
+                release_resolver=release_resolver,
+                delivery_text={
+                    "answer_text": answer_text,
+                    "final_business_summary": final_business_summary,
+                    "final_explanation": final_explanation,
+                    "follow_up_questions": follow_up_questions,
+                    "semantic_audit": semantic_audit,
+                    "quality_gate": quality_gate,
+                },
+            )
+            if (
+                projected_verifier.get("status")
+                not in {"passed", "passed_with_warnings"}
+                or len(projected_verifier.get("accepted_claim_indexes") or ())
+                != len(published_claims)
+            ):
+                raise ValueError("verified_claim_reverification_failed")
+            if source_verifier_warnings:
+                projected_verifier = {
+                    **projected_verifier,
+                    "status": "passed_with_warnings",
+                    "warnings": list(source_verifier_warnings),
+                }
+            verifier = projected_verifier
+        except (TypeError, ValueError) as exc:
+            projection_errors.append(
+                {
+                    "code": "verified_claim_provenance_invalid",
+                    "claim_index": -1,
+                    "reason": str(exc),
+                }
+            )
+    if projection_errors:
+        rejected = tuple(range(len(draft_claims)))
+        verifier = {
+            **verifier,
+            "status": "failed",
+            "errors": [*(verifier.get("errors") or ()), *projection_errors],
+            "accepted_claim_indexes": (),
+            "rejected_claim_indexes": rejected,
+        }
+        published_claims = ()
+        verified_manifest = {}
+        trusted_records = ()
     quality_gate = dict(to_jsonable(quality_gate))
     quality_gate["has_verified_claims"] = bool(published_claims)
     claim_groups = build_claim_groups(
@@ -132,6 +306,15 @@ def build_answer_package(
         "compiler_runtime_plan": to_jsonable(compiler_runtime_plan),
         "contract_gap_diagnostics": to_jsonable(contract_gap_diagnostics),
         "row_query_plan": to_jsonable(row_query_plan),
+        "analysis_contract": canonical_value(analysis_contract or {}),
+        "query_contracts": canonical_value(query_contracts),
+        "query_results": canonical_value(query_results),
+        "completeness_reports": canonical_value(completeness_reports),
+        "capability_execution_plans": canonical_value(capability_execution_plans),
+        "repair_attempts": canonical_value(repair_attempts),
+        "context_manifest": verified_manifest,
+        "verified_claims": canonical_value(published_claims),
+        "trusted_claim_provenance_records": canonical_value(trusted_records),
     }
 
     package = {
@@ -140,8 +323,8 @@ def build_answer_package(
         "package_type": "draft_answer_package",
         "snapshot_id": snapshot_id,
         "permission_scope": permission_scope,
-        "context_manifest_ref": context_manifest_ref,
-        "reuse_decisions": to_jsonable(reuse_decisions),
+        "context_manifest_ref": str(verified_manifest.get("manifest_id") or ""),
+        "reuse_decisions": [],
         "final_answer": final_business_summary or answer_text,
         "follow_up_questions": list(follow_up_questions),
         "quality_gate": quality_gate,
@@ -334,13 +517,23 @@ def reverify_answer_package_for_delivery(
         if isinstance(reported_admin, Mapping)
         else None
     )
-    if _verifier_partition(reported) != _verifier_partition(recomputed):
+    if _verifier_hard_partition(reported) != _verifier_hard_partition(recomputed):
         errors = list(recomputed.get("errors") or ())
         errors.append({"code": "reported_verifier_mismatch"})
         recomputed = {
             **recomputed,
             "status": "failed",
             "errors": errors,
+        }
+    elif (
+        recomputed.get("status") in {"passed", "passed_with_warnings"}
+        and isinstance(reported, Mapping)
+        and reported.get("warnings")
+    ):
+        recomputed = {
+            **recomputed,
+            "status": "passed_with_warnings",
+            "warnings": to_jsonable(reported.get("warnings") or ()),
         }
     projected_claims: tuple[dict[str, Any], ...] = ()
     if recomputed.get("status") in {"passed", "passed_with_warnings"}:
@@ -353,6 +546,56 @@ def reverify_answer_package_for_delivery(
             runtime_registry=runtime_registry,
             release_resolver=release_resolver,
         )
+        accepted_indexes = tuple(recomputed.get("accepted_claim_indexes") or ())
+        if len(projected_claims) != len(accepted_indexes):
+            projection_errors.append(
+                {
+                    "code": "verified_claim_projection_cardinality_mismatch",
+                    "claim_index": -1,
+                }
+            )
+        if not projection_errors:
+            try:
+                context_record = dict(
+                    reported_admin.get("context_manifest") or {}
+                ) if isinstance(reported_admin, Mapping) else {}
+                validate_context_manifest_record(context_record)
+                provenance_records = tuple(
+                    item
+                    for item in (
+                        reported_admin.get("trusted_claim_provenance_records")
+                        or ()
+                    )
+                    if isinstance(item, Mapping)
+                ) if isinstance(reported_admin, Mapping) else ()
+                if len(provenance_records) != len(accepted_indexes):
+                    raise ValueError("claim_provenance_cardinality_mismatch")
+                for provenance in provenance_records:
+                    validate_trusted_claim_provenance_record(provenance)
+                evidence_by_ref = {
+                    str(item.get("evidence_ref") or ""): item
+                    for item in evidence
+                    if item.get("evidence_ref")
+                }
+                rebuilt_claims = []
+                for factual, provenance in zip(projected_claims, provenance_records):
+                    rebuilt = build_verified_claim_record(
+                        factual,
+                        run_id=str(candidate.get("run_id") or ""),
+                        context_manifest=context_record,
+                        evidence_by_ref=evidence_by_ref,
+                        trusted_provenance=provenance,
+                    )
+                    rebuilt_claims.append(rebuilt)
+                projected_claims = tuple(rebuilt_claims)
+            except (TypeError, ValueError) as exc:
+                projection_errors.append(
+                    {
+                        "code": "verified_claim_provenance_invalid",
+                        "claim_index": -1,
+                        "reason": str(exc),
+                    }
+                )
         if projection_errors:
             rejected = tuple(
                 sorted(
@@ -427,6 +670,20 @@ def _verifier_partition(value: Any) -> Any:
                 "accepted_claim_indexes",
                 "rejected_claim_indexes",
             )
+        }
+    )
+
+
+def _verifier_hard_partition(value: Any) -> Any:
+    if not isinstance(value, Mapping):
+        return None
+    status = str(value.get("status") or "")
+    return to_jsonable(
+        {
+            "passed": status in {"passed", "passed_with_warnings"},
+            "errors": value.get("errors"),
+            "accepted_claim_indexes": value.get("accepted_claim_indexes"),
+            "rejected_claim_indexes": value.get("rejected_claim_indexes"),
         }
     )
 
@@ -856,7 +1113,18 @@ def _map_claim_numbers_to_authority(
     ) - {str(field) for field in numbers}:
         raise ValueError("claim_fact_selectors_unbound")
     claim_selector = _claim_level_fact_selector(claim)
-    for field, raw_value in numbers.items():
+    ordered_numbers = sorted(
+        numbers.items(),
+        key=lambda item: (
+            0
+            if str(item[0]).startswith("target_")
+            else 1
+            if str(item[0]).startswith("baseline_")
+            else 2,
+            str(item[0]),
+        ),
+    )
+    for field, raw_value in ordered_numbers:
         value = _decimal_value(raw_value)
         if value is None:
             raise ValueError(f"claim_number_invalid:{field}")
@@ -864,6 +1132,7 @@ def _map_claim_numbers_to_authority(
         if semantics is None:
             raise ValueError(f"claim_number_field_unbound:{field}")
         kind, metric_id, role = semantics
+        has_field_selector = str(field) in fact_selectors
         raw_selector = fact_selectors.get(str(field), claim_selector)
         if not isinstance(raw_selector, Mapping):
             raise ValueError(f"claim_fact_selector_invalid:{field}")
@@ -872,7 +1141,10 @@ def _map_claim_numbers_to_authority(
             for fact in authority_facts
             if fact.metric_id == metric_id
             and (not role or fact.window_role == role)
-            and _fact_dimensions_match(fact, dimensions)
+            and (
+                has_field_selector
+                or _fact_dimensions_match(fact, dimensions)
+            )
         )
         if kind == "delta":
             mapping = _map_delta_number(
@@ -1536,6 +1808,31 @@ def _client_claim_projection(
         for ref in claim.get("evidence_refs") or ()
         if str(ref) in evidence_ref_map
     ]
+    projected["claim_ref"] = _safe_ref(claim.get("claim_ref"))
+    projected["context_manifest_ref"] = _safe_ref(
+        claim.get("context_manifest_ref")
+    )
+    for field in (
+        "result_refs",
+        "completeness_record_refs",
+        "artifact_refs",
+        "memory_refs",
+    ):
+        projected[field] = [
+            _safe_ref(ref) for ref in claim.get(field) or () if str(ref)
+        ]
+    projected["reuse_decisions"] = [
+        {
+            key: _safe_ref(item.get(key))
+            for key in ("source_ref", "result_ref", "decision")
+            if item.get(key)
+        }
+        for item in claim.get("reuse_decisions") or ()
+        if isinstance(item, Mapping)
+    ]
+    projected["provenance_record_ref"] = _safe_ref(
+        claim.get("provenance_record_ref")
+    )
     projected["claim_id"] = f"claim:sha256:{canonical_digest(projected)}"
     return projected
 
@@ -1860,7 +2157,14 @@ def verify_answer_package(
                 }
             )
 
-        for key, expected in claim.get("numbers", {}).items():
+        authority_projected = bool(
+            claim.get("claim_ref")
+            and (
+                claim.get("fact_refs")
+                or claim.get("context_fact_selectors")
+            )
+        )
+        for key, expected in (() if authority_projected else claim.get("numbers", {}).items()):
             if not any(
                 _numbers_match(
                     evidence_by_ref[ref].get("typed_payload", {}).get(key), expected
@@ -1877,6 +2181,8 @@ def verify_answer_package(
                 )
 
         for field in ("scope", "time_window", "window"):
+            if authority_projected:
+                continue
             expected = claim.get(field)
             if expected is None:
                 continue

@@ -1019,7 +1019,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("key_findings", payload["answer_context"])
         self.assertIn("evidence_refs", payload)
 
-    def test_answer_package_carries_context_audit_from_request(self):
+    def test_answer_package_drops_unverified_context_audit_from_request(self):
         fake = FakeLLMClient()
         reuse_decisions = [
             {
@@ -1041,10 +1041,10 @@ class LLMWorkflowTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(result.answer_package["context_manifest_ref"], "context-manifest-1")
-        self.assertEqual(result.answer_package["reuse_decisions"], reuse_decisions)
+        self.assertEqual(result.answer_package["context_manifest_ref"], "")
+        self.assertEqual(result.answer_package["reuse_decisions"], [])
 
-    def test_claims_carry_context_manifest_and_reuse_decisions(self):
+    def test_claimless_package_drops_context_manifest_and_reuse_decisions(self):
         fake = FakeLLMClient()
         reuse_decisions = [
             {
@@ -1068,8 +1068,8 @@ class LLMWorkflowTest(unittest.TestCase):
 
         claims = result.answer_package["sections"][0]["payload"]["claims"]
         self.assertEqual(claims, [])
-        self.assertEqual(result.answer_package["context_manifest_ref"], "context-claim-audit")
-        self.assertEqual(result.answer_package["reuse_decisions"], reuse_decisions)
+        self.assertEqual(result.answer_package["context_manifest_ref"], "")
+        self.assertEqual(result.answer_package["reuse_decisions"], [])
 
     def test_request_draft_claims_are_wrapped_with_context_audit(self):
         fake = FakeLLMClient()

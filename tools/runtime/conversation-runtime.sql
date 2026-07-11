@@ -220,6 +220,276 @@ CREATE TABLE IF NOT EXISTS waje_runtime.dataset_snapshot_releases (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS waje_runtime.analysis_contracts (
+  analysis_contract_id text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  contract_signature text NOT NULL CHECK (length(contract_signature) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.query_contracts (
+  query_contract_id text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  analysis_contract_id text NOT NULL REFERENCES waje_runtime.analysis_contracts(analysis_contract_id) ON DELETE CASCADE,
+  contract_signature text NOT NULL CHECK (length(contract_signature) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.query_runs (
+  result_ref text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  query_contract_id text NOT NULL REFERENCES waje_runtime.query_contracts(query_contract_id) ON DELETE CASCADE,
+  execution_status text NOT NULL,
+  query_hash text NOT NULL,
+  rows_ref text NOT NULL,
+  completeness_report_ref text NOT NULL,
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object' AND NOT (payload ? 'rows')),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.snapshot_authority (
+  record_ref text PRIMARY KEY,
+  record_digest text NOT NULL,
+  snapshot_ref text NOT NULL UNIQUE,
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.rows_metadata_authority (
+  record_ref text PRIMARY KEY,
+  record_digest text NOT NULL,
+  rows_ref text NOT NULL UNIQUE,
+  rows_content_hash text NOT NULL CHECK (length(rows_content_hash) = 64),
+  row_count bigint NOT NULL CHECK (row_count >= 0),
+  unique_key_fields jsonb NOT NULL CHECK (jsonb_typeof(unique_key_fields) = 'array'),
+  storage_ref text NOT NULL,
+  payload jsonb NOT NULL CHECK (
+    jsonb_typeof(payload) = 'object'
+    AND NOT (payload #> '{record}' ? 'rows')
+  ),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.query_execution_authority (
+  record_ref text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  record_digest text NOT NULL,
+  result_ref text NOT NULL UNIQUE REFERENCES waje_runtime.query_runs(result_ref) ON DELETE CASCADE,
+  query_contract_ref text NOT NULL REFERENCES waje_runtime.query_contracts(query_contract_id) ON DELETE CASCADE,
+  rows_ref text NOT NULL REFERENCES waje_runtime.rows_metadata_authority(rows_ref),
+  payload jsonb NOT NULL CHECK (
+    jsonb_typeof(payload) = 'object'
+    AND NOT (payload #> '{record,result_payload}' ? 'rows')
+  ),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.query_completeness_reports (
+  record_ref text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  report_ref text NOT NULL,
+  report_digest text NOT NULL,
+  result_ref text NOT NULL REFERENCES waje_runtime.query_runs(result_ref) ON DELETE CASCADE,
+  query_contract_ref text NOT NULL REFERENCES waje_runtime.query_contracts(query_contract_id) ON DELETE CASCADE,
+  completeness_status text NOT NULL,
+  analysis_readiness text NOT NULL,
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS query_completeness_reports_report_ref_idx
+  ON waje_runtime.query_completeness_reports (report_ref, created_at DESC, record_ref DESC);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.capability_binding_authority (
+  record_ref text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  binding_digest text NOT NULL,
+  capability_id text NOT NULL,
+  analysis_contract_id text NOT NULL REFERENCES waje_runtime.analysis_contracts(analysis_contract_id) ON DELETE CASCADE,
+  claim_strength_taxonomy_version text NOT NULL,
+  maximum_claim_strength_rank integer NOT NULL CHECK (maximum_claim_strength_rank >= 0),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE waje_runtime.query_execution_authority
+  ADD COLUMN IF NOT EXISTS run_id text;
+ALTER TABLE waje_runtime.query_completeness_reports
+  ADD COLUMN IF NOT EXISTS run_id text;
+ALTER TABLE waje_runtime.capability_binding_authority
+  ADD COLUMN IF NOT EXISTS run_id text;
+
+UPDATE waje_runtime.query_execution_authority authority
+SET run_id = run.run_id
+FROM waje_runtime.query_runs run
+WHERE authority.result_ref = run.result_ref
+  AND authority.run_id IS NULL;
+UPDATE waje_runtime.query_completeness_reports report
+SET run_id = run.run_id
+FROM waje_runtime.query_runs run
+WHERE report.result_ref = run.result_ref
+  AND report.run_id IS NULL;
+UPDATE waje_runtime.capability_binding_authority binding
+SET run_id = contract.run_id
+FROM waje_runtime.analysis_contracts contract
+WHERE binding.analysis_contract_id = contract.analysis_contract_id
+  AND binding.run_id IS NULL;
+
+ALTER TABLE waje_runtime.query_execution_authority ALTER COLUMN run_id SET NOT NULL;
+ALTER TABLE waje_runtime.query_completeness_reports ALTER COLUMN run_id SET NOT NULL;
+ALTER TABLE waje_runtime.capability_binding_authority ALTER COLUMN run_id SET NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'query_execution_authority_run_id_fkey'
+      AND conrelid = 'waje_runtime.query_execution_authority'::regclass
+  ) THEN
+    ALTER TABLE waje_runtime.query_execution_authority
+      ADD CONSTRAINT query_execution_authority_run_id_fkey
+      FOREIGN KEY (run_id) REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'query_completeness_reports_run_id_fkey'
+      AND conrelid = 'waje_runtime.query_completeness_reports'::regclass
+  ) THEN
+    ALTER TABLE waje_runtime.query_completeness_reports
+      ADD CONSTRAINT query_completeness_reports_run_id_fkey
+      FOREIGN KEY (run_id) REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'capability_binding_authority_run_id_fkey'
+      AND conrelid = 'waje_runtime.capability_binding_authority'::regclass
+  ) THEN
+    ALTER TABLE waje_runtime.capability_binding_authority
+      ADD CONSTRAINT capability_binding_authority_run_id_fkey
+      FOREIGN KEY (run_id) REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+ALTER TABLE waje_runtime.context_manifests
+  ADD COLUMN IF NOT EXISTS run_id text REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  ADD COLUMN IF NOT EXISTS topic_id text REFERENCES waje_runtime.conversation_topics(topic_id) ON DELETE CASCADE,
+  ADD COLUMN IF NOT EXISTS manifest_digest text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS payload jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_provenance_records (
+  record_ref text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  record_digest text NOT NULL,
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.verified_claims (
+  claim_ref text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  context_manifest_ref text NOT NULL REFERENCES waje_runtime.context_manifests(manifest_id) ON DELETE CASCADE,
+  provenance_record_ref text NOT NULL REFERENCES waje_runtime.claim_provenance_records(record_ref),
+  claim_digest text NOT NULL,
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.evidence_manifests (
+  evidence_ref text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  binding_record_ref text NOT NULL REFERENCES waje_runtime.capability_binding_authority(record_ref),
+  context_manifest_ref text NOT NULL,
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_evidence_links (
+  claim_ref text NOT NULL REFERENCES waje_runtime.verified_claims(claim_ref) ON DELETE CASCADE,
+  evidence_ref text NOT NULL REFERENCES waje_runtime.evidence_manifests(evidence_ref) ON DELETE CASCADE,
+  context_manifest_ref text NOT NULL REFERENCES waje_runtime.context_manifests(manifest_id) ON DELETE CASCADE,
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  PRIMARY KEY (claim_ref, evidence_ref)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.analysis_runtime_publications (
+  run_id text PRIMARY KEY REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  analysis_contract_id text NOT NULL REFERENCES waje_runtime.analysis_contracts(analysis_contract_id) ON DELETE CASCADE,
+  topic_id text NOT NULL REFERENCES waje_runtime.conversation_topics(topic_id) ON DELETE CASCADE,
+  bundle_digest text NOT NULL CHECK (length(bundle_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'claim_evidence_links_claim_ref_fkey'
+      AND conrelid = 'waje_runtime.claim_evidence_links'::regclass
+  ) THEN
+    ALTER TABLE waje_runtime.claim_evidence_links
+      ADD CONSTRAINT claim_evidence_links_claim_ref_fkey
+      FOREIGN KEY (claim_ref) REFERENCES waje_runtime.verified_claims(claim_ref) ON DELETE CASCADE;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'claim_evidence_links_context_manifest_ref_fkey'
+      AND conrelid = 'waje_runtime.claim_evidence_links'::regclass
+  ) THEN
+    ALTER TABLE waje_runtime.claim_evidence_links
+      ADD CONSTRAINT claim_evidence_links_context_manifest_ref_fkey
+      FOREIGN KEY (context_manifest_ref) REFERENCES waje_runtime.context_manifests(manifest_id);
+  END IF;
+END $$;
+
+ALTER TABLE waje_runtime.verified_claims
+  DROP CONSTRAINT IF EXISTS verified_claims_context_manifest_ref_fkey;
+ALTER TABLE waje_runtime.verified_claims
+  ADD CONSTRAINT verified_claims_context_manifest_ref_fkey
+  FOREIGN KEY (context_manifest_ref)
+  REFERENCES waje_runtime.context_manifests(manifest_id) ON DELETE CASCADE;
+ALTER TABLE waje_runtime.claim_evidence_links
+  DROP CONSTRAINT IF EXISTS claim_evidence_links_context_manifest_ref_fkey;
+ALTER TABLE waje_runtime.claim_evidence_links
+  ADD CONSTRAINT claim_evidence_links_context_manifest_ref_fkey
+  FOREIGN KEY (context_manifest_ref)
+  REFERENCES waje_runtime.context_manifests(manifest_id) ON DELETE CASCADE;
+
+CREATE TABLE IF NOT EXISTS waje_runtime.query_repair_attempts (
+  attempt_ref text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  failed_signature text NOT NULL,
+  action text NOT NULL,
+  reason text NOT NULL,
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_analysis_contracts_run
+  ON waje_runtime.analysis_contracts(run_id);
+CREATE INDEX IF NOT EXISTS idx_query_contracts_run
+  ON waje_runtime.query_contracts(run_id, analysis_contract_id);
+CREATE INDEX IF NOT EXISTS idx_query_runs_run
+  ON waje_runtime.query_runs(run_id, query_contract_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_manifests_run
+  ON waje_runtime.evidence_manifests(run_id, binding_record_ref);
+CREATE INDEX IF NOT EXISTS idx_claim_evidence_links_evidence
+  ON waje_runtime.claim_evidence_links(evidence_ref);
+CREATE INDEX IF NOT EXISTS idx_query_repair_attempts_run
+  ON waje_runtime.query_repair_attempts(run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_verified_claims_run
+  ON waje_runtime.verified_claims(run_id, context_manifest_ref);
+CREATE INDEX IF NOT EXISTS idx_claim_provenance_records_run
+  ON waje_runtime.claim_provenance_records(run_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_contracts_run_identity
+  ON waje_runtime.analysis_contracts(run_id, analysis_contract_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_query_contracts_run_identity
+  ON waje_runtime.query_contracts(run_id, query_contract_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_query_execution_authority_rows_ref
+  ON waje_runtime.query_execution_authority(rows_ref);
+
 CREATE INDEX IF NOT EXISTS idx_conversation_topics_thread ON waje_runtime.conversation_topics(thread_id);
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread ON waje_runtime.conversation_turns(thread_id);
 CREATE INDEX IF NOT EXISTS idx_analysis_runs_thread ON waje_runtime.analysis_runs(thread_id);

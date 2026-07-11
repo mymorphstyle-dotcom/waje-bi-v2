@@ -38,6 +38,7 @@ def verified_dimension_scan_asset(
     resolved_windows,
     query_ref="query:channel-scan",
     snapshot_ref="snapshot:paid:1",
+    analysis_contract_ref="analysis:asset-fixture:1",
     contract_versions=None,
     schema_fingerprint="schema-v1",
     completeness_status="complete",
@@ -100,7 +101,7 @@ def verified_dimension_scan_asset(
     total_query_ref = f"{query_ref}:total"
     total_contract = QueryContract(
         query_contract_id=total_query_ref,
-        analysis_contract_ref="analysis:asset-fixture:1",
+        analysis_contract_ref=analysis_contract_ref,
         query_intent="daily_metric_baselines",
         dataset_snapshot_refs=(snapshot_ref,),
         metric_bindings=(metric_binding,),
@@ -131,7 +132,7 @@ def verified_dimension_scan_asset(
     )
     contract = QueryContract(
         query_contract_id=query_ref,
-        analysis_contract_ref="analysis:asset-fixture:1",
+        analysis_contract_ref=analysis_contract_ref,
         query_intent="dimension_contribution_scan",
         dataset_snapshot_refs=(snapshot_ref,),
         metric_bindings=(metric_binding,),
@@ -295,7 +296,9 @@ def verified_dimension_scan_asset(
     total_completeness_record = _record_completeness(authority, total_report)
     plan = CapabilityExecutionPlan(
         capability_id="segment_contribution",
-        capability_contract_ref="capability:segment@1",
+        capability_contract_ref=registry.capability_contract_ref(
+            "segment_contribution"
+        ),
         required_input_slots=(
             CapabilityInputSlot(
                 slot_id="dimension_contribution_scan",

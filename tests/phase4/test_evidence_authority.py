@@ -153,9 +153,8 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
         )
         plan = CapabilityExecutionPlan(
             capability_id="compare_periods",
-            capability_contract_ref=(
-                "contracts/runtime/clickhouse-analysis-bindings.yaml"
-                "#capability_inputs.compare_periods"
+            capability_contract_ref=registry.capability_contract_ref(
+                "compare_periods"
             ),
             required_input_slots=(
                 CapabilityInputSlot(
@@ -439,7 +438,11 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             runtime_registry=registry,
         )
         self.assertEqual(drifted.status, "blocked")
-        self.assertIn("capability_contract_signature_mismatch", drifted.reasons)
+        self.assertIn(
+            "capability_contract_resolution_failed:"
+            "capability_contract_plan_policy_mismatch",
+            drifted.reasons,
+        )
 
         class MetadataResolver:
             def resolve_query_execution(self, ref):

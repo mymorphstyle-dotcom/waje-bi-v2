@@ -167,6 +167,19 @@ def query_contract_signature(value: QueryContract | Mapping[str, Any]) -> str:
     return stable_contract_signature(query_contract_semantic_body(value))
 
 
+def analysis_contract_semantic_body(value: "AnalysisContract" | Mapping[str, Any]) -> dict[str, Any]:
+    payload = asdict(value) if isinstance(value, AnalysisContract) else dict(value)
+    return {
+        str(key): _serialize_contract_value(item)
+        for key, item in payload.items()
+        if key not in {"analysis_contract_id", "contract_signature"}
+    }
+
+
+def analysis_contract_signature(value: "AnalysisContract" | Mapping[str, Any]) -> str:
+    return stable_contract_signature(analysis_contract_semantic_body(value))
+
+
 def _contract_field(
     value: QueryContract | Mapping[str, Any],
     field_name: str,
@@ -250,6 +263,274 @@ class AnalysisContract:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def analysis_contract_from_dict(value: Mapping[str, Any]) -> AnalysisContract:
+    """Rehydrate the complete canonical analysis contract without coercion."""
+    item = _strict_mapping(value, path="analysis_contract")
+    _require_exact_keys(
+        item,
+        tuple(AnalysisContract.__dataclass_fields__),
+        path="analysis_contract",
+    )
+    contract = AnalysisContract(
+        analysis_contract_id=_strict_string(
+            item["analysis_contract_id"], path="analysis_contract.analysis_contract_id"
+        ),
+        contract_version=_strict_string(
+            item["contract_version"], path="analysis_contract.contract_version"
+        ),
+        question_families=_strict_string_sequence(
+            item["question_families"], path="analysis_contract.question_families"
+        ),
+        target_metric_refs=_strict_string_sequence(
+            item["target_metric_refs"], path="analysis_contract.target_metric_refs"
+        ),
+        claim_intents=_strict_string_sequence(
+            item["claim_intents"], path="analysis_contract.claim_intents"
+        ),
+        scope=dict(_strict_mapping(item["scope"], path="analysis_contract.scope")),
+        business_timezone=_strict_string(
+            item["business_timezone"], path="analysis_contract.business_timezone"
+        ),
+        as_of=_strict_string(item["as_of"], path="analysis_contract.as_of"),
+        resolved_windows=tuple(
+            _resolved_window_from_dict(raw, index=index)
+            for index, raw in enumerate(
+                _strict_sequence(
+                    item["resolved_windows"], path="analysis_contract.resolved_windows"
+                )
+            )
+        ),
+        metric_bindings=tuple(
+            _metric_binding_from_dict(raw, index=index)
+            for index, raw in enumerate(
+                _strict_sequence(
+                    item["metric_bindings"], path="analysis_contract.metric_bindings"
+                )
+            )
+        ),
+        dimension_bindings=tuple(
+            _dimension_binding_from_dict(raw, index=index)
+            for index, raw in enumerate(
+                _strict_sequence(
+                    item["dimension_bindings"],
+                    path="analysis_contract.dimension_bindings",
+                )
+            )
+        ),
+        dataset_requirements=_strict_string_sequence(
+            item["dataset_requirements"],
+            path="analysis_contract.dataset_requirements",
+        ),
+        capability_requirements=_strict_string_sequence(
+            item["capability_requirements"],
+            path="analysis_contract.capability_requirements",
+        ),
+        permission_scope=_strict_string(
+            item["permission_scope"], path="analysis_contract.permission_scope"
+        ),
+        contract_gaps=tuple(
+            _contract_gap_from_dict(raw, index=index)
+            for index, raw in enumerate(
+                _strict_sequence(
+                    item["contract_gaps"], path="analysis_contract.contract_gaps"
+                )
+            )
+        ),
+        clarification_outcome_ref=_strict_string(
+            item["clarification_outcome_ref"],
+            path="analysis_contract.clarification_outcome_ref",
+            allow_empty=True,
+        ),
+    )
+    for name, values in (
+        ("resolved_windows", tuple(item.window_id for item in contract.resolved_windows)),
+        ("metric_bindings", tuple(item.metric_id for item in contract.metric_bindings)),
+        (
+            "dimension_bindings",
+            tuple(item.dimension_id for item in contract.dimension_bindings),
+        ),
+        ("dataset_requirements", contract.dataset_requirements),
+        ("capability_requirements", contract.capability_requirements),
+    ):
+        if len(values) != len(set(values)):
+            raise ValueError(f"analysis_contract.{name}:duplicate")
+    return contract
+
+
+def _resolved_window_from_dict(value: Any, *, index: int) -> ResolvedWindow:
+    path = f"analysis_contract.resolved_windows[{index}]"
+    item = _strict_mapping(value, path=path)
+    _require_exact_keys(item, tuple(ResolvedWindow.__dataclass_fields__), path=path)
+    return ResolvedWindow(
+        window_id=_strict_string(item["window_id"], path=f"{path}.window_id"),
+        role=_strict_string(item["role"], path=f"{path}.role"),
+        label=_strict_string(item["label"], path=f"{path}.label"),
+        start_inclusive=_strict_string(
+            item["start_inclusive"], path=f"{path}.start_inclusive"
+        ),
+        end_exclusive=_strict_string(
+            item["end_exclusive"], path=f"{path}.end_exclusive"
+        ),
+        timezone=_strict_string(item["timezone"], path=f"{path}.timezone"),
+        aggregation=_strict_string(
+            item["aggregation"], path=f"{path}.aggregation"
+        ),
+        required_complete_days=_strict_int(
+            item["required_complete_days"], path=f"{path}.required_complete_days"
+        ),
+        source_watermark_requirement=_strict_string(
+            item["source_watermark_requirement"],
+            path=f"{path}.source_watermark_requirement",
+        ),
+        membership_policy=_strict_string(
+            item["membership_policy"], path=f"{path}.membership_policy"
+        ),
+    )
+
+
+def _metric_binding_from_dict(value: Any, *, index: int) -> MetricBinding:
+    path = f"analysis_contract.metric_bindings[{index}]"
+    item = _strict_mapping(value, path=path)
+    _require_exact_keys(item, tuple(MetricBinding.__dataclass_fields__), path=path)
+    return MetricBinding(
+        metric_id=_strict_string(item["metric_id"], path=f"{path}.metric_id"),
+        contract_ref=_strict_string(item["contract_ref"], path=f"{path}.contract_ref"),
+        dataset_id=_strict_string(item["dataset_id"], path=f"{path}.dataset_id"),
+        expression=_strict_string(item["expression"], path=f"{path}.expression"),
+        aggregation=_strict_string(item["aggregation"], path=f"{path}.aggregation"),
+        required_fields=_strict_string_sequence(
+            item["required_fields"], path=f"{path}.required_fields"
+        ),
+        grain=_strict_string_sequence(item["grain"], path=f"{path}.grain"),
+        numerator_metric=_strict_string(
+            item["numerator_metric"], path=f"{path}.numerator_metric", allow_empty=True
+        ),
+        denominator_metric=_strict_string(
+            item["denominator_metric"],
+            path=f"{path}.denominator_metric",
+            allow_empty=True,
+        ),
+        zero_denominator_policy=_strict_string(
+            item["zero_denominator_policy"], path=f"{path}.zero_denominator_policy"
+        ),
+        claim_types=_strict_string_sequence(
+            item["claim_types"], path=f"{path}.claim_types"
+        ),
+        reconciliation_tolerance=_strict_number(
+            item["reconciliation_tolerance"],
+            path=f"{path}.reconciliation_tolerance",
+        ),
+        reconciliation_strategy=_strict_string(
+            item["reconciliation_strategy"],
+            path=f"{path}.reconciliation_strategy",
+        ),
+        value_semantics=_strict_string(
+            item["value_semantics"], path=f"{path}.value_semantics"
+        ),
+        display_format=_strict_string(
+            item["display_format"], path=f"{path}.display_format"
+        ),
+    )
+
+
+def _dimension_binding_from_dict(value: Any, *, index: int) -> DimensionBinding:
+    path = f"analysis_contract.dimension_bindings[{index}]"
+    item = _strict_mapping(value, path=path)
+    _require_exact_keys(item, tuple(DimensionBinding.__dataclass_fields__), path=path)
+    return DimensionBinding(
+        dimension_id=_strict_string(
+            item["dimension_id"], path=f"{path}.dimension_id"
+        ),
+        contract_ref=_strict_string(item["contract_ref"], path=f"{path}.contract_ref"),
+        dataset_id=_strict_string(item["dataset_id"], path=f"{path}.dataset_id"),
+        source_field=_strict_string(item["source_field"], path=f"{path}.source_field"),
+        allowed_grains=_strict_string_sequence(
+            item["allowed_grains"], path=f"{path}.allowed_grains"
+        ),
+        null_bucket=_strict_string(item["null_bucket"], path=f"{path}.null_bucket"),
+        permission_scope=_strict_string(
+            item["permission_scope"], path=f"{path}.permission_scope"
+        ),
+    )
+
+
+def _contract_gap_from_dict(value: Any, *, index: int) -> ContractGap:
+    path = f"analysis_contract.contract_gaps[{index}]"
+    item = _strict_mapping(value, path=path)
+    _require_exact_keys(item, tuple(ContractGap.__dataclass_fields__), path=path)
+    if type(item["requires_clarification"]) is not bool:
+        raise TypeError(f"{path}.requires_clarification:expected_boolean")
+    return ContractGap(
+        gap_type=_strict_string(item["gap_type"], path=f"{path}.gap_type"),
+        gap_id=_strict_string(item["gap_id"], path=f"{path}.gap_id"),
+        dataset_id=_strict_string(
+            item["dataset_id"], path=f"{path}.dataset_id", allow_empty=True
+        ),
+        affected_capabilities=_strict_string_sequence(
+            item["affected_capabilities"], path=f"{path}.affected_capabilities"
+        ),
+        affected_claim_types=_strict_string_sequence(
+            item["affected_claim_types"], path=f"{path}.affected_claim_types"
+        ),
+        owner=_strict_string(item["owner"], path=f"{path}.owner"),
+        repair_options=_strict_string_sequence(
+            item["repair_options"], path=f"{path}.repair_options"
+        ),
+        requires_clarification=item["requires_clarification"],
+        diagnostic_context=dict(
+            _strict_mapping(
+                item["diagnostic_context"], path=f"{path}.diagnostic_context"
+            )
+        ),
+    )
+
+
+def _strict_mapping(value: Any, *, path: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or any(type(key) is not str for key in value):
+        raise TypeError(f"{path}:expected_mapping")
+    return value
+
+
+def _strict_sequence(value: Any, *, path: str) -> tuple[Any, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{path}:expected_sequence")
+    return tuple(value)
+
+
+def _strict_string_sequence(value: Any, *, path: str) -> tuple[str, ...]:
+    items = _strict_sequence(value, path=path)
+    if any(type(item) is not str or not item for item in items):
+        raise TypeError(f"{path}:expected_nonempty_strings")
+    return items
+
+
+def _strict_string(value: Any, *, path: str, allow_empty: bool = False) -> str:
+    if type(value) is not str or (not allow_empty and not value):
+        raise TypeError(f"{path}:expected_string")
+    return value
+
+
+def _strict_int(value: Any, *, path: str) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{path}:expected_integer")
+    return value
+
+
+def _strict_number(value: Any, *, path: str) -> float:
+    if type(value) is not float:
+        raise TypeError(f"{path}:expected_number")
+    return value
+
+
+def _require_exact_keys(
+    value: Mapping[str, Any], expected: tuple[str, ...], *, path: str
+) -> None:
+    if set(value) != set(expected):
+        missing = sorted(set(expected) - set(value))
+        unknown = sorted(set(value) - set(expected))
+        raise ValueError(f"{path}:keys_invalid:missing={missing}:unknown={unknown}")
 
 
 @dataclass(frozen=True)

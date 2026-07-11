@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Any, Mapping, Sequence
 
 from bi_agent.runtime.analysis_contracts import (
+    CapabilityExecutionPlan,
+    CapabilityInputSlot,
     CompletenessReport,
+    QueryContract,
     QueryResultEnvelope,
 )
 from bi_agent.runtime.clickhouse_query_compiler import (
@@ -70,7 +73,6 @@ def validate_authoritative_query_chain(
     if type(binding) is not CapabilityBindingRecord:
         raise AuthoritativeQueryChainError("capability_binding_record_type_invalid")
     _require_clean_record(binding, "capability_binding_record_integrity")
-    _validate_binding_policy(binding, runtime_registry)
     if not isinstance(resolver, RuntimeEvidenceResolver):
         raise AuthoritativeQueryChainError("runtime_evidence_resolver_invalid")
     if not isinstance(rows_loader, RowsPayloadLoader):
@@ -99,10 +101,15 @@ def validate_authoritative_query_chain(
     }
     if len(by_query_ref) != len(items):
         raise AuthoritativeQueryChainError("authoritative_query_ref_duplicate")
-    _validate_capability_slots(binding, runtime_registry, by_query_ref)
+    validate_capability_binding_plan_semantics(
+        binding,
+        runtime_registry,
+        {
+            ref: item.query_record.contract
+            for ref, item in by_query_ref.items()
+        },
+    )
     ordered_refs = _binding_query_order(binding)
-    if set(ordered_refs) != set(by_query_ref) or len(ordered_refs) != len(items):
-        raise AuthoritativeQueryChainError("capability_binding_plan_query_refs_mismatch")
     ordered = tuple(by_query_ref[ref] for ref in ordered_refs)
     base_reports = tuple(
         validate_query_result(
@@ -399,74 +406,107 @@ def _binding_query_order(binding: CapabilityBindingRecord) -> tuple[str, ...]:
     return tuple(dict.fromkeys(refs))
 
 
-def _validate_binding_policy(
+def validate_capability_binding_plan_semantics(
     binding: CapabilityBindingRecord,
     registry: RuntimeContractRegistry,
+    query_contracts_by_ref: Mapping[str, QueryContract] | None = None,
 ) -> None:
-    try:
-        capability = registry.capability_inputs(binding.capability_id)
-        maximum = str(capability.get("maximum_claim_strength") or "")
-        expected = (
-            registry.contract_version,
-            registry.capability_contract_signature(binding.capability_id),
-            maximum,
-            registry.maximum_claim_strength_rank(maximum),
-            registry.claim_strength_taxonomy_version,
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise AuthoritativeQueryChainError("capability_contract_policy_invalid") from exc
-    actual = (
-        binding.capability_contract_version,
-        binding.capability_contract_signature,
-        binding.maximum_claim_strength,
-        binding.maximum_claim_strength_rank,
-        binding.claim_strength_taxonomy_version,
-    )
-    if actual != expected:
-        raise AuthoritativeQueryChainError("capability_contract_policy_mismatch")
-    binding_policy = (
-        binding.supported_claim_types,
-        binding.supported_evidence_types,
-        binding.maximum_claim_strength,
-        binding.maximum_claim_strength_rank,
-        binding.claim_strength_taxonomy_version,
-    )
-    expected_binding_policy = (
-        tuple(capability.get("supported_claim_types") or ()),
-        tuple(capability.get("supported_evidence_types") or ()),
-        maximum,
-        registry.maximum_claim_strength_rank(maximum),
-        registry.claim_strength_taxonomy_version,
-    )
-    if binding_policy != expected_binding_policy:
-        raise AuthoritativeQueryChainError(
-            "capability_contract_binding_policy_mismatch"
-        )
-    for field in (
-        "supported_claim_types",
-        "supported_evidence_types",
-        "minimum_readiness",
-        "degradation_policy",
+    """Validate the reviewed capability plan identity shared by binder consumers."""
+    registry_error = runtime_registry_integrity_error(registry)
+    if registry_error:
+        raise AuthoritativeQueryChainError(registry_error)
+    if type(binding) is not CapabilityBindingRecord:
+        raise AuthoritativeQueryChainError("capability_binding_record_type_invalid")
+    _require_clean_record(binding, "capability_binding_record_integrity")
+    plan = binding.plan_payload
+    validate_capability_plan_semantics(plan, registry, query_contracts_by_ref)
+    if (
+        str(plan.get("capability_id") or "") != binding.capability_id
+        or str(plan.get("analysis_contract_ref") or "")
+        != binding.analysis_contract_ref
+        or tuple(binding.supported_claim_types)
+        != tuple(plan.get("supported_claim_types") or ())
+        or tuple(binding.supported_evidence_types)
+        != tuple(plan.get("supported_evidence_types") or ())
+        or binding.maximum_claim_strength
+        != str(plan.get("maximum_claim_strength") or "")
+        or binding.maximum_claim_strength_rank
+        != int(plan.get("maximum_claim_strength_rank", -1))
+        or binding.claim_strength_taxonomy_version
+        != str(plan.get("claim_strength_taxonomy_version") or "")
     ):
-        expected_value = capability.get(field)
-        actual_value = binding.plan_payload.get(field)
-        if canonical_digest(actual_value) != canonical_digest(expected_value):
-            raise AuthoritativeQueryChainError(
-                f"capability_contract_plan_policy_mismatch:{field}"
-            )
-    expected_merge = str(capability.get("merge_strategy") or "by_query_family")
-    if str(binding.plan_payload.get("merge_strategy") or "") != expected_merge:
+        raise AuthoritativeQueryChainError("capability_contract_plan_identity_mismatch")
+    if query_contracts_by_ref is None:
+        return
+    ordered_refs = _binding_query_order(binding)
+    if (
+        set(ordered_refs) != set(query_contracts_by_ref)
+        or len(ordered_refs) != len(query_contracts_by_ref)
+    ):
         raise AuthoritativeQueryChainError(
-            "capability_contract_plan_policy_mismatch:merge_strategy"
+            "capability_binding_plan_query_refs_mismatch"
         )
+
+
+def validate_capability_plan_semantics(
+    plan: CapabilityExecutionPlan | Mapping[str, Any],
+    registry: RuntimeContractRegistry,
+    query_contracts_by_ref: Mapping[str, QueryContract] | None = None,
+) -> None:
+    registry_error = runtime_registry_integrity_error(registry)
+    if registry_error:
+        raise AuthoritativeQueryChainError(registry_error)
+    payload = asdict(plan) if type(plan) is CapabilityExecutionPlan else plan
+    if not isinstance(payload, Mapping) or set(payload) != {
+        field.name for field in fields(CapabilityExecutionPlan)
+    }:
+        raise AuthoritativeQueryChainError("capability_contract_plan_schema_invalid")
+    capability_id = str(payload.get("capability_id") or "")
+    try:
+        capability = registry.capability_inputs(capability_id)
+        maximum = str(capability.get("maximum_claim_strength") or "")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AuthoritativeQueryChainError(
+            "capability_contract_policy_invalid"
+        ) from exc
+    if (
+        str(payload.get("capability_contract_ref") or "")
+        != registry.capability_contract_ref(capability_id)
+        or str(payload.get("capability_contract_version") or "")
+        != registry.contract_version
+        or str(payload.get("capability_contract_signature") or "")
+        != registry.capability_contract_signature(capability_id)
+        or not str(payload.get("analysis_contract_ref") or "")
+        or str(payload.get("merge_strategy") or "")
+        != str(capability.get("merge_strategy") or "by_query_family")
+        or canonical_digest(payload.get("minimum_readiness"))
+        != canonical_digest(capability.get("minimum_readiness") or {})
+        or canonical_digest(payload.get("degradation_policy"))
+        != canonical_digest(capability.get("degradation_policy") or {})
+        or tuple(payload.get("supported_claim_types") or ())
+        != tuple(capability.get("supported_claim_types") or ())
+        or tuple(payload.get("supported_evidence_types") or ())
+        != tuple(capability.get("supported_evidence_types") or ())
+        or str(payload.get("maximum_claim_strength") or "") != maximum
+        or int(payload.get("maximum_claim_strength_rank", -1))
+        != registry.maximum_claim_strength_rank(maximum)
+        or str(payload.get("claim_strength_taxonomy_version") or "")
+        != registry.claim_strength_taxonomy_version
+    ):
+        raise AuthoritativeQueryChainError("capability_contract_plan_policy_mismatch")
+    _validate_capability_slots(
+        payload,
+        registry,
+        query_contracts_by_ref,
+    )
 
 
 def _validate_capability_slots(
-    binding: CapabilityBindingRecord,
+    plan: Mapping[str, Any],
     registry: RuntimeContractRegistry,
-    by_query_ref: Mapping[str, _ResolvedItem],
+    by_query_ref: Mapping[str, QueryContract] | None,
 ) -> None:
-    capability = registry.capability_inputs(binding.capability_id)
+    capability = registry.capability_inputs(str(plan.get("capability_id") or ""))
     query_families = tuple(capability.get("query_families") or ())
     optional_families = set(capability.get("optional_query_families") or ())
     accepted = tuple(
@@ -481,13 +521,20 @@ def _validate_capability_slots(
     raw_slots = tuple(
         slot
         for field in ("required_input_slots", "optional_input_slots")
-        for slot in binding.plan_payload.get(field) or ()
+        for slot in plan.get(field) or ()
     )
     if any(not isinstance(slot, Mapping) for slot in raw_slots):
         raise AuthoritativeQueryChainError(
             "capability_contract_slot_schema_invalid"
         )
     slots = raw_slots
+    if any(
+        set(slot) != {field.name for field in fields(CapabilityInputSlot)}
+        for slot in slots
+    ):
+        raise AuthoritativeQueryChainError(
+            "capability_contract_slot_schema_invalid"
+        )
     slot_families = tuple(_slot_query_family(slot) for slot in slots)
     if set(slot_families) != set(query_families) or any(
         family not in query_families for family in slot_families
@@ -525,6 +572,8 @@ def _validate_capability_slots(
                     f"capability_contract_slot_validation_dependency_mismatch:{family}"
                 )
             continue
+        if by_query_ref is None:
+            continue
         primaries = tuple(by_query_ref.get(ref) for ref in primary_refs)
         if any(item is None for item in primaries):
             raise AuthoritativeQueryChainError(
@@ -533,7 +582,7 @@ def _validate_capability_slots(
         expected_metrics = tuple(family_metrics.get(family) or default_metrics)
         expected_validation_refs = []
         for item in primaries:
-            contract = item.query_record.contract
+            contract = item
             if contract.query_intent != family:
                 raise AuthoritativeQueryChainError(
                     f"capability_contract_slot_query_intent_mismatch:{family}"
@@ -583,9 +632,9 @@ def _validate_capability_slots(
                 companions = tuple(
                     ref
                     for ref, candidate in by_query_ref.items()
-                    if candidate.query_record.contract.query_role_ref
+                    if candidate.query_role_ref
                     == reconciliation.reference_query_role_ref
-                    and candidate.query_record.contract.contract_signature
+                    and candidate.contract_signature
                     == reconciliation.reference_contract_signature
                 )
                 expected_validation_refs.extend(companions)

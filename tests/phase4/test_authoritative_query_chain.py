@@ -530,7 +530,7 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             AuthoritativeQueryChainError,
-            "capability_contract_slot",
+            "capability_contract_plan_policy_mismatch",
         ):
             validate_authoritative_query_chain(
                 forged,
@@ -551,7 +551,7 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             AuthoritativeQueryChainError,
-            "capability_contract_binding_policy_mismatch",
+            "capability_contract_plan_identity_mismatch",
         ):
             validate_authoritative_query_chain(
                 forged,

@@ -658,12 +658,38 @@ class FakeConnection:
         self.rows = rows
         self.fail_execute_at = fail_execute_at
         self.fail_commit = fail_commit
+        self.runtime_publications = {}
+        self.pending_runtime_publications = {}
 
     def execute(self, statement, params=None):
         self.statements.append((statement, params or {}))
         if len(self.statements) == self.fail_execute_at:
             raise RuntimeError("execute failed")
         rows = self.rows
+        if "runtime_publication_preflight" in statement and rows is None:
+            run_id = (params or {})["run_id"]
+            rows = [{
+                "run_id": run_id,
+                "thread_id": (params or {}).get("expected_thread_id", "thread-task9"),
+                "topic_id": (params or {}).get("expected_topic_id", "topic-task9"),
+                "bundle_digest": self.runtime_publications.get(run_id, ""),
+            }]
+        if "INSERT INTO waje_runtime.analysis_runtime_publications" in statement:
+            self.pending_runtime_publications[(params or {})["run_id"]] = (
+                params or {}
+            )["bundle_digest"]
+        if "runtime_publication_postcheck" in statement and self.rows is None:
+            rows = [{
+                "bundle_digest": (params or {})["expected_bundle_digest"],
+                "query_contract_count": (params or {})["expected_query_contract_count"],
+                "query_run_count": (params or {})["expected_query_run_count"],
+                "query_authority_count": (params or {})["expected_query_authority_count"],
+                "completeness_count": (params or {})["expected_completeness_count"],
+                "binding_count": (params or {})["expected_binding_count"],
+                "evidence_count": (params or {})["expected_evidence_count"],
+                "verified_claim_count": (params or {})["expected_verified_claim_count"],
+                "claim_link_count": (params or {})["expected_claim_link_count"],
+            }]
         if rows is None and "validated_count" in statement:
             expected = json.loads((params or {})["expected_payloads"])
             rows = [{"validated_count": len(expected)}]
@@ -672,9 +698,12 @@ class FakeConnection:
     def commit(self):
         if self.fail_commit:
             raise RuntimeError("commit failed")
+        self.runtime_publications.update(self.pending_runtime_publications)
+        self.pending_runtime_publications.clear()
         self.commits += 1
 
     def rollback(self):
+        self.pending_runtime_publications.clear()
         self.rollbacks += 1
 
 

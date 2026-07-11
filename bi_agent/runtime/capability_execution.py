@@ -12,7 +12,9 @@ from bi_agent.runtime.analysis_contracts import (
 )
 from bi_agent.runtime.canonical_values import canonical_thaw
 from bi_agent.runtime.authoritative_query_chain import (
+    AuthoritativeQueryChainError,
     validate_authoritative_query_chain,
+    validate_capability_plan_semantics,
 )
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
@@ -135,24 +137,12 @@ def bind_capability_inputs(
         if registry is None:
             return _blocked_bound(plan, "runtime_contract_registry_missing")
         try:
-            expected_signature = registry.capability_contract_signature(
-                plan.capability_id
-            )
-        except (KeyError, TypeError, ValueError) as exc:
+            validate_capability_plan_semantics(plan, registry)
+        except (AuthoritativeQueryChainError, KeyError, TypeError, ValueError) as exc:
             return _blocked_bound(
                 plan,
                 f"capability_contract_resolution_failed:{exc}",
             )
-        if (
-            plan.capability_contract_version != registry.contract_version
-            or plan.capability_contract_signature != expected_signature
-            or not _plan_matches_registry_contract(
-                plan,
-                registry.capability_inputs(plan.capability_id),
-                registry,
-            )
-        ):
-            return _blocked_bound(plan, "capability_contract_signature_mismatch")
         try:
             (
                 results,
@@ -836,29 +826,6 @@ def _optional_failure_blocks(
     )
     action = str(plan.degradation_policy.get(policy_key) or "")
     return action not in _NON_BLOCKING_DEGRADATION_ACTIONS
-
-
-def _plan_matches_registry_contract(
-    plan: CapabilityExecutionPlan,
-    contract: Mapping[str, Any],
-    registry: RuntimeContractRegistry,
-) -> bool:
-    return bool(
-        _canonical_value(plan.minimum_readiness)
-        == _canonical_value(contract.get("minimum_readiness") or {})
-        and _canonical_value(plan.degradation_policy)
-        == _canonical_value(contract.get("degradation_policy") or {})
-        and tuple(plan.supported_evidence_types)
-        == tuple(contract.get("supported_evidence_types") or ())
-        and tuple(plan.supported_claim_types)
-        == tuple(contract.get("supported_claim_types") or ())
-        and plan.maximum_claim_strength
-        == str(contract.get("maximum_claim_strength") or "")
-        and plan.maximum_claim_strength_rank
-        == registry.maximum_claim_strength_rank(plan.maximum_claim_strength)
-        and plan.claim_strength_taxonomy_version
-        == registry.claim_strength_taxonomy_version
-    )
 
 
 _NON_BLOCKING_DEGRADATION_ACTIONS = frozenset(

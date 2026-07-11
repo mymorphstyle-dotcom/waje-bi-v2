@@ -155,6 +155,17 @@ class RuntimeContractRegistry:
         ).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
+    def capability_contract_ref(self, capability_id: str) -> str:
+        contract = self.capability_inputs(capability_id)
+        base = str(
+            contract.get("contract_ref")
+            or f"contracts/runtime/clickhouse-analysis-bindings.yaml#capability_inputs.{capability_id}"
+        )
+        return (
+            f"{base}|runtime_version={self.contract_version}"
+            f"|sha256={self.capability_contract_signature(capability_id)}"
+        )
+
     @property
     def claim_strength_taxonomy(self) -> dict[str, Any]:
         return deepcopy(dict(self._payload["claim_strength_taxonomy"]))

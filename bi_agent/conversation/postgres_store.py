@@ -4,7 +4,7 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional, Sequence
 from uuid import uuid4
 
 from bi_agent.conversation.models import (
@@ -408,6 +408,574 @@ class PostgresConversationStore:
                 payload=package,
             )
         self._audit("answer_package_recorded", run_id=run_id, ref=run_id)
+
+    def runtime_evidence_resolver(self):
+        from bi_agent.runtime.runtime_persistence import (
+            PostgresRuntimeEvidenceResolver,
+        )
+
+        return PostgresRuntimeEvidenceResolver(self.connection)
+
+    def save_analysis_runtime_records(
+        self,
+        *,
+        run_id: str,
+        analysis_contract: Mapping[str, Any],
+        query_contracts: Sequence[Any],
+        query_execution_records: Sequence[Any],
+        rows_records: Sequence[Any],
+        snapshot_records: Sequence[Any],
+        completeness_records: Sequence[Any],
+        capability_binding_records: Sequence[Any],
+        evidence_manifests: Sequence[Mapping[str, Any]],
+        context_manifests: Sequence[Mapping[str, Any]],
+        trusted_provenance_records: Sequence[Mapping[str, Any]],
+        verified_claims: Sequence[Mapping[str, Any]],
+        claim_links: Sequence[Mapping[str, Any]],
+        repair_attempts: Sequence[Mapping[str, Any]],
+    ) -> str:
+        from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
+        from bi_agent.runtime.runtime_persistence import (
+            authority_record_payload,
+            validate_analysis_runtime_records,
+        )
+
+        bundle = validate_analysis_runtime_records(
+            run_id=run_id,
+            analysis_contract=analysis_contract,
+            query_contracts=query_contracts,
+            query_execution_records=query_execution_records,
+            rows_records=rows_records,
+            snapshot_records=snapshot_records,
+            completeness_records=completeness_records,
+            capability_binding_records=capability_binding_records,
+            evidence_manifests=evidence_manifests,
+            context_manifests=context_manifests,
+            trusted_provenance_records=trusted_provenance_records,
+            verified_claims=verified_claims,
+            claim_links=claim_links,
+            repair_attempts=repair_attempts,
+        )
+        analysis = bundle["analysis_contract"]
+        bundle_digest = canonical_digest(bundle)
+        context_owners = {
+            (
+                str(item["thread_id"]),
+                str(item["topic_id"]),
+            )
+            for item in bundle["context_manifests"]
+        }
+        if len(context_owners) > 1:
+            from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+            raise EvidenceIntegrityError("runtime_persistence_context_owner_mismatch")
+        expected_thread_id, expected_topic_id = (
+            next(iter(context_owners)) if context_owners else ("", "")
+        )
+        try:
+            self._execute(
+                """
+                SELECT pg_advisory_xact_lock(
+                  hashtextextended(%(lock_key)s, 0)
+                )
+                """,
+                {"lock_key": f"analysis_runtime_publication:{run_id}"},
+                commit=False,
+            )
+            publication = self._fetchone(
+                """
+                /* runtime_publication_preflight */
+                SELECT r.run_id, r.thread_id, r.topic_id, p.bundle_digest
+                FROM waje_runtime.analysis_runs r
+                LEFT JOIN waje_runtime.analysis_runtime_publications p
+                  ON p.run_id = r.run_id
+                WHERE r.run_id = %(run_id)s
+                FOR UPDATE OF r
+                """,
+                {
+                    "run_id": run_id,
+                    "expected_thread_id": expected_thread_id,
+                    "expected_topic_id": expected_topic_id,
+                },
+            )
+            if publication is None:
+                from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+                raise EvidenceIntegrityError("analysis_runtime_run_missing")
+            persisted_thread_id = str(_field(publication, "thread_id", 1) or "")
+            persisted_topic_id = str(_field(publication, "topic_id", 2) or "")
+            persisted_digest = str(_field(publication, "bundle_digest", 3) or "")
+            if context_owners and (
+                persisted_thread_id != expected_thread_id
+                or persisted_topic_id != expected_topic_id
+            ):
+                from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+                raise EvidenceIntegrityError("analysis_runtime_owner_mismatch")
+            if not context_owners:
+                expected_thread_id = persisted_thread_id
+                expected_topic_id = persisted_topic_id
+            if persisted_digest:
+                if persisted_digest == bundle_digest:
+                    self.connection.rollback()
+                    return "replayed"
+                from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+                raise EvidenceIntegrityError("analysis_runtime_publication_conflict")
+            self._insert_immutable(
+                """
+                INSERT INTO waje_runtime.analysis_contracts AS current(
+                  analysis_contract_id, run_id, contract_signature, payload
+                ) VALUES (
+                  %(analysis_contract_id)s, %(run_id)s, %(contract_signature)s,
+                  %(payload)s::jsonb
+                )
+                ON CONFLICT (analysis_contract_id) DO UPDATE
+                SET analysis_contract_id = current.analysis_contract_id
+                WHERE current.run_id = EXCLUDED.run_id
+                  AND current.contract_signature = EXCLUDED.contract_signature
+                  AND current.payload = EXCLUDED.payload
+                RETURNING analysis_contract_id
+                """,
+                {
+                    "analysis_contract_id": analysis["analysis_contract_id"],
+                    "run_id": run_id,
+                    "contract_signature": analysis["contract_signature"],
+                    "payload": _json(analysis),
+                },
+                collision="analysis_contract",
+            )
+            for contract in bundle["query_contracts"]:
+                payload = canonical_value(contract)
+                self._insert_immutable(
+                    """
+                    INSERT INTO waje_runtime.query_contracts AS current(
+                      query_contract_id, run_id, analysis_contract_id,
+                      contract_signature, payload
+                    ) VALUES (
+                      %(query_contract_id)s, %(run_id)s, %(analysis_contract_id)s,
+                      %(contract_signature)s, %(payload)s::jsonb
+                    )
+                    ON CONFLICT (query_contract_id) DO UPDATE
+                    SET query_contract_id = current.query_contract_id
+                    WHERE current.run_id = EXCLUDED.run_id
+                      AND current.analysis_contract_id = EXCLUDED.analysis_contract_id
+                      AND current.contract_signature = EXCLUDED.contract_signature
+                      AND current.payload = EXCLUDED.payload
+                    RETURNING query_contract_id
+                    """,
+                    {
+                        "query_contract_id": contract.query_contract_id,
+                        "run_id": run_id,
+                        "analysis_contract_id": contract.analysis_contract_ref,
+                        "contract_signature": contract.contract_signature,
+                        "payload": _json(payload),
+                    },
+                    collision="query_contract",
+                )
+            for record in bundle["query_execution_records"]:
+                self._insert_immutable(
+                    """
+                    INSERT INTO waje_runtime.query_runs AS current(
+                      result_ref, run_id, query_contract_id, execution_status,
+                      query_hash, rows_ref, completeness_report_ref, payload
+                    ) VALUES (
+                      %(result_ref)s, %(run_id)s, %(query_contract_id)s,
+                      %(execution_status)s, %(query_hash)s, %(rows_ref)s,
+                      %(completeness_report_ref)s, %(payload)s::jsonb
+                    )
+                    ON CONFLICT (result_ref) DO UPDATE
+                    SET result_ref = current.result_ref
+                    WHERE current.run_id = EXCLUDED.run_id
+                      AND current.query_contract_id = EXCLUDED.query_contract_id
+                      AND current.execution_status = EXCLUDED.execution_status
+                      AND current.query_hash = EXCLUDED.query_hash
+                      AND current.rows_ref = EXCLUDED.rows_ref
+                      AND current.completeness_report_ref = EXCLUDED.completeness_report_ref
+                      AND current.payload = EXCLUDED.payload
+                    RETURNING result_ref
+                    """,
+                    {
+                        "result_ref": record.result_ref,
+                        "run_id": run_id,
+                        "query_contract_id": record.query_contract_ref,
+                        "execution_status": record.execution_status,
+                        "query_hash": record.query_hash,
+                        "rows_ref": record.rows_ref,
+                        "completeness_report_ref": record.completeness_report_ref,
+                        "payload": _json(canonical_value(record.result_payload)),
+                    },
+                    collision="query_run",
+                )
+            for record in bundle["snapshot_records"]:
+                self._insert_authority_record(
+                    table="snapshot_authority",
+                    primary="record_ref",
+                    columns={
+                        "record_ref": record.record_ref,
+                        "record_digest": record.record_digest,
+                        "snapshot_ref": record.snapshot_ref,
+                    },
+                    payload=authority_record_payload("snapshot", record),
+                    collision="snapshot_record",
+                )
+            for record in bundle["rows_records"]:
+                self._insert_authority_record(
+                    table="rows_metadata_authority",
+                    primary="record_ref",
+                    columns={
+                        "record_ref": record.record_ref,
+                        "record_digest": record.record_digest,
+                        "rows_ref": record.rows_ref,
+                        "rows_content_hash": record.rows_content_hash,
+                        "row_count": record.row_count,
+                        "unique_key_fields": _json(list(record.unique_key_fields)),
+                        "storage_ref": record.storage_ref,
+                    },
+                    json_columns={"unique_key_fields"},
+                    payload=authority_record_payload("rows", record),
+                    collision="rows_record",
+                )
+            for record in bundle["query_execution_records"]:
+                self._insert_authority_record(
+                    table="query_execution_authority",
+                    primary="record_ref",
+                    columns={
+                        "record_ref": record.record_ref,
+                        "run_id": run_id,
+                        "record_digest": record.record_digest,
+                        "result_ref": record.result_ref,
+                        "query_contract_ref": record.query_contract_ref,
+                        "rows_ref": record.rows_ref,
+                    },
+                    payload=authority_record_payload("query_execution", record),
+                    collision="query_execution_record",
+                )
+            for record in bundle["completeness_records"]:
+                report = canonical_value(record.report_payload)
+                self._insert_authority_record(
+                    table="query_completeness_reports",
+                    primary="record_ref",
+                    columns={
+                        "record_ref": record.record_ref,
+                        "run_id": run_id,
+                        "report_ref": record.report_ref,
+                        "report_digest": record.report_digest,
+                        "result_ref": record.result_ref,
+                        "query_contract_ref": record.query_contract_ref,
+                        "completeness_status": report["completeness_status"],
+                        "analysis_readiness": report["analysis_readiness"],
+                    },
+                    payload=authority_record_payload("completeness", record),
+                    collision="completeness_record",
+                )
+            for record in bundle["capability_binding_records"]:
+                self._insert_authority_record(
+                    table="capability_binding_authority",
+                    primary="record_ref",
+                    columns={
+                        "record_ref": record.record_ref,
+                        "run_id": run_id,
+                        "binding_digest": record.binding_digest,
+                        "capability_id": record.capability_id,
+                        "analysis_contract_id": record.analysis_contract_ref,
+                        "claim_strength_taxonomy_version": record.claim_strength_taxonomy_version,
+                        "maximum_claim_strength_rank": record.maximum_claim_strength_rank,
+                    },
+                    payload=authority_record_payload("capability_binding", record),
+                    collision="capability_binding_record",
+                )
+            for manifest in bundle["evidence_manifests"]:
+                self._insert_immutable(
+                    """
+                    INSERT INTO waje_runtime.evidence_manifests AS current(
+                      evidence_ref, run_id, binding_record_ref,
+                      context_manifest_ref, payload
+                    ) VALUES (
+                      %(evidence_ref)s, %(run_id)s, %(binding_record_ref)s,
+                      %(context_manifest_ref)s, %(payload)s::jsonb
+                    )
+                    ON CONFLICT (evidence_ref) DO UPDATE
+                    SET evidence_ref = current.evidence_ref
+                    WHERE current.run_id = EXCLUDED.run_id
+                      AND current.binding_record_ref = EXCLUDED.binding_record_ref
+                      AND current.context_manifest_ref = EXCLUDED.context_manifest_ref
+                      AND current.payload = EXCLUDED.payload
+                    RETURNING evidence_ref
+                    """,
+                    {
+                        "evidence_ref": manifest["evidence_ref"],
+                        "run_id": run_id,
+                        "binding_record_ref": manifest["binding_record_ref"],
+                        "context_manifest_ref": manifest["context_manifest_ref"],
+                        "payload": _json(manifest),
+                    },
+                    collision="evidence_manifest",
+                )
+            for manifest in bundle["context_manifests"]:
+                self._insert_immutable(
+                    """
+                    INSERT INTO waje_runtime.context_manifests AS current(
+                      manifest_id, thread_id, turn_id, topic_id, run_id,
+                      can_support_claims, items, manifest_digest, payload
+                    ) VALUES (
+                      %(manifest_id)s, %(thread_id)s, NULL, %(topic_id)s,
+                      %(run_id)s, true, %(items)s::jsonb,
+                      %(manifest_digest)s, %(payload)s::jsonb
+                    )
+                    ON CONFLICT (manifest_id) DO UPDATE
+                    SET manifest_id = current.manifest_id
+                    WHERE current.thread_id = EXCLUDED.thread_id
+                      AND current.topic_id = EXCLUDED.topic_id
+                      AND current.run_id = EXCLUDED.run_id
+                      AND current.can_support_claims = EXCLUDED.can_support_claims
+                      AND current.items = EXCLUDED.items
+                      AND current.manifest_digest = EXCLUDED.manifest_digest
+                      AND current.payload = EXCLUDED.payload
+                    RETURNING manifest_id
+                    """,
+                    {
+                        **manifest,
+                        "items": _json(manifest["sources"]),
+                        "payload": _json(manifest),
+                    },
+                    collision="context_manifest",
+                )
+            for provenance in bundle["trusted_provenance_records"]:
+                self._insert_authority_record(
+                    table="claim_provenance_records",
+                    primary="record_ref",
+                    columns={
+                        "record_ref": provenance["record_ref"],
+                        "run_id": run_id,
+                        "record_digest": provenance["record_digest"],
+                    },
+                    payload=provenance,
+                    collision="claim_provenance_record",
+                )
+            for claim in bundle["verified_claims"]:
+                self._insert_authority_record(
+                    table="verified_claims",
+                    primary="claim_ref",
+                    columns={
+                        "claim_ref": claim["claim_ref"],
+                        "run_id": run_id,
+                        "context_manifest_ref": claim["context_manifest_ref"],
+                        "provenance_record_ref": claim["provenance_record_ref"],
+                        "claim_digest": claim["claim_digest"],
+                    },
+                    payload=claim,
+                    collision="verified_claim",
+                )
+            for link in bundle["claim_links"]:
+                self._insert_immutable(
+                    """
+                    INSERT INTO waje_runtime.claim_evidence_links AS current(
+                      claim_ref, evidence_ref, context_manifest_ref, payload
+                    ) VALUES (
+                      %(claim_ref)s, %(evidence_ref)s,
+                      %(context_manifest_ref)s, %(payload)s::jsonb
+                    )
+                    ON CONFLICT (claim_ref, evidence_ref) DO UPDATE
+                    SET claim_ref = current.claim_ref
+                    WHERE current.context_manifest_ref = EXCLUDED.context_manifest_ref
+                      AND current.payload = EXCLUDED.payload
+                    RETURNING claim_ref
+                    """,
+                    {**link, "payload": _json(link)},
+                    collision="claim_evidence_link",
+                )
+            for repair in bundle["repair_attempts"]:
+                self._insert_immutable(
+                    """
+                    INSERT INTO waje_runtime.query_repair_attempts AS current(
+                      attempt_ref, run_id, failed_signature, action, reason, payload
+                    ) VALUES (
+                      %(attempt_ref)s, %(run_id)s, %(failed_signature)s,
+                      %(action)s, %(reason)s, %(payload)s::jsonb
+                    )
+                    ON CONFLICT (attempt_ref) DO UPDATE
+                    SET attempt_ref = current.attempt_ref
+                    WHERE current.run_id = EXCLUDED.run_id
+                      AND current.failed_signature = EXCLUDED.failed_signature
+                      AND current.action = EXCLUDED.action
+                      AND current.reason = EXCLUDED.reason
+                      AND current.payload = EXCLUDED.payload
+                    RETURNING attempt_ref
+                    """,
+                    {**repair, "run_id": run_id, "payload": _json(repair)},
+                    collision="repair_attempt",
+                )
+            self._insert_immutable(
+                """
+                INSERT INTO waje_runtime.analysis_runtime_publications AS current(
+                  run_id, analysis_contract_id, topic_id, bundle_digest, payload
+                ) VALUES (
+                  %(run_id)s, %(analysis_contract_id)s, %(topic_id)s,
+                  %(bundle_digest)s, %(payload)s::jsonb
+                )
+                ON CONFLICT (run_id) DO UPDATE
+                SET run_id = current.run_id
+                WHERE current.analysis_contract_id = EXCLUDED.analysis_contract_id
+                  AND current.topic_id = EXCLUDED.topic_id
+                  AND current.bundle_digest = EXCLUDED.bundle_digest
+                  AND current.payload = EXCLUDED.payload
+                RETURNING run_id
+                """,
+                {
+                    "run_id": run_id,
+                    "analysis_contract_id": analysis["analysis_contract_id"],
+                    "topic_id": expected_topic_id,
+                    "bundle_digest": bundle_digest,
+                    "payload": _json(
+                        {
+                            "analysis_contract_id": analysis["analysis_contract_id"],
+                            "context_manifest_refs": [
+                                item["manifest_id"]
+                                for item in bundle["context_manifests"]
+                            ],
+                            "verified_claim_refs": [
+                                item["claim_ref"] for item in bundle["verified_claims"]
+                            ],
+                        }
+                    ),
+                },
+                collision="analysis_runtime_publication",
+            )
+            verification = self._fetchone(
+                """
+                /* runtime_publication_postcheck */
+                SELECT p.bundle_digest,
+                       count(DISTINCT q.query_contract_id) AS query_contract_count,
+                       count(DISTINCT qr.result_ref) AS query_run_count,
+                       count(DISTINCT qe.record_ref) AS query_authority_count,
+                       count(DISTINCT c.record_ref) AS completeness_count,
+                       count(DISTINCT b.record_ref) AS binding_count,
+                       count(DISTINCT e.evidence_ref) AS evidence_count,
+                       count(DISTINCT vc.claim_ref) AS verified_claim_count,
+                       count(DISTINCT l.claim_ref || E'\\x1f' || l.evidence_ref) AS claim_link_count
+                FROM waje_runtime.analysis_runtime_publications p
+                JOIN waje_runtime.analysis_contracts a
+                  ON a.analysis_contract_id = p.analysis_contract_id
+                 AND a.run_id = p.run_id
+                LEFT JOIN waje_runtime.query_contracts q ON q.run_id = p.run_id
+                LEFT JOIN waje_runtime.query_runs qr ON qr.run_id = p.run_id
+                LEFT JOIN waje_runtime.query_execution_authority qe ON qe.run_id = p.run_id
+                LEFT JOIN waje_runtime.query_completeness_reports c ON c.run_id = p.run_id
+                LEFT JOIN waje_runtime.capability_binding_authority b ON b.run_id = p.run_id
+                LEFT JOIN waje_runtime.evidence_manifests e ON e.run_id = p.run_id
+                LEFT JOIN waje_runtime.verified_claims vc ON vc.run_id = p.run_id
+                LEFT JOIN waje_runtime.claim_evidence_links l ON l.claim_ref = vc.claim_ref
+                WHERE p.run_id = %(run_id)s
+                GROUP BY p.bundle_digest
+                """,
+                {
+                    "run_id": run_id,
+                    "expected_bundle_digest": bundle_digest,
+                    "expected_query_contract_count": len(bundle["query_contracts"]),
+                    "expected_query_run_count": len(bundle["query_execution_records"]),
+                    "expected_query_authority_count": len(bundle["query_execution_records"]),
+                    "expected_completeness_count": len(bundle["completeness_records"]),
+                    "expected_binding_count": len(bundle["capability_binding_records"]),
+                    "expected_evidence_count": len(bundle["evidence_manifests"]),
+                    "expected_verified_claim_count": len(bundle["verified_claims"]),
+                    "expected_claim_link_count": len(bundle["claim_links"]),
+                },
+            )
+            expected_verification = (
+                bundle_digest,
+                len(bundle["query_contracts"]),
+                len(bundle["query_execution_records"]),
+                len(bundle["query_execution_records"]),
+                len(bundle["completeness_records"]),
+                len(bundle["capability_binding_records"]),
+                len(bundle["evidence_manifests"]),
+                len(bundle["verified_claims"]),
+                len(bundle["claim_links"]),
+            )
+            actual_verification = tuple(
+                _field(verification, name, index)
+                for index, name in enumerate(
+                    (
+                        "bundle_digest",
+                        "query_contract_count",
+                        "query_run_count",
+                        "query_authority_count",
+                        "completeness_count",
+                        "binding_count",
+                        "evidence_count",
+                        "verified_claim_count",
+                        "claim_link_count",
+                    )
+                )
+            ) if verification is not None else ()
+            if actual_verification != expected_verification:
+                from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+                raise EvidenceIntegrityError("analysis_runtime_postwrite_validation_failed")
+            self._audit(
+                "analysis_runtime_records_persisted",
+                run_id=run_id,
+                ref=str(analysis["analysis_contract_id"]),
+                payload={
+                    "query_count": len(bundle["query_execution_records"]),
+                    "capability_binding_count": len(bundle["capability_binding_records"]),
+                    "claim_link_count": len(bundle["claim_links"]),
+                },
+                commit=False,
+            )
+            self.connection.commit()
+            return "published"
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def _insert_authority_record(
+        self,
+        *,
+        table: str,
+        primary: str,
+        columns: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        collision: str,
+        json_columns: set[str] | None = None,
+    ) -> None:
+        json_columns = json_columns or set()
+        names = [*columns, "payload"]
+        value_sql = [
+            f"%({name})s::jsonb" if name in json_columns or name == "payload" else f"%({name})s"
+            for name in names
+        ]
+        where = " AND ".join(
+            f"current.{name} = EXCLUDED.{name}" for name in names if name != primary
+        )
+        params = dict(columns)
+        params["payload"] = _json(payload)
+        self._insert_immutable(
+            f"""
+            INSERT INTO waje_runtime.{table} AS current({', '.join(names)})
+            VALUES ({', '.join(value_sql)})
+            ON CONFLICT ({primary}) DO UPDATE
+            SET {primary} = current.{primary}
+            WHERE {where}
+            RETURNING {primary}
+            """,
+            params,
+            collision=collision,
+        )
+
+    def _insert_immutable(
+        self,
+        statement: str,
+        params: Mapping[str, Any],
+        *,
+        collision: str,
+    ) -> None:
+        cursor = self._execute(statement, dict(params), commit=False)
+        if getattr(cursor, "rowcount", 1) != 1:
+            from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+            raise EvidenceIntegrityError(f"authority_ref_collision:{collision}")
 
     def save_analysis_assets(
         self,

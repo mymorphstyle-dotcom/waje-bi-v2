@@ -219,6 +219,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
     def test_complete_fact_selector_uniquely_binds_window_observation_and_dimension(self):
         package, context, _ = _verified_delivery_package(
             run_id="run-agent-core-selector-complete",
+            claim_selector_mode="target",
             extra_rows=(
                 {
                     "window_id": "target_day",
@@ -230,19 +231,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 },
             ),
         )
-        claim = package["sections"][0]["payload"]["claims"][0]
-        claim["fact_selectors"] = {
-            "paid_amount": _fact_selector(
-                package,
-                context,
-                window_role="target",
-                window_id="target_day",
-                observation_key="2026-06-02",
-                dimensions={"channel": "A"},
-            )
-        }
-        _resign_reported_verifier(package, context)
-
         delivered = _run_verified_package_through_core(
             package,
             context,
@@ -278,7 +266,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
             dimensions={"channel": "A"},
         )
         selector["observation_key"] = "2026-06-01"
-        claim.update(selector)
+        claim["fact_selectors"] = {"paid_amount": selector}
         _resign_reported_verifier(package, context)
 
         delivered = _run_verified_package_through_core(
@@ -298,6 +286,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
             baseline_amount=7.0,
             claim_text="paid_amount delta is 3.",
             claim_numbers={"delta": 3.0},
+            claim_selector_mode="delta_pair",
             extra_rows=(
                 {
                     "window_id": "target_day",
@@ -317,30 +306,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 },
             ),
         )
-        claim = package["sections"][0]["payload"]["claims"][0]
-        claim["fact_selectors"] = {
-            "delta": {
-                "metric_id": "paid_amount",
-                "target": _fact_selector(
-                    package,
-                    context,
-                    window_role="target",
-                    window_id="target_day",
-                    observation_key="2026-06-02",
-                    dimensions={"channel": "A"},
-                ),
-                "baseline": _fact_selector(
-                    package,
-                    context,
-                    window_role="baseline",
-                    window_id="baseline_day",
-                    observation_key="2026-06-01",
-                    dimensions={"channel": "A"},
-                ),
-            }
-        }
-        _resign_reported_verifier(package, context)
-
         delivered = _run_verified_package_through_core(
             package,
             context,
@@ -395,6 +360,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
             baseline_amount=7.0,
             claim_text="paid_amount delta is 4.",
             claim_numbers={"delta": 4.0},
+            claim_selector_mode="delta_pair",
             extra_rows=(
                 {
                     "window_id": "target_day",
@@ -414,30 +380,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 },
             ),
         )
-        claim = package["sections"][0]["payload"]["claims"][0]
-        claim["fact_selectors"] = {
-            "delta": {
-                "metric_id": "paid_amount",
-                "target": _fact_selector(
-                    package,
-                    context,
-                    window_role="target",
-                    window_id="target_day",
-                    observation_key="2026-06-02",
-                    dimensions={"channel": "A"},
-                ),
-                "baseline": _fact_selector(
-                    package,
-                    context,
-                    window_role="baseline",
-                    window_id="baseline_day",
-                    observation_key="2026-06-01",
-                    dimensions={"channel": "A"},
-                ),
-            }
-        }
-        _resign_reported_verifier(package, context)
-
         delivered = _run_verified_package_through_core(
             package,
             context,
@@ -2341,6 +2283,7 @@ def _verified_delivery_package(
     extra_rows=(),
     claim_dimensions=None,
     channel="A",
+    claim_selector_mode="",
 ):
     resolved_windows = {
         "target_day": {
@@ -2494,6 +2437,47 @@ def _verified_delivery_package(
         "evidence_refs": (evidence_ref,),
         "numbers": dict(verified_numbers),
     }
+    if claim_selector_mode:
+        query_record = resolver.resolve_query_execution(binding.result_refs[0])
+
+        def selector(*, role, window_id, observation_key):
+            return {
+                "query_contract_ref": query_record.contract.query_contract_id,
+                "result_ref": binding.result_refs[0],
+                "metric_id": "paid_amount",
+                "window_role": role,
+                "window_id": window_id,
+                "observation_key": observation_key,
+                "dimensions": {"channel": channel},
+                "grain": list(query_record.contract.result_shape.grain),
+            }
+
+        if claim_selector_mode == "target":
+            claim["fact_selectors"] = {
+                "paid_amount": selector(
+                    role="target",
+                    window_id="target_day",
+                    observation_key="2026-06-02",
+                )
+            }
+        elif claim_selector_mode == "delta_pair":
+            claim["fact_selectors"] = {
+                "delta": {
+                    "metric_id": "paid_amount",
+                    "target": selector(
+                        role="target",
+                        window_id="target_day",
+                        observation_key="2026-06-02",
+                    ),
+                    "baseline": selector(
+                        role="baseline",
+                        window_id="baseline_day",
+                        observation_key="2026-06-01",
+                    ),
+                }
+            }
+        else:
+            raise ValueError(f"unsupported claim_selector_mode: {claim_selector_mode}")
     if claim_dimensions:
         claim["dimensions"] = dict(claim_dimensions)
     package = build_answer_package(

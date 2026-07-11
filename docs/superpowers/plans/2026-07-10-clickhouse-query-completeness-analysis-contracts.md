@@ -2446,7 +2446,7 @@ git commit -m "feat: ingest gameplay and event evidence snapshots"
 - Adds these records to Answer Package admin audit and `context_manifest` refs.
 - Implements a PostgreSQL-backed `RuntimeEvidenceResolver` for the immutable query, rows-ref metadata, snapshot, completeness, and capability-binding records introduced in Task 6; write paths remain internal to the runtime persistence transaction.
 
-- [ ] **Step 1: 写 transactional persistence 失败测试**
+- [x] **Step 1: 写 transactional persistence 失败测试**
 
 Create `tests/phase7/test_analysis_runtime_persistence.py`:
 
@@ -2503,7 +2503,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
         self.assertEqual(loader.load_rows("rows:1"), ({"window_id": "target"},))
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```bash
 python3 -m unittest tests.phase7.test_analysis_runtime_persistence -v
@@ -2511,7 +2511,7 @@ python3 -m unittest tests.phase7.test_analysis_runtime_persistence -v
 
 Expected: FAIL because store method and tables are absent.
 
-- [ ] **Step 3: 增加 normalized runtime audit tables**
+- [x] **Step 3: 增加 normalized runtime audit tables**
 
 Add tables with primary refs and JSON payloads:
 
@@ -2611,7 +2611,7 @@ CREATE TABLE IF NOT EXISTS waje_runtime.query_repair_attempts (
 );
 ```
 
-- [ ] **Step 4: 实现 one-transaction store methods**
+- [x] **Step 4: 实现 one-transaction store methods**
 
 `save_analysis_runtime_records()` performs all inserts with `commit=False`, writes one audit event with `commit=False`, then commits once. On exception it calls `connection.rollback()` and re-raises. Add the same logical API to `InMemoryConversationStore` for unit tests.
 
@@ -2625,7 +2625,7 @@ persist aggregate row payloads in PostgreSQL. A separate
 `storage_ref`; PostgreSQL persists row hash/count/unique-key/storage metadata
 only.
 
-- [ ] **Step 5: 扩展 Answer Package and ContextManifest**
+- [x] **Step 5: 扩展 Answer Package and ContextManifest**
 
 Add these admin-audit fields:
 
@@ -2640,7 +2640,7 @@ Add these admin-audit fields:
 
 Each claim includes `claim_ref`, `context_manifest_ref`, `reuse_decisions`, `evidence_refs`, `result_refs`, `artifact_refs`, and `memory_refs`. `ContextManifest.sources` receives evidence and completeness refs only after verifier acceptance.
 
-- [ ] **Step 6: 运行 Task 9 验证**
+- [x] **Step 6: 运行 Task 9 验证**
 
 ```bash
 python3 -m unittest tests.phase7.test_analysis_runtime_persistence -v
@@ -2650,7 +2650,7 @@ ruby tools/runtime/load-conversation-runtime-schema.rb
 
 Expected: tests PASS; schema applies successfully.
 
-- [ ] **Step 7: 提交 Task 9**
+- [x] **Step 7: 提交 Task 9**
 
 ```bash
 git add tests/phase7/test_analysis_runtime_persistence.py tools/runtime/conversation-runtime.sql bi_agent/conversation/store.py bi_agent/conversation/postgres_store.py bi_agent/runtime/answer_package.py bi_agent/conversation/models.py tests/phase7/test_conversation_persistence.py
