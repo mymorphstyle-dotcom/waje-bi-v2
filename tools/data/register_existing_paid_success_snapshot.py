@@ -92,6 +92,18 @@ def inspect_existing_paid_success(
         )
 
     storage = _mapping(source_contract.get("storage_boundary"))
+    analytical_database = str(storage.get("analytical_database") or "")
+    _require_identifier(analytical_database, "analytical_database")
+    configured_database_rows = _query_rows(
+        client,
+        "SELECT currentDatabase() AS configured_database",
+    )
+    if (
+        len(configured_database_rows) != 1
+        or str(configured_database_rows[0].get("configured_database") or "")
+        != analytical_database
+    ):
+        raise PaidSuccessRegistrationError("analytical_database:mismatch")
     expected_table = str(storage.get("clean_table") or "")
     if physical_table != expected_table:
         errors.append(
@@ -104,10 +116,14 @@ def inspect_existing_paid_success(
         """
         SELECT name, type
         FROM system.columns
-        WHERE database = currentDatabase() AND table = {physical_table:String}
+        WHERE database = {analytical_database:String}
+          AND table = {physical_table:String}
         ORDER BY position
         """,
-        parameters={"physical_table": physical_table},
+        parameters={
+            "analytical_database": analytical_database,
+            "physical_table": physical_table,
+        },
     )
     actual_schema = tuple(
         (str(item.get("name") or ""), str(item.get("type") or ""))
@@ -149,7 +165,7 @@ def inspect_existing_paid_success(
           count() - uniqExact(order_id) AS duplicate_key_rows,
           groupBitXor(cityHash64(tuple({fingerprint_expression}))) AS content_hash_a,
           groupBitXor(cityHash64(tuple({fingerprint_expression}), 1)) AS content_hash_b
-        FROM {_quote_identifier(physical_table, "physical_table")}
+        FROM {_qualified_table_identifier(analytical_database, physical_table)}
         """,
     )
     if len(aggregate_rows) != 1:
@@ -434,6 +450,14 @@ def _require_identifier(value: str, field: str) -> None:
 def _quote_identifier(value: str, field: str) -> str:
     _require_identifier(value, field)
     return f"`{value}`"
+
+
+def _qualified_table_identifier(database: str, table: str) -> str:
+    return (
+        _quote_identifier(database, "analytical_database")
+        + "."
+        + _quote_identifier(table, "physical_table")
+    )
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

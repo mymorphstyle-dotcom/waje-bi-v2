@@ -45,8 +45,15 @@ class _QueryResult:
 
 
 class FakeClickHouseClient:
-    def __init__(self, *, aggregate=None, schema=SCHEMA):
+    def __init__(
+        self,
+        *,
+        aggregate=None,
+        schema=SCHEMA,
+        configured_database="waje_bi",
+    ):
         self.schema = tuple(schema)
+        self.configured_database = configured_database
         self.aggregate = {
             "row_count": 41_234_677,
             "min_business_date": "2024-01-01",
@@ -59,9 +66,15 @@ class FakeClickHouseClient:
             **(aggregate or {}),
         }
         self.queries = []
+        self.query_parameters = []
 
     def query(self, query, parameters=None, settings=None):
         self.queries.append(query)
+        self.query_parameters.append(parameters or {})
+        if "currentDatabase() AS configured_database" in query:
+            return _QueryResult(
+                ({"configured_database": self.configured_database},)
+            )
         if "system.columns" in query:
             return _QueryResult(
                 {"name": name, "type": data_type} for name, data_type in self.schema
@@ -90,10 +103,54 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
         self.assertEqual(inspection.row_count, 41_234_677)
         self.assertIn("paid_amount_ngn", inspection.schema_fields)
         self.assertTrue(inspection.ready_to_publish)
-        self.assertEqual(len(client.queries), 2)
-        self.assertIn("system.columns", client.queries[0])
-        self.assertIn("count()", client.queries[1])
-        self.assertIn("groupBitXor", client.queries[1])
+        self.assertEqual(len(client.queries), 3)
+        self.assertIn("currentDatabase()", client.queries[0])
+        self.assertIn("system.columns", client.queries[1])
+        self.assertEqual(
+            client.query_parameters[1]["analytical_database"], "waje_bi"
+        )
+        self.assertIn("database = {analytical_database:String}", client.queries[1])
+        self.assertIn("count()", client.queries[2])
+        self.assertIn("groupBitXor", client.queries[2])
+        self.assertIn(
+            "FROM `waje_bi`.`paid_order_success_clean_20240101_20260704`",
+            client.queries[2],
+        )
+
+    def test_wrong_configured_database_fails_before_fact_query(self):
+        client = FakeClickHouseClient(configured_database="default")
+
+        with self.assertRaisesRegex(
+            PaidSuccessRegistrationError, "analytical_database:mismatch"
+        ):
+            inspect_existing_paid_success(
+                client,
+                archive_path=self.archive,
+                physical_table=PHYSICAL_TABLE,
+                source_contract=self._source_contract(),
+            )
+
+        self.assertEqual(len(client.queries), 1)
+        self.assertNotIn("count()", client.queries[0])
+
+    def test_unsafe_reviewed_database_identifier_fails_before_any_query(self):
+        contract = self._source_contract()
+        contract["storage_boundary"]["analytical_database"] = (
+            "waje_bi`; DROP DATABASE waje_bi; --"
+        )
+        client = FakeClickHouseClient()
+
+        with self.assertRaisesRegex(
+            PaidSuccessRegistrationError, "analytical_database:invalid_identifier"
+        ):
+            inspect_existing_paid_success(
+                client,
+                archive_path=self.archive,
+                physical_table=PHYSICAL_TABLE,
+                source_contract=contract,
+            )
+
+        self.assertEqual(client.queries, [])
 
     def test_aggregate_fingerprint_canonicalizes_nullable_columns(self):
         nullable_schema = (
@@ -116,11 +173,11 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
 
         self.assertIn(
             "tuple(isNull(`channel`), ifNull(`channel`, ''))",
-            client.queries[1],
+            client.queries[2],
         )
         self.assertIn(
             "tuple(isNull(`optional_amount`), ifNull(`optional_amount`, 0))",
-            client.queries[1],
+            client.queries[2],
         )
 
     def test_schema_mismatch_fails_before_fact_aggregate_query(self):
@@ -134,8 +191,8 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
                 source_contract=self._source_contract(),
             )
 
-        self.assertEqual(len(client.queries), 1)
-        self.assertIn("system.columns", client.queries[0])
+        self.assertEqual(len(client.queries), 2)
+        self.assertIn("system.columns", client.queries[1])
 
     def test_unreviewed_malicious_physical_column_never_reaches_fact_query(self):
         client = FakeClickHouseClient(
@@ -150,8 +207,8 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
                 source_contract=self._source_contract(),
             )
 
-        self.assertEqual(len(client.queries), 1)
-        self.assertNotIn("DROP TABLE", client.queries[0])
+        self.assertEqual(len(client.queries), 2)
+        self.assertNotIn("DROP TABLE", "\n".join(client.queries))
 
     def test_inspector_fails_closed_for_each_immutable_source_fact(self):
         mutations = {
@@ -400,6 +457,7 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
                 "date_range": {"start": "2024-01-01", "end": "2026-07-04"},
             },
             "storage_boundary": {
+                "analytical_database": "waje_bi",
                 "clean_table": PHYSICAL_TABLE,
                 "clean_schema": [
                     {"name": name, "type": data_type} for name, data_type in SCHEMA
