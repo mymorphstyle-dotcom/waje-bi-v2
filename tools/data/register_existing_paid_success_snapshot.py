@@ -120,6 +120,8 @@ def inspect_existing_paid_success(
             + ":actual="
             + _compact(actual_schema)
         )
+    if errors:
+        raise PaidSuccessRegistrationError(";".join(errors))
 
     boundary = _mapping(source_contract.get("paid_amount_boundary"))
     _validate_success_semantics(boundary, errors)
@@ -133,7 +135,7 @@ def inspect_existing_paid_success(
 
     fingerprint_expression = ", ".join(
         _fingerprint_column_expression(name, data_type)
-        for name, data_type in actual_schema
+        for name, data_type in expected_schema
     )
     aggregate_rows = _query_rows(
         client,
@@ -147,7 +149,7 @@ def inspect_existing_paid_success(
           count() - uniqExact(order_id) AS duplicate_key_rows,
           groupBitXor(cityHash64(tuple({fingerprint_expression}))) AS content_hash_a,
           groupBitXor(cityHash64(tuple({fingerprint_expression}), 1)) AS content_hash_b
-        FROM `{physical_table}`
+        FROM {_quote_identifier(physical_table, "physical_table")}
         """,
     )
     if len(aggregate_rows) != 1:
@@ -176,7 +178,7 @@ def inspect_existing_paid_success(
             errors.append(f"{failure_type}:invalid_rows={count}")
 
     rows_hash_payload = {
-        "algorithm": "clickhouse-aggregate-cityhash64-xor-v1",
+        "algorithm": "clickhouse-aggregate-cityhash64-xor-null-marker-v2",
         "schema": actual_schema,
         "row_count": row_count,
         "content_hash_a": str(aggregate.get("content_hash_a") or ""),
@@ -251,21 +253,21 @@ def register_existing_paid_success_snapshot(
     load_revision: str,
     loaded_at: str,
 ) -> PaidSuccessRegistrationResult:
-    payload = build_paid_success_snapshot_payload(
-        inspection,
-        snapshot_id=snapshot_id,
-        load_revision=load_revision,
-        loaded_at=loaded_at,
-    )
-    payloads, logical_id, _, release_ref = validate_dataset_snapshot_release_payloads(
-        (payload,)
-    )
-    authority = build_dataset_release_authority_record(payloads)
-    if authority.integrity_errors:
-        raise PaidSuccessRegistrationError(
-            "release_authority:" + ",".join(authority.integrity_errors)
+    with store.dataset_snapshot_release_lock(snapshot_id):
+        payload = build_paid_success_snapshot_payload(
+            inspection,
+            snapshot_id=snapshot_id,
+            load_revision=load_revision,
+            loaded_at=loaded_at,
         )
-    with store.dataset_snapshot_release_lock(logical_id):
+        payloads, logical_id, _, release_ref = validate_dataset_snapshot_release_payloads(
+            (payload,)
+        )
+        authority = build_dataset_release_authority_record(payloads)
+        if authority.integrity_errors:
+            raise PaidSuccessRegistrationError(
+                "release_authority:" + ",".join(authority.integrity_errors)
+            )
         store.publish_dataset_snapshot_release(
             release_ref=release_ref,
             logical_snapshot_id=logical_id,
@@ -291,8 +293,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     mode.add_argument("--publish", action="store_true")
     args = parser.parse_args(argv)
 
-    contract = load_contract(SOURCE_CONTRACT_PATH)
     try:
+        contract = load_contract(SOURCE_CONTRACT_PATH)
         runtime = ClickHouseRuntime.from_env()
         if not runtime.configured():
             raise PaidSuccessRegistrationError(
@@ -335,12 +337,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         print(json.dumps(output, ensure_ascii=False, sort_keys=True))
         return 0
-    except PaidSuccessRegistrationError as exc:
+    except Exception as exc:
+        if isinstance(exc, PaidSuccessRegistrationError):
+            error_code = "paid_success_validation_failed"
+            validation_errors = str(exc).split(";")
+        else:
+            error_code = "registration_runtime_failed"
+            validation_errors = [error_code]
         print(
             json.dumps(
                 {
                     "ready_to_publish": False,
-                    "validation_errors": str(exc).split(";"),
+                    "error_code": error_code,
+                    "validation_errors": validation_errors,
                     "owner": "payment_contract_owner",
                     "impact": "paid_order_success authority release withheld",
                 },
@@ -401,7 +410,7 @@ def _validate_success_semantics(boundary: Mapping[str, Any], errors: list[str]) 
 
 
 def _fingerprint_column_expression(name: str, data_type: str) -> str:
-    column = f"`{name}`"
+    column = _quote_identifier(name, "schema_field")
     nullable = re.fullmatch(r"Nullable\((.+)\)", data_type)
     if nullable is None:
         return column
@@ -414,12 +423,17 @@ def _fingerprint_column_expression(name: str, data_type: str) -> str:
         default = "toDateTime(0)"
     else:
         default = "0"
-    return f"ifNull({column}, {default})"
+    return f"tuple(isNull({column}), ifNull({column}, {default}))"
 
 
 def _require_identifier(value: str, field: str) -> None:
     if not _IDENTIFIER.fullmatch(value):
         raise PaidSuccessRegistrationError(f"{field}:invalid_identifier")
+
+
+def _quote_identifier(value: str, field: str) -> str:
+    _require_identifier(value, field)
+    return f"`{value}`"
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
