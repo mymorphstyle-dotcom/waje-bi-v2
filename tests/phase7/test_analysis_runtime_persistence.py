@@ -78,6 +78,7 @@ def _authority_bundle(
         analysis_contract_ref=analysis_contract_ref,
     )
     resolver = content["evidence_resolver"]
+    release_resolver = content["release_resolver"]
     binding = resolver.resolve_capability_binding(content["binding_manifest_ref"])
     result_refs = (*binding.result_refs, *binding.validation_result_refs)
     query_records = tuple(resolver.resolve_query_execution(ref) for ref in result_refs)
@@ -175,7 +176,7 @@ def _authority_bundle(
         runtime_registry=RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
         ),
-        release_resolver=None,
+        release_resolver=release_resolver,
     )
     if projection_errors or len(factual_claims) != 1:
         raise AssertionError((projection_errors, factual_claims))
@@ -1615,6 +1616,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             runtime_registry=RuntimeContractRegistry.from_path(
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             ),
+            release_resolver=content["release_resolver"],
             checkpoint_events=(),
             proposed_graph=(),
             accepted_graph=(),
@@ -1677,6 +1679,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             runtime_registry=RuntimeContractRegistry.from_path(
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             ),
+            release_resolver=content["release_resolver"],
         )
         self.assertEqual(set(client["admin_audit"]), {"verifier"})
         self.assertNotIn("SELECT aggregate", str(client))

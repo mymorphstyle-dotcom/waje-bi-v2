@@ -192,6 +192,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
             rows_loader=context["rows_loader"],
             evidence_writer=context["evidence_resolver"]._runtime_writer(),
             runtime_registry=context["runtime_registry"],
+            release_resolver=context["release_resolver"],
         )
         result = core.run_message(
             thread_id="thread-canonical-delivery-context",
@@ -3896,6 +3897,7 @@ def _verified_delivery_package(
         evidence_resolver=resolver,
         rows_loader=context["rows_loader"],
         runtime_registry=registry,
+        release_resolver=context["release_resolver"],
         checkpoint_events=(),
         proposed_graph=("segment_contribution",),
         accepted_graph=("segment_contribution", "answer_verify"),
@@ -3952,6 +3954,7 @@ def _resign_reported_verifier(package, context):
         evidence_resolver=context["evidence_resolver"],
         rows_loader=context["rows_loader"],
         runtime_registry=context["runtime_registry"],
+        release_resolver=context["release_resolver"],
         delivery_text={"answer_text": summary["claims"][0]["text"]},
     )
     package["admin_audit"]["verifier"] = verifier
@@ -3997,6 +4000,7 @@ def _run_verified_package_through_core(
         rows_loader=context["rows_loader"],
         evidence_writer=context["evidence_resolver"]._runtime_writer(),
         runtime_registry=context["runtime_registry"],
+        release_resolver=context["release_resolver"],
     )
     return (
         core.run_message(

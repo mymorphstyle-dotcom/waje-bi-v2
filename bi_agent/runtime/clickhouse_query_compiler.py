@@ -155,7 +155,12 @@ def _compile_clickhouse_query_with_registry(
     parameters = _window_parameters(contract.resolved_windows)
     filter_sql, filter_parameters = _compile_filters(contract.filters, snapshot)
     parameters.update(filter_parameters)
-    physical_filters, physical_parameters = _physical_snapshot_filters(snapshot)
+    physical_filters, physical_parameters = _physical_snapshot_filters(
+        snapshot,
+        requires_physical_revision=bool(
+            registry.dataset(snapshot.dataset_id).get("requires_physical_revision")
+        ),
+    )
     filter_sql = (*filter_sql, *physical_filters)
     parameters.update(physical_parameters)
 
@@ -1130,8 +1135,10 @@ def _compile_filters(
 
 def _physical_snapshot_filters(
     snapshot: DatasetSnapshot,
+    *,
+    requires_physical_revision: bool,
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
-    if not snapshot.load_revision:
+    if not requires_physical_revision:
         return (), {}
     required = {"snapshot_id", "load_revision"}
     if not required.issubset(snapshot.schema_fields):

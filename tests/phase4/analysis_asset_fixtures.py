@@ -15,7 +15,11 @@ from bi_agent.runtime.analysis_contracts import (
     ResultShape,
     query_contract_signature,
 )
-from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.dataset_catalog import (
+    DatasetSnapshot,
+    build_dataset_release_authority_record,
+    dataset_snapshot_release_ref,
+)
 from bi_agent.runtime.evidence_authority import (
     RuntimeEvidenceAuthority,
     _record_capability_binding,
@@ -185,7 +189,32 @@ def verified_dimension_scan_asset(
         permission_scopes=("analyst",),
         loaded_at="2026-07-09T00:00:00+00:00",
         status="active",
+        logical_snapshot_id="paid-order-success-fixture",
+        load_revision="paid-order-success-load:sha256:fixture",
+        rows_content_hash="a" * 64,
+        snapshot_id="paid-order-success-fixture",
     )
+    release_ref = dataset_snapshot_release_ref(
+        snapshot.logical_snapshot_id,
+        snapshot.load_revision,
+        (snapshot.snapshot_ref,),
+    )
+    snapshot = replace(snapshot, release_ref=release_ref)
+    release_record = build_dataset_release_authority_record(
+        ({**snapshot.to_dict(), "requires_release": True},)
+    )
+    snapshot = replace(
+        snapshot,
+        authority_record_ref=release_record.authority_record_ref,
+    )
+
+    class ReleaseResolver:
+        def resolve_dataset_release(self, requested_release_ref):
+            if requested_release_ref != release_record.release_ref:
+                raise KeyError(requested_release_ref)
+            return release_record
+
+    release_resolver = ReleaseResolver()
     attempt_ref = "attempt:asset-fixture"
     query_hash = "hash:asset-fixture"
     refs = query_audit_refs(
@@ -276,8 +305,18 @@ def verified_dimension_scan_asset(
         (contract, total_contract),
         (result, total_result),
         (
-            validate_query_result(contract, result, snapshot),
-            validate_query_result(total_contract, total_result, snapshot),
+            validate_query_result(
+                contract,
+                result,
+                snapshot,
+                release_resolver=release_resolver,
+            ),
+            validate_query_result(
+                total_contract,
+                total_result,
+                snapshot,
+                release_resolver=release_resolver,
+            ),
         ),
     )
     if completeness_status != "complete" or analysis_readiness != "ready":
@@ -412,6 +451,7 @@ def verified_dimension_scan_asset(
         "evidence_resolver": authority,
         "rows_loader": authority.rows_loader,
         "runtime_registry": registry,
+        "release_resolver": release_resolver,
     }
     reuse_contract = build_dimension_scan_reuse_contract(
         target_metric="paid_amount",

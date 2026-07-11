@@ -1436,7 +1436,10 @@ class LLMWorkflowTest(unittest.TestCase):
         from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
         from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-        from tests.phase4.test_analysis_contract_compiler import snapshot
+        from tests.phase4.test_analysis_contract_compiler import (
+            canonical_release_catalog,
+            snapshot,
+        )
 
         class CompleteRuntime:
             def aggregate(self, sql, query_id, **kwargs):
@@ -1465,10 +1468,11 @@ class LLMWorkflowTest(unittest.TestCase):
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
         )
         authority = RuntimeEvidenceAuthority(runtime_registry=registry)
+        catalog, release_resolver, _ = canonical_release_catalog(
+            snapshot("paid_order_success", "paid", "2026-07-04")
+        )
         runtime = AnalysisRuntime(
-            catalog=DatasetCatalog(
-                (snapshot("paid_order_success", "paid", "2026-07-04"),)
-            ),
+            catalog=catalog,
             registry=registry,
             executor=ClickHouseQueryExecutor(
                 CompleteRuntime(),
@@ -1476,7 +1480,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 rows_loader=authority.rows_loader,
                 evidence_writer=authority._runtime_writer(),
             ),
-            release_resolver=None,
+            release_resolver=release_resolver,
             evidence_authority=authority,
         )
         request = AnalysisRuntimeRequest.create(
@@ -1645,19 +1649,23 @@ class LLMWorkflowTest(unittest.TestCase):
         from bi_agent.runtime.dataset_catalog import DatasetCatalog
         from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-        from tests.phase4.test_analysis_contract_compiler import snapshot
+        from tests.phase4.test_analysis_contract_compiler import (
+            canonical_release_catalog,
+            snapshot,
+        )
 
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
         )
         authority = RuntimeEvidenceAuthority(runtime_registry=registry)
+        catalog, release_resolver, _ = canonical_release_catalog(
+            snapshot("paid_order_success", "paid", "2026-07-04")
+        )
         runtime = AnalysisRuntime(
-            catalog=DatasetCatalog(
-                (snapshot("paid_order_success", "paid", "2026-07-04"),)
-            ),
+            catalog=catalog,
             registry=registry,
             executor=object(),
-            release_resolver=None,
+            release_resolver=release_resolver,
             evidence_authority=authority,
         )
         request = AnalysisRuntimeRequest.create(

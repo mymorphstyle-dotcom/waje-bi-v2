@@ -8,6 +8,7 @@ from bi_agent.runtime.capability_registry import public_capability_ids
 from bi_agent.runtime.compiler import SUPPORTED_CAPABILITIES, compile_graph
 from bi_agent.runtime.contracts import load_contract
 from bi_agent.runtime.dataset_catalog import (
+    canonical_dataset_release_members,
     DatasetCatalog,
     DatasetSnapshot,
     build_dataset_release_authority_record,
@@ -51,32 +52,37 @@ class _ReleaseResolver:
 
 
 def released_catalog(*snapshots):
+    catalog, _, _ = canonical_release_catalog(*snapshots)
+    return catalog
+
+
+def canonical_release_catalog(*snapshots):
     selected = list(snapshots)
-    logical_id = selected[0].logical_snapshot_id
-    revision = selected[0].load_revision
+    if not selected:
+        raise ValueError("canonical_release_fixture_empty")
+    members = canonical_dataset_release_members(selected[0].dataset_id)
+    logical_id = selected[0].logical_snapshot_id or f"{selected[0].dataset_id}-logical"
+    revision = selected[0].load_revision or f"{selected[0].dataset_id}-load:sha256:test"
     existing_ids = {item.dataset_id for item in selected}
-    if "market_dashboard" not in existing_ids:
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    for member in members:
+        if member in existing_ids:
+            continue
         selected.append(
             replace(
                 selected[0],
-                snapshot_ref="snapshot:synthetic:market_dashboard",
-                dataset_id="market_dashboard",
-                physical_table="market_dashboard_daily__synthetic",
-                evidence_state="claim_ready",
-                reconciliation_status="matched",
-            )
-        )
-    if "market_dashboard_channel" not in existing_ids:
-        selected.append(
-            replace(
-                selected[0],
-                snapshot_ref="snapshot:synthetic:market_dashboard_channel",
-                dataset_id="market_dashboard_channel",
-                physical_table="market_dashboard_channel_daily__synthetic",
+                snapshot_ref=f"snapshot:synthetic:{member}",
+                dataset_id=member,
+                physical_table=f"{member}_daily__synthetic",
+                schema_fields=tuple(registry.dataset(member).get("schema_fields") or ()),
                 evidence_state="context_only",
                 reconciliation_status="mismatch",
             )
         )
+    if {item.dataset_id for item in selected} != set(members):
+        raise ValueError("canonical_release_fixture_dataset_set")
     release_ref = dataset_snapshot_release_ref(
         logical_id,
         revision,
@@ -85,6 +91,9 @@ def released_catalog(*snapshots):
     released = tuple(
         replace(
             item,
+            logical_snapshot_id=logical_id,
+            load_revision=revision,
+            snapshot_id=item.snapshot_id or logical_id,
             release_ref=release_ref,
             rows_content_hash=item.rows_content_hash or (
                 "a" * 64 if item.dataset_id == "market_dashboard" else "b" * 64
@@ -105,9 +114,13 @@ def released_catalog(*snapshots):
         for item in released
     )
     requested_refs = {item.snapshot_ref for item in snapshots}
-    return DatasetCatalog(
+    resolver = _ReleaseResolver(record)
+    catalog = DatasetCatalog(
         tuple(item for item in authorized if item.snapshot_ref in requested_refs),
-        release_resolver=_ReleaseResolver(record),
+        release_resolver=resolver,
+    )
+    return catalog, resolver, tuple(
+        item for item in authorized if item.snapshot_ref in requested_refs
     )
 
 
@@ -162,6 +175,22 @@ def _market_dashboard_snapshots():
 
 
 class AnalysisContractCompilerTest(unittest.TestCase):
+    def test_canonical_paid_release_fixture_threads_one_authority_resolver(self):
+        paid = snapshot("paid_order_success", "paid", "2026-07-04")
+
+        catalog, resolver, released = canonical_release_catalog(paid)
+
+        self.assertIs(catalog._release_resolver, resolver)
+        self.assertEqual(len(released), 1)
+        self.assertTrue(released[0].release_ref)
+        self.assertTrue(released[0].authority_record_ref)
+        selected = catalog.resolve(
+            "paid_order_success",
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+        self.assertEqual(selected.snapshot_ref, paid.snapshot_ref)
+
     def test_obligation_capability_order_is_stable_across_input_order(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
