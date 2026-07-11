@@ -205,7 +205,7 @@ class AnalysisRuntimeResult:
         }
 
 
-def analysis_outcome_requires_preexecution_clarification(
+def analysis_outcome_requires_route_clarification(
     outcome: AnalysisCompileOutcome,
 ) -> bool:
     clarification_capabilities = {
@@ -218,7 +218,6 @@ def analysis_outcome_requires_preexecution_clarification(
     if not clarification_capabilities:
         return False
     materially_unbound_capabilities = set()
-    executable_capabilities = set()
     for plan in outcome.capability_plans:
         for slot in plan.required_input_slots:
             required = (
@@ -239,9 +238,41 @@ def analysis_outcome_requires_preexecution_clarification(
             if required and not query_refs and not validation_refs:
                 if plan.capability_id in clarification_capabilities:
                     materially_unbound_capabilities.add(plan.capability_id)
-            elif required and (query_refs or validation_refs):
-                executable_capabilities.add(plan.capability_id)
-    return bool(materially_unbound_capabilities) and not executable_capabilities
+    return bool(materially_unbound_capabilities)
+
+
+def analysis_outcome_has_executable_ready_capability(
+    outcome: AnalysisCompileOutcome,
+) -> bool:
+    for plan in outcome.capability_plans:
+        for slot in plan.required_input_slots:
+            required = (
+                bool(slot.get("required", True))
+                if isinstance(slot, Mapping)
+                else bool(slot.required)
+            )
+            query_refs = (
+                tuple(slot.get("query_contract_refs") or ())
+                if isinstance(slot, Mapping)
+                else slot.query_contract_refs
+            )
+            validation_refs = (
+                tuple(slot.get("validation_query_contract_refs") or ())
+                if isinstance(slot, Mapping)
+                else slot.validation_query_contract_refs
+            )
+            if required and (query_refs or validation_refs):
+                return True
+    return False
+
+
+def analysis_outcome_requires_preexecution_clarification(
+    outcome: AnalysisCompileOutcome,
+) -> bool:
+    return (
+        analysis_outcome_requires_route_clarification(outcome)
+        and not analysis_outcome_has_executable_ready_capability(outcome)
+    )
 
 
 class AnalysisRuntime:

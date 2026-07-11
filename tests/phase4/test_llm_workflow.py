@@ -78,6 +78,8 @@ from bi_agent.runtime.analysis_runtime import (
     AnalysisRuntimeRequest,
     AnalysisRuntimeResult,
     AnswerPackageBuildContext,
+    analysis_outcome_has_executable_ready_capability,
+    analysis_outcome_requires_route_clarification,
     analysis_outcome_requires_preexecution_clarification,
 )
 from bi_agent.runtime.llm_client import (
@@ -1721,8 +1723,10 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
     def test_preexecution_query_contracts_include_snapshot_authority_records(self):
+        from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult
         from bi_agent.runtime.dataset_catalog import DatasetCatalog
         from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
+        from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
         from tests.phase4.test_analysis_contract_compiler import (
             canonical_release_catalog,
@@ -1736,10 +1740,40 @@ class LLMWorkflowTest(unittest.TestCase):
         catalog, release_resolver, _ = canonical_release_catalog(
             snapshot("paid_order_success", "paid", "2026-07-04")
         )
+
+        class CompletePatternRuntime:
+            def aggregate(self, sql, query_id, **kwargs):
+                return ClickHouseQueryResult(
+                    ok=True,
+                    query_id=query_id,
+                    rows=(
+                        {
+                            "window_id": "target_day",
+                            "window_role": "target",
+                            "observation_key": "2026-06-02",
+                            "paid_amount": 120.0,
+                        },
+                        {
+                            "window_id": "previous_day",
+                            "window_role": "baseline",
+                            "observation_key": "2026-06-01",
+                            "paid_amount": 100.0,
+                        },
+                    ),
+                )
+
+            bounded_context = aggregate
+
         runtime = AnalysisRuntime(
             catalog=catalog,
             registry=registry,
-            executor=object(),
+            executor=ClickHouseQueryExecutor(
+                CompletePatternRuntime(),
+                evidence_resolver=authority,
+                rows_loader=authority.rows_loader,
+                evidence_writer=authority._runtime_writer(),
+                release_resolver=release_resolver,
+            ),
             release_resolver=release_resolver,
             evidence_authority=authority,
         )
@@ -1765,7 +1799,7 @@ class LLMWorkflowTest(unittest.TestCase):
         }
 
         self.assertTrue(result.query_contracts)
-        self.assertEqual(result.query_results, ())
+        self.assertTrue(result.query_results)
         self.assertEqual(
             {
                 record.snapshot_ref
@@ -1913,6 +1947,8 @@ class LLMWorkflowTest(unittest.TestCase):
                 ),
             ),
         )
+        self.assertTrue(analysis_outcome_requires_route_clarification(outcome))
+        self.assertTrue(analysis_outcome_has_executable_ready_capability(outcome))
         state = {
             "run_id": "run-typed-precompile-clarify",
             "request": {
@@ -1950,9 +1986,20 @@ class LLMWorkflowTest(unittest.TestCase):
             ("market_health_compare", "event_evidence"),
         )
 
+        pure_unbound_outcome = SimpleNamespace(
+            analysis_contract=analysis_contract,
+            query_contracts=(),
+            capability_plans=(
+                SimpleNamespace(
+                    capability_id="event_evidence",
+                    required_input_slots=({"query_contract_refs": ()},),
+                    optional_input_slots=(),
+                ),
+            ),
+        )
         runtime = object.__new__(AnalysisRuntime)
         runtime._catalog_provider = lambda: SimpleNamespace(snapshots=lambda: ())
-        runtime._compile_with_catalog = lambda request, catalog: outcome
+        runtime._compile_with_catalog = lambda request, catalog: pure_unbound_outcome
         runtime._authority_records = (
             lambda compiled, results, bound, **kwargs: {}
         )

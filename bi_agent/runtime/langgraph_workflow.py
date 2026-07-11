@@ -40,7 +40,7 @@ from bi_agent.runtime.answer_package import (
 from bi_agent.runtime.analysis_runtime import (
     AnswerPackageBuildContext,
     AnalysisRuntimeRequest,
-    analysis_outcome_requires_preexecution_clarification,
+    analysis_outcome_requires_route_clarification,
 )
 from bi_agent.runtime.artifacts import persist_artifact, to_jsonable
 from bi_agent.runtime.capability_harness import (
@@ -1703,7 +1703,7 @@ def _typed_clarification_compiled_graph(
 ) -> CompiledGraph | None:
     if outcome is None:
         return None
-    needs_clarification = analysis_outcome_requires_preexecution_clarification(outcome)
+    needs_clarification = analysis_outcome_requires_route_clarification(outcome)
     accepted_graph = tuple(
         dict.fromkeys(str(item) for item in intent.get("requested_nodes", ()) if item)
     )

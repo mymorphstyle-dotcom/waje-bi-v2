@@ -2,7 +2,9 @@ from dataclasses import replace
 from datetime import datetime
 import unittest
 
-from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
+from bi_agent.runtime.analysis_contract_compiler import (
+    compile_analysis_contract as _compile_analysis_contract,
+)
 from bi_agent.runtime.analysis_contracts import query_contract_signature
 from bi_agent.runtime.capability_registry import public_capability_ids
 from bi_agent.runtime.compiler import SUPPORTED_CAPABILITIES, compile_graph
@@ -124,6 +126,45 @@ def canonical_release_catalog(*snapshots):
     )
 
 
+def compile_analysis_contract(**kwargs):
+    """Compile test proposals with canonical authority for paid release fixtures."""
+    catalog = kwargs["catalog"]
+    snapshots = catalog.snapshots()
+    unsigned_paid = tuple(
+        item
+        for item in snapshots
+        if item.dataset_id == "paid_order_success" and not item.release_ref
+    )
+    if not unsigned_paid:
+        return _compile_analysis_contract(**kwargs)
+    released = []
+    release_records = {}
+    for paid_snapshot in unsigned_paid:
+        _, paid_resolver, signed = canonical_release_catalog(paid_snapshot)
+        released.extend(signed)
+        release_records[paid_resolver.record.release_ref] = paid_resolver.record
+
+    class PaidReleaseResolver:
+        def resolve_dataset_release(self, release_ref):
+            return release_records[release_ref]
+
+    paid_resolver = PaidReleaseResolver()
+    other_snapshots = tuple(
+        item for item in snapshots if item.dataset_id != "paid_order_success"
+    )
+    signed_catalog = DatasetCatalog(
+        (*tuple(released), *other_snapshots),
+        release_resolver=paid_resolver,
+    )
+    return _compile_analysis_contract(
+        **{
+            **kwargs,
+            "catalog": signed_catalog,
+            "release_resolver": paid_resolver,
+        }
+    )
+
+
 def _market_dashboard_snapshots():
     common = {
         "watermark": "2026-06-02",
@@ -175,6 +216,31 @@ def _market_dashboard_snapshots():
 
 
 class AnalysisContractCompilerTest(unittest.TestCase):
+    def test_unsigned_required_release_is_source_unbound(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = _compile_analysis_contract(
+            run_id="run-unsigned-required-release",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["comparative_change"],
+            },
+            accepted_capabilities=("compare_periods",),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertFalse(outcome.query_contracts)
+        self.assertIn(
+            "dataset:paid_order_success:source_unbound",
+            {gap.gap_id for gap in outcome.analysis_contract.contract_gaps},
+        )
+
     def test_source_isolation_preserves_unaffected_current_data_queries(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
