@@ -136,3 +136,17 @@ boundary still prevents unsupported claims. The next general fix is a reviewed
 question-family capability-obligation contract plus compiler reconciliation,
 followed by the same fixed eval. No rule should key on one of the eight
 sentences or on one observed model response.
+
+## Runtime existing-data coverage audit
+
+Generate the read-only, authority-backed coverage matrix with a fixed business
+clock. The output stays local and source-unbound cells are valid report rows.
+Resolver or contract-integrity failures return a nonzero status.
+
+```bash
+set -a; source /Users/luka/work/waje-bi-v2/.env; set +a
+/tmp/waje-bi-v2-py312/bin/python3 tools/phase7/audit_existing_data_coverage.py \
+  --as-of 2026-06-03T12:00:00+01:00 \
+  --permission-scope analyst \
+  --out artifacts/phase7/existing-data-coverage/coverage.json
+```
