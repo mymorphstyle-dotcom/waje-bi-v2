@@ -16,7 +16,12 @@ from bi_agent.runtime.analysis_contracts import (
     ResultShape,
     query_contract_signature,
 )
-from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.dataset_catalog import (
+    DatasetReleaseAuthorityRecord,
+    DatasetSnapshot,
+    build_dataset_release_authority_record,
+    dataset_snapshot_release_ref,
+)
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     RuntimeEvidenceAuthority,
@@ -37,7 +42,7 @@ from bi_agent.runtime.query_audit import query_rows_ref
 from bi_agent.runtime.query_completeness import (
     ASSERTIONS,
     _event_recurrence_occurs_in_window,
-    validate_query_result,
+    validate_query_result as _validate_query_result,
     validate_query_set,
 )
 from bi_agent.runtime.query_repair import plan_query_repair
@@ -81,9 +86,23 @@ class _SuccessfulClickHouseClient:
         return _SuccessfulClickHouseResult()
 
 
-def paid_snapshot(watermark="2026-07-04"):
+class _PaidReleaseResolver:
+    def __init__(self):
+        self.records = {}
+
+    def add(self, record: DatasetReleaseAuthorityRecord) -> None:
+        self.records[record.release_ref] = record
+
+    def resolve_dataset_release(self, release_ref: str) -> DatasetReleaseAuthorityRecord:
+        return self.records[release_ref]
+
+
+_PAID_RELEASE_RESOLVER = _PaidReleaseResolver()
+
+
+def raw_paid_snapshot(watermark="2026-07-04", snapshot_ref="snapshot:paid:1"):
     return DatasetSnapshot(
-        "snapshot:paid:1",
+        snapshot_ref,
         "paid_order_success",
         "analytics.paid_success",
         watermark,
@@ -100,6 +119,47 @@ def paid_snapshot(watermark="2026-07-04"):
         "2026-07-05T00:00:00Z",
         "active",
     )
+
+
+def authorize_paid_snapshot(snapshot):
+    logical_id = f"paid-logical:{snapshot.snapshot_ref}"
+    revision = f"paid-load:{snapshot.watermark}"
+    release_ref = dataset_snapshot_release_ref(
+        logical_id,
+        revision,
+        (snapshot.snapshot_ref,),
+    )
+    released = replace(
+        snapshot,
+        logical_snapshot_id=logical_id,
+        load_revision=revision,
+        snapshot_id=logical_id,
+        release_ref=release_ref,
+        rows_content_hash="a" * 64,
+    )
+    record = build_dataset_release_authority_record(
+        ({**released.to_dict(), "requires_release": True},)
+    )
+    _PAID_RELEASE_RESOLVER.add(record)
+    return replace(released, authority_record_ref=record.authority_record_ref)
+
+
+def paid_snapshot(watermark="2026-07-04", snapshot_ref="snapshot:paid:1"):
+    return authorize_paid_snapshot(raw_paid_snapshot(watermark, snapshot_ref))
+
+
+def paid_catalog(snapshot):
+    authorized = authorize_paid_snapshot(snapshot) if not snapshot.release_ref else snapshot
+    return (
+        DatasetCatalog((authorized,), release_resolver=_PAID_RELEASE_RESOLVER),
+        _PAID_RELEASE_RESOLVER,
+        authorized,
+    )
+
+
+def validate_query_result(contract, result, snapshot, **kwargs):
+    kwargs.setdefault("release_resolver", _PAID_RELEASE_RESOLVER)
+    return _validate_query_result(contract, result, snapshot, **kwargs)
 
 
 def paid_metric(*, tolerance=0.01):
@@ -912,10 +972,7 @@ class QueryCompletenessTest(unittest.TestCase):
         )
         result = successful_result(contract, rows=complete_rows())
         good = paid_snapshot()
-        stale = replace(
-            paid_snapshot("2026-06-01"),
-            snapshot_ref=second_ref,
-        )
+        stale = paid_snapshot("2026-06-01", second_ref)
 
         reports = (
             validate_query_result(contract, result, snapshots)
@@ -946,6 +1003,21 @@ class QueryCompletenessTest(unittest.TestCase):
                 self.assertEqual(report.analysis_readiness, "blocked")
                 self.assertIn(f"execution_status:{status}", report.failure_reasons)
                 self.assertIn(f"{status}_cause", report.failure_reasons)
+
+    def test_unsigned_required_release_snapshot_fails_closed(self):
+        contract = baseline_contract()
+        report = _validate_query_result(
+            contract,
+            successful_result(contract, rows=complete_rows()),
+            raw_paid_snapshot(),
+        )
+
+        self.assertEqual(report.completeness_status, "invalid")
+        self.assertEqual(report.analysis_readiness, "blocked")
+        self.assertIn(
+            "snapshot_release_unverified:snapshot:paid:1",
+            report.failure_reasons,
+        )
 
     def test_query_and_snapshot_reference_mismatches_are_invalid(self):
         contract = baseline_contract()
@@ -1644,6 +1716,7 @@ class QueryCompletenessTest(unittest.TestCase):
             reviewed_snapshot(),
             loaded_at="2026-06-03T00:00:00Z",
         )
+        catalog, release_resolver, snapshot = paid_catalog(snapshot)
         outcome = compile_analysis_contract(
             run_id="run-segment-ready",
             proposal={
@@ -1653,12 +1726,13 @@ class QueryCompletenessTest(unittest.TestCase):
                 "claim_intents": ["segment_contribution_or_mix_shift"],
             },
             accepted_capabilities=("segment_contribution",),
-            catalog=DatasetCatalog((snapshot,)),
+            catalog=catalog,
             registry=RuntimeContractRegistry.from_path(
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             ),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
             permission_scope="analyst",
+            release_resolver=release_resolver,
         )
         dimension_contract = next(
             query for query in outcome.query_contracts if query.dimension_bindings
@@ -1946,9 +2020,10 @@ class QueryCompletenessTest(unittest.TestCase):
 
     def test_runtime_failure_preserves_transient_type_through_repair(self):
         contract = reviewed_contract()
-        snapshot = reviewed_snapshot()
+        snapshot = authorize_paid_snapshot(reviewed_snapshot())
         executor = ClickHouseQueryExecutor(
-            ClickHouseRuntime(client=_TransientClickHouseClient())
+            ClickHouseRuntime(client=_TransientClickHouseClient()),
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         envelope = executor.execute(contract, {snapshot.snapshot_ref: snapshot})
 
@@ -2022,9 +2097,10 @@ class QueryCompletenessTest(unittest.TestCase):
 
     def test_runtime_confirmed_provider_break_is_truncated(self):
         contract = reviewed_contract()
-        snapshot = reviewed_snapshot()
+        snapshot = authorize_paid_snapshot(reviewed_snapshot())
         envelope = ClickHouseQueryExecutor(
-            ClickHouseRuntime(client=_TruncatedClickHouseClient())
+            ClickHouseRuntime(client=_TruncatedClickHouseClient()),
+            release_resolver=_PAID_RELEASE_RESOLVER,
         ).execute(contract, {snapshot.snapshot_ref: snapshot})
 
         report = validate_query_result(contract, envelope, snapshot)
