@@ -171,13 +171,73 @@ def test_obligation_review_enforces_claim_ceiling_and_terminal_boundary(
         "runtime_authority": {
             "query_executions": ([{"dataset_id": dataset, "execution_status": "succeeded", "completeness_status": "complete"}] if boundary == "verified_answer" else []),
             "contract_gaps": gaps,
-            "verified_claims": [{"claim_strength": claim_strength}],
+            "capability_bindings": [{"binding_manifest_ref": "binding:test", "capability_id": "data_quality_profile", "maximum_claim_strength": "directional", "result_refs": ["result:test"], "status": "ready"}],
+            "evidence_manifests": [{"evidence_ref": "evidence:test", "binding_manifest_ref": "binding:test", "result_refs": ["result:test"]}],
+            "verified_claims": [{"claim_ref": "claim:test", "claim_strength": claim_strength, "evidence_refs": ["evidence:test"], "result_refs": ["result:test"]}],
         },
     }
     review = review_case_obligations(turn, registry)
     assert review["claim_ceiling_passed"] is (claim_strength != "strong")
     assert review["terminal_boundary_passed"] is passed if claim_strength != "strong" else review["terminal_boundary_passed"]
     assert review["hard_acceptance_passed"] is passed
+
+
+def test_claim_ceiling_uses_only_claim_producing_binding_provenance():
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+
+    def review(strength="observed", evidence_ref="evidence:analysis"):
+        return review_case_obligations(
+            {
+                "status": "completed",
+                "answer_package": {"final_answer": "有证据的结论"},
+                "accepted_graph": ["data_quality_profile", "metric_coverage_profile", "answer_verify"],
+                "scenario": {
+                    "question_family": "data_quality_or_evidence_review",
+                    "target_metrics": ["paid_amount"],
+                    "expected_dataset_states": {"paid_order_success": "executable"},
+                    "allowed_claim_ceiling": "directional",
+                    "terminal_boundary": "verified_answer",
+                },
+                "runtime_authority": {
+                    "query_executions": [{"dataset_id": "paid_order_success", "execution_status": "succeeded", "completeness_status": "complete"}],
+                    "capability_bindings": [
+                        {"binding_manifest_ref": "binding:analysis", "capability_id": "data_quality_profile", "maximum_claim_strength": "directional", "result_refs": ["result:analysis"], "status": "ready"},
+                        {"binding_manifest_ref": "binding:verify", "capability_id": "answer_verify", "maximum_claim_strength": "verifier_only", "result_refs": [], "status": "ready"},
+                        {"binding_manifest_ref": "binding:reduce", "capability_id": "evidence_reduce", "maximum_claim_strength": "reducer_only", "result_refs": [], "status": "ready"},
+                    ],
+                    "evidence_manifests": [{"evidence_ref": "evidence:analysis", "binding_manifest_ref": "binding:analysis", "result_refs": ["result:analysis"]}],
+                    "verified_claims": [{"claim_ref": "claim:1", "claim_strength": strength, "evidence_refs": [evidence_ref], "result_refs": (["result:analysis"] if evidence_ref == "evidence:analysis" else ["result:missing"])}],
+                },
+            },
+            registry,
+        )
+
+    legal = review()
+    assert legal["claim_ceiling_passed"] is True
+    assert legal["actual_authority_ceiling"] == "directional"
+    assert legal["missing_claim_capability_provenance"] == []
+    assert review("strong")["claim_ceiling_passed"] is False
+    missing = review(evidence_ref="evidence:missing")
+    assert missing["missing_claim_capability_provenance"] == ["claim:1"]
+    assert missing["hard_acceptance_passed"] is False
+
+
+def test_runtime_review_serializes_same_hard_acceptance_summary(tmp_path):
+    from tools.phase7.run_live_conversation_system_test import _write_case_artifact
+
+    output = {
+        "coverage_summary": {
+            "hard_acceptance": {"runtime_passed": True, "obligation_passed": False, "passed": False},
+            "runtime_correctness": {"all_required_queries_complete": True},
+        },
+        "turns": [{"index": 1, "real_clickhouse_review": {}, "obligation_review": {}}],
+    }
+    _write_case_artifact(tmp_path, "serialized-hard", output)
+    runtime = json.loads((tmp_path / "serialized-hard.runtime-review.json").read_text())
+    coverage = json.loads((tmp_path / "serialized-hard.coverage-summary.json").read_text())
+    assert runtime["hard_acceptance"] == coverage["hard_acceptance"]
 
 
 def test_runtime_observation_does_not_copy_expected_and_requires_excluded_gap():

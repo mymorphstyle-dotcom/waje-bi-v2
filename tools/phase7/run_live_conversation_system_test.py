@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import os
 import sys
@@ -313,6 +314,10 @@ def review_case_obligations(
         "missing_expected_typed_gaps": missing_expected_gaps,
         "actual_max_claim_strength": claim_review["actual_max_claim_strength"],
         "actual_authority_ceiling": claim_review["actual_authority_ceiling"],
+        "claim_authority_reviews": claim_review["claim_authority_reviews"],
+        "missing_claim_capability_provenance": claim_review[
+            "missing_claim_capability_provenance"
+        ],
         "claim_ceiling_passed": claim_review["passed"],
         "terminal_outcome": terminal_review["outcome"],
         "terminal_boundary_passed": terminal_review["passed"],
@@ -465,34 +470,131 @@ def _review_claim_ceiling(
     registry: RuntimeContractRegistry,
 ) -> dict[str, Any]:
     claims = _mapping_items_for_keys(authority, {"verified_claims"})
-    strengths = tuple(
-        str(item.get("claim_strength") or item.get("strength") or "")
-        for item in claims
-        if str(item.get("claim_strength") or item.get("strength") or "")
+    bindings = _mapping_items_for_keys(authority, {"capability_bindings"})
+    evidence = _mapping_items_for_keys(authority, {"evidence_manifests", "evidence"})
+    provenance = _mapping_items_for_keys(
+        authority, {"trusted_provenance_records", "claim_provenance_records"}
     )
+    binding_by_ref = {
+        ref: item
+        for item in bindings
+        for ref in (
+            str(item.get("binding_manifest_ref") or ""),
+            str(item.get("record_ref") or ""),
+            str(item.get("binding_ref") or ""),
+        )
+        if ref
+    }
+    evidence_by_ref = {
+        str(item.get("evidence_ref") or ""): item
+        for item in evidence
+        if str(item.get("evidence_ref") or "")
+    }
+    provenance_by_ref = {
+        str(item.get("provenance_record_ref") or item.get("record_ref") or ""): item
+        for item in provenance
+        if str(item.get("provenance_record_ref") or item.get("record_ref") or "")
+    }
+    allowed = str(scenario.get("allowed_claim_ceiling") or "")
+    allowed_rank = registry.maximum_claim_strength_rank(allowed)
+    claim_reviews: list[dict[str, Any]] = []
+    missing: list[str] = []
+    producing_ceilings: list[str] = []
+    strengths: list[str] = []
+    for index, claim in enumerate(claims):
+        claim_ref = str(claim.get("claim_ref") or f"claim-index:{index}")
+        strength = str(
+            claim.get("claim_strength") or claim.get("strength") or "insufficient"
+        )
+        strengths.append(strength)
+        support_evidence = {
+            str(ref) for ref in claim.get("evidence_refs") or () if ref
+        }
+        support_results = {
+            str(ref) for ref in claim.get("result_refs") or () if ref
+        }
+        provenance_record = provenance_by_ref.get(
+            str(claim.get("provenance_record_ref") or "")
+        )
+        if provenance_record:
+            support_evidence.update(
+                str(ref) for ref in provenance_record.get("evidence_refs") or () if ref
+            )
+            support_results.update(
+                str(ref) for ref in provenance_record.get("result_refs") or () if ref
+            )
+        related: dict[str, Mapping[str, Any]] = {}
+        for evidence_ref in support_evidence:
+            manifest = evidence_by_ref.get(evidence_ref)
+            if not manifest:
+                continue
+            binding_ref = str(manifest.get("binding_manifest_ref") or "")
+            if binding_ref in binding_by_ref:
+                related[binding_ref] = binding_by_ref[binding_ref]
+            support_results.update(
+                str(ref) for ref in manifest.get("result_refs") or () if ref
+            )
+        for binding_ref, binding in binding_by_ref.items():
+            binding_results = {
+                str(ref) for ref in binding.get("result_refs") or () if ref
+            }
+            if support_results & binding_results:
+                related[binding_ref] = binding
+        ceilings = tuple(
+            str(binding.get("maximum_claim_strength") or "")
+            for binding in related.values()
+            if str(binding.get("maximum_claim_strength") or "")
+        )
+        if not ceilings:
+            missing.append(claim_ref)
+            claim_reviews.append(
+                {
+                    "claim_ref": claim_ref,
+                    "claim_strength": strength,
+                    "producing_capabilities": [],
+                    "authority_ceiling": "",
+                    "passed": False,
+                    "error_code": "missing_claim_capability_provenance",
+                }
+            )
+            continue
+        ceiling = min(ceilings, key=registry.maximum_claim_strength_rank)
+        producing_ceilings.append(ceiling)
+        passed = (
+            registry.claim_strength_rank(strength)
+            <= registry.maximum_claim_strength_rank(ceiling)
+            and registry.claim_strength_rank(strength) <= allowed_rank
+        )
+        claim_reviews.append(
+            {
+                "claim_ref": claim_ref,
+                "claim_strength": strength,
+                "producing_capabilities": sorted(
+                    {
+                        str(binding.get("capability_id") or "")
+                        for binding in related.values()
+                        if binding.get("capability_id")
+                    }
+                ),
+                "authority_ceiling": ceiling,
+                "passed": passed,
+                "error_code": "" if passed else "claim_strength_exceeds_authority",
+            }
+        )
     actual_strength = (
         max(strengths, key=registry.claim_strength_rank) if strengths else "insufficient"
     )
-    bindings = _mapping_items_for_keys(authority, {"capability_bindings"})
-    ceilings = tuple(
-        str(item.get("maximum_claim_strength") or "")
-        for item in bindings
-        if str(item.get("maximum_claim_strength") or "")
-    )
     actual_ceiling = (
-        min(ceilings, key=registry.maximum_claim_strength_rank) if ceilings else ""
-    )
-    allowed = str(scenario.get("allowed_claim_ceiling") or "")
-    allowed_rank = registry.maximum_claim_strength_rank(allowed)
-    strength_rank = registry.claim_strength_rank(actual_strength)
-    authority_ok = (
-        not actual_ceiling
-        or strength_rank <= registry.maximum_claim_strength_rank(actual_ceiling)
+        min(producing_ceilings, key=registry.maximum_claim_strength_rank)
+        if producing_ceilings
+        else ""
     )
     return {
         "actual_max_claim_strength": actual_strength,
         "actual_authority_ceiling": actual_ceiling,
-        "passed": strength_rank <= allowed_rank and authority_ok,
+        "claim_authority_reviews": claim_reviews,
+        "missing_claim_capability_provenance": missing,
+        "passed": not missing and all(item["passed"] for item in claim_reviews),
     }
 
 
@@ -1542,6 +1644,9 @@ def _write_case_artifact(
         "runtime-review": {
             "case_id": case_id,
             "runtime_correctness": output.get("coverage_summary", {}).get("runtime_correctness", {}),
+            "hard_acceptance": deepcopy(
+                output.get("coverage_summary", {}).get("hard_acceptance", {})
+            ),
             "turns": [
                 {
                     "index": turn.get("index"),
