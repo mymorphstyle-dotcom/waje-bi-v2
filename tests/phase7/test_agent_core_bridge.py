@@ -1,5 +1,6 @@
 import unittest
 import json
+from copy import deepcopy
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -18,12 +19,50 @@ from bi_agent.runtime.answer_package import (
     reverify_answer_package_for_delivery,
     verify_answer_package,
 )
-from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_value
+from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_digest, canonical_value
+from bi_agent.runtime.claim_provenance import (
+    build_context_manifest_record,
+    validated_context_manifest_record,
+)
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
 
 
 class AgentCoreBridgeTest(unittest.TestCase):
+    def test_context_manifest_versioned_and_legacy_digest_validation(self):
+        current = build_context_manifest_record(
+            run_id="run-manifest-version",
+            thread_id="thread-manifest-version",
+            topic_id="topic-manifest-version",
+            sources=({"type": "evidence", "ref": "evidence:1", "can_support_claim": True},),
+            permission_context={"role": "analyst"},
+            accepted_assumptions=({"action_kind": "omit_unavailable_context"},),
+        )
+        self.assertEqual(current["manifest_schema_version"], "2")
+        self.assertEqual(validated_context_manifest_record(current), current)
+
+        legacy_payload = {
+            key: value
+            for key, value in current.items()
+            if key not in {
+                "accepted_assumptions", "manifest_schema_version",
+                "manifest_id", "manifest_digest",
+            }
+        }
+        legacy_digest = canonical_digest(legacy_payload)
+        legacy = {
+            **legacy_payload,
+            "manifest_id": f"context-manifest:sha256:{legacy_digest}",
+            "manifest_digest": legacy_digest,
+        }
+        normalized = validated_context_manifest_record(legacy)
+        self.assertEqual(normalized["accepted_assumptions"], [])
+
+        with self.assertRaisesRegex(EvidenceIntegrityError, "integrity_invalid"):
+            validated_context_manifest_record({**legacy, "thread_id": "tampered"})
+        with self.assertRaisesRegex(EvidenceIntegrityError, "payload_keys_invalid"):
+            validated_context_manifest_record({**legacy, "unknown": True})
+
     def test_answer_verifier_and_authority_manifest_receive_exact_accepted_assumptions(self):
         choice = {
             "action_kind": "omit_unavailable_context",
@@ -54,6 +93,65 @@ class AgentCoreBridgeTest(unittest.TestCase):
             [choice],
         )
         self.assertEqual(delivered["context_assumptions"], [choice])
+
+    def test_delivery_reverify_rejects_every_assumption_authority_layer_tamper(self):
+        choice = {
+            "action_kind": "omit_unavailable_context",
+            "affected_capabilities": ["event_evidence"],
+            "claim_ceiling": "observed",
+        }
+        package, context, _ = _verified_delivery_package(
+            run_id="run-assumption-tamper",
+            accepted_assumptions=(choice,),
+        )
+        exact = reverify_answer_package_for_delivery(
+            package,
+            evidence_resolver=context["evidence_resolver"],
+            rows_loader=context["rows_loader"],
+            runtime_registry=context["runtime_registry"],
+            release_resolver=context["release_resolver"],
+        )
+        self.assertEqual(exact["status"], "draft")
+        self.assertEqual(exact["context_assumptions"], [choice])
+
+        def changed():
+            return {**choice, "claim_ceiling": "insufficient"}
+
+        candidates = []
+        context_layer = deepcopy(package)
+        context_layer["context_assumptions"] = [changed()]
+        candidates.append(context_layer)
+        graph_layer = deepcopy(package)
+        graph_layer["accepted_graph_metadata"] = {
+            "accepted_assumptions": [changed()]
+        }
+        candidates.append(graph_layer)
+        choice_layer = deepcopy(package)
+        choice_layer["accepted_degradation_choice"] = changed()
+        candidates.append(choice_layer)
+        manifest_layer = deepcopy(package)
+        manifest_layer["admin_audit"]["context_manifest"][
+            "accepted_assumptions"
+        ] = [changed()]
+        candidates.append(manifest_layer)
+
+        for candidate in candidates:
+            with self.subTest(layer=candidates.index(candidate)):
+                delivered = reverify_answer_package_for_delivery(
+                    candidate,
+                    evidence_resolver=context["evidence_resolver"],
+                    rows_loader=context["rows_loader"],
+                    runtime_registry=context["runtime_registry"],
+                    release_resolver=context["release_resolver"],
+                )
+                self.assertEqual(delivered["status"], "failed")
+                self.assertIn(
+                    "accepted_assumptions_authority_mismatch",
+                    {
+                        item.get("code")
+                        for item in delivered["admin_audit"]["verifier"]["errors"]
+                    },
+                )
 
     def test_agent_core_passes_and_persists_fixed_analysis_clock(self):
         captured = {}
@@ -3966,6 +4064,14 @@ def _verified_delivery_package(
             reuse_decisions=({"source_ref": "asset:test", "decision": "reuse"},),
         ),
         context_assumptions=accepted_assumptions,
+        accepted_degradation_choice=(
+            dict(accepted_assumptions[0]) if accepted_assumptions else {}
+        ),
+        compiler_runtime_plan=(
+            {"graph_metadata": {"accepted_assumptions": list(accepted_assumptions)}}
+            if accepted_assumptions
+            else {}
+        ),
     )
     return package, context, claim_text
 

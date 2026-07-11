@@ -35,7 +35,9 @@ from bi_agent.runtime.claim_provenance import (
     validate_context_manifest_record,
     validate_trusted_claim_provenance_record,
     validate_verified_claim_record,
+    validated_context_manifest_record,
 )
+from bi_agent.runtime.analysis_assets import canonical_material_assumption
 
 
 def _verified_sources_from_claims(
@@ -519,6 +521,57 @@ def reverify_answer_package_for_delivery(
 ) -> dict[str, Any]:
     """Recompute delivery authority from persisted records at the Core boundary."""
     candidate = dict(to_jsonable(package))
+    reported_admin = candidate.get("admin_audit")
+    reported_admin = reported_admin if isinstance(reported_admin, Mapping) else {}
+    candidate_layers = (
+        candidate.get("context_assumptions") or (),
+        (candidate.get("accepted_graph_metadata") or {}).get(
+            "accepted_assumptions"
+        )
+        or (),
+        candidate.get("accepted_degradation_choice") or {},
+    )
+    raw_authority_manifest = reported_admin.get("context_manifest") or {}
+    authority_manifest: dict[str, Any] = {}
+    assumption_errors: list[dict[str, Any]] = []
+    if raw_authority_manifest or any(candidate_layers):
+        try:
+            authority_manifest = validated_context_manifest_record(
+                raw_authority_manifest
+            )
+        except (TypeError, ValueError) as exc:
+            assumption_errors.append(
+                {
+                    "code": "accepted_assumptions_authority_mismatch",
+                    "reason": str(exc),
+                }
+            )
+    authority_assumptions = _normalize_single_assumption(
+        authority_manifest.get("accepted_assumptions") or ()
+    )
+    if not _single_assumption_shape_valid(
+        authority_manifest.get("accepted_assumptions") or ()
+    ):
+        assumption_errors.append(
+            {"code": "accepted_assumptions_authority_mismatch"}
+        )
+    authority_material = _material_assumption_projection(authority_assumptions)
+    if any(
+        not _single_assumption_shape_valid(layer)
+        or _material_assumption_projection(_normalize_single_assumption(layer))
+        != authority_material
+        for layer in candidate_layers
+    ):
+        assumption_errors.append(
+            {"code": "accepted_assumptions_authority_mismatch"}
+        )
+    candidate["context_assumptions"] = to_jsonable(authority_assumptions)
+    candidate["accepted_graph_metadata"] = {
+        "accepted_assumptions": to_jsonable(authority_assumptions)
+    }
+    candidate["accepted_degradation_choice"] = (
+        dict(authority_assumptions[0]) if authority_assumptions else {}
+    )
     summary = _section_payload(candidate, "summary")
     evidence_section = _section_payload(candidate, "evidence")
     claims = tuple(
@@ -548,18 +601,19 @@ def reverify_answer_package_for_delivery(
             "semantic_audit": candidate.get("semantic_audit"),
             "quality_gate": candidate.get("quality_gate"),
         },
-        accepted_assumptions=tuple(
-            dict(item)
-            for item in candidate.get("context_assumptions") or ()
-            if isinstance(item, Mapping)
-        ),
+        accepted_assumptions=authority_assumptions,
     )
-    reported_admin = candidate.get("admin_audit")
     reported = (
         reported_admin.get("verifier")
         if isinstance(reported_admin, Mapping)
         else None
     )
+    if assumption_errors:
+        recomputed = {
+            **recomputed,
+            "status": "failed",
+            "errors": [*(recomputed.get("errors") or ()), *assumption_errors],
+        }
     if _verifier_hard_partition(reported) != _verifier_hard_partition(recomputed):
         errors = list(recomputed.get("errors") or ())
         errors.append({"code": "reported_verifier_mismatch"})
@@ -730,8 +784,39 @@ def _verifier_hard_partition(value: Any) -> Any:
             "errors": value.get("errors"),
             "accepted_claim_indexes": value.get("accepted_claim_indexes"),
             "rejected_claim_indexes": value.get("rejected_claim_indexes"),
+            "accepted_assumptions": _material_assumption_projection(
+                _normalize_single_assumption(value.get("accepted_assumptions") or ())
+            ),
         }
     )
+
+
+def _normalize_single_assumption(value: Any) -> tuple[dict[str, Any], ...]:
+    if isinstance(value, Mapping):
+        return (dict(value),) if value else ()
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        items = tuple(dict(item) for item in value if isinstance(item, Mapping) and item)
+        if len(items) <= 1:
+            return items
+    return ()
+
+
+def _single_assumption_shape_valid(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return True
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return len(value) <= 1 and all(isinstance(item, Mapping) for item in value)
+    return False
+
+
+def _material_assumption_projection(
+    assumptions: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        canonical
+        for item in assumptions
+        if (canonical := canonical_material_assumption(item))
+    ]
 
 
 def _authority_bound_claim_projections(
