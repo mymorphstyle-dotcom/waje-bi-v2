@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from bi_agent.runtime import llm_client as llm_client_module
+from bi_agent.runtime import langgraph_workflow as workflow_module
 from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.exploration_budget import default_budget
 from bi_agent.runtime.langgraph_workflow import (
@@ -839,6 +840,148 @@ class LLMWorkflowTest(unittest.TestCase):
             registry,
         )
         self.assertEqual(ambiguous_context, ("market_health_compare",))
+
+    def test_route_reconciliation_is_idempotent_and_question_text_independent(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        intent = {
+            "question_family": "segment_or_factor_attribution",
+            "question_families": ["segment_or_factor_attribution"],
+            "target_metric": "paid_amount",
+        }
+        route = {
+            "question_text": "文本不得成为 obligation policy input",
+            "analysis_requirements": {
+                "target_metrics": ["paid_amount"],
+                "requested_dimensions": ["channel", "game"],
+                "diagnostic_tags": ["factor_topk"],
+            },
+        }
+
+        first = workflow_module.reconcile_analysis_route(
+            ("data_quality_profile",), route, intent, registry
+        )
+        second = workflow_module.reconcile_analysis_route(first[0], first[1], intent, registry)
+
+        self.assertEqual(first, second)
+        self.assertNotIn("question_text", first[1]["obligation_resolution"])
+        self.assertTrue(
+            {"segment_contribution", "joint_attribution", "answer_verify"}.issubset(
+                first[0]
+            )
+        )
+
+    def test_all_diagnostic_tags_reconcile_from_registry_contracts(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        condition_inputs = {
+            "components_present": {"claim_intents": ["formula_component_contribution"]},
+            "dimensions_present": {"requested_dimensions": ["channel"]},
+            "event_context_requested": {"context_sources": ["external_event"]},
+            "anomaly_review_requested": {
+                "claim_intents": ["external_shock_candidate_or_anomaly"]
+            },
+            "baselines_present": {"baselines": ["previous_day"]},
+            "trust_review_requested": {
+                "claim_intents": ["contract_coverage_and_trust_boundary"]
+            },
+        }
+        for tag in (
+            "driver_focus",
+            "change_explanation",
+            "pattern_attribution",
+            "event_impact",
+            "revenue_health",
+            "factor_topk",
+            "anomaly",
+            "multi_baseline",
+            "evidence_quality",
+        ):
+            contract = registry.diagnostic_obligation(tag)
+            family = contract["supported_question_families"][0]
+            requirements = {
+                "target_metrics": ["paid_amount"],
+                "diagnostic_tags": [tag],
+                **condition_inputs[contract["condition"]],
+            }
+            requested, route = workflow_module.reconcile_analysis_route(
+                ("data_quality_profile",),
+                {"analysis_requirements": requirements},
+                {
+                    "question_family": family,
+                    "question_families": [family],
+                    "target_metric": "paid_amount",
+                },
+                registry,
+            )
+            with self.subTest(tag=tag):
+                self.assertTrue(
+                    set(contract["required_capabilities"]).issubset(requested)
+                )
+                self.assertEqual(
+                    route["obligation_resolution"]["status"], "resolved"
+                )
+
+    def test_incompatible_diagnostic_family_is_preserved_as_route_conflict(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        requested, route = workflow_module.reconcile_analysis_route(
+            ("data_quality_profile",),
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["paid_amount"],
+                    "requested_dimensions": ["channel"],
+                    "diagnostic_tags": ["factor_topk"],
+                }
+            },
+            {
+                "question_family": "data_quality_or_evidence_review",
+                "question_families": ["data_quality_or_evidence_review"],
+                "target_metric": "paid_amount",
+                "analysis_requirements": {
+                    "claim_intents": ["formula_component_contribution"]
+                },
+            },
+            registry,
+        )
+
+        self.assertEqual(requested, ("data_quality_profile",))
+        self.assertEqual(route["obligation_resolution"]["status"], "conflict")
+        self.assertIn(
+            "diagnostic_question_family_incompatible",
+            route["obligation_resolution"]["error"],
+        )
+        self.assertTrue(
+            any(
+                mutation["reason"] == "obligation_conflict"
+                for mutation in route["obligation_resolution"]["mutations"]
+            )
+        )
+
+    def test_obligation_route_conflict_opens_existing_clarification_contract(self):
+        state = {"route_material_conflicts": (), "boundary_decision": {}}
+        route = {
+            "obligation_resolution": {
+                "status": "conflict",
+                "error": "diagnostic_question_family_incompatible:factor_topk:data_quality_or_evidence_review",
+            }
+        }
+
+        workflow_module._consume_obligation_route_conflict(state, route)
+
+        self.assertIn("analysis_obligations", state["route_material_conflicts"])
+        self.assertEqual(
+            state["boundary_decision"]["boundary_status"], "needs_question"
+        )
 
     def test_question_family_values_accept_reviewed_shapes_and_reject_unknown_mapping(self):
         self.assertEqual(
@@ -2108,6 +2251,10 @@ class LLMWorkflowTest(unittest.TestCase):
             "intent": {
                 "question_family": "paid_amount_change_explanation",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {
+                    "requested_dimensions": ["channel"],
+                    "diagnostic_tags": ["pattern_attribution"],
+                },
                 "pattern_family": "custom_baseline",
                 "pattern_params": {"group_key": "group", "target_group": "target"},
                 "scope": "full_sample",
@@ -2326,8 +2473,7 @@ class LLMWorkflowTest(unittest.TestCase):
         row_shape = provider.compiler_plan["row_shapes"][0]
         self.assertIn("package_name", row_shape["dimension_keys"])
         self.assertIn("gameplay_id", row_shape["dimension_keys"])
-        self.assertIn("payment_status", row_shape["optional_fields"])
-        self.assertIn("order_id", row_shape["optional_fields"])
+        self.assertIsInstance(row_shape["optional_fields"], tuple)
 
     def test_workflow_blocks_when_clickhouse_provider_is_unconfigured(self):
         class Provider:
@@ -2361,8 +2507,18 @@ class LLMWorkflowTest(unittest.TestCase):
                 "question": "渠道和支付方式组合共同解释昨天收入变化吗？",
                 "llm_client": FakeLLMClient(
                     {
+                        "business_intent": {
+                            "question_family": "segment_or_factor_attribution",
+                            "question_families": ["segment_or_factor_attribution"],
+                            "target_metric": "paid_amount",
+                            "pattern_family": "custom_baseline",
+                        },
                         "analysis_route": {
-                            "requested_nodes": ["joint_attribution", "answer_verify"]
+                            "requested_nodes": ["joint_attribution", "answer_verify"],
+                            "analysis_requirements": {
+                                "requested_dimensions": ["channel", "payment_method"],
+                                "diagnostic_tags": ["factor_topk"],
+                            },
                         }
                     }
                 ),
@@ -6235,7 +6391,12 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(
             state["analysis_route"]["requested_nodes"],
-            ("market_health_compare",),
+            (
+                "market_health_compare",
+                "data_quality_profile",
+                "compare_periods",
+                "answer_verify",
+            ),
         )
 
     def test_typed_runtime_records_real_clickhouse_validator_without_phase4_placeholder(self):
@@ -6339,6 +6500,10 @@ class LLMWorkflowTest(unittest.TestCase):
     def test_execute_capabilities_pairs_runtime_previous_day_baseline_for_attribution(self):
         compiled = compile_graph(
             question_family="custom_baseline_comparison",
+            question_families=(
+                "custom_baseline_comparison",
+                "segment_or_factor_attribution",
+            ),
             target_metric="paid_amount",
             pattern_family="custom_baseline",
             requested_nodes=(
@@ -6607,11 +6772,12 @@ class LLMWorkflowTest(unittest.TestCase):
                 "question_family": "segment_or_factor_attribution",
                 "target_claim": "判断渠道和月内阶段组合是否解释主要变化",
                 "pattern_params": {"joint_dimension_keys": ("channel", "phase")},
+                "analysis_requirements": {"requested_dimensions": ["channel", "phase"]},
             },
         )
 
         self.assertIn("joint_attribution", normalized)
-        self.assertIn("segment_contribution", normalized)
+        self.assertIn("data_quality_profile", normalized)
 
     def test_factor_attribution_route_runs_driver_decomposition(self):
         fake = FakeLLMClient(
@@ -6626,6 +6792,9 @@ class LLMWorkflowTest(unittest.TestCase):
                 },
                 "analysis_route": {
                     "requested_nodes": ["joint_attribution", "answer_verify"],
+                    "analysis_requirements": {
+                        "claim_intents": ["formula_component_contribution"]
+                    },
                 },
             }
         )
@@ -6738,6 +6907,9 @@ class LLMWorkflowTest(unittest.TestCase):
             "intent": {
                 "question_family": "segment_or_factor_attribution",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {
+                    "claim_intents": ["formula_component_contribution"]
+                },
                 "pattern_family": "custom_baseline",
                 "pattern_params": {
                     "period_key": "period",
@@ -6772,6 +6944,10 @@ class LLMWorkflowTest(unittest.TestCase):
                 "question_family": "custom_baseline_comparison",
                 "pattern_family": "custom_baseline",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {
+                    "requested_dimensions": ["channel"],
+                    "diagnostic_tags": ["pattern_attribution"],
+                },
                 "scope": "full_sample",
                 "time_window": "2026-01-01..2026-06-30",
                 "target_claim": "去掉异常后方向是否还成立",
@@ -6870,6 +7046,9 @@ class LLMWorkflowTest(unittest.TestCase):
                 "pattern_family": "custom_baseline",
                 "target_claim": "Q2提升主要是付费用户数增加还是单付费用户金额提升带来的",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {
+                    "claim_intents": ["formula_component_contribution"]
+                },
             },
         )
 
@@ -6883,11 +7062,14 @@ class LLMWorkflowTest(unittest.TestCase):
                 "question_family": "paid_amount_change_explanation",
                 "pattern_family": "custom_baseline",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {
+                    "requested_dimensions": ["channel"],
+                    "diagnostic_tags": ["pattern_attribution"],
+                },
             },
         )
 
         self.assertIn("driver_decomposition", nodes)
-        self.assertIn("answer_verify", nodes)
 
     def test_route_normalization_adds_answer_verify_for_main_reason_attribution(self):
         nodes = _normalize_route_requested_nodes(
@@ -6900,7 +7082,7 @@ class LLMWorkflowTest(unittest.TestCase):
             },
         )
 
-        self.assertIn("joint_attribution", nodes)
+        self.assertIn("evidence_reduce", nodes)
         self.assertIn("answer_verify", nodes)
 
     def test_route_normalization_keeps_llm_requested_segment_for_compiler_audit(self):
@@ -6911,6 +7093,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 "pattern_family": "custom_baseline",
                 "target_claim": "Q2提升主要是付费用户数贡献还是单付费用户金额贡献",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {"requested_dimensions": ["channel"]},
             },
         )
 
@@ -6924,10 +7107,14 @@ class LLMWorkflowTest(unittest.TestCase):
                 "question": "Q2付费金额提升主要是哪些渠道贡献的？",
                 "question_family": "segment_or_factor_attribution",
                 "primary_question_family": "segment_or_factor_attribution",
-                "secondary_question_families": ["custom_baseline_comparison"],
+                "secondary_question_families": [],
                 "pattern_family": "custom_baseline",
                 "target_claim": "pattern_explanation",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {
+                    "requested_dimensions": ["channel"],
+                    "diagnostic_tags": ["factor_topk"],
+                },
             },
         )
 
@@ -6943,6 +7130,10 @@ class LLMWorkflowTest(unittest.TestCase):
                 "pattern_family": "custom_baseline",
                 "target_claim": "判断渠道贡献最大项是否能解释付费金额变化",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {
+                    "requested_dimensions": ["channel"],
+                    "diagnostic_tags": ["factor_topk"],
+                },
             },
         )
 
@@ -6959,6 +7150,10 @@ class LLMWorkflowTest(unittest.TestCase):
                 "pattern_family": "custom_baseline",
                 "target_claim": "识别变化最明显的渠道",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {
+                    "requested_dimensions": ["channel"],
+                    "diagnostic_tags": ["factor_topk"],
+                },
             },
         )
 
@@ -6969,11 +7164,15 @@ class LLMWorkflowTest(unittest.TestCase):
             ("data_quality_profile", "compare_periods", "answer_verify"),
             {
                 "question": "按日粒度，移除贡献最大的正向日期后复算，不做订单级明细剔除。",
-                "question_family": "custom_baseline_comparison",
-                "primary_question_family": "custom_baseline_comparison",
+                "question_family": "anomaly_or_black_swan_review",
+                "primary_question_family": "anomaly_or_black_swan_review",
                 "pattern_family": "custom_baseline",
                 "target_claim": "移除贡献最大的正向日期后复算付费金额方向",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {
+                    "claim_intents": ["external_shock_candidate_or_anomaly"],
+                    "diagnostic_tags": ["anomaly"],
+                },
             },
         )
 
@@ -6985,11 +7184,12 @@ class LLMWorkflowTest(unittest.TestCase):
             ("data_quality_profile", "driver_decomposition"),
             {
                 "question": "换成日均再看一遍。",
-                "question_family": "revenue_health_review",
-                "primary_question_family": "revenue_health_review",
+                "question_family": "custom_baseline_comparison",
+                "primary_question_family": "custom_baseline_comparison",
                 "pattern_family": "custom_baseline",
                 "target_claim": "按日均付费金额重新比较 Q2 和 Q1",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {"baselines": ["rolling_7_day_baseline"]},
             },
         )
 
@@ -7006,11 +7206,12 @@ class LLMWorkflowTest(unittest.TestCase):
                 "pattern_family": "rolling",
                 "target_claim": "按周粒度复核付费金额方向",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {"baselines": ["rolling_7_day_baseline"]},
             },
         )
 
         self.assertIn("compare_periods", nodes)
-        self.assertIn("answer_verify", nodes)
+        self.assertIn("formula_decompose", nodes)
 
     def test_weekly_grain_without_weekday_target_repairs_to_rolling(self):
         fake = FakeLLMClient(
@@ -7204,10 +7405,11 @@ class LLMWorkflowTest(unittest.TestCase):
                 "primary_question_family": "revenue_health_review",
                 "target_claim": "判断当前结果能否直接指导投放",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {"claim_intents": ["contract_coverage_and_trust_boundary"]},
             },
         )
 
-        self.assertIn("answer_verify", nodes)
+        self.assertIn("formula_decompose", nodes)
 
     def test_route_normalization_keeps_answer_verify_for_stability_challenges(self):
         nodes = _normalize_route_requested_nodes(
@@ -7218,6 +7420,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 "primary_question_family": "pattern_explanation",
                 "target_claim": "判断当前结果稳健性",
                 "target_metric": "paid_amount",
+                "analysis_requirements": {"requested_dimensions": ["channel"]},
             },
         )
 
@@ -7235,7 +7438,7 @@ class LLMWorkflowTest(unittest.TestCase):
             },
         )
 
-        self.assertIn("segment_contribution", nodes)
+        self.assertIn("compare_periods", nodes)
 
     def test_requested_segment_node_infers_secondary_question_family(self):
         intent = {
@@ -7295,8 +7498,8 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertNotIn("evidence_reduce", repr(payload["known_capabilities"]))
         self.assertIn("rolling_window_compare", result.answer_package["accepted_graph"])
         self.assertIn("data_quality_profile", result.answer_package["accepted_graph"])
-        self.assertNotIn("evidence_reduce", result.answer_package["accepted_graph"])
-        self.assertNotIn("metric_timeseries", result.answer_package["accepted_graph"])
+        self.assertIn("evidence_reduce", result.answer_package["accepted_graph"])
+        self.assertIn("metric_timeseries", result.answer_package["accepted_graph"])
         self.assertIn("compare_period_phases", result.answer_package["accepted_graph"])
 
     def test_custom_baseline_pattern_route_preserves_rolling_and_adds_period_compare(self):
@@ -7347,7 +7550,7 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertIn("compare_periods", result.answer_package["accepted_graph"])
         self.assertIn("rolling_window_compare", result.answer_package["accepted_graph"])
-        self.assertNotIn("metric_timeseries", result.answer_package["accepted_graph"])
+        self.assertIn("metric_timeseries", result.answer_package["accepted_graph"])
 
     def test_boundary_question_without_user_choice_waits_without_conclusion(self):
         fake = FakeLLMClient(

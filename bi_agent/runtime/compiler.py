@@ -11,6 +11,14 @@ from bi_agent.runtime.models import (
 from bi_agent.runtime.capability_registry import get_capability_card, public_capability_ids
 from bi_agent.runtime.recipe_registry import load_recipe_registry
 from bi_agent.runtime.revenue_runtime_plan import build_revenue_runtime_plan
+from bi_agent.runtime.analysis_obligations import (
+    ObligationRequest,
+    resolve_analysis_obligations,
+)
+from bi_agent.runtime.runtime_contract_registry import (
+    CANONICAL_RUNTIME_BINDINGS_PATH,
+    RuntimeContractRegistry,
+)
 
 
 REQUIRED_PATTERN_PATHS = (
@@ -27,25 +35,7 @@ SUPPORTED_CAPABILITIES = frozenset(
     (*REQUIRED_PATTERN_PATHS, "joint_attribution", *public_capability_ids())
 )
 PUBLIC_CAPABILITIES = frozenset(public_capability_ids())
-PHASE6_ENABLED_FAMILY_REQUIREMENTS = {
-    "paid_amount_change_explanation": frozenset(("driver_decomposition",)),
-    "segment_or_factor_attribution": frozenset(("segment_contribution",)),
-    "anomaly_or_black_swan_review": frozenset(("outlier_contribution",)),
-    "data_quality_or_evidence_review": frozenset(("data_quality_profile",)),
-    "revenue_health_review": frozenset(
-        (
-            "data_quality_profile",
-            "driver_decomposition",
-            "user_mix_contribution",
-            "high_value_user_contribution",
-            "outlier_scan",
-            "event_evidence",
-            "answer_verify",
-        )
-    ),
-    "business_object_impact_review": frozenset(("event_evidence", "answer_verify")),
-}
-REVENUE_DIAGNOSTIC_BUNDLES = {
+_CONVERSATION_DIAGNOSTIC_SUGGESTIONS = {
     "driver_focus": (
         "data_quality_profile",
         "driver_decomposition",
@@ -109,30 +99,6 @@ REVENUE_DIAGNOSTIC_BUNDLES = {
         "answer_verify",
     ),
 }
-REVENUE_DIAGNOSTIC_FAMILIES = {
-    "driver_focus": ("paid_amount_change_explanation",),
-    "change_explanation": ("paid_amount_change_explanation", "custom_baseline_comparison"),
-    "pattern_attribution": ("pattern_explanation", "segment_or_factor_attribution"),
-    "event_impact": ("business_object_impact_review", "paid_amount_change_explanation"),
-    "revenue_health": (
-        "revenue_health_review",
-        "paid_amount_change_explanation",
-        "segment_or_factor_attribution",
-        "anomaly_or_black_swan_review",
-    ),
-    "factor_topk": ("segment_or_factor_attribution", "paid_amount_change_explanation"),
-    "anomaly": (
-        "anomaly_or_black_swan_review",
-        "segment_or_factor_attribution",
-        "paid_amount_change_explanation",
-    ),
-    "multi_baseline": ("custom_baseline_comparison", "paid_amount_change_explanation"),
-    "evidence_quality": (
-        "data_quality_or_evidence_review",
-        "segment_or_factor_attribution",
-        "anomaly_or_black_swan_review",
-    ),
-}
 CAPABILITY_ORDER = {
     "data_quality_check": 10,
     "data_quality_profile": 11,
@@ -167,8 +133,12 @@ def compile_graph(
     bound_context: Optional[Mapping[str, Any]] = None,
     prior_analysis_assets: Iterable[Mapping[str, Any]] = (),
     registry: Optional[Mapping[str, RecipeEntry]] = None,
+    runtime_registry: Optional[RuntimeContractRegistry] = None,
 ) -> CompiledGraph:
     registry = load_recipe_registry() if registry is None else registry
+    runtime_registry = runtime_registry or RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
     base_proposed_graph = _dedupe(tuple(requested_nodes))
     explicit_requested = bool(base_proposed_graph)
     recipe = registry.get(question_family)
@@ -192,24 +162,32 @@ def compile_graph(
     if not base_proposed_graph:
         base_proposed_graph = recipe.subgraph_nodes
 
-    diagnostic_axes = _revenue_diagnostic_axes(
-        question_text=question_text,
+    obligation_request = ObligationRequest.from_intent(
         question_family=question_family,
-        pattern_family=pattern_family,
-        requested_nodes=base_proposed_graph,
+        question_families=tuple(question_families),
+        target_metric=target_metric,
+        bound_context=bound_context or {},
     )
-    diagnostic_nodes = _revenue_diagnostic_nodes(diagnostic_axes)
-    proposed_graph = _dedupe((*base_proposed_graph, *diagnostic_nodes))
-
-    supported_families = frozenset(
-        _dedupe(
-            (
-                question_family,
-                *tuple(question_families),
-                *_revenue_diagnostic_families(diagnostic_axes),
-            )
+    diagnostic_axes = obligation_request.diagnostic_tags
+    try:
+        obligation_resolution = resolve_analysis_obligations(
+            obligation_request, runtime_registry
         )
+        obligation_error = ""
+    except ValueError as exc:
+        obligation_resolution = None
+        obligation_error = str(exc)
+    obligation_nodes = (
+        (
+            *obligation_resolution.required_capabilities,
+            *obligation_resolution.conditional_capabilities,
+        )
+        if obligation_resolution is not None
+        else ()
     )
+    proposed_graph = _dedupe((*base_proposed_graph, *obligation_nodes))
+
+    supported_families = frozenset(obligation_request.question_families)
     unknown = tuple(node for node in proposed_graph if node not in SUPPORTED_CAPABILITIES)
     unsupported_for_family = tuple(
         node
@@ -242,19 +220,32 @@ def compile_graph(
             for node in unsupported_for_family
         ),
     )
-    records = (
-        *records,
-        *(
+    if obligation_resolution is not None:
+        records = (
+            *records,
+            *(
+                MutationRecord(
+                    action="auto_added",
+                    capability=node,
+                    reason=(
+                        "obligation_conditional"
+                        if node in obligation_resolution.conditional_capabilities
+                        else "obligation_required"
+                    ),
+                )
+                for node in obligation_nodes
+                if node not in base_proposed_graph
+            ),
+        )
+    else:
+        records = (
+            *records,
             MutationRecord(
-                action="auto_added",
-                capability=node,
-                reason=f"revenue_diagnostics:{axis}",
-            )
-            for axis in diagnostic_axes
-            for node in REVENUE_DIAGNOSTIC_BUNDLES[axis]
-            if node not in base_proposed_graph
-        ),
-    )
+                action="rejected",
+                capability=question_family,
+                reason="obligation_conflict",
+            ),
+        )
     def make_runtime_plan(accepted: tuple[str, ...]) -> dict:
         return build_revenue_runtime_plan(
             target_metric=target_metric,
@@ -304,10 +295,7 @@ def compile_graph(
 
     if explicit_requested and known_requested:
         accepted = _order_capabilities(_dedupe(known_requested), diagnostic_axes)
-        enablement = PHASE6_ENABLED_FAMILY_REQUIREMENTS.get(question_family)
-        if recipe.default_degraded and not (
-            enablement and enablement.issubset(set(accepted))
-        ):
+        if obligation_error:
             return _compiled(
                 status="degraded",
                 target_metric=target_metric,
@@ -321,7 +309,7 @@ def compile_graph(
                     MutationRecord(
                         action="degraded",
                         capability=question_family,
-                        reason="phase6_family_not_enabled",
+                        reason="obligation_conflict",
                     ),
                 ),
                 node_status="degraded",
@@ -567,15 +555,7 @@ def _revenue_diagnostic_nodes(axes: Iterable[str]) -> tuple[str, ...]:
     return _dedupe(
         node
         for axis in axes
-        for node in REVENUE_DIAGNOSTIC_BUNDLES.get(axis, ())
-    )
-
-
-def _revenue_diagnostic_families(axes: Iterable[str]) -> tuple[str, ...]:
-    return _dedupe(
-        family
-        for axis in axes
-        for family in REVENUE_DIAGNOSTIC_FAMILIES.get(axis, ())
+        for node in _CONVERSATION_DIAGNOSTIC_SUGGESTIONS.get(axis, ())
     )
 
 

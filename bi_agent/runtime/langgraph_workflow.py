@@ -55,6 +55,10 @@ from bi_agent.runtime.capability_execution import (
 )
 from bi_agent.runtime.capability_registry import llm_capability_cards
 from bi_agent.runtime.compiler import compile_graph
+from bi_agent.runtime.analysis_obligations import (
+    ObligationRequest,
+    resolve_analysis_obligations,
+)
 from bi_agent.runtime.data_contract_diagnostics import (
     contract_fields_from_records,
     diagnose_contract_gaps,
@@ -1238,12 +1242,13 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             state["intent"]["secondary_question_families"] = list(prior_families[1:])
         else:
             _infer_question_families_from_requested_nodes(state["intent"], requested)
-        requested, output = _reconcile_route_metric_capabilities(
+        requested, output = reconcile_analysis_route(
             requested,
             output,
             state["intent"],
             RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
         )
+        _consume_obligation_route_conflict(state, output)
         requested, output = _apply_query_gap_action_to_route(
             requested,
             output,
@@ -1286,12 +1291,13 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         )
     if not requested:
         requested = ("pattern_scan",)
-    requested, output = _reconcile_route_metric_capabilities(
+    requested, output = reconcile_analysis_route(
         requested,
         output,
         state["intent"],
         RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
     )
+    _consume_obligation_route_conflict(state, output)
     output = _align_route_output_to_requested(output, requested)
     _infer_question_families_from_requested_nodes(state["intent"], requested)
     state["analysis_route"] = {**output, "requested_nodes": requested}
@@ -1337,7 +1343,7 @@ def _merge_confirmed_material_requirements(
     return output, tuple(dict.fromkeys(conflicts))
 
 
-def _reconcile_route_metric_capabilities(
+def _reconcile_route_input_capabilities(
     requested: tuple[str, ...],
     route: Mapping[str, Any],
     intent: Mapping[str, Any],
@@ -1449,6 +1455,99 @@ def _reconcile_route_metric_capabilities(
     requirements["claim_intents"] = claim_intents
     output["analysis_requirements"] = requirements
     return reconciled, output
+
+
+def _reconcile_route_metric_capabilities(
+    requested: tuple[str, ...],
+    route: Mapping[str, Any],
+    intent: Mapping[str, Any],
+    registry: RuntimeContractRegistry,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """Compatibility wrapper for metric/source input reconciliation."""
+    return _reconcile_route_input_capabilities(requested, route, intent, registry)
+
+
+def reconcile_analysis_route(
+    requested: tuple[str, ...],
+    route: Mapping[str, Any],
+    intent: Mapping[str, Any],
+    registry: RuntimeContractRegistry,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    requested, output = _reconcile_route_input_capabilities(
+        requested, route, intent, registry
+    )
+    requirements = dict(output.get("analysis_requirements") or {})
+    bound_context = dict(intent)
+    bound_context["analysis_requirements"] = requirements
+    request = ObligationRequest.from_intent(
+        question_family=str(intent.get("question_family") or ""),
+        question_families=tuple(intent.get("question_families") or ()),
+        target_metric=str(intent.get("target_metric") or ""),
+        bound_context=bound_context,
+    )
+    try:
+        resolution = resolve_analysis_obligations(request, registry)
+    except ValueError as exc:
+        error = str(exc)
+        output["obligation_resolution"] = {
+            "status": "conflict",
+            "error": error,
+            "mutations": [
+                {
+                    "action": "rejected",
+                    "capability": tag,
+                    "reason": "obligation_conflict",
+                }
+                for tag in request.diagnostic_tags or (request.question_families[0],)
+            ],
+        }
+        return requested, output
+
+    obligations = (
+        *resolution.required_capabilities,
+        *resolution.conditional_capabilities,
+    )
+    reconciled = tuple(dict.fromkeys((*requested, *obligations)))
+    output["obligation_resolution"] = {
+        "status": "resolved",
+        "required_capabilities": list(resolution.required_capabilities),
+        "conditional_capabilities": list(resolution.conditional_capabilities),
+        "minimum_publishable_evidence": list(
+            resolution.minimum_publishable_evidence
+        ),
+        "mutations": [
+            {
+                "action": "auto_added",
+                "capability": capability,
+                "reason": (
+                    "obligation_conditional"
+                    if capability in resolution.conditional_capabilities
+                    else "obligation_required"
+                ),
+            }
+            for capability in obligations
+        ],
+    }
+    return reconciled, output
+
+
+def _consume_obligation_route_conflict(
+    state: WorkflowState,
+    route: Mapping[str, Any],
+) -> None:
+    resolution = route.get("obligation_resolution") or {}
+    if not isinstance(resolution, Mapping) or resolution.get("status") != "conflict":
+        return
+    conflicts = tuple(state.get("route_material_conflicts") or ())
+    state["route_material_conflicts"] = tuple(
+        dict.fromkeys((*conflicts, "analysis_obligations"))
+    )
+    state["boundary_decision"] = {
+        "boundary_status": "needs_question",
+        "recommended_assumption": "保留已确认的业务意图，并选择合同支持的诊断路线继续。",
+        "clarification_questions": [],
+        "decision_summary": "诊断要求与问题类型合同冲突，需要用户确认分析路线。",
+    }
 
 
 def _apply_query_gap_action_to_route(
@@ -1792,12 +1891,13 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
     )
     if not requested:
         requested = tuple(state["analysis_route"].get("requested_nodes") or ())
-    requested, output = _reconcile_route_metric_capabilities(
+    requested, output = reconcile_analysis_route(
         requested,
         output,
         state["intent"],
         RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
     )
+    _consume_obligation_route_conflict(state, output)
     output = _align_route_output_to_requested(output, requested)
     _infer_question_families_from_requested_nodes(state["intent"], requested)
     state["analysis_route"] = {**state["analysis_route"], **output, "requested_nodes": requested}
