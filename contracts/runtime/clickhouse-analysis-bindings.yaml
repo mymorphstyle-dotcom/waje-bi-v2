@@ -404,6 +404,92 @@ query_shapes:
       max_duplicate_keys: 0
       max_unmatched_rows: 0
 
+question_family_obligations:
+  pattern_explanation:
+    required_capabilities: [data_quality_profile, metric_timeseries, answer_verify]
+    conditional_rules:
+      - {condition: baselines_present, add: [compare_periods]}
+      - {condition: multiple_dimensions_present, add: [candidate_dimension_screen]}
+      - {condition: event_context_requested, add: [event_window_compare]}
+    independent_capabilities: [compare_period_phases, weekday_calendar_compare]
+    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
+    missing_contract_owner: analysis_contract_owner
+    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
+  paid_amount_change_explanation:
+    required_capabilities: [data_quality_profile, driver_decomposition, answer_verify]
+    conditional_rules:
+      - {condition: baselines_present, add: [compare_periods]}
+      - {condition: dimensions_present, add: [segment_contribution]}
+      - {condition: multiple_dimensions_present, add: [joint_attribution]}
+      - {condition: components_present, add: [component_contribution]}
+    independent_capabilities: [metric_timeseries]
+    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
+    missing_contract_owner: analysis_contract_owner
+    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
+  business_object_impact_review:
+    required_capabilities: [data_quality_profile]
+    conditional_rules:
+      - {condition: baselines_present, add: [compare_periods]}
+      - {condition: event_context_requested, add: [event_evidence]}
+    independent_capabilities: [gameplay_activity_context, event_window_compare]
+    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
+    missing_contract_owner: analysis_contract_owner
+    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
+  revenue_health_review:
+    required_capabilities: [data_quality_profile, formula_decompose]
+    conditional_rules:
+      - {condition: trust_review_requested, add: [source_reconciliation]}
+    independent_capabilities: [market_health_compare, source_reconciliation]
+    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
+    missing_contract_owner: analysis_contract_owner
+    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
+  segment_or_factor_attribution:
+    required_capabilities: [data_quality_profile, answer_verify]
+    conditional_rules:
+      - {condition: dimensions_present, add: [market_channel_context]}
+      - {condition: components_present, add: [driver_decomposition]}
+    independent_capabilities: [gameplay_activity_context]
+    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
+    missing_contract_owner: analysis_contract_owner
+    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
+  anomaly_or_black_swan_review:
+    required_capabilities: [data_quality_profile, outlier_scan]
+    conditional_rules:
+      - {condition: anomaly_review_requested, add: [outlier_contribution]}
+      - {condition: event_context_requested, add: [event_evidence]}
+    independent_capabilities: [change_point_scan]
+    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
+    missing_contract_owner: analysis_contract_owner
+    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
+  custom_baseline_comparison:
+    required_capabilities: [data_quality_profile, compare_periods, answer_verify]
+    conditional_rules:
+      - {condition: components_present, add: [driver_decomposition]}
+    independent_capabilities: [market_health_compare, user_mix_contribution]
+    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
+    missing_contract_owner: analysis_contract_owner
+    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
+  data_quality_or_evidence_review:
+    required_capabilities: [data_quality_profile, metric_coverage_profile, answer_verify]
+    conditional_rules:
+      - {condition: trust_review_requested, add: [source_reconciliation]}
+      - {condition: dimensions_present, add: [market_channel_context]}
+    independent_capabilities: [source_reconciliation]
+    minimum_publishable_evidence: [verified_trust_boundary]
+    missing_contract_owner: analysis_contract_owner
+    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
+
+diagnostic_obligations:
+  driver_focus: {required_capabilities: [driver_decomposition], condition: components_present}
+  change_explanation: {required_capabilities: [driver_decomposition], condition: components_present}
+  pattern_attribution: {required_capabilities: [candidate_dimension_screen], condition: dimensions_present}
+  event_impact: {required_capabilities: [event_evidence], condition: event_context_requested}
+  revenue_health: {required_capabilities: [user_mix_contribution, high_value_user_contribution], condition: components_present}
+  factor_topk: {required_capabilities: [segment_contribution, joint_attribution], condition: dimensions_present}
+  anomaly: {required_capabilities: [outlier_scan, outlier_contribution], condition: anomaly_review_requested}
+  multi_baseline: {required_capabilities: [compare_periods, rolling_window_compare], condition: baselines_present}
+  evidence_quality: {required_capabilities: [data_quality_profile], condition: trust_review_requested}
+
 capability_inputs:
   gameplay_activity_context:
     query_families: [gameplay_activity_probe]

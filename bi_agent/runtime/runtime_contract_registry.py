@@ -9,6 +9,7 @@ from typing import Any, Mapping
 import yaml
 
 from bi_agent.runtime.analysis_contracts import DIMENSION_PRESENCE_POLICIES
+from bi_agent.runtime.capability_registry import public_capability_ids
 from bi_agent.runtime.contracts import load_contract
 
 
@@ -21,6 +22,7 @@ CANONICAL_RUNTIME_BINDINGS_PATH = (
 
 _MAPPING_SECTIONS = ("datasets", "metrics", "dimensions", "capability_inputs")
 _OPTIONAL_MAPPING_SECTIONS = ("query_shapes",)
+_OBLIGATION_SECTIONS = ("question_family_obligations", "diagnostic_obligations")
 _REQUIRED_SECTIONS = (
     "contract_version",
     "artifact",
@@ -29,6 +31,18 @@ _REQUIRED_SECTIONS = (
     "metric_display_policies",
     "metric_business_labels",
     *_MAPPING_SECTIONS,
+    *_OBLIGATION_SECTIONS,
+)
+_OBLIGATION_CONDITIONS = frozenset(
+    {
+        "baselines_present",
+        "dimensions_present",
+        "multiple_dimensions_present",
+        "components_present",
+        "event_context_requested",
+        "anomaly_review_requested",
+        "trust_review_requested",
+    }
 )
 _REQUIRED_CLAIM_STRENGTHS = frozenset(
     {
@@ -78,6 +92,7 @@ class RuntimeContractRegistry:
             tuple(str(item) for item in payload["metrics"]),
         )
         _validate_query_shapes(payload.get("query_shapes") or {})
+        _validate_obligations(payload)
         maximum_ranks = payload["claim_strength_taxonomy"]["maximum_strength_ranks"]
         for capability_id, contract in payload["capability_inputs"].items():
             maximum = str(contract.get("maximum_claim_strength") or "")
@@ -110,6 +125,22 @@ class RuntimeContractRegistry:
     @property
     def dataset_ids(self) -> tuple[str, ...]:
         return tuple(sorted(str(item) for item in self._payload["datasets"]))
+
+    @property
+    def question_family_ids(self) -> tuple[str, ...]:
+        return tuple(self._payload["question_family_obligations"])
+
+    def question_family_obligation(self, question_family: str) -> dict[str, Any]:
+        return self._entry(
+            "question_family_obligations", question_family, "question_family_obligation"
+        )
+
+    def diagnostic_obligation(self, tag: str) -> dict[str, Any]:
+        return self._entry("diagnostic_obligations", tag, "diagnostic_obligation")
+
+    def order_capabilities(self, capabilities: Any) -> tuple[str, ...]:
+        requested = set(str(item) for item in capabilities)
+        return tuple(item for item in public_capability_ids() if item in requested)
 
     @property
     def business_timezone(self) -> str:
@@ -406,6 +437,73 @@ def _validate_query_shapes(value: Any) -> None:
             raise ValueError(
                 f"runtime_query_shape_source_fields:{query_family}"
             )
+
+
+def _validate_obligations(payload: Mapping[str, Any]) -> None:
+    public = set(public_capability_ids())
+    configured = set(payload["capability_inputs"])
+    family_fields = {
+        "required_capabilities",
+        "conditional_rules",
+        "independent_capabilities",
+        "minimum_publishable_evidence",
+        "missing_contract_owner",
+        "degradation_policy",
+    }
+    diagnostic_fields = {"required_capabilities", "condition"}
+    for family, contract in payload["question_family_obligations"].items():
+        _validate_obligation_mapping(contract, family_fields, str(family))
+        _validate_capability_references(
+            (*contract["required_capabilities"], *contract["independent_capabilities"]),
+            public,
+            configured,
+            str(family),
+        )
+        rules = contract["conditional_rules"]
+        if not isinstance(rules, list):
+            raise ValueError(f"runtime_obligation_conditional_rules_invalid:{family}")
+        for rule in rules:
+            if not isinstance(rule, Mapping) or set(rule) != {"condition", "add"}:
+                raise ValueError(f"runtime_obligation_conditional_rule_invalid:{family}")
+            _validate_obligation_condition(rule["condition"], str(family))
+            _validate_capability_references(rule["add"], public, configured, str(family))
+    for tag, contract in payload["diagnostic_obligations"].items():
+        _validate_obligation_mapping(contract, diagnostic_fields, str(tag))
+        _validate_obligation_condition(contract["condition"], str(tag))
+        _validate_capability_references(
+            contract["required_capabilities"], public, configured, str(tag)
+        )
+
+
+def _validate_obligation_mapping(value: Any, fields: set[str], item_id: str) -> None:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"runtime_obligation_invalid:{item_id}")
+    extras = set(value) - fields
+    if extras:
+        raise ValueError(
+            f"runtime_obligation_eval_specific_key:{item_id}:{','.join(sorted(extras))}"
+        )
+    missing = fields - set(value)
+    if missing:
+        raise ValueError(f"runtime_obligation_missing_fields:{item_id}:{','.join(sorted(missing))}")
+
+
+def _validate_capability_references(
+    values: Any,
+    public: set[str],
+    configured: set[str],
+    item_id: str,
+) -> None:
+    if not isinstance(values, list) and not isinstance(values, tuple):
+        raise ValueError(f"runtime_obligation_capabilities_invalid:{item_id}")
+    for capability in values:
+        if capability not in public or capability not in configured:
+            raise ValueError(f"runtime_obligation_unknown_capability:{item_id}:{capability}")
+
+
+def _validate_obligation_condition(value: Any, item_id: str) -> None:
+    if value not in _OBLIGATION_CONDITIONS:
+        raise ValueError(f"runtime_obligation_unknown_condition:{item_id}:{value}")
 
 
 def _walk_mapping_nodes(node: yaml.Node, *, path: tuple[str, ...]) -> None:

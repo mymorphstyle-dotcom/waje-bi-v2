@@ -162,6 +162,14 @@ def _market_dashboard_snapshots():
 
 
 class AnalysisContractCompilerTest(unittest.TestCase):
+    def test_obligation_capability_order_is_stable_across_input_order(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        expected = registry.order_capabilities(public_capability_ids())
+        self.assertEqual(expected, registry.order_capabilities(reversed(public_capability_ids())))
+        self.assertEqual(set(expected), set(public_capability_ids()))
+
     def test_capability_metric_gaps_merge_ownership_by_stable_semantic_identity(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
