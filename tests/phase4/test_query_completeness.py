@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import datetime
+from decimal import Decimal
 import unittest
 from unittest.mock import patch
 
@@ -19,14 +20,20 @@ from bi_agent.runtime.dataset_catalog import DatasetSnapshot
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     RuntimeEvidenceAuthority,
+    canonical_result_rows_hash,
     canonical_rows_hash,
 )
 from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
 from bi_agent.runtime.dataset_catalog import DatasetCatalog
 from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult, ClickHouseRuntime
 from bi_agent.runtime.clickhouse_query_compiler import CompiledQuery
-from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
+from bi_agent.runtime.query_executor import (
+    AggregateRowsStore,
+    ClickHouseQueryExecutor,
+    _aggregate_rows,
+)
 from bi_agent.runtime.query_audit import query_audit_refs
+from bi_agent.runtime.query_audit import query_rows_ref
 from bi_agent.runtime.query_completeness import (
     ASSERTIONS,
     _event_recurrence_occurs_in_window,
@@ -321,6 +328,13 @@ def successful_result(
         f"attempt:test:{contract.query_contract_id}"
     )
     selected_query_contract_ref = query_contract_ref or contract.query_contract_id
+    try:
+        rows_content_hash = canonical_result_rows_hash(
+            rows,
+            contract.result_shape.unique_key,
+        )
+    except EvidenceIntegrityError:
+        rows_content_hash = ""
     audit_refs = query_audit_refs(
         f"hash:{contract.query_contract_id}",
         contract.contract_signature,
@@ -331,6 +345,7 @@ def successful_result(
         ),
         query_contract_ref=selected_query_contract_ref,
         execution_attempt_ref=attempt_ref,
+        rows_content_hash=rows_content_hash,
     )
     return QueryResultEnvelope(
         query_contract_ref=selected_query_contract_ref,
@@ -1303,6 +1318,104 @@ class QueryCompletenessTest(unittest.TestCase):
                 "invalid_type:paid_orders:exact_additive_count",
                 report.failure_reasons,
             )
+
+    def test_exact_additive_count_accepts_integral_decimal_and_canonicalizes_to_int(self):
+        contract = baseline_contract(
+            query_id="query:decimal-count:1",
+            metric=count_metric(),
+        )
+        decimal_rows = complete_rows(
+            metric_id="paid_orders",
+            target=Decimal("10.000"),
+            baseline=Decimal("8"),
+        )
+
+        normalized, _, failure_reason = _aggregate_rows(decimal_rows, contract)
+        report = validate_query_result(
+            contract,
+            successful_result(contract, rows=decimal_rows),
+            paid_snapshot(),
+        )
+
+        self.assertEqual(failure_reason, "")
+        self.assertIs(type(normalized[0]["paid_orders"]), int)
+        self.assertEqual(normalized[0]["paid_orders"], 10)
+        self.assertEqual(report.completeness_status, "complete")
+
+    def test_exact_additive_count_rejects_fractional_and_nonfinite_decimal(self):
+        contract = baseline_contract(
+            query_id="query:invalid-decimal-count:1",
+            metric=count_metric(),
+        )
+
+        for value in (Decimal("10.5"), Decimal("NaN"), Decimal("Infinity")):
+            with self.subTest(value=str(value)):
+                report = validate_query_result(
+                    contract,
+                    successful_result(
+                        contract,
+                        rows=complete_rows(
+                            metric_id="paid_orders",
+                            target=value,
+                            baseline=Decimal("8"),
+                        ),
+                    ),
+                    paid_snapshot(),
+                )
+                self.assertEqual(report.completeness_status, "invalid")
+                self.assertTrue(
+                    any(
+                        reason.startswith("invalid_type:paid_orders")
+                        for reason in report.failure_reasons
+                    )
+                )
+
+    def test_rows_ref_includes_canonical_content_identity(self):
+        store = AggregateRowsStore()
+        first = store.persist(
+            "query-hash",
+            "contract-signature",
+            ("snapshot:1",),
+            ({"window_id": "target_day", "active_users": 10},),
+        )
+        repeated = store.persist(
+            "query-hash",
+            "contract-signature",
+            ("snapshot:1",),
+            ({"window_id": "target_day", "active_users": 10},),
+        )
+        changed = store.persist(
+            "query-hash",
+            "contract-signature",
+            ("snapshot:1",),
+            ({"window_id": "target_day", "active_users": 11},),
+        )
+
+        self.assertEqual(repeated, first)
+        self.assertNotEqual(changed, first)
+
+    def test_succeeded_legacy_rows_ref_is_rejected_while_failed_ref_stays_compatible(self):
+        contract = baseline_contract(query_id="query:legacy-rows-ref:1")
+        succeeded = successful_result(contract, rows=complete_rows())
+        legacy = replace(
+            succeeded,
+            rows_ref=query_rows_ref(
+                succeeded.query_hash,
+                contract.contract_signature,
+                contract.dataset_snapshot_refs,
+            ),
+        )
+        failed = failed_result(
+            contract,
+            status="failed",
+            reason="transient_clickhouse:connection_reset",
+        )
+
+        legacy_report = validate_query_result(contract, legacy, paid_snapshot())
+        failed_report = validate_query_result(contract, failed, paid_snapshot())
+
+        self.assertIn("rows_ref_mismatch", legacy_report.failure_reasons)
+        self.assertNotIn("rows_ref_mismatch", failed_report.failure_reasons)
 
     def test_ratio_reconciliation_uses_components_in_multi_metric_result(self):
         metrics = (count_metric(), replace(count_metric(), metric_id="paid_users"), ratio_metric())

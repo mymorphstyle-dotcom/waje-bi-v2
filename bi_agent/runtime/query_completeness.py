@@ -12,6 +12,7 @@ from bi_agent.runtime.analysis_contracts import (
     MetricBinding,
     QueryContract,
     QueryResultEnvelope,
+    canonical_exact_additive_count,
 )
 from bi_agent.runtime.dataset_catalog import (
     DatasetReleaseResolver,
@@ -26,6 +27,7 @@ from bi_agent.runtime.evidence_authority import (
     RuntimeEvidenceWriter,
     _record_completeness,
     canonical_digest,
+    canonical_result_rows_hash,
     runtime_evidence_record_integrity_errors,
 )
 from bi_agent.runtime.query_audit import query_audit_refs
@@ -290,12 +292,20 @@ def _execution_assertion(
         reasons.append(f"row_count_mismatch:{result.row_count}:{len(rows)}")
     reasons.extend(_metric_reconciliation_contract_reasons(contract))
     reasons.extend(_join_expectation_contract_reasons(contract))
+    try:
+        rows_content_hash = canonical_result_rows_hash(
+            rows,
+            contract.result_shape.unique_key,
+        )
+    except EvidenceIntegrityError:
+        rows_content_hash = ""
     expected_refs = query_audit_refs(
         result.query_hash,
         contract.contract_signature,
         contract.dataset_snapshot_refs,
         query_contract_ref=contract.query_contract_id,
         execution_attempt_ref=result.execution_attempt_ref,
+        rows_content_hash=(rows_content_hash if result.execution_status == "succeeded" else ""),
     )
     if result.result_ref != expected_refs.result_ref:
         reasons.append("result_ref_mismatch")
@@ -499,7 +509,7 @@ def _required_fields_assertion(
                     reasons.append(f"invalid_type:{binding.metric_id}")
                     break
                 if binding.reconciliation_strategy == "exact_additive_count" and (
-                    isinstance(value, bool) or not isinstance(value, int)
+                    canonical_exact_additive_count(value) is None
                 ):
                     reasons.append(
                         "invalid_type:"

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal
 from hashlib import sha256
 import json
+import math
 from typing import Any, Mapping
 
 from bi_agent.runtime.canonical_values import canonical_thaw
@@ -11,6 +13,23 @@ from bi_agent.runtime.canonical_values import canonical_thaw
 DIMENSION_PRESENCE_POLICIES = frozenset(
     {"paired_required", "sparse_allowed", "zero_filled"}
 )
+
+
+def canonical_exact_additive_count(value: Any) -> int | None:
+    """Return the exact integer represented by a reviewed count scalar."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, Decimal):
+        if not value.is_finite() or value != value.to_integral_value():
+            return None
+        return int(value)
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            return None
+        return int(value)
+    return None
 
 
 def stable_contract_signature(value: Mapping[str, Any]) -> str:

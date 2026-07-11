@@ -16,6 +16,20 @@ class ConversationSchemaLoaderTest(unittest.TestCase):
         self.assertIn("WAJE_PG_DB", loader)
         self.assertIn("psql", loader)
 
+    def test_repeated_query_execution_can_reference_the_same_immutable_rows_record(self):
+        schema = (ROOT / "tools" / "runtime" / "conversation-runtime.sql").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "DROP INDEX IF EXISTS waje_runtime.idx_query_execution_authority_rows_ref",
+            schema,
+        )
+        self.assertNotIn(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_query_execution_authority_rows_ref",
+            schema,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

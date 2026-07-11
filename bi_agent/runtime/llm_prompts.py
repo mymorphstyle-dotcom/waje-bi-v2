@@ -5,7 +5,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-07.v32"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-11.v34"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 
 
@@ -54,8 +54,16 @@ TASK_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
         "requested_nodes",
         "route_summary",
         "expected_evidence",
+        "analysis_requirements",
         "decision_summary",
     ),
+    "query_gap_clarification": (
+        "questions",
+        "recommended_assumption",
+        "decision_summary",
+    ),
+    "query_gap_action_render": ("rendered_actions",),
+    "query_gap_recommendation_repair": ("option_index", "brief_reason"),
     "route_repair": ("requested_nodes", "repair_summary", "decision_summary"),
     "data_coverage_interpretation": (
         "coverage_status",
@@ -238,7 +246,9 @@ def _task_rules(task: str) -> str:
             "Write narrative fields such as target_claim, status_message, and baseline "
             "candidate descriptions in Chinese business wording; use business labels "
             "such as 付费金额 instead of metric ids such as paid_amount. Keep metric ids "
-            "only in machine fields such as target_metric. "
+            "only in machine fields such as target_metric. target_metric must be exactly "
+            "one id from allowed_target_metric_ids; never add a prefix such as market_, "
+            "gameplay_, or payment_ when that prefixed id is absent from the list. "
             "Use WAJE capability language. Do not emit raw SQL."
         ),
         "boundary_decision": (
@@ -293,10 +303,16 @@ def _task_rules(task: str) -> str:
         ),
         "clarification_question": (
             "Generate the user-facing clarification package from the boundary decision. "
-            "Ask only about business boundaries that can change the answer. Provide 2-3 "
-            "short business questions, each with up to 3 options. Include a recommended "
-            "option when a safe default exists, and include a tell-agent-differently "
-            "escape so the user can redirect the run. Do not ask about technical schema "
+            "Ask only about business boundaries that can change the answer. Return exactly "
+            "one concise business question with 2-3 mutually exclusive business options, "
+            "then append the exact escape option 'tell the agent to do differently'. "
+            "options must be an array of strings; never return option objects, ids, "
+            "descriptions, or recommended flags inside that array. Use this exact shape: "
+            "{\"questions\":[{\"question\":\"业务问题\",\"options\":[\"业务选项A\",\"业务选项B\","
+            "\"tell the agent to do differently\"]}],\"recommended_assumption\":"
+            "{\"option\":\"业务选项A\"}}. "
+            "recommended_assumption must be an object whose option exactly matches one "
+            "business option. Do not ask about technical schema "
             "names, SQL, provider settings, or hidden implementation details."
         ),
         "analysis_route": (
@@ -327,7 +343,70 @@ def _task_rules(task: str) -> str:
             "For activity, event, or cause questions, include event_evidence with the "
             "direct comparison path. Do not mention p-values, "
             "confidence levels, significance, or invented numeric thresholds in route "
-            "summaries; say product default importance and stability rules instead."
+            "summaries; say product default importance and stability rules instead. "
+            "Return analysis_requirements as a typed JSON object with target_metrics, "
+            "requested_components, requested_dimensions, baselines, context_sources, "
+            "claim_intents, and scope. These values are proposals only and cannot claim "
+            "that data exists, a contract is valid, a query is safe, or execution will succeed. "
+            "Use only exact machine ids already present in intent or capability cards. "
+            "claim_intents must come from allowed_claim_types of the selected capability "
+            "cards; never write a Chinese sentence or invent an id there. target_metrics "
+            "must preserve intent.target_metric. requested_components may include only "
+            "metrics explicitly needed by the question and selected capability contracts; "
+            "do not add paid_amount to a market active-user question. baselines must be a "
+            "list of supported symbolic ids such as previous_day, rolling_7_day_baseline, "
+            "or same_weekday_last_week, never objects, dates, or descriptions. context_sources "
+            "must use reviewed dataset ids from the supplied contracts. Prefer a source-specific "
+            "capability when it is the capability card that allows the target metric. Do not "
+            "select compare_periods when its metric contract excludes the target metric. "
+            "Check each card.runtime_input_contract before selecting it. Do not add a data "
+            "quality capability when its required_metrics or allowed_datasets would introduce "
+            "an unrelated source. context_sources must come from allowed_dataset_ids."
+        ),
+        "query_gap_clarification": (
+            "Turn the supplied business gap projections and business labels into one concise "
+            "business clarification. This task is called only after local policy has decided "
+            "that user clarification is required, so questions must never be empty. Return "
+            "exactly one question with 2-3 draft options grounded in "
+            "allowed_actions.business_semantics, then add one tell "
+            "the agent to do differently escape option. Never invent or paraphrase an action. "
+            "Do not return an answer or status in place of the "
+            "question. The business options cover the user decision "
+            "when the choice changes the target date, baseline, grain, permission "
+            "exposure, claim strength, or material execution cost. Include one "
+            "recommended_assumption and a decision_summary. Every package must include "
+            "a tell the agent to do differently option so the user can redirect the "
+            "same run. recommended_assumption must contain only an option key whose value "
+            "is copied character-for-character from one of the two business options you "
+            "return. An assumption key, a generic default-assumption phrase, a paraphrase, "
+            "or the escape option is invalid. When retry_feedback reports "
+            "query_gap_clarification_recommendation_unbound, correct only this field by "
+            "copying one returned business option exactly. Describe sources in business language; never "
+            "invent technical source details beyond the supplied business projection. "
+            "Never expose dataset ids, snapshot ids, provider fields, UTC diagnostics, or any "
+            "future availability timestamp that was not visible at the analysis clock. "
+            "You cannot claim that data exists, a repair is executable, or a "
+            "contract is accepted. Do not expose SQL, schema fields, provider details, "
+            "or hidden reasoning. Canonical shape (replace placeholder wording with the "
+            "supplied business choices): {\"questions\":[{\"question\":\"需要确认按哪个业务口径继续？\","
+            "\"options\":[\"业务选项A\",\"业务选项B\",\"tell the agent to do differently\"]}],"
+            "\"recommended_assumption\":{\"option\":\"业务选项A\"},"
+            "\"decision_summary\":\"该选择会影响业务结论。\","
+            "\"display_summary\":\"等待用户确认业务口径。\"}."
+        ),
+        "query_gap_recommendation_repair": (
+            "Choose exactly one of the one or two supplied business options. Return "
+            "option_index as a zero-based integer within the supplied list and a concise "
+            "Simplified Chinese brief_reason. Do not copy, "
+            "rewrite, combine, or add an option. Do not choose an escape path. The caller "
+            "will map the index back to the exact option text."
+        ),
+        "query_gap_action_render": (
+            "Render one concise Simplified Chinese business label and reason for every "
+            "supplied allowed action. Return rendered_actions as an array of objects with "
+            "exactly choice_id, label, and reason. Copy each supplied choice_id exactly once; "
+            "do not omit, duplicate, combine, or invent actions. Labels must be mutually "
+            "exclusive and must describe only the supplied business_semantics."
         ),
         "route_repair": (
             "Repair only the rejected or incomplete part of the route. Preserve valid "
@@ -413,8 +492,10 @@ def _task_rules(task: str) -> str:
             "Do not expose hidden chain-of-thought; describe only the auditable business "
             "reasoning path and evidence used. Keep the conclusion bounded by evidence "
             "strength, comparable periods, limitations, and missing mechanism evidence. "
-            "Each claim must include evidence_refs, numbers, scope, time_window, and "
-            "wording strength where available. Claim scope and time_window must match "
+            "Each claim must include exactly these verifier fields: text, evidence_refs, "
+            "numbers, scope, time_window, claim_type, and claim_strength. Copy "
+            "evidence_refs exactly from supplied evidence; do not translate, shorten, or "
+            "invent them. Do not return a claim without text. Claim scope and time_window must match "
             "the supplied intent and evidence window; exception periods can be mentioned "
             "in claim text but must not replace the run-level claim time_window. Return "
             "at most one claim per distinct evidence-backed conclusion. Do not duplicate "
@@ -465,7 +546,11 @@ def _task_rules(task: str) -> str:
             "answer_text: question understanding, analysis path, key findings, bounded "
             "conclusion, and observable follow-up items or cautions. Keep supported "
             "claims, remove duplicates, and weaken unsupported or over-strong wording. "
-            "Do not add new claims. Treat unlisted claims as unsafe: when audit or "
+            "Do not add new claims. Each retained claim must include exactly these verifier "
+            "fields: text, evidence_refs, numbers, scope, time_window, claim_type, and "
+            "claim_strength. Copy evidence_refs exactly from draft_claims or supplied "
+            "evidence; do not translate, shorten, or invent them. Do not return a claim "
+            "without text. Treat unlisted claims as unsafe: when audit or "
             "verifier feedback flags unlisted claims, remove them from answer_text "
             "unless the same fact is present in draft_claims or supplied answer_context "
             "key facts. Do not add operational action recommendations unless supplied "

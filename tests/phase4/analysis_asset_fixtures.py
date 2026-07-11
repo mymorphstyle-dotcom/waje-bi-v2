@@ -21,6 +21,7 @@ from bi_agent.runtime.evidence_authority import (
     _record_capability_binding,
     _record_completeness,
     _record_query_execution,
+    canonical_result_rows_hash,
 )
 from bi_agent.runtime.query_audit import query_audit_refs
 from bi_agent.runtime.query_completeness import (
@@ -193,6 +194,10 @@ def verified_dimension_scan_asset(
         contract.dataset_snapshot_refs,
         query_contract_ref=query_ref,
         execution_attempt_ref=attempt_ref,
+        rows_content_hash=canonical_result_rows_hash(
+            rows,
+            contract.result_shape.unique_key,
+        ),
     )
     result = QueryResultEnvelope(
         query_contract_ref=query_ref,
@@ -241,6 +246,10 @@ def verified_dimension_scan_asset(
         total_contract.dataset_snapshot_refs,
         query_contract_ref=total_query_ref,
         execution_attempt_ref=total_attempt_ref,
+        rows_content_hash=canonical_result_rows_hash(
+            total_rows,
+            total_contract.result_shape.unique_key,
+        ),
     )
     total_result = QueryResultEnvelope(
         query_contract_ref=total_query_ref,

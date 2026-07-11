@@ -38,6 +38,7 @@ from bi_agent.runtime.evidence_authority import (
     _record_completeness,
     _record_query_execution,
     canonical_digest,
+    canonical_result_rows_hash,
 )
 from bi_agent.runtime.dataset_catalog import (
     DatasetCatalog,
@@ -252,6 +253,58 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
                 facts,
             )
 
+    def test_single_metric_window_comparison_projects_generic_value_and_change_fields(self):
+        facts = _comparison_authority_facts()
+
+        projected = _project_claim_from_authority(
+            {
+                "text": "Use authority values.",
+                "claim_strength": "observed",
+                "claim_type": "comparative_change",
+                "evidence_refs": ("market:evidence",),
+                "numbers": {
+                    "target_value": "125260",
+                    "baseline_value": "216820",
+                    "absolute_change": "-91560",
+                    "relative_change": "-0.4222857669956646065861082926",
+                },
+            },
+            facts,
+        )
+
+        self.assertEqual(projected["target_metric"], "active_users")
+        self.assertEqual(len(set(projected["fact_refs"])), 2)
+        self.assertEqual(projected["numbers"]["absolute_change"], "-91560")
+        self.assertEqual(
+            projected["numbers"]["relative_change"],
+            "-0.4222857669956646065861082926",
+        )
+
+    def test_generic_change_projection_rejects_tampering_and_ambiguity(self):
+        claim = {
+            "text": "Use authority values.",
+            "claim_strength": "observed",
+            "claim_type": "comparative_change",
+            "evidence_refs": ("market:evidence",),
+            "numbers": {"relative_change": "0.5"},
+        }
+        with self.assertRaisesRegex(ValueError, "claim_ratio_value_mismatch"):
+            _project_claim_from_authority(claim, _comparison_authority_facts())
+
+        multi_metric = dict(_comparison_authority_facts())
+        multi_metric["metric_ids"] = ("active_users", "paid_users")
+        with self.assertRaisesRegex(ValueError, "claim_number_field_unbound"):
+            _project_claim_from_authority(claim, multi_metric)
+
+        multiple_targets = dict(_comparison_authority_facts())
+        first_target = multiple_targets["authority_facts"][0]
+        multiple_targets["authority_facts"] = (
+            *multiple_targets["authority_facts"],
+            replace(first_target, observation_key="2026-06-03"),
+        )
+        with self.assertRaisesRegex(ValueError, "claim_ratio_fact_not_unique"):
+            _project_claim_from_authority(claim, multiple_targets)
+
     def test_event_claim_projection_uses_authoritative_rows_not_typed_payload(self):
         context = _event_authority_context(self.registry)
         bound = bind_capability_inputs(
@@ -452,6 +505,45 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
             release_resolver=context["release_resolver"],
         )
         self.assertEqual(passed["status"], "passed", passed["errors"])
+
+    def test_authority_projection_deduplicates_claims_that_resolve_to_one_fact(self):
+        context = _dashboard_authority_context(self.registry)
+        bound = bind_capability_inputs(
+            context["plan"],
+            results={context["contract"].query_contract_id: context["result"]},
+            reports={context["contract"].query_contract_id: context["report"]},
+            evidence_authority=context["authority"],
+            runtime_registry=self.registry,
+            release_resolver=context["release_resolver"],
+        )
+        evidence = _evidence_from_bound_dashboard_input(bound)
+        claims = tuple(
+            {
+                "text": text,
+                "claim_type": "comparative_change",
+                "claim_strength": "observed",
+                "evidence_refs": (evidence["evidence_ref"],),
+                "numbers": {"paid_amount": 100.0},
+            }
+            for text in (
+                "目标期大盘付费金额为 100。",
+                "总体数据在目标期记录到付费金额 100。",
+            )
+        )
+
+        projected, errors = _authority_bound_claim_projections(
+            claims=claims,
+            accepted_indexes=(0, 1),
+            evidence=(evidence,),
+            evidence_resolver=context["authority"],
+            rows_loader=context["authority"].rows_loader,
+            runtime_registry=self.registry,
+            release_resolver=context["release_resolver"],
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(projected), 1)
+        self.assertTrue(projected[0]["fact_refs"])
 
     def test_direct_payload_and_subclass_registries_cannot_authorize_chain(self):
         direct_payload_registry = RuntimeContractRegistry(self.registry._payload)
@@ -662,6 +754,43 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
                         rows_loader=self.resolver.rows_loader,
                         runtime_registry=self.registry,
                     )
+
+
+def _comparison_authority_facts():
+    target = AuthorityFact.create(
+        query_contract_ref="query:market:1",
+        result_ref="result:market:1",
+        metric_id="active_users",
+        value=Decimal("125260"),
+        window_id="target_day",
+        window_role="target",
+        observation_key="2026-06-02",
+        dimensions=(),
+        grain=("window_id",),
+        value_semantics="raw_scalar",
+        display_format="number",
+    )
+    baseline = AuthorityFact.create(
+        query_contract_ref="query:market:1",
+        result_ref="result:market:1",
+        metric_id="active_users",
+        value=Decimal("216820"),
+        window_id="previous_day",
+        window_role="baseline",
+        observation_key="2026-06-01",
+        dimensions=(),
+        grain=("window_id",),
+        value_semantics="raw_scalar",
+        display_format="number",
+    )
+    return {
+        "metric_ids": ("active_users",),
+        "authority_facts": (target, baseline),
+        "authority_context_facts": (),
+        "grains": (("window_id",),),
+        "target_windows": (),
+        "baseline_windows": (),
+    }
 
 
 def _replace_binding_rows_record(binding, rows_record):
@@ -1084,6 +1213,10 @@ def _dashboard_authority_context(registry):
         contract.dataset_snapshot_refs,
         query_contract_ref=contract.query_contract_id,
         execution_attempt_ref=attempt_ref,
+        rows_content_hash=canonical_result_rows_hash(
+            rows,
+            contract.result_shape.unique_key,
+        ),
     )
     result = QueryResultEnvelope(
         query_contract_ref=contract.query_contract_id,

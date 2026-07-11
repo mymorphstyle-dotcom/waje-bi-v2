@@ -275,11 +275,29 @@ def validate_analysis_runtime_records(
                     raise EvidenceIntegrityError(
                         "runtime_persistence_binding_completeness_link_mismatch"
                     )
-    if bound_result_refs != set(query_records):
+    unbound_result_refs = set(query_records) - bound_result_refs
+    repair_signatures = {
+        str(item.get("failed_signature") or "")
+        for item in repair_attempts
+        if isinstance(item, Mapping)
+        and all(item.get(key) for key in ("attempt_ref", "failed_signature", "action", "reason"))
+    }
+    repaired_unbound_results = bool(unbound_result_refs) and all(
+        query_records[result_ref].contract_signature in repair_signatures
+        for result_ref in unbound_result_refs
+    )
+    if any(
+        query_records[result_ref].contract_signature not in repair_signatures
+        for result_ref in unbound_result_refs
+    ):
         raise EvidenceIntegrityError("runtime_persistence_binding_chain_incomplete")
-    unbound_claim_intents = _validated_unbound_claim_intents(
-        typed_analysis,
-        supported_claim_intents,
+    unbound_claim_intents = (
+        set(typed_analysis.claim_intents)
+        if repaired_unbound_results
+        else _validated_unbound_claim_intents(
+            typed_analysis,
+            supported_claim_intents,
+        )
     )
     if unbound_claim_intents and (
         verified_claims or claim_links or trusted_provenance_records
@@ -562,12 +580,25 @@ def _validated_unbound_claim_intents(
     sentinel = "unbound_claim_intent"
     intents = set(analysis.claim_intents)
     unsupported = intents - supported_claim_intents - {sentinel}
-    if unsupported:
+    metric_claim_intents = {
+        claim_type
+        for metric in analysis.metric_bindings
+        for claim_type in metric.claim_types
+    }
+    clarification_claim_intents = {
+        claim_type
+        for gap in analysis.contract_gaps
+        if gap.requires_clarification
+        for claim_type in gap.affected_claim_types
+    }
+    if not unsupported.issubset(
+        metric_claim_intents.intersection(clarification_claim_intents)
+    ):
         raise EvidenceIntegrityError(
             "runtime_persistence_analysis_claim_intent_unsupported"
         )
     if sentinel not in intents:
-        return set()
+        return unsupported
     expected_capabilities = (
         analysis.capability_requirements or ("analysis_contract",)
     )
@@ -609,7 +640,7 @@ def _validated_unbound_claim_intents(
         raise EvidenceIntegrityError(
             "runtime_persistence_unbound_claim_intent_gap_invalid"
         )
-    return {sentinel}
+    return {sentinel, *unsupported}
 
 
 def _validate_verified_claim_contract_boundary(

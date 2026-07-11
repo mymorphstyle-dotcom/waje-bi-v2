@@ -922,7 +922,7 @@ class AnalysisAssetsTest(unittest.TestCase):
             role="analyst",
         )
 
-        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["status"], "failed")
         assets = store.list_analysis_assets("thread-agent-assets", result["topic_id"])
         asset_types = {asset["asset_type"] for asset in assets}
         self.assertEqual(result["answer_package"]["status"], "failed")
@@ -1228,8 +1228,8 @@ class AnalysisAssetsTest(unittest.TestCase):
             role="analyst",
         )
 
-        self.assertEqual(first["status"], "completed")
-        self.assertEqual(second["status"], "completed")
+        self.assertEqual(first["status"], "failed")
+        self.assertEqual(second["status"], "failed")
         assets = store.list_analysis_assets("thread-follow-up-assets", first["topic_id"])
         self.assertEqual(first["answer_package"]["status"], "failed")
         self.assertFalse(any(asset["asset_type"] == "dimension_scan" for asset in assets))

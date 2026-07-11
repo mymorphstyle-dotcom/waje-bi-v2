@@ -618,6 +618,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 "reuse_decisions": ({"source_ref": "asset:forged", "decision": "reuse"},),
                 "context_manifest_ref": "context:forged",
                 "claim_ref": "claim:forged",
+                "claim_id": "claim-id:forged",
             },
             run_id="run-claim",
             context_manifest=context,
@@ -790,6 +791,56 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
         self.assertEqual(
             store.audit_events[-1]["event_type"],
             "analysis_runtime_records_persisted",
+        )
+
+    def test_preexecution_clarification_persists_metric_backed_unbound_intent(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _authority_bundle()
+        claim_intent = bundle["analysis_contract"]["claim_intents"][0]
+        analysis = {
+            **bundle["analysis_contract"],
+            "contract_gaps": [{
+                "gap_type": "contract_partial",
+                "gap_id": "window:unsupported_baseline:business_choice",
+                "dataset_id": "",
+                "affected_capabilities": list(
+                    bundle["analysis_contract"]["capability_requirements"]
+                ),
+                "affected_claim_types": [claim_intent],
+                "owner": "contract_owner",
+                "repair_options": [
+                    "choose_supported_window",
+                    "clarify_window_contract",
+                ],
+                "requires_clarification": True,
+                "diagnostic_context": {},
+            }],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle.update(
+            {
+                "analysis_contract": analysis,
+                "query_contracts": (),
+                "query_execution_records": (),
+                "rows_records": (),
+                "snapshot_records": (),
+                "completeness_records": (),
+                "capability_binding_records": (),
+                "evidence_manifests": (),
+                "context_manifests": (),
+                "trusted_provenance_records": (),
+                "verified_claims": (),
+                "claim_links": (),
+                "repair_attempts": (),
+            }
+        )
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            ),
+            "published",
         )
 
     def test_zero_claim_postgres_run_publishes_and_replays_without_claim_rows(self):

@@ -487,8 +487,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_contracts_run_identity
   ON waje_runtime.analysis_contracts(run_id, analysis_contract_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_query_contracts_run_identity
   ON waje_runtime.query_contracts(run_id, query_contract_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_query_execution_authority_rows_ref
-  ON waje_runtime.query_execution_authority(rows_ref);
+DROP INDEX IF EXISTS waje_runtime.idx_query_execution_authority_rows_ref;
 
 CREATE INDEX IF NOT EXISTS idx_conversation_topics_thread ON waje_runtime.conversation_topics(thread_id);
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread ON waje_runtime.conversation_turns(thread_id);

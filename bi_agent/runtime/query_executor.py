@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 from bi_agent.runtime.analysis_contracts import (
     QueryContract,
     QueryResultEnvelope,
+    canonical_exact_additive_count,
     query_contract_signature,
 )
 from bi_agent.runtime.clickhouse_query_compiler import compile_clickhouse_query
@@ -22,6 +23,7 @@ from bi_agent.runtime.evidence_authority import (
     RuntimeEvidenceWriter,
     _record_query_execution,
     canonical_digest,
+    canonical_result_rows_hash,
     runtime_evidence_record_integrity_errors,
 )
 from bi_agent.runtime.query_audit import query_audit_refs, query_rows_ref
@@ -38,11 +40,14 @@ class AggregateRowsStore:
         semantic_signature: str,
         snapshot_refs: Sequence[str],
         rows: Sequence[Mapping[str, Any]],
+        unique_key_fields: Sequence[str] = (),
     ) -> str:
+        rows_content_hash = canonical_result_rows_hash(rows, unique_key_fields)
         rows_ref = query_rows_ref(
             query_hash,
             semantic_signature,
             snapshot_refs,
+            rows_content_hash,
         )
         self._rows[rows_ref] = deepcopy(tuple(dict(row) for row in rows))
         return rows_ref
@@ -249,18 +254,35 @@ class ClickHouseQueryExecutor:
                 execution_attempt_ref=attempt_ref,
             ))
 
+        try:
+            rows_content_hash = canonical_result_rows_hash(
+                rows,
+                contract.result_shape.unique_key,
+            )
+        except EvidenceIntegrityError as exc:
+            return finish(_failed_envelope(
+                contract,
+                query_id=result.query_id or query_id,
+                query_hash=effective_hash,
+                reason=f"invalid_result_rows:{exc}",
+                provider_stats=result.provider_stats,
+                execution_status="failed",
+                execution_attempt_ref=attempt_ref,
+            ))
         audit_refs = query_audit_refs(
             effective_hash,
             contract.contract_signature,
             contract.dataset_snapshot_refs,
             query_contract_ref=contract.query_contract_id,
             execution_attempt_ref=attempt_ref,
+            rows_content_hash=rows_content_hash,
         )
         rows_ref = self.rows_store.persist(
             effective_hash,
             contract.contract_signature,
             contract.dataset_snapshot_refs,
             rows,
+            contract.result_shape.unique_key,
         )
         provider_stats = dict(result.provider_stats)
         provider_stats.update(join_audit_stats)
@@ -331,6 +353,11 @@ def _aggregate_rows(
         else set()
     )
     rows = []
+    exact_count_metrics = {
+        binding.metric_id
+        for binding in contract.metric_bindings
+        if binding.reconciliation_strategy == "exact_additive_count"
+    }
     audit_values: dict[str, list[Any]] = {
         field: [] for field in audit_fields
     }
@@ -347,13 +374,16 @@ def _aggregate_rows(
         for field in audit_fields:
             if field in raw_row:
                 audit_values[field].append(raw_row[field])
-        rows.append(
-            {
-                str(key): value
-                for key, value in raw_row.items()
-                if str(key) in allowed
-            }
-        )
+        row = {
+            str(key): value
+            for key, value in raw_row.items()
+            if str(key) in allowed
+        }
+        for metric_id in exact_count_metrics.intersection(row):
+            canonical = canonical_exact_additive_count(row[metric_id])
+            if canonical is not None:
+                row[metric_id] = canonical
+        rows.append(row)
     join_audit_stats: dict[str, Any] = {}
     if contract.join_expectation is not None:
         for field, values in audit_values.items():

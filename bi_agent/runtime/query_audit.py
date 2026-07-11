@@ -42,6 +42,7 @@ def query_audit_refs(
     *,
     query_contract_ref: str,
     execution_attempt_ref: str,
+    rows_content_hash: str = "",
 ) -> QueryAuditRefs:
     content_identity = query_audit_identity(
         query_hash,
@@ -63,7 +64,11 @@ def query_audit_refs(
     ).hexdigest()
     return QueryAuditRefs(
         result_ref=f"result:{execution_identity}",
-        rows_ref=f"rows:{content_identity}",
+        rows_ref=(
+            f"rows:{content_identity}:{rows_content_hash}"
+            if rows_content_hash
+            else f"rows:{content_identity}"
+        ),
         completeness_report_ref=f"completeness:{execution_identity}",
     )
 
@@ -72,9 +77,11 @@ def query_rows_ref(
     query_hash: str,
     contract_signature: str,
     snapshot_refs: Sequence[str],
+    rows_content_hash: str = "",
 ) -> str:
-    return "rows:" + query_audit_identity(
+    base = "rows:" + query_audit_identity(
         query_hash,
         contract_signature,
         snapshot_refs,
     )
+    return f"{base}:{rows_content_hash}" if rows_content_hash else base

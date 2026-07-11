@@ -158,7 +158,7 @@ class FinalAnswerAuditTest(unittest.TestCase):
         self.assertFalse(audit["blocks_display"])
         self.assertEqual(audit["repairable_warnings"], ["missing_business_interpretation"])
 
-    def test_hard_blocker_blocks_display(self):
+    def test_llm_hard_label_is_a_nonblocking_risk_flag(self):
         audit = normalize_final_answer_audit(
             {
                 "display_status": "hard_blocked",
@@ -169,8 +169,9 @@ class FinalAnswerAuditTest(unittest.TestCase):
             }
         )
 
-        self.assertTrue(audit["blocks_display"])
-        self.assertEqual(audit["hard_blockers"], ["unsupported_main_claim"])
+        self.assertFalse(audit["blocks_display"])
+        self.assertEqual(audit["hard_blockers"], [])
+        self.assertEqual(audit["risk_flags"], ["unsupported_main_claim"])
 
     def test_unknown_repairable_warning_becomes_nonblocking_contract_mismatch(self):
         audit = normalize_final_answer_audit(

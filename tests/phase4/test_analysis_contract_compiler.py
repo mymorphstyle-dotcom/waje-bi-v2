@@ -1375,6 +1375,89 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             gap.diagnostic_context["earliest_snapshot_ref"],
             "snapshot:paid:future",
         )
+        self.assertTrue(gap.requires_clarification)
+
+    def test_future_context_snapshot_does_not_remove_independent_ready_query(self):
+        registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
+        market, channel = _market_dashboard_snapshots()
+        future_event = replace(
+            snapshot("external_event", "business_events__future", "2026-06-08"),
+            snapshot_ref="snapshot:event:future",
+            schema_fields=tuple(registry.dataset("external_event")["schema_fields"]),
+            loaded_at="2026-06-09T00:00:00+00:00",
+            evidence_state="context_only",
+            logical_snapshot_id="event-logical",
+            load_revision="event-load:sha256:future",
+            rows_content_hash="c" * 64,
+        )
+
+        def authorized_release(*members):
+            release_ref = dataset_snapshot_release_ref(
+                members[0].logical_snapshot_id,
+                members[0].load_revision,
+                (member.snapshot_ref for member in members),
+            )
+            released = tuple(replace(member, release_ref=release_ref) for member in members)
+            record = build_dataset_release_authority_record(
+                tuple({**member.to_dict(), "requires_release": True} for member in released)
+            )
+            return (
+                tuple(
+                    replace(member, authority_record_ref=record.authority_record_ref)
+                    for member in released
+                ),
+                record,
+            )
+
+        market_release, market_record = authorized_release(market, channel)
+        event_release, event_record = authorized_release(future_event)
+
+        class Resolver:
+            def resolve_dataset_release(self, release_ref):
+                records = {
+                    market_record.release_ref: market_record,
+                    event_record.release_ref: event_record,
+                }
+                return records[release_ref]
+
+        resolver = Resolver()
+
+        outcome = compile_analysis_contract(
+            run_id="run-ready-with-future-context",
+            proposal={
+                "question_families": ["anomaly_or_black_swan_review"],
+                "target_metrics": ["active_users"],
+                "requested_context_sources": ["external_event"],
+                "baselines": ["previous_day"],
+                "claim_intents": ["comparative_change", "candidate_mechanism"],
+                "target_semantic": "2026-06-02",
+            },
+            accepted_capabilities=("market_health_compare", "event_evidence"),
+            catalog=DatasetCatalog((*market_release, *event_release), release_resolver=resolver),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+            release_resolver=resolver,
+        )
+
+        self.assertEqual(
+            {query.query_intent for query in outcome.query_contracts},
+            {"daily_metric_baselines"},
+        )
+        plans = {plan.capability_id: plan for plan in outcome.capability_plans}
+        self.assertTrue(
+            plans["market_health_compare"].required_input_slots[0].query_contract_refs
+        )
+        self.assertFalse(
+            plans["event_evidence"].required_input_slots[0].query_contract_refs
+        )
+        gap = next(
+            gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_type == "dataset_snapshot_unavailable_as_of"
+        )
+        self.assertEqual(gap.affected_capabilities, ("event_evidence",))
+        self.assertTrue(gap.requires_clarification)
 
     def test_eligible_permission_mismatch_is_permission_blocked(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")

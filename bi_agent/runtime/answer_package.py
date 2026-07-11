@@ -116,6 +116,7 @@ def build_answer_package(
     repair_attempts: Sequence[Any] = (),
     context_manifest: Optional[Mapping[str, Any]] = None,
     trusted_claim_provenance_records: Sequence[Mapping[str, Any]] = (),
+    trusted_claim_provenance_record: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
     semantic_audit = {} if semantic_audit is None else semantic_audit
@@ -216,6 +217,16 @@ def build_answer_package(
                     validate_trusted_claim_provenance_record(item)
                     if item["run_id"] != run_id:
                         raise ValueError("claim_provenance_run_mismatch")
+            elif trusted_claim_provenance_record:
+                validate_trusted_claim_provenance_record(
+                    trusted_claim_provenance_record
+                )
+                if trusted_claim_provenance_record["run_id"] != run_id:
+                    raise ValueError("claim_provenance_run_mismatch")
+                trusted_records = tuple(
+                    dict(to_jsonable(trusted_claim_provenance_record))
+                    for _ in factual_claims
+                )
             else:
                 trusted_records = tuple(
                     build_trusted_claim_provenance_record(run_id=run_id)
@@ -554,7 +565,7 @@ def reverify_answer_package_for_delivery(
                     "claim_index": -1,
                 }
             )
-        if not projection_errors:
+        if not projection_errors and accepted_indexes:
             try:
                 context_record = dict(
                     reported_admin.get("context_manifest") or {}
@@ -704,6 +715,7 @@ def _authority_bound_claim_projections(
         if item.get("evidence_ref")
     }
     projected = []
+    projected_signatures = set()
     errors = []
     for index in accepted_indexes:
         if type(index) is not int or index < 0 or index >= len(claims):
@@ -727,6 +739,26 @@ def _authority_bound_claim_projections(
             )
             claim_projection = _project_claim_from_authority(claim, facts)
             if claim_projection.get("fact_refs"):
+                signature = canonical_digest(
+                    {
+                        key: claim_projection.get(key)
+                        for key in (
+                            "claim_type",
+                            "claim_strength",
+                            "evidence_refs",
+                            "fact_refs",
+                            "numbers",
+                            "target",
+                            "baseline",
+                            "grain",
+                            "comparison_direction",
+                            "time_window",
+                        )
+                    }
+                )
+                if signature in projected_signatures:
+                    continue
+                projected_signatures.add(signature)
                 projected.append(claim_projection)
         except Exception as exc:
             errors.append(
@@ -1154,6 +1186,14 @@ def _map_claim_numbers_to_authority(
                 candidates=candidates,
                 selector=raw_selector,
             )
+        elif kind == "ratio":
+            mapping = _map_ratio_number(
+                field=str(field),
+                value=value,
+                metric_id=metric_id,
+                candidates=candidates,
+                selector=raw_selector,
+            )
         else:
             candidates = tuple(
                 fact
@@ -1191,6 +1231,15 @@ def _number_field_semantics(
     metric_ids: Sequence[str],
 ) -> tuple[str, str, str] | None:
     lowered = field.lower()
+    if len(metric_ids) == 1:
+        generic = {
+            "target_value": ("fact", metric_ids[0], "target"),
+            "baseline_value": ("fact", metric_ids[0], "baseline"),
+            "absolute_change": ("delta", metric_ids[0], ""),
+            "relative_change": ("ratio", metric_ids[0], ""),
+        }
+        if lowered in generic:
+            return generic[lowered]
     role = ""
     for prefix, candidate_role in (("target_", "target"), ("baseline_", "baseline")):
         if lowered.startswith(prefix):
@@ -1545,6 +1594,76 @@ def _map_delta_number(
     }
 
 
+def _map_ratio_number(
+    *,
+    field: str,
+    value: Decimal,
+    metric_id: str,
+    candidates: Sequence[AuthorityFact],
+    selector: Mapping[str, Any],
+) -> dict[str, Any]:
+    shared_selector = {
+        key: item for key, item in selector.items() if key not in {"target", "baseline"}
+    }
+    target_selector = selector.get("target") or {}
+    baseline_selector = selector.get("baseline") or {}
+    if not isinstance(target_selector, Mapping) or not isinstance(
+        baseline_selector, Mapping
+    ):
+        raise ValueError(f"claim_ratio_selector_invalid:{field}")
+    targets = tuple(
+        fact
+        for fact in candidates
+        if fact.window_role == "target"
+        and _fact_matches_selector(fact, {**shared_selector, **target_selector})
+    )
+    baselines = tuple(
+        fact
+        for fact in candidates
+        if fact.window_role == "baseline"
+        and _fact_matches_selector(fact, {**shared_selector, **baseline_selector})
+    )
+    if len(targets) != 1 or len(baselines) != 1:
+        raise ValueError(
+            f"claim_ratio_fact_not_unique:{field}:"
+            f"target={len(targets)}:baseline={len(baselines)}"
+        )
+    target, baseline = targets[0], baselines[0]
+    if baseline.value == 0:
+        raise ValueError(f"claim_ratio_zero_baseline:{field}")
+    if (
+        target.dimensions != baseline.dimensions
+        or target.grain != baseline.grain
+        or not target.observation_key
+        or not baseline.observation_key
+    ):
+        raise ValueError(f"claim_ratio_fact_incompatible:{field}")
+    ratio = (target.value - baseline.value) / baseline.value
+    if not _decimal_matches(value, {ratio}):
+        raise ValueError(f"claim_ratio_value_mismatch:{field}")
+    return {
+        "field": field,
+        "kind": "ratio",
+        "metric_id": metric_id,
+        "value": ratio,
+        "fact_refs": (target.fact_ref, baseline.fact_ref),
+        "window_id": target.window_id,
+        "window_role": "comparison",
+        "target_window_id": target.window_id,
+        "baseline_window_id": baseline.window_id,
+        "observation_key": target.observation_key,
+        "dimensions": target.dimensions,
+        "grain": target.grain,
+        "value_semantics": "scalar_ratio",
+        "display_format": "percent",
+        "fact_selector": {
+            "metric_id": metric_id,
+            "target": _authority_fact_selector(target),
+            "baseline": _authority_fact_selector(baseline),
+        },
+    }
+
+
 def _render_authority_facts(
     mappings: Sequence[Mapping[str, Any]],
 ) -> tuple[str, ...]:
@@ -1555,6 +1674,13 @@ def _render_authority_facts(
             for key, value in mapping.get("dimensions") or ()
         )
         metric_id = mapping["metric_id"]
+        if mapping["kind"] == "ratio":
+            clauses.append(
+                f"目标期（{mapping['target_window_id']}）相较基线"
+                f"（{mapping['baseline_window_id']}）{metric_id}{dimensions}"
+                f"相对变化{_format_fact_value(Decimal(mapping['value']), mapping)}。"
+            )
+            continue
         if mapping["kind"] == "delta":
             value = Decimal(mapping["value"])
             direction = "增加" if value > 0 else "减少" if value < 0 else "持平"
@@ -1683,6 +1809,13 @@ def _project_client_answer_package(
         for claim in accepted_claims
         if str(claim.get("text") or "").strip()
     )
+    terminal_explanation = (
+        _terminal_explanation_projection(candidate)
+        if passed and not accepted_claims
+        else {}
+    )
+    if terminal_explanation:
+        final_answer = _render_terminal_explanation(terminal_explanation)
     claim_groups = build_claim_groups(
         draft_claims=accepted_claims,
         evidence=accepted_evidence,
@@ -1700,7 +1833,7 @@ def _project_client_answer_package(
     quality_gate = {
         "status": verifier.get("status") if passed else "failed",
         "has_verified_claims": bool(accepted_claims),
-        "business_insight_present": bool(final_answer),
+        "business_insight_present": bool(accepted_claims),
         "blocks_display": not passed,
     }
     package = {
@@ -1722,7 +1855,7 @@ def _project_client_answer_package(
         "checkpoint_events": [],
         "llm_calls": [],
         "semantic_audit": {},
-        "final_explanation": {},
+        "final_explanation": terminal_explanation,
         "delivery_claim_ids": [
             claim["claim_id"] for claim in accepted_claims
         ],
@@ -1739,7 +1872,7 @@ def _project_client_answer_package(
                     "visualization_plan": visualization,
                     "limitations": limitations,
                     "sql_hash": sql_hash,
-                    "final_explanation": {},
+                    "final_explanation": terminal_explanation,
                     "delivery_claim_ids": [
                         claim["claim_id"] for claim in accepted_claims
                     ],
@@ -2228,7 +2361,11 @@ def verify_answer_package(
         for index in range(len(draft_claims))
         if index not in rejected_claim_indexes
     )
-    if not accepted_claim_indexes and _contains_nonempty_text(delivery_text):
+    if (
+        not accepted_claim_indexes
+        and _contains_nonempty_text(delivery_text)
+        and not _is_terminal_explanation_delivery(delivery_text)
+    ):
         errors.append({"code": "free_text_without_verified_claim"})
 
     warnings = wording_warnings(draft_claims, evidence_by_ref)
@@ -2673,6 +2810,74 @@ def _contains_nonempty_text(value: Any) -> bool:
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
         return any(_contains_nonempty_text(item) for item in value)
     return False
+
+
+def _is_terminal_explanation_delivery(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    raw = value.get("final_explanation")
+    if not isinstance(raw, Mapping):
+        return False
+    status = str(raw.get("status") or "")
+    explanation = str(raw.get("explanation") or "").strip()
+    owner = str(raw.get("owner") or "").strip()
+    repair_path = str(raw.get("repair_path") or "").strip()
+    if status not in {"blocked", "degraded"} or not all(
+        (explanation, owner, repair_path)
+    ):
+        return False
+    visible = " ".join((explanation, owner, repair_path))
+    if any(token in visible.lower() for token in ("select ", "sql", "provider", "traceback")):
+        return False
+    if re.search(r"\d+(?:\.\d+)?\s*(?:%|ngn|奈拉|元|万|亿)", visible, re.IGNORECASE):
+        return False
+    return True
+
+
+def _terminal_explanation_projection(candidate: Mapping[str, Any]) -> dict[str, str]:
+    if not _is_terminal_explanation_delivery(
+        {"final_explanation": candidate.get("final_explanation")}
+    ):
+        return {}
+    admin = candidate.get("admin_audit")
+    admin = admin if isinstance(admin, Mapping) else {}
+    plan = admin.get("compiler_runtime_plan")
+    plan = plan if isinstance(plan, Mapping) else {}
+    analysis = plan.get("analysis_contract")
+    analysis = analysis if isinstance(analysis, Mapping) else {}
+    typed_gaps = tuple(analysis.get("contract_gaps") or ())
+    failed_validators = tuple(
+        item
+        for item in admin.get("validator_results") or ()
+        if isinstance(item, Mapping) and item.get("ok") is False
+    )
+    raw = candidate["final_explanation"]
+    prior_terminal_projection = (
+        candidate.get("status") == "draft"
+        and not tuple(candidate.get("delivery_claim_ids") or ())
+        and isinstance(candidate.get("quality_gate"), Mapping)
+        and candidate["quality_gate"].get("blocks_display") is False
+        and str(candidate.get("final_answer") or "")
+        == _render_terminal_explanation(raw)
+    )
+    if not typed_gaps and not failed_validators and not prior_terminal_projection:
+        return {}
+    return {
+        "status": str(raw.get("status") or ""),
+        "explanation": str(raw.get("explanation") or "").strip(),
+        "owner": str(raw.get("owner") or "").strip(),
+        "repair_path": str(raw.get("repair_path") or "").strip(),
+    }
+
+
+def _render_terminal_explanation(value: Mapping[str, Any]) -> str:
+    return "\n".join(
+        (
+            str(value.get("explanation") or "").strip(),
+            f"负责方：{str(value.get('owner') or '').strip()}",
+            f"下一步：{str(value.get('repair_path') or '').strip()}",
+        )
+    )
 
 
 def _is_machine_code(value: Any) -> bool:

@@ -58,6 +58,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             record.source_snapshot_refs,
             query_contract_ref=record.query_contract_ref,
             execution_attempt_ref=record.execution_attempt_ref,
+            rows_content_hash=record.rows_content_hash,
         )
         result_payload = {
             **dict(record.result_payload),
@@ -717,6 +718,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             resigned_contract.dataset_snapshot_refs,
             query_contract_ref=resigned_contract.query_contract_id,
             execution_attempt_ref=result.execution_attempt_ref,
+            rows_content_hash=query_record.rows_content_hash,
         )
         resigned_result = replace(
             result,

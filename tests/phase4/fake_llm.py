@@ -9,7 +9,9 @@ class FakeLLMClient:
     def invoke_json(self, *, task, prompt_version, messages, required_keys):
         self.calls.append(task)
         output = (
-            _default_final_business_summary(messages)
+            _default_query_gap_action_render(messages)
+            if task == "query_gap_action_render" and task not in self.overrides
+            else _default_final_business_summary(messages)
             if task == "final_business_summary" and task not in self.overrides
             else dict(DEFAULT_OUTPUTS.get(task, {}))
         )
@@ -44,6 +46,21 @@ class FakeLLMResult:
         self.audit = audit
 
 
+def _default_query_gap_action_render(messages):
+    payload = _input_payload(messages)
+    return {
+        "rendered_actions": [
+            {
+                "choice_id": action.get("choice_id"),
+                "label": action.get("business_semantics"),
+                "reason": "该处理方式符合当前业务证据边界。",
+            }
+            for action in payload.get("allowed_actions") or ()
+            if isinstance(action, dict)
+        ]
+    }
+
+
 DEFAULT_OUTPUTS = {
     "business_intent": {
         "question_family": "pattern_explanation",
@@ -75,7 +92,35 @@ DEFAULT_OUTPUTS = {
         "requested_nodes": ["pattern_scan"],
         "route_summary": "先验证 pattern，再补充必要证据路径。",
         "expected_evidence": ["pattern_scan"],
+        "analysis_requirements": {
+            "target_metrics": ["paid_amount"],
+            "requested_components": [],
+            "requested_dimensions": [],
+            "baselines": ["previous_day"],
+            "context_sources": [],
+            "claim_intents": ["recurring_pattern"],
+            "scope": {"type": "full_sample"},
+        },
         "decision_summary": "使用 pattern_explanation 路线。",
+    },
+    "query_gap_clarification": {
+        "questions": [
+            {
+                "question": "目标日数据尚未完整时，按哪个业务窗口继续？",
+                "options": [
+                    "等待相关业务数据可用后继续",
+                    "tell the agent to do differently",
+                ],
+            }
+        ],
+        "recommended_assumption": {
+            "option": "等待相关业务数据可用后继续",
+        },
+        "decision_summary": "目标窗口会改变结论，需要用户确认。",
+    },
+    "query_gap_recommendation_repair": {
+        "option_index": 0,
+        "brief_reason": "优先保持当前业务口径。",
     },
     "route_repair": {
         "requested_nodes": ["pattern_scan"],

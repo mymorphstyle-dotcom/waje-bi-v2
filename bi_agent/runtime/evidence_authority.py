@@ -422,6 +422,18 @@ def canonical_rows_hash(
     return canonical_digest(tuple(row for _, row in normalized))
 
 
+def canonical_result_rows_hash(
+    rows: Sequence[Mapping[str, Any]],
+    unique_key_fields: Sequence[str],
+) -> str:
+    try:
+        return canonical_rows_hash(rows, unique_key_fields)
+    except EvidenceIntegrityError as exc:
+        if not str(exc).startswith("unique_key_fields_missing:"):
+            raise
+        return canonical_rows_hash(rows, ())
+
+
 def canonical_rows_storage_ref(rows: Sequence[Mapping[str, Any]]) -> str:
     if any(not isinstance(row, Mapping) for row in rows):
         raise EvidenceIntegrityError("rows_payload_invalid")
@@ -461,12 +473,17 @@ def _write_query_execution(
         raise EvidenceIntegrityError("query_snapshot_refs_mismatch")
     if set(snapshots) != set(contract.dataset_snapshot_refs):
         raise EvidenceIntegrityError("query_snapshot_payloads_mismatch")
+    rows_hash = canonical_result_rows_hash(
+        result.rows,
+        contract.result_shape.unique_key,
+    )
     expected = query_audit_refs(
         result.query_hash,
         contract.contract_signature,
         contract.dataset_snapshot_refs,
         query_contract_ref=contract.query_contract_id,
         execution_attempt_ref=result.execution_attempt_ref,
+        rows_content_hash=rows_hash if result.execution_status == "succeeded" else "",
     )
     if (
         result.query_contract_ref != contract.query_contract_id
@@ -476,15 +493,6 @@ def _write_query_execution(
         or result.row_count != len(result.rows)
     ):
         raise EvidenceIntegrityError("query_execution_provenance_mismatch")
-    try:
-        rows_hash = canonical_rows_hash(
-            result.rows,
-            contract.result_shape.unique_key,
-        )
-    except EvidenceIntegrityError as exc:
-        if not str(exc).startswith("unique_key_fields_missing:"):
-            raise
-        rows_hash = canonical_rows_hash(result.rows, ())
     snapshot_records = []
     for snapshot_ref in result.source_snapshot_refs:
         snapshot = snapshots[snapshot_ref]
@@ -848,6 +856,11 @@ def runtime_evidence_record_integrity_errors(record: Any) -> tuple[str, ...]:
             record.source_snapshot_refs,
             query_contract_ref=record.query_contract_ref,
             execution_attempt_ref=record.execution_attempt_ref,
+            rows_content_hash=(
+                record.rows_content_hash
+                if record.execution_status == "succeeded"
+                else ""
+            ),
         )
         if (
             record.record_ref

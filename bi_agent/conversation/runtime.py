@@ -77,6 +77,7 @@ class ConversationRuntime:
         owner_scope: str = "org-default",
         run_id: str | None = None,
         prior_analysis_assets: tuple[Mapping[str, Any], ...] = (),
+        analysis_context: Mapping[str, Any] | None = None,
     ) -> ConversationTurnResult:
         thread = self.store.get_thread(thread_id)
         open_clarification = self.store.get_open_clarification(thread_id)
@@ -189,6 +190,30 @@ class ConversationRuntime:
             )
         run_request = None
         if not needs_clarification and _should_run(intent_name, topic_relation):
+            clarification_resume_context = {}
+            if intent_name == "clarification_answer" and open_clarification:
+                get_run_request = getattr(self.store, "get_run_request", None)
+                if callable(get_run_request):
+                    prior_request = get_run_request(open_clarification.run_id)
+                    prior_clarification = dict(
+                        prior_request.get("clarification") or {}
+                    )
+                    selected_query_gap_action = _selected_query_gap_action(
+                        prior_clarification,
+                        user_message,
+                    )
+                    clarification_resume_context = {
+                        "resume_run_id": open_clarification.run_id,
+                        "question": str(prior_request.get("question") or ""),
+                        "accepted_graph": tuple(prior_request.get("accepted_graph") or ()),
+                        "analysis_contract": dict(prior_request.get("analysis_contract") or {}),
+                        "analysis_route": dict(prior_request.get("analysis_route") or {}),
+                        "analysis_context": dict(prior_request.get("analysis_context") or {}),
+                        "original_intent": dict(prior_request.get("original_intent") or {}),
+                        "material_slots": dict(prior_request.get("material_slots") or {}),
+                        "clarification": prior_clarification,
+                        "selected_query_gap_action": selected_query_gap_action,
+                    }
             run_request = ConversationRunRequest(
                 thread_id=thread_id,
                 turn_id=turn_id,
@@ -197,6 +222,8 @@ class ConversationRuntime:
                 context_manifest=manifest.to_dict(),
                 permission_context={"role": role},
                 runtime_budget=_runtime_budget(user_message),
+                analysis_context=dict(analysis_context or {}),
+                clarification_resume_context=clarification_resume_context,
                 prior_analysis_assets=combined_prior_assets,
                 requested_nodes=_requested_nodes(user_message, intent_name),
             )
@@ -957,6 +984,44 @@ def _looks_like_clarification_answer(
     if "日均" in scope or "总金额" in scope or "口径" in scope:
         return _looks_like_metric_clarification_answer(normalized)
     return False
+
+
+def _selected_query_gap_action(
+    clarification: Mapping[str, Any],
+    user_message: str,
+) -> dict[str, Any]:
+    actions = tuple(
+        dict(action)
+        for action in clarification.get("choice_actions") or ()
+        if isinstance(action, Mapping)
+    )
+    normalized = user_message.strip().rstrip("。")
+    for action in actions:
+        if str(action.get("business_label") or "").strip().rstrip("。") == normalized:
+            return action
+    if normalized not in {"按推荐继续", "推荐"}:
+        return {}
+    recommended_id = str(clarification.get("recommended_choice_id") or "")
+    if not recommended_id:
+        recommended = clarification.get("recommended_assumption") or {}
+        recommended_label = str(
+            recommended.get("option") if isinstance(recommended, Mapping) else recommended
+        ).strip().rstrip("。")
+        for action in actions:
+            if (
+                str(action.get("business_label") or "").strip().rstrip("。")
+                == recommended_label
+            ):
+                recommended_id = str(action.get("choice_id") or "")
+                break
+    return next(
+        (
+            action
+            for action in actions
+            if str(action.get("choice_id") or "") == recommended_id
+        ),
+        {},
+    )
 
 
 def _looks_like_legacy_clarification_answer(text: str) -> bool:

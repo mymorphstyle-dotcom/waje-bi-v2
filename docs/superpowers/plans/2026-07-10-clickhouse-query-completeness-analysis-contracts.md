@@ -2679,7 +2679,7 @@ git commit -m "feat: persist analysis contract evidence chains"
 - Workflow consumes exact `CapabilityExecutionPlan` inputs and removes arbitrary live row fallback.
 - `AnalysisRuntime` owns/passes the runtime evidence authority resolver through executor, completeness validation, binder, capability harness, answer verifier, and analysis-asset build/reuse.
 
-- [ ] **Step 1: 写 ConversationAgentCore fixed-clock and no-fallback tests**
+- [x] **Step 1: 写 ConversationAgentCore fixed-clock and no-fallback tests**
 
 Extend `tests/phase7/test_agent_core_bridge.py`:
 
@@ -2717,7 +2717,7 @@ Extend `tests/phase4/test_llm_workflow.py` with:
 - repeated contract signature degrades without a loop;
 - final answer remains visible when final LLM audit returns warnings.
 
-- [ ] **Step 2: 运行 targeted tests and confirm failure**
+- [x] **Step 2: 运行 targeted tests and confirm failure**
 
 ```bash
 python3 -m unittest tests.phase7.test_agent_core_bridge.ConversationAgentCoreBridgeTest.test_agent_core_passes_fixed_analysis_clock_to_workflow -v
@@ -2726,7 +2726,7 @@ python3 -m pytest tests/phase4/test_llm_workflow.py -k "query_contract or comple
 
 Expected: FAIL because `analysis_context` and analysis runtime graph nodes are absent.
 
-- [ ] **Step 3: 实现 AnalysisRuntime facade**
+- [x] **Step 3: 实现 AnalysisRuntime facade**
 
 Create `analysis_runtime.py` with a narrow orchestration API:
 
@@ -2755,7 +2755,7 @@ class AnalysisRuntime:
 
 Each method returns immutable typed values. It does not call an LLM and does not create business prose.
 
-- [ ] **Step 4: 扩展 LLM analysis proposal and query-gap clarification prompts**
+- [x] **Step 4: 扩展 LLM analysis proposal and query-gap clarification prompts**
 
 Add `analysis_requirements` to `analysis_route` output, containing target metrics, requested components, dimensions, baselines, context sources, claim intents, and scope. Add task `query_gap_clarification` with required keys `questions`, `recommended_assumption`, `decision_summary`.
 
@@ -2763,7 +2763,7 @@ The prompt receives typed gaps and business labels. It must return 2-3 business 
 
 Update `FakeLLMClient` with structured outputs. Fake output is test-only and never used in live runtime.
 
-- [ ] **Step 5: Integrate graph nodes and remove live fallback**
+- [x] **Step 5: Integrate graph nodes and remove live fallback**
 
 Change the graph segment to:
 
@@ -2786,13 +2786,13 @@ Replace `_capability_rows_for()` and `_capability_result_refs_for()` live behavi
 
 Local completeness code determines legal execution state. LLM `data_coverage_interpretation` receives completeness summaries and provides business interpretation; local code does not overwrite its narrative with a template.
 
-- [ ] **Step 6: Wire ConversationAgentCore and persistence**
+- [x] **Step 6: Wire ConversationAgentCore and persistence**
 
 Add `analysis_context: dict | None = None` to `run_message()` and `ConversationRunRequest`. Persist it and inject `AnalysisRuntime` from `from_environment(real_clickhouse=True)`. CLI accepts optional `--as-of` for eval/debug; production Gateway omits it.
 
 After workflow completion call `save_analysis_runtime_records()` before recording the Answer Package. A persistence failure marks the run failed with `analysis_runtime_persistence_failed`; it never publishes unpersisted verified claims.
 
-- [ ] **Step 7: 运行 Task 10 targeted and regression tests**
+- [x] **Step 7: 运行 Task 10 targeted and regression tests**
 
 ```bash
 python3 -m pytest tests/phase4/test_llm_workflow.py tests/phase7/test_agent_core_bridge.py tests/phase7/test_analysis_assets.py -q
@@ -2802,7 +2802,7 @@ npm run build
 
 Expected: all Python tests PASS; Next.js build PASS. No test may use a node runner as end-to-end evidence.
 
-- [ ] **Step 8: 提交 Task 10**
+- [x] **Step 8: 提交 Task 10**
 
 ```bash
 git add bi_agent/runtime/analysis_runtime.py bi_agent/runtime/langgraph_workflow.py bi_agent/runtime/compiler.py bi_agent/runtime/revenue_runtime_plan.py bi_agent/runtime/llm_prompts.py bi_agent/conversation/models.py bi_agent/conversation/agent_core.py tests/phase4/fake_llm.py tests/phase4/test_llm_workflow.py tests/phase7/test_agent_core_bridge.py

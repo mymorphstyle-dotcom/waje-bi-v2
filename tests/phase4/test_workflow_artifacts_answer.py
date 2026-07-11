@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from bi_agent.runtime.answer_package import (
     build_answer_package,
+    reverify_answer_package_for_delivery,
     scrub_answer_package_for_delivery,
     verify_answer_package,
 )
@@ -13,6 +14,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _available_fields_for_contract_diagnostics,
     _contract_gap_diagnostics_from_state,
     _compiler_bound_context,
+    _ensure_degraded_audit,
     _ensure_blocked_boundary_audit,
     _local_coverage_block_reason,
     run_pattern_workflow as _run_pattern_workflow,
@@ -46,6 +48,75 @@ def _llm_input_payload(answer_package, task):
 
 
 class WorkflowArtifactsAnswerTest(unittest.TestCase):
+    def test_blocked_runtime_completeness_keeps_degraded_terminal_at_zero_claims(self):
+        from types import SimpleNamespace
+
+        state = {
+            "run_id": "blocked-runtime-degrade",
+            "intent": {"scope": "全市场", "time_window": "昨天和前天"},
+            "analysis_runtime_result": SimpleNamespace(status="blocked"),
+            "draft_claims": [],
+            "evidence": [],
+        }
+
+        _ensure_degraded_audit(state)
+
+        self.assertEqual(state["draft_claims"], [])
+        self.assertEqual(len(state["evidence"]), 1)
+
+    def test_typed_terminal_gap_is_visible_with_zero_business_claims(self):
+        package = build_answer_package(
+            run_id="typed-terminal-gap",
+            draft_claims=(),
+            evidence=(),
+            checkpoint_events=(),
+            proposed_graph=(),
+            accepted_graph=(),
+            rejected_or_degraded_mutations=(),
+            validator_results=(
+                {"validator": "query_completeness", "ok": False, "reason": "source_unbound"},
+            ),
+            sql_text="",
+            sql_hash="",
+            artifact_audit={},
+            answer_text="",
+            final_business_summary="",
+            final_explanation={
+                "status": "blocked",
+                "explanation": "当前缺少可用的数据快照，无法发布业务结论。",
+                "owner": "数据负责人",
+                "repair_path": "注册并验收对应数据快照后继续。",
+            },
+            follow_up_questions=(),
+            compiler_runtime_plan={
+                "analysis_contract": {
+                    "contract_gaps": [
+                        {"gap_type": "source_unbound", "owner": "data_owner"}
+                    ]
+                }
+            },
+        )
+
+        delivered = reverify_answer_package_for_delivery(
+            package,
+            evidence_resolver=None,
+            rows_loader=None,
+            runtime_registry=None,
+        )
+        delivered_again = reverify_answer_package_for_delivery(
+            delivered,
+            evidence_resolver=None,
+            rows_loader=None,
+            runtime_registry=None,
+        )
+
+        self.assertEqual(delivered["status"], "draft")
+        self.assertEqual(delivered["sections"][0]["payload"]["claims"], [])
+        self.assertIn("当前缺少可用的数据快照", delivered["final_answer"])
+        self.assertFalse(delivered["quality_gate"]["blocks_display"])
+        self.assertEqual(delivered_again["final_answer"], delivered["final_answer"])
+        self.assertEqual(delivered_again["final_explanation"], delivered["final_explanation"])
+
     def test_compiler_bound_context_carries_accepted_analysis_contract_clock(self):
         context = _compiler_bound_context(
             {
@@ -527,6 +598,8 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 "inspect_schema",
                 "validate_runtime_binding",
                 "fetch_runtime_rows",
+                "validate_query_completeness",
+                "decide_query_repair",
                 "interpret_data_coverage",
                 "execute_capabilities",
                 "reduce_evidence",
@@ -1105,16 +1178,12 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         _ensure_blocked_boundary_audit(state)
 
         self.assertEqual(len(state["evidence"]), 1)
-        self.assertEqual(len(state["draft_claims"]), 1)
+        self.assertEqual(state["draft_claims"], [])
         evidence = state["evidence"][0]
-        claim = state["draft_claims"][0]
         self.assertIn(":validator", evidence["evidence_ref"])
         self.assertEqual(evidence["typed_payload"]["boundary_type"], "validator")
         self.assertNotIn("coverage_block", evidence["evidence_ref"])
         self.assertNotIn("no_rows", evidence["limitations"])
-        self.assertNotIn("数据覆盖不足", claim["text"])
-        self.assertNotIn("没有返回可分析数据", claim["text"])
-        self.assertIn("运行时校验边界", claim["text"])
 
     def test_blocked_validator_audit_uses_validator_boundary_over_contract_gap(self):
         state = {
@@ -1140,15 +1209,12 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         _ensure_blocked_boundary_audit(state)
 
         self.assertEqual(len(state["evidence"]), 1)
-        self.assertEqual(len(state["draft_claims"]), 1)
+        self.assertEqual(state["draft_claims"], [])
         evidence = state["evidence"][0]
-        claim = state["draft_claims"][0]
         self.assertIn(":validator", evidence["evidence_ref"])
         self.assertEqual(evidence["typed_payload"]["boundary_type"], "validator")
         self.assertEqual(evidence["limitations"], ["sql_safety"])
         self.assertNotIn(":contract_gap", evidence["evidence_ref"])
-        self.assertIn("运行时校验边界", claim["text"])
-        self.assertNotIn("合同缺口", claim["text"])
 
     def test_local_coverage_block_reason_ignores_failed_validators(self):
         reason = _local_coverage_block_reason(
@@ -1157,6 +1223,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                     {"validator": "permission", "ok": False, "reason": "aggregate_only_denied"}
                 ],
                 "request": {
+                    "run_mode": "fixture",
                     "rows": [
                         {"period": "2026-07-01", "group": "target", "amount": 100},
                     ],
@@ -1205,7 +1272,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             payload["contract_gap_diagnostics"],
         )
 
-    def test_blocked_contract_gap_emits_auditable_evidence_and_claim(self):
+    def test_blocked_contract_gap_emits_auditable_evidence_and_zero_claims(self):
         fake = FakeLLMClient(
             {
                 "business_intent": {
@@ -1249,11 +1316,8 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertEqual(result.status, "draft")
         self.assertEqual(summary["claims"], [])
         self.assertTrue(evidence)
-        self.assertEqual(verifier["status"], "failed")
-        self.assertIn(
-            "claim_without_authority_backed_evidence",
-            {item["code"] for item in verifier["errors"]},
-        )
+        self.assertEqual(verifier["status"], "passed")
+        self.assertEqual(verifier["errors"], [])
         self.assertEqual(
             result.answer_package["admin_audit"]["contract_gap_diagnostics"][0]["gap_id"],
             "event_context_contract_missing",

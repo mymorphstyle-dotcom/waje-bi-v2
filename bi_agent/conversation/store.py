@@ -144,6 +144,9 @@ class InMemoryConversationStore:
         }
         self.add_audit_event("run_status_changed", thread_id=thread_id, topic_id=topic_id, run_id=run_id)
 
+    def get_run_request(self, run_id: str) -> dict[str, Any]:
+        return deepcopy((self.runs.get(run_id) or {}).get("request") or {})
+
     def record_context_manifest(self, manifest: dict) -> None:
         self.save_context_manifest(manifest)
 

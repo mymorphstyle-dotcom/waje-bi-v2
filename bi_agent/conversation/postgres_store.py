@@ -309,6 +309,16 @@ class PostgresConversationStore:
         )
         self._audit("run_status_changed", thread_id=thread_id, topic_id=topic_id, run_id=run_id, ref=run_id)
 
+    def get_run_request(self, run_id: str) -> dict[str, Any]:
+        row = self._fetchone(
+            "SELECT request FROM waje_runtime.analysis_runs WHERE run_id = %(run_id)s",
+            {"run_id": run_id},
+        )
+        value = _field(row, "request", 0) if row else {}
+        if isinstance(value, str):
+            value = json.loads(value)
+        return dict(value) if isinstance(value, Mapping) else {}
+
     def record_context_manifest(self, manifest: dict[str, Any]) -> None:
         self.save_context_manifest(manifest)
 

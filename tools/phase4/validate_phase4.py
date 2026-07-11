@@ -312,7 +312,10 @@ def run_eval_case(
         "required_fields": _required_fields_for_case(case),
         "requested_nodes": tuple(case.get("required_capabilities", ())),
         "allow_question_interrupt": False,
-        "run_mode": mode,
+        # This legacy node-level harness materializes rows before the workflow.
+        # It remains a diagnostic fixture; production/e2e validation enters via Core.
+        "run_mode": "fixture",
+        "source_mode": mode,
     }
     for key in ("question", "baseline", "target"):
         if key in case:

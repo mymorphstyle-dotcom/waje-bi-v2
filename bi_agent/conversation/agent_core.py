@@ -4,10 +4,12 @@ import argparse
 import json
 import sys
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
 from bi_agent.conversation.postgres_store import PostgresConversationStore
+from bi_agent.conversation.models import ClarificationOption, ClarificationState
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.analysis_assets import build_analysis_assets
@@ -37,6 +39,7 @@ class ConversationAgentCore:
         evidence_writer: Any = None,
         runtime_registry: RuntimeContractRegistry | None = None,
         release_resolver: Any = None,
+        analysis_runtime: Any = None,
     ) -> None:
         self.store = store
         self.workflow_runner = workflow_runner or run_pattern_workflow
@@ -47,6 +50,7 @@ class ConversationAgentCore:
         self.evidence_writer = evidence_writer
         self.runtime_registry = runtime_registry
         self.release_resolver = release_resolver
+        self.analysis_runtime = analysis_runtime
 
     def run_message(
         self,
@@ -60,7 +64,9 @@ class ConversationAgentCore:
         artifact_root: str = "artifacts/phase-7",
         clarification: dict[str, Any] | None = None,
         prior_analysis_assets: tuple[Mapping[str, Any], ...] = (),
+        analysis_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        analysis_context = _validated_analysis_context(analysis_context)
         role = str((permission_context or {}).get("role") or role or "analyst")
         run_id = run_id or f"run-{uuid4().hex[:12]}"
         self.store.get_thread(thread_id)
@@ -82,6 +88,7 @@ class ConversationAgentCore:
             role=role,
             run_id=run_id,
             prior_analysis_assets=tuple(prior_analysis_assets or ()),
+            analysis_context=analysis_context,
         )
         context_manifest = turn.context_manifest.to_dict()
         if turn.run_request and self.workflow_runner is _dry_run_workflow:
@@ -150,16 +157,22 @@ class ConversationAgentCore:
         )
         request["context_manifest"] = context_manifest
         request["reuse_decisions"] = [decision.to_dict() for decision in turn.reuse_decisions]
+        resume_context = request.get("clarification_resume_context") or {}
+        original_question = str(resume_context.get("question") or "")
         request.update(
             {
                 "run_id": run_id,
-                "question": user_message,
+                "question": original_question or user_message,
+                "clarification_user_message": (
+                    user_message if original_question else ""
+                ),
                 "role": role,
                 "user_id": user_id,
                 "permission_context": permission_context or {},
                 "artifact_root": artifact_root,
                 "clarification_answer": clarification,
                 "prior_analysis_assets": tuple(turn.run_request.prior_analysis_assets or ()),
+                "analysis_context": dict(analysis_context),
             }
         )
         if clarification_choice:
@@ -176,6 +189,74 @@ class ConversationAgentCore:
             request["runtime_registry"] = self.runtime_registry
         if self.release_resolver is not None:
             request["release_resolver"] = self.release_resolver
+        if self.analysis_runtime is not None:
+            request["analysis_runtime"] = self.analysis_runtime
+            request["run_mode"] = "production"
+        selected_action = resume_context.get("selected_query_gap_action") or {}
+        action_kind = str(selected_action.get("action_kind") or "")
+        if action_kind in {"wait_for_source", "user_redirect"}:
+            prior_clarification = dict(resume_context.get("clarification") or {})
+            if action_kind == "wait_for_source":
+                questions = tuple(prior_clarification.get("questions") or ())
+                first_question = next(
+                    (item for item in questions if isinstance(item, Mapping)),
+                    {},
+                )
+                raw_recommended = prior_clarification.get("recommended_assumption") or {}
+                recommended = str(
+                    raw_recommended.get("option")
+                    if isinstance(raw_recommended, Mapping)
+                    else raw_recommended
+                ).strip()
+                options = [
+                    ClarificationOption(
+                        option_id=f"query-gap-{index + 1}",
+                        label=str(label),
+                        description=str(label),
+                        recommended=str(label) == recommended,
+                    )
+                    for index, label in enumerate(first_question.get("options") or ())
+                    if str(label)
+                ]
+                self.store.set_pending_clarification(
+                    thread_id,
+                    turn.topic_id or "",
+                    run_id,
+                )
+                self.store.save_clarification_state(
+                    ClarificationState(
+                        run_id=run_id,
+                        topic_id=turn.topic_id or "",
+                        question=str(first_question.get("question") or ""),
+                        options=options,
+                    )
+                )
+            else:
+                self.store.clear_pending_clarification(thread_id)
+            self.store.upsert_run(
+                run_id,
+                thread_id=thread_id,
+                turn_id=turn.turn_id,
+                topic_id=turn.topic_id or "",
+                status="waiting_for_clarification",
+                request={
+                    **_persistable_request(request),
+                    "clarification": prior_clarification,
+                    "selected_query_gap_action": dict(selected_action),
+                },
+            )
+            return {
+                "status": "waiting_for_clarification",
+                "run_id": run_id,
+                "turn_id": turn.turn_id,
+                "topic_id": turn.topic_id,
+                "intent": turn.turn_intent.intent,
+                "topic_relation": turn.topic_relation,
+                "context_manifest": context_manifest,
+                "clarification": prior_clarification,
+                "selected_query_gap_action": dict(selected_action),
+                "user_redirect": action_kind == "user_redirect",
+            }
         self.store.upsert_run(
             run_id,
             thread_id=thread_id,
@@ -185,6 +266,167 @@ class ConversationAgentCore:
             request=_persistable_request(request),
         )
         result = self.workflow_runner(request)
+        if result.status == "waiting_for_clarification" and result.answer_package:
+            try:
+                if result.analysis_runtime_records is None:
+                    if result.answer_package.get("analysis_contract"):
+                        raise ValueError("analysis_runtime_records_missing")
+                else:
+                    records = dict(result.analysis_runtime_records)
+                    runtime_result = getattr(result, "analysis_runtime_result", None)
+                    if self.analysis_runtime is not None and runtime_result is not None:
+                        records = self.analysis_runtime.build_persistence_bundle(
+                            runtime_result,
+                            answer_package=result.answer_package,
+                            request=request,
+                            artifact_path=result.artifact_path,
+                        )
+                    self.store.save_analysis_runtime_records(run_id=run_id, **records)
+            except Exception as exc:
+                self.store.upsert_run(
+                    run_id,
+                    thread_id=thread_id,
+                    turn_id=turn.turn_id,
+                    topic_id=turn.topic_id or "",
+                    status="failed",
+                    request={
+                        **_persistable_request(request),
+                        "failure_reason": "analysis_runtime_persistence_failed",
+                    },
+                )
+                self.store.add_audit_event(
+                    "analysis_runtime_persistence_failed",
+                    thread_id=thread_id,
+                    topic_id=turn.topic_id or "",
+                    run_id=run_id,
+                    ref=run_id,
+                    payload={
+                        "reason": str(exc),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return {
+                    "status": "failed",
+                    "run_id": run_id,
+                    "turn_id": turn.turn_id,
+                    "topic_id": turn.topic_id,
+                    "failure_reason": "analysis_runtime_persistence_failed",
+                }
+            clarification_payload = dict(
+                result.answer_package.get("clarification") or {}
+            )
+            questions = tuple(clarification_payload.get("questions") or ())
+            first_question = next(
+                (item for item in questions if isinstance(item, Mapping)),
+                {},
+            )
+            option_labels = tuple(
+                str(item)
+                for item in first_question.get("options") or ()
+                if str(item)
+            )
+            raw_recommended = clarification_payload.get("recommended_assumption")
+            recommended_text = str(
+                (
+                    raw_recommended.get("option")
+                    or raw_recommended.get("assumption")
+                    or ""
+                )
+                if isinstance(raw_recommended, Mapping)
+                else raw_recommended or ""
+            ).strip()
+            recommended = (
+                recommended_text if recommended_text in option_labels else ""
+            )
+            clarification_payload["recommended_assumption"] = (
+                {"option": recommended}
+                if recommended
+                else {"assumption": recommended_text}
+            )
+            clarification_payload["recommended_choice_id"] = next(
+                (
+                    str(action.get("choice_id") or "")
+                    for action in clarification_payload.get("choice_actions") or ()
+                    if isinstance(action, Mapping)
+                    and str(action.get("business_label") or "").strip()
+                    == recommended
+                ),
+                "",
+            )
+            options = [
+                ClarificationOption(
+                    option_id=f"query-gap-{index + 1}",
+                    label=label,
+                    description=label,
+                    recommended=label == recommended,
+                )
+                for index, label in enumerate(option_labels)
+            ]
+            self.store.set_pending_clarification(
+                thread_id,
+                turn.topic_id or "",
+                run_id,
+            )
+            self.store.save_clarification_state(
+                ClarificationState(
+                    run_id=run_id,
+                    topic_id=turn.topic_id or "",
+                    question=str(first_question.get("question") or ""),
+                    options=options,
+                )
+            )
+            self.store.upsert_run(
+                run_id,
+                thread_id=thread_id,
+                turn_id=turn.turn_id,
+                topic_id=turn.topic_id or "",
+                status="waiting_for_clarification",
+                request={
+                    **_persistable_request(request),
+                    "accepted_graph": list(
+                        result.answer_package.get("accepted_graph") or ()
+                    ),
+                    "analysis_contract": dict(
+                        result.answer_package.get("analysis_contract") or {}
+                    ),
+                    "analysis_route": dict(
+                        result.answer_package.get("analysis_route") or {}
+                    ),
+                    "original_intent": dict(
+                        result.answer_package.get("original_intent") or {}
+                    ),
+                    "material_slots": dict(
+                        result.answer_package.get("material_slots") or {}
+                    ),
+                    "clarification": clarification_payload,
+                },
+            )
+            return {
+                "status": "waiting_for_clarification",
+                "run_id": run_id,
+                "turn_id": turn.turn_id,
+                "topic_id": turn.topic_id,
+                "intent": turn.turn_intent.intent,
+                "topic_relation": turn.topic_relation,
+                "context_manifest": context_manifest,
+                "clarification": clarification_payload,
+                "accepted_graph": list(
+                    result.answer_package.get("accepted_graph") or ()
+                ),
+                "analysis_contract": dict(
+                    result.answer_package.get("analysis_contract") or {}
+                ),
+                "analysis_route": dict(
+                    result.answer_package.get("analysis_route") or {}
+                ),
+                "original_intent": dict(
+                    result.answer_package.get("original_intent") or {}
+                ),
+                "material_slots": dict(
+                    result.answer_package.get("material_slots") or {}
+                ),
+                "artifact_path": result.artifact_path,
+            }
         if result.status != "draft" or not result.answer_package:
             self.store.upsert_run(
                 run_id,
@@ -234,12 +476,165 @@ class ConversationAgentCore:
         )
         package["run_id"] = run_id
         package["artifact_path"] = result.artifact_path
+        verifier_status = str(
+            package.get("admin_audit", {}).get("verifier", {}).get("status") or ""
+        )
+        delivery_failed = (
+            str(package.get("status") or "") == "failed"
+            or verifier_status == "failed"
+            or bool(package.get("evidence_verifier_block"))
+            or bool(package.get("quality_gate", {}).get("blocks_display"))
+        )
+        if delivery_failed:
+            self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
+            self.store.upsert_run(
+                run_id,
+                thread_id=thread_id,
+                turn_id=turn.turn_id,
+                topic_id=turn.topic_id or "",
+                status="failed",
+                request={
+                    **_persistable_request(request),
+                    "failure_reason": "delivery_verifier_failed",
+                },
+            )
+            self.store.add_audit_event(
+                "answer_publication_blocked",
+                thread_id=thread_id,
+                topic_id=turn.topic_id or "",
+                run_id=run_id,
+                ref=run_id,
+                payload={"reason": "delivery_verifier_failed"},
+            )
+            return {
+                "status": "failed",
+                "run_id": run_id,
+                "turn_id": turn.turn_id,
+                "topic_id": turn.topic_id,
+                "intent": turn.turn_intent.intent,
+                "topic_relation": turn.topic_relation,
+                "artifact_path": result.artifact_path,
+                "answer_package": package,
+                "context_manifest": context_manifest,
+                "failure_reason": "delivery_verifier_failed",
+                "llm_calls": [],
+                "quality_review": package.get("quality_gate")
+                or package.get("admin_audit"),
+            }
         accepted_graph = (
             package.get("accepted_graph")
             or package.get("admin_audit", {}).get("accepted_graph")
             or []
         )
-        context_manifest = _manifest_with_current_run_evidence(context_manifest, package, role)
+        summary_claims = tuple(
+            claim
+            for section in package.get("sections") or ()
+            if isinstance(section, Mapping)
+            and (section.get("section_id") or section.get("id")) == "summary"
+            for claim in (section.get("payload") or {}).get("claims") or ()
+            if isinstance(claim, Mapping)
+        )
+        authority_evidence = tuple(
+            evidence
+            for section in package.get("sections") or ()
+            if isinstance(section, Mapping)
+            for evidence in (section.get("payload") or {}).get("evidence") or ()
+            if isinstance(evidence, Mapping)
+            and evidence.get("binding_manifest_ref")
+        )
+        persisted_context_manifest = None
+        try:
+            if result.analysis_runtime_records is None:
+                if summary_claims or authority_evidence:
+                    raise ValueError("analysis_runtime_records_missing")
+            else:
+                records = dict(result.analysis_runtime_records)
+                runtime_result = getattr(result, "analysis_runtime_result", None)
+                if self.analysis_runtime is not None and runtime_result is not None:
+                    records = self.analysis_runtime.build_persistence_bundle(
+                        runtime_result,
+                        answer_package=package,
+                        request=request,
+                        artifact_path=result.artifact_path,
+                    )
+                verified_claims = tuple(records.get("verified_claims") or ())
+                contexts_by_ref = {
+                    str(item.get("manifest_id") or ""): item
+                    for item in records.get("context_manifests") or ()
+                    if isinstance(item, Mapping) and item.get("manifest_id")
+                }
+                if summary_claims:
+                    context_refs = {
+                        str(item.get("context_manifest_ref") or "")
+                        for item in verified_claims
+                        if isinstance(item, Mapping)
+                    }
+                    if (
+                        not verified_claims
+                        or len(context_refs) != 1
+                        or not context_refs.issubset(contexts_by_ref)
+                    ):
+                        raise ValueError(
+                            "analysis_runtime_verified_claim_context_missing"
+                        )
+                    persisted_context_manifest = dict(
+                        contexts_by_ref[next(iter(context_refs))]
+                    )
+                self.store.save_analysis_runtime_records(run_id=run_id, **records)
+                package["verified_claims"] = list(verified_claims)
+                package.setdefault("admin_audit", {})[
+                    "analysis_runtime_persistence"
+                ] = {
+                    "status": "persisted",
+                    "analysis_contract_ref": str(
+                        records.get("analysis_contract", {}).get(
+                            "analysis_contract_id"
+                        )
+                        or ""
+                    ),
+                    "verified_claim_refs": [
+                        str(item.get("claim_ref") or "")
+                        for item in records.get("verified_claims") or ()
+                    ],
+                }
+        except Exception as exc:
+            self.store.upsert_run(
+                run_id,
+                thread_id=thread_id,
+                turn_id=turn.turn_id,
+                topic_id=turn.topic_id or "",
+                status="failed",
+                request={
+                    **_persistable_request(request),
+                    "failure_reason": "analysis_runtime_persistence_failed",
+                },
+            )
+            self.store.add_audit_event(
+                "analysis_runtime_persistence_failed",
+                thread_id=thread_id,
+                topic_id=turn.topic_id or "",
+                run_id=run_id,
+                ref=run_id,
+                payload={
+                    "reason": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return {
+                "status": "failed",
+                "run_id": run_id,
+                "turn_id": turn.turn_id,
+                "topic_id": turn.topic_id,
+                "intent": turn.turn_intent.intent,
+                "topic_relation": turn.topic_relation,
+                "context_manifest": context_manifest,
+                "failure_reason": "analysis_runtime_persistence_failed",
+            }
+        context_manifest = persisted_context_manifest or _manifest_with_current_run_evidence(
+            context_manifest,
+            package,
+            role,
+        )
         self.store.record_context_manifest(context_manifest)
         self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
         self.store.record_answer_package(run_id, package)
@@ -285,8 +680,8 @@ class ConversationAgentCore:
         real_llm: bool = False,
         real_clickhouse: bool = False,
     ) -> "ConversationAgentCore":
-        authority = RuntimeEvidenceAuthority()
         registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+        authority = RuntimeEvidenceAuthority(runtime_registry=registry)
         authority_kwargs = {
             "evidence_resolver": authority,
             "rows_loader": authority.rows_loader,
@@ -296,27 +691,23 @@ class ConversationAgentCore:
         if real_llm or real_clickhouse:
             store = PostgresConversationStore.from_env()
             row_provider = None
+            analysis_runtime = None
             if real_clickhouse:
-                from bi_agent.runtime.clickhouse_revenue_rows import (
-                    ClickHouseRevenueRows,
-                    trusted_active_dataset_snapshots,
-                )
+                from bi_agent.runtime.analysis_runtime import AnalysisRuntime
 
-                row_provider = ClickHouseRevenueRows.from_env(
-                    snapshot_loader=lambda *, purpose: trusted_active_dataset_snapshots(
-                        store,
-                        purpose=purpose,
-                    ),
-                    release_resolver=store,
-                    evidence_resolver=authority,
-                    evidence_writer=authority._runtime_writer(),
-                    rows_loader=authority.rows_loader,
-                )
+                analysis_runtime = AnalysisRuntime.from_environment(store)
+                authority_kwargs = {
+                    "evidence_resolver": analysis_runtime.evidence_resolver,
+                    "rows_loader": analysis_runtime.rows_loader,
+                    "evidence_writer": analysis_runtime.evidence_writer,
+                    "runtime_registry": analysis_runtime.registry,
+                }
             return cls(
                 store,
                 conversation_llm_client=_conversation_llm_from_env() if real_llm else None,
                 row_provider=row_provider,
                 release_resolver=store,
+                analysis_runtime=analysis_runtime,
                 **authority_kwargs,
             )
         store = InMemoryConversationStore()
@@ -337,6 +728,25 @@ def _conversation_llm_from_env() -> Any:
         return None
 
 
+def _validated_analysis_context(
+    value: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping) or set(value) != {"as_of"}:
+        raise PermissionError("analysis_context_external_override_rejected")
+    raw = value.get("as_of")
+    if not isinstance(raw, str):
+        raise ValueError("analysis_context_as_of_invalid")
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError("analysis_context_as_of_invalid") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("analysis_context_as_of_timezone_required")
+    return {"as_of": parsed.isoformat()}
+
+
 def _persistable_request(request: dict[str, Any]) -> dict[str, Any]:
     safe = dict(request or {})
     for key in (
@@ -347,6 +757,7 @@ def _persistable_request(request: dict[str, Any]) -> dict[str, Any]:
         "evidence_writer",
         "runtime_registry",
         "release_resolver",
+        "analysis_runtime",
     ):
         if key in safe:
             safe[key] = _runtime_object_descriptor(safe[key])
@@ -361,6 +772,7 @@ def _persistable_request(request: dict[str, Any]) -> dict[str, Any]:
             "evidence_writer",
             "runtime_registry",
             "release_resolver",
+            "analysis_runtime",
         ):
             if key in safe_runtime:
                 safe_runtime[key] = _runtime_object_descriptor(safe_runtime[key])
@@ -688,21 +1100,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--artifact-root", default="artifacts/phase-7")
     parser.add_argument("--clarification")
     parser.add_argument("--prior-analysis-assets")
+    parser.add_argument("--as-of")
     args = parser.parse_args(argv)
     clarification = json.loads(args.clarification) if args.clarification else None
     prior_analysis_assets = _parse_prior_analysis_assets(args.prior_analysis_assets)
 
-    store = PostgresConversationStore.from_env()
-    authority = RuntimeEvidenceAuthority()
-    core = ConversationAgentCore(
-        store,
-        conversation_llm_client=_conversation_llm_from_env(),
-        evidence_resolver=authority,
-        rows_loader=authority.rows_loader,
-        evidence_writer=authority._runtime_writer(),
-        runtime_registry=RuntimeContractRegistry.from_path(
-            CANONICAL_RUNTIME_BINDINGS_PATH
-        ),
+    core = ConversationAgentCore.from_environment(
+        real_llm=True,
+        real_clickhouse=True,
     )
     result = core.run_message(
         thread_id=args.thread_id,
@@ -712,6 +1117,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         artifact_root=args.artifact_root,
         clarification=clarification,
         prior_analysis_assets=prior_analysis_assets,
+        analysis_context={"as_of": args.as_of} if args.as_of else None,
     )
     json.dump(result, sys.stdout, ensure_ascii=False, sort_keys=True)
     sys.stdout.write("\n")

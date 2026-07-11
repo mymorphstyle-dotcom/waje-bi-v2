@@ -10,33 +10,71 @@ from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.exploration_budget import default_budget
 from bi_agent.runtime.langgraph_workflow import (
     _answer_synthesis_context,
+    _answer_quality_gate,
+    _accept_analysis_route,
+    _build_answer_package_from_state,
     _apply_reused_dimension_scan_input,
+    _apply_query_gap_action_to_route,
     _capability_path_labels,
     _capability_result_refs_for,
     _capability_rows_for,
     _clarification_policy_gate,
     _claims_from_llm_or_default,
     _default_claim_from_evidence,
+    _design_analysis_route,
+    _delivery_reverify_with_answer_repair,
     _execute_capabilities,
+    _evidence_established,
     _execute_joint_attribution,
+    _ensure_business_narrative_answer,
+    _fetch_runtime_rows,
     _final_business_summary_fallback,
     _final_summary_needs_display_repair,
     _legacy_quality_with_final_answer_audit,
+    _merge_confirmed_material_requirements,
     _local_coverage_answerable_reason,
     _infer_question_families_from_requested_nodes,
+    _business_query_gap_projection,
+    _business_query_repair_gap,
+    _reconcile_route_metric_capabilities,
     _normalize_evidence_interpretation_output,
+    _normalize_query_gap_clarification_output,
+    _question_family_values,
+    normalize_final_answer_audit,
+    _generate_query_gap_clarification,
+    _group_query_gap_actions,
+    _preserved_authority_claims,
+    _persist_clarification,
+    _retrying_node,
     _align_route_output_to_requested,
     _normalize_route_requested_nodes,
     _repair_path_invents_fixed_future_window,
+    _repair_analysis_contract,
+    _render_query_gap_actions,
     _reduce_evidence,
     evaluate_answer_quality,
     repair_final_answer_with_verified_claim,
     _route_after_next_action,
+    _route_after_query_gap_clarification,
+    _route_after_clarification,
+    _route_after_accept_analysis,
+    _route_after_semantic_audit,
     _sanitize_terminal_explanation,
+    _sanitize_answer,
     _segment_contribution_params,
     _understand_business_intent,
+    _typed_clarification_compiled_graph,
+    _validate_runtime_binding,
     WorkflowFailure,
     run_pattern_workflow as _run_pattern_workflow,
+)
+
+from bi_agent.runtime.analysis_runtime import (
+    AnalysisRuntime,
+    AnalysisRuntimeRequest,
+    AnalysisRuntimeResult,
+    AnswerPackageBuildContext,
+    analysis_outcome_requires_preexecution_clarification,
 )
 from bi_agent.runtime.llm_client import (
     LLMConfigurationError,
@@ -103,6 +141,1529 @@ def _llm_input_payload(answer_package, task):
 
 
 class LLMWorkflowTest(unittest.TestCase):
+    def test_live_publication_requires_analysis_runtime_binding(self):
+        result = _run_pattern_workflow(
+            {
+                "run_id": "live-missing-analysis-runtime",
+                "run_mode": "live",
+                "llm_client": FakeLLMClient(),
+            }
+        )
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(
+            result.failure_reason,
+            "analysis_runtime_required_for_live_publication",
+        )
+
+    def test_live_runtime_rows_never_use_default_or_request_fixture_rows(self):
+        from bi_agent.runtime.langgraph_workflow import (
+            _capability_rows,
+            _coverage_rows_for_local_check,
+        )
+
+        live = {
+            "request": {
+                "run_mode": "live",
+                "rows": ({"period": "fixture", "amount": 999.0},),
+            }
+        }
+        fixture = {
+            "request": {
+                "run_mode": "fixture",
+                "rows": ({"period": "fixture", "amount": 999.0},),
+            }
+        }
+
+        self.assertEqual(list(_capability_rows(live)), [])
+        self.assertEqual(_coverage_rows_for_local_check(live), [])
+        self.assertEqual(list(_capability_rows(fixture))[0]["amount"], 999.0)
+
+    def test_analysis_route_prompt_requires_typed_analysis_requirements(self):
+        text = "\n".join(
+            message["content"]
+            for message in build_prompt("analysis_route", {"intent": {}}).messages
+        )
+
+        self.assertIn("analysis_requirements", text)
+        for key in (
+            "target_metrics",
+            "requested_components",
+            "requested_dimensions",
+            "baselines",
+            "context_sources",
+            "claim_intents",
+            "scope",
+        ):
+            self.assertIn(key, text)
+        self.assertIn("allowed_claim_types", text)
+        self.assertIn("never objects, dates, or descriptions", text)
+        self.assertIn("Do not select compare_periods", text)
+
+    def test_query_gap_clarification_prompt_has_business_options_and_escape(self):
+        prompt = build_prompt(
+            "query_gap_clarification",
+            {"business_gaps": [{"business_gap": "业务时间范围不可用"}]},
+        )
+        text = "\n".join(message["content"] for message in prompt.messages)
+
+        self.assertEqual(
+            prompt.required_keys,
+            ("questions", "recommended_assumption", "decision_summary", "display_summary"),
+        )
+        self.assertIn("exactly one question", text)
+        self.assertIn("2-3 draft options", text)
+        self.assertIn("allowed_actions.business_semantics", text)
+        self.assertIn("questions must never be empty", text)
+        self.assertIn("tell the agent to do differently", text)
+        self.assertIn("cannot claim", text)
+        self.assertIn("character-for-character", text)
+        self.assertIn("future availability timestamp", text)
+
+    def test_final_llm_audit_hard_label_is_recorded_as_nonblocking_risk(self):
+        audit = normalize_final_answer_audit(
+            {
+                "display_status": "hard_blocked",
+                "hard_blockers": ["unsupported_main_claim"],
+                "repairable_warnings": [],
+                "retry_instruction": "弱化措辞。",
+                "business_audit_summary": "存在措辞风险。",
+            }
+        )
+
+        self.assertFalse(audit["blocks_display"])
+        self.assertEqual(audit["hard_blockers"], [])
+        self.assertEqual(audit["risk_flags"], ["unsupported_main_claim"])
+        self.assertEqual(audit["display_status"], "ready_with_warnings")
+
+    def test_query_gap_clarification_normalizes_structured_options_and_preserves_escape(self):
+        normalized = _normalize_query_gap_clarification_output(
+            {
+                "questions": [
+                    {
+                        "question": "目标日数据未完整时怎么继续？",
+                        "options": [
+                            {"label": "等待刷新", "description": "数据齐备后继续。"},
+                            {"label": "改用完整日", "description": "重新确认目标日。"},
+                        ],
+                    },
+                    {
+                        "question": "另一个问题不应扩大单次澄清范围。",
+                        "options": [
+                            {"text": "选项一"},
+                            {"description": "选项二"},
+                        ],
+                    },
+                ],
+                "recommended_assumption": {"option": "等待刷新"},
+                "decision_summary": "目标窗口会改变结论。",
+            }
+        )
+
+        self.assertEqual(len(normalized["questions"]), 1)
+        self.assertEqual(len(normalized["questions"][0]["options"]), 3)
+        self.assertIn("等待刷新", normalized["questions"][0]["options"][0])
+        self.assertIn(
+            "tell the agent to do differently",
+            normalized["questions"][0]["options"][-1].lower(),
+        )
+        self.assertIn("option", normalized["recommended_assumption"])
+
+    def test_query_gap_clarification_accepts_choice_maps_and_recommended_choice(self):
+        mapped = _normalize_query_gap_clarification_output(
+            {
+                "questions": [
+                    {
+                        "question_text": "缺口存在时如何推进？",
+                        "choices": {
+                            "wait": {"text": "等待数据刷新"},
+                            "change": "改用完整窗口",
+                        },
+                    }
+                ],
+                "recommended_assumption": {"option": "等待数据刷新"},
+                "decision_summary": "窗口选择会改变结论。",
+            }
+        )
+        recommended_only = _normalize_query_gap_clarification_output(
+            {
+                "question": "缺口存在时如何推进？",
+                "questions": [],
+                "recommended_assumption": {"option": "等待数据刷新"},
+                "decision_summary": "窗口选择会改变结论。",
+            }
+        )
+        singular = _normalize_query_gap_clarification_output(
+            {
+                "questions": {
+                    "question": "缺口存在时如何推进？",
+                    "options": ["等待数据刷新"],
+                },
+                "recommended_assumption": {"option": "等待数据刷新"},
+                "decision_summary": "窗口选择会改变结论。",
+            }
+        )
+
+        self.assertEqual(len(mapped["questions"][0]["options"]), 3)
+        self.assertEqual(len(recommended_only["questions"][0]["options"]), 2)
+        self.assertEqual(len(singular["questions"][0]["options"]), 2)
+        self.assertEqual(
+            recommended_only["recommended_assumption"],
+            {"option": "等待数据刷新"},
+        )
+
+    def test_query_gap_recommendation_normalizes_only_one_explicit_business_option(self):
+        def normalized(recommendation):
+            return _normalize_query_gap_clarification_output(
+                {
+                    "questions": [{
+                        "question": "按哪个业务口径继续？",
+                        "options": [
+                            "等待相关业务数据可用后继续。",
+                            "改用当前可验证的业务范围继续。",
+                            "tell the agent to do differently",
+                        ],
+                    }],
+                    "recommended_assumption": recommendation,
+                    "decision_summary": "选择会影响结论。",
+                }
+            )["recommended_assumption"]
+
+        self.assertEqual(
+            normalized({
+                "recommended_option": {
+                    "text": "建议等待相关业务数据可用后继续。再恢复分析。"
+                }
+            }),
+            {"option": "等待相关业务数据可用后继续。"},
+        )
+        self.assertNotIn(
+            "option",
+            normalized(
+                "可等待相关业务数据可用后继续。也可改用当前可验证的业务范围继续。"
+            ),
+        )
+        self.assertNotIn(
+            "option",
+            normalized("tell the agent to do differently"),
+        )
+        self.assertNotIn(
+            "option",
+            normalized({"assumption": "采用产品默认业务假设继续。"}),
+        )
+
+    def test_query_gap_clarification_retry_receives_contract_failure_reason(self):
+        class InvalidThenValidLLM(FakeLLMClient):
+            def __init__(self):
+                super().__init__()
+                self.message_batches = []
+
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                self.message_batches.append([dict(message) for message in messages])
+                if len(self.message_batches) == 1:
+                    return FakeLLMResult(
+                        {
+                            "questions": [{
+                                "question": "external_event 数据集最早 2026-06-09 可用，怎么处理？",
+                                "options": [
+                                    "等待未来快照。",
+                                    "tell the agent to do differently",
+                                ],
+                            }],
+                            "recommended_assumption": {"option": "等待未来快照。"},
+                            "decision_summary": "",
+                            "display_summary": "",
+                        },
+                        {"task": task},
+                    )
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
+
+        fake = InvalidThenValidLLM()
+        state = {
+            "request": {},
+            "analysis_runtime_result": type(
+                "ClarificationResult",
+                (),
+                {"typed_gaps": ({
+                    "gap_type": "dataset_snapshot_unavailable_as_of",
+                    "requires_clarification": True,
+                    "dataset_id": "external_event",
+                    "diagnostic_context": {
+                        "earliest_loaded_at": "2026-06-09T00:00:00+00:00",
+                    },
+                },)},
+            )(),
+            "query_repair_decisions": [],
+            "intent": {"target_metric": "active_users", "time_window": "previous_day"},
+            "llm_client": fake,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        result = _retrying_node(
+            "generate_query_gap_clarification",
+            _generate_query_gap_clarification,
+        )(state)
+
+        self.assertEqual(result["workflow_status"], "waiting_for_clarification")
+        first_prompt = "\n".join(
+            message["content"] for message in fake.message_batches[0]
+        )
+        second_prompt = "\n".join(
+            message["content"] for message in fake.message_batches[1]
+        )
+        for hidden_value in (
+            "external_event",
+            "2026-06-09",
+            "dataset_snapshot_unavailable_as_of",
+        ):
+            self.assertNotIn(hidden_value, first_prompt)
+            self.assertNotIn(hidden_value, second_prompt)
+        self.assertIn("业务数据在分析时点尚不可用", first_prompt)
+        self.assertIn("query_gap_clarification_internal_authority_leak", second_prompt)
+        self.assertEqual(
+            result["request"]["node_retry_feedback"]["node"],
+            "generate_query_gap_clarification",
+        )
+
+    def test_query_gap_business_projection_excludes_authority_metadata(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        projected = _business_query_gap_projection(
+            ({
+                "gap_type": "dataset_snapshot_unavailable_as_of",
+                "requires_clarification": True,
+                "gap_id": "dataset:external_event:dataset_snapshot_unavailable_as_of",
+                "dataset_id": "external_event",
+                "owner": "data_owner",
+                "affected_capabilities": ("event_evidence",),
+                "repair_options": (
+                    "use_historical_snapshot_loaded_by_as_of",
+                    "wait_for_snapshot_availability",
+                ),
+                "diagnostic_context": {
+                    "as_of": "2026-06-03T11:00:00+00:00",
+                    "earliest_snapshot_ref": "snapshot:event:future",
+                    "earliest_loaded_at": "2026-06-09T00:00:00+00:00",
+                },
+            }, {
+                "gap_type": "source_unbound",
+                "owner": "data_owner",
+                "affected_capabilities": ("event_evidence",),
+                "repair_options": ("bind_source",),
+                "requires_clarification": False,
+            }),
+            {"target_metric": "活跃用户", "time_window": "目标日与前一日"},
+            accepted_capabilities=("market_health_compare", "event_evidence"),
+            registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+        rendered = json.dumps(projected, ensure_ascii=False)
+        self.assertIn("业务数据在分析时点尚不可用", rendered)
+        self.assertIn("等待相关业务数据可用后再恢复本次分析", rendered)
+        self.assertIn("继续可验证的主指标分析，并明确缺少相关业务背景证据", rendered)
+        self.assertNotIn("使用分析时点内已有的历史业务范围", rendered)
+        self.assertNotIn("绑定业务来源", rendered)
+        for hidden_value in (
+            "external_event",
+            "snapshot:event:future",
+            "2026-06-09",
+            "dataset_snapshot_unavailable_as_of",
+        ):
+            self.assertNotIn(hidden_value, rendered)
+
+    def test_query_gap_recommendation_is_repaired_by_llm_option_index(self):
+        class RecommendationRepairLLM(FakeLLMClient):
+            def __init__(self, option_index):
+                super().__init__()
+                self.option_index = option_index
+                self.message_batches = []
+
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                self.message_batches.append((task, [dict(message) for message in messages]))
+                if task == "query_gap_clarification":
+                    return FakeLLMResult(
+                        {
+                            "questions": [{
+                                "question": "需要确认按哪个业务口径继续？",
+                                "options": [
+                                    "继续主指标分析，并明确相关业务背景证据缺失",
+                                    "等待相关业务数据可用后继续",
+                                    "tell the agent to do differently",
+                                ],
+                            }],
+                            "recommended_assumption": {
+                                "assumption": "采用产品默认业务假设继续。"
+                            },
+                            "decision_summary": "该选择会影响结论。",
+                            "display_summary": "等待用户确认。",
+                        },
+                        {"task": task},
+                    )
+                if task == "query_gap_recommendation_repair":
+                    return FakeLLMResult(
+                        {
+                            "option_index": self.option_index,
+                            "brief_reason": "当前选择更符合证据边界。",
+                            "display_summary": "已形成推荐选项。",
+                        },
+                        {"task": task},
+                    )
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
+
+        def state(llm):
+            return {
+                "request": {},
+                "analysis_route": {
+                    "requested_nodes": ["market_health_compare", "event_evidence"]
+                },
+                "analysis_runtime_result": type(
+                    "ClarificationResult",
+                    (),
+                    {"typed_gaps": ({
+                        "gap_type": "dataset_snapshot_unavailable_as_of",
+                        "requires_clarification": True,
+                        "dataset_id": "external_event",
+                        "owner": "data_owner",
+                        "affected_capabilities": ("event_evidence",),
+                        "repair_options": (
+                            "use_historical_snapshot_loaded_by_as_of",
+                            "wait_for_snapshot_availability",
+                        ),
+                        "diagnostic_context": {
+                            "earliest_loaded_at": "2026-06-09T00:00:00+00:00"
+                        },
+                    },)},
+                )(),
+                "query_repair_decisions": [],
+                "intent": {"target_metric": "active_users", "time_window": "previous_day"},
+                "llm_client": llm,
+                "llm_calls": [],
+                "checkpoint_events": [],
+            }
+
+        valid = RecommendationRepairLLM(1)
+        result = _generate_query_gap_clarification(state(valid))
+        self.assertEqual(
+            result["query_gap_clarification"]["recommended_assumption"],
+            {"option": "等待相关业务数据可用后再恢复本次分析"},
+        )
+        repair_prompt = "\n".join(
+            message["content"] for task, messages in valid.message_batches
+            if task == "query_gap_recommendation_repair"
+            for message in messages
+        )
+        self.assertIn("继续可验证的主指标分析，并明确缺少相关业务背景证据", repair_prompt)
+        self.assertIn("等待相关业务数据可用后再恢复本次分析", repair_prompt)
+        for hidden_value in ("external_event", "2026-06-09", "snapshot"):
+            self.assertNotIn(hidden_value, repair_prompt)
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "query_gap_recommendation_repair_invalid",
+        ):
+            _generate_query_gap_clarification(state(RecommendationRepairLLM(2)))
+
+    def test_analysis_runtime_request_is_typed_and_requires_fixed_clock(self):
+        request = AnalysisRuntimeRequest.create(
+            run_id="run-runtime",
+            proposal={
+                "question_families": ["paid_amount_change_explanation"],
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["comparative_change"],
+                "scope": {"type": "full_sample"},
+                "target_semantic": "yesterday",
+                "baselines": ["previous_day"],
+            },
+            accepted_graph=("compare_periods",),
+            as_of="2026-06-03T12:00:00+01:00",
+            permission_scope="analyst",
+        )
+
+        self.assertEqual(request.as_of.isoformat(), "2026-06-03T12:00:00+01:00")
+        self.assertEqual(request.accepted_graph, ("compare_periods",))
+        self.assertTrue(hasattr(AnalysisRuntime, "execute"))
+
+    def test_query_gap_resume_reuses_original_analysis_requirements_without_rerouting(self):
+        fake = FakeLLMClient()
+        prior_route = {
+            "requested_nodes": ["event_evidence", "gameplay_activity_context"],
+            "analysis_requirements": {
+                "target_metrics": ["player_bet_amount"],
+                "context_sources": ["external_event", "gameplay"],
+                "claim_intents": ["candidate_mechanism", "observed_activity"],
+                "baselines": ["previous_day"],
+                "scope": {"type": "full_sample"},
+            },
+        }
+        state = {
+            "run_id": "run-typed-precompile-clarify",
+            "request": {
+                "clarification_resume_context": {
+                    "accepted_graph": (
+                        "event_evidence",
+                        "gameplay_activity_context",
+                    ),
+                    "analysis_route": prior_route,
+                    "analysis_contract": {
+                        "question_families": ["anomaly_or_black_swan_review"]
+                    },
+                }
+            },
+            "intent": {
+                "question_family": "segment_or_factor_attribution",
+                "question_families": ["segment_or_factor_attribution"],
+                "target_metric": "player_bet_amount",
+                "pattern_family": "custom_baseline",
+            },
+            "confirmed_understanding": {},
+            "llm_client": fake,
+            "llm_calls": [],
+        }
+
+        _design_analysis_route(state)
+
+        self.assertEqual(
+            state["analysis_route"]["analysis_requirements"],
+            prior_route["analysis_requirements"],
+        )
+        self.assertEqual(
+            state["intent"]["question_families"],
+            ["anomaly_or_black_swan_review"],
+        )
+        self.assertEqual(
+            state["intent"]["question_family"],
+            "anomaly_or_black_swan_review",
+        )
+        self.assertNotIn("analysis_route", fake.calls)
+
+    def test_route_reconciliation_adds_unique_metric_query_capability(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        route = {
+            "analysis_requirements": {
+                "target_metrics": ["active_users"],
+                "baselines": ["previous_day"],
+                "claim_intents": ["candidate_mechanism"],
+            }
+        }
+
+        requested, reconciled = _reconcile_route_metric_capabilities(
+            ("event_evidence",),
+            route,
+            {"target_metric": "active_users"},
+            registry,
+        )
+
+        self.assertEqual(requested, ("market_health_compare", "event_evidence"))
+        self.assertEqual(
+            reconciled["analysis_requirements"]["claim_intents"],
+            ["candidate_mechanism", "comparative_change"],
+        )
+        already_covered, _ = _reconcile_route_metric_capabilities(
+            requested,
+            reconciled,
+            {"target_metric": "active_users"},
+            registry,
+        )
+        self.assertEqual(already_covered, requested)
+
+        metric_only_context, _ = _reconcile_route_metric_capabilities(
+            ("market_channel_context",),
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["active_users"],
+                    "baselines": ["previous_day"],
+                    "claim_intents": ["comparative_change"],
+                }
+            },
+            {"target_metric": "active_users"},
+            registry,
+        )
+        self.assertEqual(
+            metric_only_context,
+            ("market_health_compare", "market_channel_context"),
+        )
+
+        ambiguous, _ = _reconcile_route_metric_capabilities(
+            ("event_evidence",),
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["paid_amount"],
+                    "baselines": ["previous_day"],
+                    "claim_intents": ["candidate_mechanism"],
+                }
+            },
+            {"target_metric": "paid_amount"},
+            registry,
+        )
+        self.assertEqual(ambiguous, ("event_evidence",))
+
+        context_bound, _ = _reconcile_route_metric_capabilities(
+            ("market_health_compare",),
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["active_users"],
+                    "context_sources": ["external_event"],
+                    "baselines": ["previous_day"],
+                    "claim_intents": ["comparative_change", "candidate_mechanism"],
+                }
+            },
+            {
+                "target_metric": "active_users",
+                "question_family": "anomaly_or_black_swan_review",
+                "question_families": ["anomaly_or_black_swan_review"],
+            },
+            registry,
+        )
+        self.assertEqual(
+            context_bound,
+            ("market_health_compare", "event_evidence"),
+        )
+        no_context_requirement, _ = _reconcile_route_metric_capabilities(
+            ("market_health_compare",),
+            {"analysis_requirements": {"target_metrics": ["active_users"]}},
+            {
+                "target_metric": "active_users",
+                "question_family": "anomaly_or_black_swan_review",
+            },
+            registry,
+        )
+        self.assertEqual(no_context_requirement, ("market_health_compare",))
+        ambiguous_context, _ = _reconcile_route_metric_capabilities(
+            ("market_health_compare",),
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["active_users"],
+                    "context_sources": ["external_event"],
+                }
+            },
+            {
+                "target_metric": "active_users",
+                "question_family": "business_object_impact_review",
+                "question_families": ["business_object_impact_review"],
+            },
+            registry,
+        )
+        self.assertEqual(ambiguous_context, ("market_health_compare",))
+
+    def test_question_family_values_accept_reviewed_shapes_and_reject_unknown_mapping(self):
+        self.assertEqual(
+            _question_family_values("anomaly_or_black_swan_review"),
+            ["anomaly_or_black_swan_review"],
+        )
+        self.assertEqual(
+            _question_family_values([
+                "anomaly_or_black_swan_review",
+                "custom_baseline_comparison",
+            ]),
+            ["anomaly_or_black_swan_review", "custom_baseline_comparison"],
+        )
+        self.assertEqual(
+            _question_family_values({
+                "primary_question_family": "anomaly_or_black_swan_review",
+                "secondary_question_families": ["custom_baseline_comparison"],
+            }),
+            ["anomaly_or_black_swan_review", "custom_baseline_comparison"],
+        )
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "question_families_mapping_contract_invalid",
+        ):
+            _question_family_values({"unexpected_family_key": "anomaly"})
+
+    def test_delivery_reverify_repairs_with_exact_codes_and_fails_after_bound(self):
+        failed = {
+            "status": "failed",
+            "admin_audit": {
+                "verifier": {
+                    "status": "failed",
+                    "errors": [
+                        {"code": "free_text_without_verified_claim"},
+                        {"code": "reported_verifier_mismatch"},
+                    ],
+                }
+            },
+        }
+        passed = {
+            "status": "draft",
+            "admin_audit": {"verifier": {"status": "passed", "errors": []}},
+        }
+
+        def state():
+            return {
+                "request": {},
+                "answer_text": "待修复答案",
+                "draft_claims": [],
+                "evidence": [],
+                "evidence_brief": {},
+                "intent": {
+                    "target_metric": "active_users",
+                    "pattern_family": "custom_baseline",
+                    "scope": "full_sample",
+                    "time_window": "2026-06-02",
+                },
+                "llm_calls": [],
+            }
+
+        captured = []
+
+        def repair_llm(_state, task, payload):
+            captured.append((task, dict(payload)))
+            return {"answer_text": "已修复答案", "claims": []}
+
+        authority_candidates = (
+            {"status": "draft", "internal_authority": "candidate-1"},
+            {"status": "draft", "internal_authority": "candidate-2"},
+        )
+        with patch(
+            "bi_agent.runtime.langgraph_workflow.reverify_answer_package_for_delivery",
+            side_effect=(failed, passed),
+        ), patch(
+            "bi_agent.runtime.langgraph_workflow._build_answer_package_from_state",
+            side_effect=authority_candidates,
+        ), patch(
+            "bi_agent.runtime.langgraph_workflow._invoke_llm",
+            side_effect=repair_llm,
+        ), patch(
+            "bi_agent.runtime.langgraph_workflow._claims_from_llm_or_default",
+            return_value=[],
+        ):
+            repaired_state = state()
+            result = _delivery_reverify_with_answer_repair(repaired_state)
+
+        self.assertEqual(result["status"], "draft")
+        self.assertEqual(result["internal_authority"], "candidate-2")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(
+            captured[0][1]["delivery_verifier_error_codes"],
+            ["free_text_without_verified_claim", "reported_verifier_mismatch"],
+        )
+        self.assertIn("do not rerun queries", captured[0][1]["repair_scope"])
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow.reverify_answer_package_for_delivery",
+            side_effect=(failed, failed, failed),
+        ), patch(
+            "bi_agent.runtime.langgraph_workflow._build_answer_package_from_state",
+            return_value={},
+        ), patch(
+            "bi_agent.runtime.langgraph_workflow._invoke_llm",
+            side_effect=repair_llm,
+        ), patch(
+            "bi_agent.runtime.langgraph_workflow._claims_from_llm_or_default",
+            return_value=[],
+        ):
+            failed_state = state()
+            result = _delivery_reverify_with_answer_repair(failed_state)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(failed_state["workflow_status"], "failed")
+
+    def test_empty_graph_repairs_material_requirements_and_blocks_boundary_only(self):
+        empty = compile_graph(
+            question_family="unsupported_family",
+            target_metric="active_users",
+            requested_nodes=(),
+        )
+        material = {
+            "compiled_graph": empty,
+            "analysis_route": {
+                "analysis_requirements": {
+                    "target_metrics": ["active_users"],
+                    "claim_intents": ["comparative_change"],
+                }
+            },
+            "repair_attempts": 0,
+        }
+        self.assertEqual(_route_after_accept_analysis(material), "repair")
+        material["repair_attempts"] = 2
+        self.assertEqual(_route_after_accept_analysis(material), "block")
+
+        boundary_only = {
+            "compiled_graph": empty,
+            "analysis_route": {"analysis_requirements": {}},
+            "repair_attempts": 0,
+        }
+        self.assertEqual(_route_after_accept_analysis(boundary_only), "block")
+
+    def test_query_gap_action_omits_only_unavailable_context_capability(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        route = {
+            "analysis_requirements": {
+                "target_metrics": ["active_users"],
+                "context_sources": ["external_event"],
+                "claim_intents": ["candidate_mechanism", "comparative_change"],
+            }
+        }
+        remaining, updated = _apply_query_gap_action_to_route(
+            ("market_health_compare", "event_evidence"),
+            route,
+            {
+                "action_kind": "omit_unavailable_context",
+                "affected_capabilities": ["event_evidence"],
+            },
+            registry,
+        )
+
+        self.assertEqual(remaining, ("market_health_compare",))
+        self.assertEqual(updated["analysis_requirements"]["context_sources"], [])
+        self.assertEqual(
+            updated["analysis_requirements"]["claim_intents"],
+            ["comparative_change"],
+        )
+        waiting, unchanged = _apply_query_gap_action_to_route(
+            ("market_health_compare", "event_evidence"),
+            route,
+            {"action_kind": "wait_for_source"},
+            registry,
+        )
+        self.assertEqual(waiting, ("market_health_compare", "event_evidence"))
+        self.assertEqual(unchanged, route)
+
+    def test_query_gap_actions_group_atomic_affected_capabilities_and_stage_overflow(self):
+        actions = (
+            {
+                "action_kind": "omit_unavailable_context",
+                "business_semantics": "继续主指标分析并保留背景限制",
+                "affected_capabilities": ["event_evidence"],
+            },
+            {
+                "action_kind": "omit_unavailable_context",
+                "business_semantics": "继续主指标分析并保留背景限制",
+                "affected_capabilities": ["gameplay_activity_context"],
+            },
+            {
+                "action_kind": "wait_for_source",
+                "business_semantics": "等待相关业务数据可用",
+                "affected_capabilities": ["event_evidence", "gameplay_activity_context"],
+            },
+            {
+                "action_kind": "request_permission",
+                "business_semantics": "申请所需业务权限",
+                "affected_capabilities": ["restricted_context"],
+            },
+        )
+
+        selected, staged = _group_query_gap_actions(actions)
+
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(selected[0]["action_kind"], "omit_unavailable_context")
+        self.assertEqual(
+            selected[0]["affected_capabilities"],
+            ["event_evidence", "gameplay_activity_context"],
+        )
+        self.assertEqual(selected[1]["action_kind"], "wait_for_source")
+        self.assertEqual(len(staged), 1)
+        self.assertEqual(staged[0]["action_kind"], "request_permission")
+        self.assertTrue(selected[0]["choice_id"].startswith("query-gap-"))
+
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        remaining, updated = _apply_query_gap_action_to_route(
+            (
+                "market_health_compare",
+                "event_evidence",
+                "gameplay_activity_context",
+            ),
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["active_users"],
+                    "context_sources": ["external_event", "gameplay"],
+                    "claim_intents": ["comparative_change", "candidate_mechanism"],
+                }
+            },
+            selected[0],
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+        self.assertEqual(remaining, ("market_health_compare",))
+        self.assertEqual(updated["analysis_requirements"]["context_sources"], [])
+        self.assertEqual(
+            updated["analysis_requirements"]["claim_intents"],
+            ["comparative_change"],
+        )
+
+    def test_material_query_gap_without_feasible_action_routes_to_typed_block(self):
+        from types import SimpleNamespace
+
+        fake = FakeLLMClient()
+        state = {
+            "request": {},
+            "analysis_runtime_result": SimpleNamespace(
+                typed_gaps=({
+                    "gap_type": "unmapped_material_gap",
+                    "requires_clarification": True,
+                    "owner": "contract_owner",
+                    "affected_capabilities": ("event_evidence",),
+                    "repair_options": ("unreviewed_repair",),
+                },),
+            ),
+            "query_repair_decisions": (),
+            "compiled_graph": SimpleNamespace(
+                mutations=SimpleNamespace(accepted_graph=("event_evidence",))
+            ),
+            "intent": {"target_metric": "active_users", "time_window": "target_day"},
+            "llm_client": fake,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        _generate_query_gap_clarification(state)
+
+        self.assertTrue(state["query_gap_no_feasible_action"])
+        self.assertEqual(state["workflow_status"], "blocked")
+        self.assertEqual(_route_after_query_gap_clarification(state), "block")
+        self.assertNotIn("query_gap_action_render", fake.calls)
+
+    def test_query_gap_action_render_rejects_missing_duplicate_and_unknown_actions(self):
+        business_gaps = [{
+            "allowed_actions": [
+                {
+                    "choice_id": "continue",
+                    "action_kind": "omit_unavailable_context",
+                    "business_semantics": "继续主指标分析并说明限制",
+                    "affected_capabilities": ["event_evidence"],
+                },
+                {
+                    "choice_id": "wait",
+                    "action_kind": "wait_for_source",
+                    "business_semantics": "等待相关业务数据",
+                    "affected_capabilities": ["event_evidence"],
+                },
+            ]
+        }]
+
+        def state(rendered_actions):
+            return {
+                "llm_client": FakeLLMClient({
+                    "query_gap_action_render": {
+                        "rendered_actions": rendered_actions,
+                    }
+                }),
+                "llm_calls": [],
+            }
+
+        invalid = (
+            [{"choice_id": "continue", "label": "继续", "reason": "可继续"}],
+            [
+                {"choice_id": "continue", "label": "继续", "reason": "可继续"},
+                {"choice_id": "continue", "label": "等待", "reason": "需等待"},
+            ],
+            [
+                {"choice_id": "continue", "label": "继续", "reason": "可继续"},
+                {"choice_id": "unknown", "label": "其他", "reason": "未知"},
+            ],
+        )
+        for rendered_actions in invalid:
+            with self.subTest(rendered_actions=rendered_actions), self.assertRaisesRegex(
+                WorkflowFailure,
+                "query_gap_action_render_invalid",
+            ):
+                _render_query_gap_actions(
+                    state(rendered_actions),
+                    business_gaps,
+                    (),
+                )
+
+    def test_window_coverage_repair_offers_wait_without_changing_fixed_target(self):
+        gap = _business_query_repair_gap(({
+            "action": "clarify",
+            "reason": "window_coverage_failure",
+            "requires_clarification": True,
+            "failed_query_contract_ref": "query:internal",
+        },))
+
+        self.assertEqual(len(gap["allowed_actions"]), 1)
+        action = gap["allowed_actions"][0]
+        self.assertEqual(action["action_kind"], "wait_for_source")
+        self.assertIn("不调整目标日期", action["business_semantics"])
+        self.assertNotIn("query:internal", json.dumps(gap, ensure_ascii=False))
+
+    def test_workflow_and_persistence_share_answer_package_build_context(self):
+        request = {
+            "run_id": "run-shared-build-context",
+            "thread_id": "thread-shared-build-context",
+            "topic_id": "topic-shared-build-context",
+            "permission_context": {"role": "analyst"},
+            "context_manifest": {"manifest_id": "context-input", "items": []},
+            "reuse_decisions": [],
+            "artifact_root": "artifacts/task10-core",
+        }
+        artifact_path = (
+            "artifacts/task10-core/run-shared-build-context/answer_package.json"
+        )
+        expected = AnswerPackageBuildContext.create(
+            request=request,
+            artifact_path=artifact_path,
+        )
+        state = {
+            "run_id": request["run_id"],
+            "request": request,
+            "checkpoint_events": [],
+            "draft_claims": [],
+            "evidence": [],
+            "validator_results": [],
+        }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow.build_answer_package",
+            side_effect=lambda **kwargs: kwargs,
+        ):
+            workflow_kwargs = _build_answer_package_from_state(state)
+
+        self.assertEqual(
+            workflow_kwargs["context_manifest"],
+            dict(expected.context_owner),
+        )
+        self.assertEqual(
+            workflow_kwargs["trusted_claim_provenance_record"],
+            dict(expected.trusted_provenance),
+        )
+        tampered = AnswerPackageBuildContext.create(
+            request=request,
+            artifact_path="artifacts/tampered/answer_package.json",
+        )
+        self.assertNotEqual(
+            tampered.trusted_provenance["record_ref"],
+            expected.trusted_provenance["record_ref"],
+        )
+
+    def test_analysis_runtime_executes_exact_slot_and_persists_complete_zero_claim_chain(self):
+        from bi_agent.conversation.store import InMemoryConversationStore
+        from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult
+        from bi_agent.runtime.dataset_catalog import DatasetCatalog
+        from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
+        from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+        from tests.phase4.test_analysis_contract_compiler import snapshot
+
+        class CompleteRuntime:
+            def aggregate(self, sql, query_id, **kwargs):
+                return ClickHouseQueryResult(
+                    ok=True,
+                    query_id=query_id,
+                    rows=(
+                        {
+                            "window_id": "target_day",
+                            "window_role": "target",
+                            "observation_key": "2026-06-02",
+                            "paid_amount": 120.0,
+                        },
+                        {
+                            "window_id": "previous_day",
+                            "window_role": "baseline",
+                            "observation_key": "2026-06-01",
+                            "paid_amount": 100.0,
+                        },
+                    ),
+                )
+
+            bounded_context = aggregate
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        authority = RuntimeEvidenceAuthority(runtime_registry=registry)
+        runtime = AnalysisRuntime(
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            executor=ClickHouseQueryExecutor(
+                CompleteRuntime(),
+                evidence_resolver=authority,
+                rows_loader=authority.rows_loader,
+                evidence_writer=authority._runtime_writer(),
+            ),
+            release_resolver=None,
+            evidence_authority=authority,
+        )
+        request = AnalysisRuntimeRequest.create(
+            run_id="run-runtime-complete",
+            proposal={
+                "question_families": ["custom_baseline_comparison"],
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["comparative_change"],
+                "scope": {"type": "full_sample"},
+                "target_semantic": "yesterday",
+                "baselines": ["previous_day"],
+            },
+            accepted_graph=("compare_periods",),
+            as_of="2026-06-03T12:00:00+01:00",
+            permission_scope="analyst",
+        )
+
+        result = runtime.execute(request)
+        typed_graph = _typed_clarification_compiled_graph(
+            runtime.compile(request),
+            {
+                "requested_nodes": ["compare_periods"],
+                "target_claim": "comparative_change",
+            },
+        )
+        missing_runtime = AnalysisRuntime(
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            executor=runtime.executor,
+            release_resolver=None,
+            evidence_authority=authority,
+        )
+        hard_gap_graph = _typed_clarification_compiled_graph(
+            missing_runtime.compile(request),
+            {
+                "requested_nodes": ["compare_periods"],
+                "target_claim": "comparative_change",
+            },
+        )
+        bundle = runtime.build_persistence_bundle(
+            result,
+            answer_package={"status": "draft", "sections": []},
+            request={
+                "run_id": "run-runtime-complete",
+                "thread_id": "thread-runtime-complete",
+                "topic_id": "topic-runtime-complete",
+                "permission_context": {"role": "analyst"},
+                "context_manifest": {"manifest_id": "context-runtime", "items": []},
+            },
+            artifact_path="artifacts/task10-core/run-runtime-complete.json",
+        )
+        store = InMemoryConversationStore()
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(typed_graph.status, "accepted")
+        self.assertEqual(
+            typed_graph.mutations.accepted_graph,
+            ("compare_periods",),
+        )
+        self.assertIsNone(hard_gap_graph)
+        self.assertEqual(result.completeness_reports[0].completeness_status, "complete")
+        self.assertEqual(result.bound_capability_inputs["compare_periods"].status, "ready")
+        self.assertEqual(
+            tuple(result.bound_capability_inputs["compare_periods"].rows_by_slot),
+            ("daily_metric_baselines",),
+        )
+        self.assertEqual(
+            store.save_analysis_runtime_records(
+                run_id="run-runtime-complete",
+                **bundle,
+            ),
+            "published",
+        )
+        self.assertEqual(bundle["verified_claims"], ())
+
+        binding = result.persistence_records["capability_binding_records"][0]
+        evidence_ref = "evidence:runtime-complete"
+        claim_bundle = runtime.build_persistence_bundle(
+            result,
+            answer_package={
+                "status": "draft",
+                "sections": [
+                    {
+                        "section_id": "summary",
+                        "payload": {
+                            "claims": [
+                                {
+                                    "text": "目标日付费金额高于前一日。",
+                                    "claim_type": "comparative_change",
+                                    "claim_strength": "observed",
+                                    "evidence_refs": [evidence_ref],
+                                    "numbers": {},
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "section_id": "evidence",
+                        "payload": {
+                            "evidence": [
+                                {
+                                    "evidence_ref": evidence_ref,
+                                    "binding_manifest_ref": binding.record_ref,
+                                }
+                            ]
+                        },
+                    },
+                ],
+            },
+            request={
+                "run_id": "run-runtime-complete",
+                "thread_id": "thread-runtime-complete",
+                "topic_id": "topic-runtime-complete",
+                "permission_context": {"role": "analyst"},
+                "context_manifest": {"manifest_id": "context-runtime", "items": []},
+            },
+            artifact_path="artifacts/task10-core/run-runtime-complete.json",
+        )
+
+        self.assertEqual(len(claim_bundle["verified_claims"]), 1)
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-runtime-complete",
+                **claim_bundle,
+            ),
+            "published",
+        )
+
+        resumed_request = AnalysisRuntimeRequest.create(
+            run_id="run-runtime-complete-resumed",
+            proposal=dict(request.proposal),
+            accepted_graph=request.accepted_graph,
+            as_of=request.as_of,
+            permission_scope=request.permission_scope,
+        )
+        resumed_result = runtime.execute(resumed_request)
+        original_bound = result.bound_capability_inputs["compare_periods"]
+        resumed_bound = resumed_result.bound_capability_inputs["compare_periods"]
+
+        self.assertEqual(resumed_result.status, "ready")
+        self.assertNotEqual(
+            resumed_result.analysis_contract.analysis_contract_id,
+            result.analysis_contract.analysis_contract_id,
+        )
+        self.assertNotEqual(
+            resumed_bound.analysis_contract_ref,
+            original_bound.analysis_contract_ref,
+        )
+        self.assertNotEqual(
+            resumed_bound.binding_manifest_ref,
+            original_bound.binding_manifest_ref,
+        )
+        self.assertNotEqual(
+            resumed_bound.binding_manifest_digest,
+            original_bound.binding_manifest_digest,
+        )
+        self.assertNotEqual(resumed_bound.result_refs, original_bound.result_refs)
+        self.assertTrue(
+            all(
+                "run-runtime-complete-resumed" in ref
+                for ref in resumed_bound.query_contract_refs
+            )
+        )
+
+    def test_analysis_runtime_passes_release_authority_to_query_validation(self):
+        from bi_agent.conversation.store import InMemoryConversationStore
+        from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult
+        from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
+        from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+        from tests.phase4.test_analysis_contract_compiler import (
+            _market_dashboard_snapshots,
+            released_catalog,
+        )
+
+        class CompleteMarketRuntime:
+            def aggregate(self, sql, query_id, **kwargs):
+                return ClickHouseQueryResult(
+                    ok=True,
+                    query_id=query_id,
+                    rows=(
+                        {
+                            "window_id": "target_day",
+                            "window_role": "target",
+                            "observation_key": "2026-06-02",
+                            "active_users": 120.0,
+                        },
+                        {
+                            "window_id": "previous_day",
+                            "window_role": "baseline",
+                            "observation_key": "2026-06-01",
+                            "active_users": 100.0,
+                        },
+                    ),
+                )
+
+            bounded_context = aggregate
+
+        catalog = released_catalog(*_market_dashboard_snapshots())
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        authority = RuntimeEvidenceAuthority(runtime_registry=registry)
+        runtime = AnalysisRuntime(
+            catalog=catalog,
+            registry=registry,
+            executor=ClickHouseQueryExecutor(
+                CompleteMarketRuntime(),
+                evidence_resolver=authority,
+                rows_loader=authority.rows_loader,
+                evidence_writer=authority._runtime_writer(),
+                release_resolver=catalog._release_resolver,
+            ),
+            release_resolver=catalog._release_resolver,
+            evidence_authority=authority,
+        )
+        request = AnalysisRuntimeRequest.create(
+            run_id="run-runtime-release",
+            proposal={
+                "question_families": ["market_health_comparison"],
+                "target_metrics": ["active_users"],
+                "claim_intents": ["comparative_change"],
+                "scope": {"type": "full_sample"},
+                "target_semantic": "yesterday",
+                "baselines": ["previous_day"],
+            },
+            accepted_graph=("market_health_compare",),
+            as_of="2026-06-03T12:00:00+01:00",
+            permission_scope="analyst",
+        )
+
+        result = runtime.execute(request)
+        bundle = runtime.build_persistence_bundle(
+            result,
+            answer_package={"status": "failed", "sections": []},
+            request={
+                "run_id": request.run_id,
+                "thread_id": "thread-runtime-release",
+                "topic_id": "topic-runtime-release",
+                "permission_context": {"role": "analyst"},
+            },
+            artifact_path="artifacts/task10-core/run-runtime-release.json",
+        )
+
+        self.assertEqual(len(result.query_results), 1)
+        self.assertEqual(
+            result.query_contracts[0].dataset_snapshot_refs,
+            ("snapshot:market:capability-local",),
+        )
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id=request.run_id,
+                **bundle,
+            ),
+            "published",
+        )
+
+    def test_analysis_contract_gap_that_changes_the_conclusion_requests_clarification(self):
+        runtime_result = AnalysisRuntimeResult(
+            analysis_contract=object(),
+            query_contracts=(),
+            query_results=(),
+            completeness_reports=(),
+            capability_plans=(),
+            bound_capability_inputs={},
+            repair_decisions=(),
+            typed_gaps=({"requires_clarification": True},),
+            persistence_records={},
+        )
+
+        self.assertEqual(runtime_result.status, "clarify")
+
+    def test_typed_unbound_clarification_bypasses_only_legacy_precompile(self):
+        from types import SimpleNamespace
+
+        gap = SimpleNamespace(
+            requires_clarification=True,
+            affected_capabilities=("event_evidence",),
+            to_dict=lambda: {
+                "requires_clarification": True,
+                "affected_capabilities": ["event_evidence"],
+            },
+        )
+        analysis_contract = SimpleNamespace(
+            contract_gaps=(gap,),
+            to_dict=lambda: {"contract_gaps": [{"requires_clarification": True}]},
+        )
+        outcome = SimpleNamespace(
+            analysis_contract=analysis_contract,
+            query_contracts=(SimpleNamespace(to_dict=lambda: {"query": "ready"}),),
+            capability_plans=(
+                SimpleNamespace(
+                    capability_id="market_health_compare",
+                    required_input_slots=({"query_contract_refs": ("query:ready",)},),
+                    optional_input_slots=(),
+                ),
+                SimpleNamespace(
+                    capability_id="event_evidence",
+                    required_input_slots=({"query_contract_refs": ()},),
+                    optional_input_slots=(),
+                ),
+            ),
+        )
+        state = {
+            "run_id": "run-typed-precompile-clarify",
+            "request": {
+                "analysis_runtime": SimpleNamespace(compile=lambda _: outcome),
+                "analysis_context": {"as_of": "2026-06-03T12:00:00+01:00"},
+                "role": "analyst",
+                "question": "外部活动是否影响活跃用户？",
+            },
+            "intent": {
+                "question_family": "business_object_impact_review",
+                "question_families": ["business_object_impact_review"],
+                "target_metric": "active_users",
+                "pattern_family": "custom_baseline",
+                "requested_nodes": ("market_health_compare", "event_evidence"),
+                "scope": "full_sample",
+                "time_window": "2026-06-02",
+            },
+            "analysis_route": {
+                "requested_nodes": ("market_health_compare", "event_evidence"),
+                "analysis_requirements": {
+                    "target_metrics": ["active_users"],
+                    "context_sources": ["external_event"],
+                },
+            },
+        }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow.compile_graph",
+            side_effect=AssertionError("legacy compiler must not run"),
+        ):
+            _accept_analysis_route(state)
+
+        self.assertEqual(
+            state["compiled_graph"].mutations.accepted_graph,
+            ("market_health_compare", "event_evidence"),
+        )
+
+        runtime = object.__new__(AnalysisRuntime)
+        runtime._catalog_provider = lambda: object()
+        runtime._compile_with_catalog = lambda request, catalog: outcome
+        runtime._authority_records = lambda compiled, results, bound: {}
+        result = runtime.execute(
+            AnalysisRuntimeRequest.create(
+                run_id="run-no-query-before-clarify",
+                proposal={"target_metrics": ["active_users"]},
+                accepted_graph=("market_health_compare", "event_evidence"),
+                as_of="2026-06-03T12:00:00+01:00",
+                permission_scope="analyst",
+            )
+        )
+        self.assertEqual(result.status, "clarify")
+        self.assertEqual(result.query_results, ())
+
+        optional_only = SimpleNamespace(
+            analysis_contract=analysis_contract,
+            query_contracts=outcome.query_contracts,
+            capability_plans=(
+                SimpleNamespace(
+                    capability_id="event_evidence",
+                    required_input_slots=({
+                        "required": True,
+                        "query_contract_refs": ("query:event-ready",),
+                    },),
+                    optional_input_slots=({
+                        "required": False,
+                        "query_contract_refs": (),
+                    },),
+                ),
+            ),
+        )
+        self.assertFalse(
+            analysis_outcome_requires_preexecution_clarification(optional_only)
+        )
+
+    def test_nonclarification_outcome_does_not_swallow_legacy_compile_error(self):
+        from types import SimpleNamespace
+
+        outcome = SimpleNamespace(
+            analysis_contract=SimpleNamespace(contract_gaps=()),
+            query_contracts=(),
+            capability_plans=(),
+        )
+        state = {
+            "run_id": "run-nonclarify-hard-error",
+            "request": {
+                "analysis_runtime": SimpleNamespace(compile=lambda _: outcome),
+                "analysis_context": {"as_of": "2026-06-03T12:00:00+01:00"},
+                "role": "analyst",
+                "question": "测试硬错误。",
+            },
+            "intent": {
+                "question_family": "custom_baseline_comparison",
+                "question_families": ["custom_baseline_comparison"],
+                "target_metric": "active_users",
+                "pattern_family": "custom_baseline",
+                "requested_nodes": ("market_health_compare",),
+                "scope": "full_sample",
+                "time_window": "2026-06-02",
+            },
+            "analysis_route": {
+                "requested_nodes": ("market_health_compare",),
+                "analysis_requirements": {"target_metrics": ["active_users"]},
+            },
+        }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow.compile_graph",
+            side_effect=ValueError("legacy_hard_error"),
+        ), self.assertRaisesRegex(ValueError, "legacy_hard_error"):
+            _accept_analysis_route(state)
+
+    def test_executed_rows_do_not_degrade_a_blocked_completeness_boundary(self):
+        from types import SimpleNamespace
+
+        runtime_result = AnalysisRuntimeResult(
+            analysis_contract=object(),
+            query_contracts=(),
+            query_results=(object(),),
+            completeness_reports=(SimpleNamespace(analysis_readiness="blocked"),),
+            capability_plans=(),
+            bound_capability_inputs={},
+            repair_decisions=(SimpleNamespace(action="degrade"),),
+            typed_gaps=(),
+            persistence_records={},
+        )
+
+        self.assertEqual(runtime_result.status, "blocked")
+
+    def test_answer_package_carries_typed_runtime_payload_after_query_repair(self):
+        package = _build_answer_package_from_state(
+            {
+                "run_id": "run-typed-package",
+                "request": {
+                    "role": "analyst",
+                    "analysis_contract": {"analysis_contract_id": "analysis:typed"},
+                    "query_contracts": [{"query_contract_id": "query:typed"}],
+                    "query_results": [{"result_ref": "result:typed"}],
+                    "completeness_reports": [{"report_ref": "complete:typed"}],
+                    "capability_execution_plans": [{"capability_id": "compare_periods"}],
+                    "repair_decisions": [
+                        {"failed_signature": "signature", "action": "degrade"}
+                    ],
+                },
+                "checkpoint_events": [],
+                "draft_claims": [],
+                "evidence": [],
+                "validator_results": [],
+                "final_explanation": {
+                    "status": "blocked",
+                    "code": "typed_query_gap",
+                    "reason": "结果完整性不足。",
+                    "owner": "data_platform",
+                    "repair_path": "刷新后重试。",
+                },
+            }
+        )
+
+        self.assertEqual(
+            package["admin_audit"]["analysis_contract"]["analysis_contract_id"],
+            "analysis:typed",
+        )
+        self.assertEqual(len(package["admin_audit"]["query_contracts"]), 1)
+        self.assertEqual(len(package["admin_audit"]["repair_attempts"]), 1)
+
     def test_prompt_specs_are_consistent(self):
         self.assertEqual(validate_prompt_specs(), [])
 
@@ -778,6 +2339,270 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(state["checkpoint_events"][-1]["route"], "low_risk_assumption")
 
+    def test_general_clarification_waits_with_validated_business_options(self):
+        from bi_agent.runtime.langgraph_workflow import _generate_clarification
+
+        fake = FakeLLMClient({
+            "clarification_question": {
+                "questions": [{
+                    "question": "按哪个已确认业务边界继续？",
+                    "options": [
+                        {"label": "保留当前指标和基线继续。", "description": "保留已确认口径。"},
+                        {"label": "调整业务范围后继续。", "description": "用新范围重新绑定。"},
+                        "tell the agent to do differently",
+                    ],
+                }],
+                "recommended_assumption": {"option": "保留当前指标和基线继续。"},
+                "status_message": "等待确认。",
+            }
+        })
+        with tempfile.TemporaryDirectory() as artifact_root:
+            state = {
+                "run_id": "run-general-clarification",
+                "request": {"artifact_root": artifact_root},
+                "intent": {
+                    "target_metric": "active_users",
+                    "baseline_candidates": ["previous_day"],
+                    "scope": "full_sample",
+                },
+                "boundary_decision": {
+                    "boundary_status": "needs_question",
+                    "clarification_questions": [],
+                },
+                "llm_client": fake,
+                "llm_calls": [],
+                "checkpoint_events": [],
+            }
+
+            _generate_clarification(state)
+            self.assertEqual(_route_after_clarification(state), "wait")
+            _persist_clarification(state)
+
+        self.assertEqual(state["workflow_status"], "waiting_for_clarification")
+        self.assertEqual(
+            state["answer_package"]["material_slots"]["target_metrics"],
+            ["active_users"],
+        )
+        self.assertEqual(
+            state["answer_package"]["material_slots"]["baselines"],
+            ["previous_day"],
+        )
+        self.assertEqual(
+            state["answer_package"]["clarification"]["recommended_assumption"],
+            {"option": "保留当前指标和基线继续。"},
+        )
+
+    def test_general_clarification_option_objects_reject_unsafe_or_ambiguous_shapes(self):
+        from bi_agent.runtime.langgraph_workflow import (
+            _normalize_general_clarification_output,
+        )
+
+        base = {
+            "questions": [{
+                "question": "按哪个范围继续？",
+                "options": [
+                    {"label": "保留当前范围", "description": "继续当前口径"},
+                    {"label": "调整业务范围", "description": "重新确认口径"},
+                    "tell the agent to do differently",
+                ],
+            }],
+            "recommended_assumption": {"label": "保留当前范围"},
+        }
+        normalized = _normalize_general_clarification_output(base)
+        self.assertEqual(
+            normalized["questions"][0]["options"][0],
+            "保留当前范围",
+        )
+
+        invalid_options = (
+            {"label": "保留当前范围", "description": "继续", "action": "override"},
+            {"label": "", "description": "继续"},
+            {"label": "保留当前范围", "description": "evidence_ref"},
+        )
+        for invalid in invalid_options:
+            candidate = {
+                **base,
+                "questions": [{
+                    **base["questions"][0],
+                    "options": [
+                        invalid,
+                        {"label": "调整业务范围", "description": "重新确认"},
+                        "tell the agent to do differently",
+                    ],
+                }],
+            }
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                WorkflowFailure,
+                "general_clarification_contract_invalid:option_object",
+            ):
+                _normalize_general_clarification_output(candidate)
+
+        duplicate = {
+            **base,
+            "questions": [{
+                **base["questions"][0],
+                "options": [
+                    {"label": "保留当前范围", "description": "继续"},
+                    {"label": "保留当前范围", "description": "换个说法"},
+                    "tell the agent to do differently",
+                ],
+            }],
+        }
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "general_clarification_contract_invalid:options",
+        ):
+            _normalize_general_clarification_output(duplicate)
+
+    def test_general_clarification_prompt_requires_string_option_array(self):
+        text = "\n".join(
+            message["content"]
+            for message in build_prompt("clarification_question", {}).messages
+        )
+
+        self.assertIn("options must be an array of strings", text)
+        self.assertIn('"options":["业务选项A","业务选项B"', text)
+
+    def test_general_clarification_repairs_recommendation_to_validated_option(self):
+        from bi_agent.runtime.langgraph_workflow import _generate_clarification
+
+        fake = FakeLLMClient(
+            {
+                "clarification_question": {
+                    "questions": [{
+                        "question": "按哪个基线继续？",
+                        "options": [
+                            "与前一天比较",
+                            "与上周同一天比较",
+                            "tell the agent to do differently",
+                        ],
+                    }],
+                    "recommended_assumption": {"option": "使用推荐基线"},
+                },
+                "query_gap_recommendation_repair": {
+                    "option_index": 1,
+                    "brief_reason": "更适合控制星期效应。",
+                },
+            }
+        )
+        state = {
+            "request": {},
+            "intent": {"target_metric": "active_users"},
+            "boundary_decision": {
+                "boundary_status": "needs_question",
+                "clarification_questions": [],
+            },
+            "llm_client": fake,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        _generate_clarification(state)
+
+        self.assertIn("query_gap_recommendation_repair", fake.calls)
+        self.assertEqual(
+            state["clarification_outcome"]["recommended_assumption"],
+            {"option": "与上周同一天比较"},
+        )
+
+    def test_route_requirements_preserve_confirmed_material_slots_and_flag_conflict(self):
+        state = {
+            "intent": {
+                "target_metric": "active_users",
+                "baseline_candidates": ["previous_day"],
+                "context_sources": ["external_event"],
+                "scope": "full_sample",
+            },
+            "request": {},
+        }
+        merged, conflicts = _merge_confirmed_material_requirements(
+            {
+                "analysis_requirements": {
+                    "target_metrics": [],
+                    "baselines": [],
+                    "context_sources": [],
+                    "scope": "full_sample",
+                }
+            },
+            state,
+        )
+
+        self.assertEqual(merged["analysis_requirements"]["target_metrics"], ["active_users"])
+        self.assertEqual(merged["analysis_requirements"]["baselines"], ["previous_day"])
+        self.assertEqual(merged["analysis_requirements"]["context_sources"], ["external_event"])
+        self.assertEqual(conflicts, ())
+
+        _, conflicts = _merge_confirmed_material_requirements(
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["paid_amount"],
+                    "scope": "channel",
+                }
+            },
+            state,
+        )
+        self.assertEqual(set(conflicts), {"target_metrics", "scope"})
+
+    def test_invalid_general_clarification_retries_with_contract_reason(self):
+        from bi_agent.runtime.langgraph_workflow import _generate_clarification
+
+        class InvalidThenValid(FakeLLMClient):
+            def __init__(self):
+                super().__init__()
+                self.attempts = 0
+
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                if task != "clarification_question":
+                    return super().invoke_json(
+                        task=task,
+                        prompt_version=prompt_version,
+                        messages=messages,
+                        required_keys=required_keys,
+                    )
+                self.attempts += 1
+                options = (
+                    ["只有一个业务选项", "tell the agent to do differently"]
+                    if self.attempts == 1
+                    else [
+                        "保留当前指标和基线继续。",
+                        "调整业务范围后继续。",
+                        "tell the agent to do differently",
+                    ]
+                )
+                return FakeLLMResult(
+                    {
+                        "questions": [{"question": "按哪个范围继续？", "options": options}],
+                        "recommended_assumption": {
+                            "option": "保留当前指标和基线继续。"
+                        },
+                        "status_message": "等待确认。",
+                    },
+                    {"task": task},
+                )
+
+        fake = InvalidThenValid()
+        state = {
+            "run_id": "run-general-retry",
+            "request": {},
+            "intent": {"target_metric": "active_users"},
+            "boundary_decision": {
+                "boundary_status": "needs_question",
+                "clarification_questions": [],
+            },
+            "llm_client": fake,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        result = _retrying_node("generate_clarification", _generate_clarification)(state)
+
+        self.assertEqual(fake.attempts, 2)
+        self.assertEqual(result["clarification_outcome"]["status"], "question_tool_opened")
+        self.assertIn(
+            "general_clarification_contract_invalid:options",
+            result["request"]["node_retry_feedback"]["reason"],
+        )
+
     def test_segment_causal_followup_defaults_to_observational_boundary(self):
         state = {
             "request": {"allow_question_interrupt": True},
@@ -1124,6 +2949,18 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertIn("retry_context", text)
         self.assertIn("failure_reason", text)
+
+    def test_answer_prompts_require_complete_verifier_claim_shape(self):
+        for task in ("answer_synthesis", "answer_repair"):
+            messages = build_prompt(task, {"answer_context": {}}).messages
+            text = "\n".join(message["content"] for message in messages)
+
+            self.assertIn(
+                "text, evidence_refs, numbers, scope, time_window, claim_type, and claim_strength",
+                text,
+            )
+            self.assertIn("copy evidence_refs exactly", text.lower())
+            self.assertIn("Do not return a claim without text", text)
 
     def test_answer_prompts_block_business_reader_metadata_leaks(self):
         for task in ("answer_synthesis", "answer_repair"):
@@ -1666,6 +3503,7 @@ class LLMWorkflowTest(unittest.TestCase):
             "evidence_boundary": "不推断长期趋势。",
         }
         state = {
+            "request": {},
             "intent": {
                 "pattern_family": "custom_baseline",
                 "baseline": {"label": "Q1"},
@@ -1890,6 +3728,326 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertNotIn("因果结论", claims[0]["text"])
         self.assertNotIn("定因果", claims[0]["text"])
         self.assertIn("原因定论", claims[0]["text"])
+
+    def test_authority_bound_claim_uses_contract_claim_type_scope_strength_and_numbers(self):
+        evidence_ref = "market_health_compare:run-1"
+        state = {
+            "request": {},
+            "intent": {
+                "pattern_family": "custom_baseline",
+                "target_metric": "active_users",
+                "scope": "用户口语范围",
+                "time_window": "用户口语窗口",
+            },
+            "evidence": [
+                {
+                    "evidence_ref": evidence_ref,
+                    "capability_id": "market_health_compare",
+                    "evidence_type": "statistical_association",
+                    "strength": "directional",
+                    "wording_limit": "quantified",
+                    "input_status": "ready",
+                    "binding_manifest_ref": "capability-binding:market:1",
+                    "claim_type": "comparative_change",
+                    "supported_claim_types": ("comparative_change",),
+                    "supported_evidence_types": ("statistical_association",),
+                    "maximum_claim_strength": "directional",
+                    "scope": "market",
+                    "time_window": "昨天与前天",
+                    "numeric_facts": {
+                        "target_value": 125260,
+                        "baseline_value": 216820,
+                        "absolute_change": -91560,
+                    },
+                    "typed_payload": {
+                        "target_value": 125260,
+                        "baseline_value": 216820,
+                        "absolute_change": -91560,
+                    },
+                    "limitations": (),
+                }
+            ],
+        }
+
+        claim = _claims_from_llm_or_default(
+            [
+                {
+                    "claim_text": "昨天活跃用户低于前天。",
+                    "evidence_refs": [evidence_ref],
+                    "strength": "directional",
+                    "scope": "市场整体",
+                    "time_window": "昨日对比前日",
+                    "target_value": "125260",
+                    "baseline_value": "216820",
+                    "absolute_change": "-91560",
+                }
+            ],
+            state,
+        )[0]
+
+        self.assertEqual(claim["claim_type"], "comparative_change")
+        self.assertEqual(claim["claim_strength"], "observed")
+        self.assertEqual(claim["scope"], "market")
+        self.assertEqual(claim["time_window"], "昨天与前天")
+
+        self.assertEqual(claim["numbers"]["absolute_change"], "-91560")
+
+        state["draft_claims"] = [claim]
+        self.assertEqual(_claims_from_llm_or_default([], state), [claim])
+        self.assertEqual(_preserved_authority_claims(state), [claim])
+        state["semantic_audit"] = {"audit_status": "needs_revision"}
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._business_narrative_answer",
+            return_value="已清洗叙事。",
+        ):
+            _sanitize_answer(state)
+        self.assertEqual(state["draft_claims"], [claim])
+
+        state.pop("draft_claims")
+        structured_only = _claims_from_llm_or_default(
+            [
+                {
+                    "evidence_refs": [evidence_ref],
+                    "numbers": {"target_value": "125260"},
+                }
+            ],
+            state,
+        )[0]
+        self.assertEqual(structured_only["claim_type"], "comparative_change")
+        self.assertEqual(structured_only["numbers"], {"target_value": "125260"})
+        self.assertIn("active_users", structured_only["text"])
+        text_only = _claims_from_llm_or_default(
+            [{"claim_text": "活跃用户下降。", "evidence_refs": [evidence_ref]}],
+            state,
+        )[0]
+        self.assertEqual(
+            text_only["numbers"],
+            {
+                "absolute_change": -91560,
+                "baseline_value": 216820,
+                "target_value": 125260,
+            },
+        )
+        self.assertEqual(
+            _claims_from_llm_or_default([{"evidence_refs": [evidence_ref]}], state),
+            [],
+        )
+
+    def test_production_empty_llm_claims_wait_for_repair_candidate(self):
+        evidence_ref = "market_health_compare:run-resumed"
+        state = {
+            "request": {"run_mode": "production"},
+            "intent": {
+                "pattern_family": "custom_baseline",
+                "target_metric": "active_users",
+                "scope": "用户口语范围",
+                "time_window": "用户口语窗口",
+            },
+            "evidence": [
+                {
+                    "evidence_ref": evidence_ref,
+                    "capability_id": "market_health_compare",
+                    "evidence_type": "statistical_association",
+                    "strength": "directional",
+                    "wording_limit": "quantified",
+                    "input_status": "ready",
+                    "binding_manifest_ref": "capability-binding:market:resumed",
+                    "claim_type": "comparative_change",
+                    "supported_claim_types": ("comparative_change",),
+                    "supported_evidence_types": ("statistical_association",),
+                    "maximum_claim_strength": "directional",
+                    "scope": "market",
+                    "time_window": "昨天与前天",
+                    "numeric_facts": {
+                        "target_value": 125260,
+                        "baseline_value": 216820,
+                        "absolute_change": -91560,
+                    },
+                    "typed_payload": {
+                        "target_value": 125260,
+                        "baseline_value": 216820,
+                        "absolute_change": -91560,
+                    },
+                    "limitations": (),
+                }
+            ],
+        }
+
+        self.assertEqual(_claims_from_llm_or_default(None, state), [])
+        self.assertEqual(_claims_from_llm_or_default([], state), [])
+        self.assertEqual(
+            _claims_from_llm_or_default(
+                [
+                    {
+                        "evidence_refs": [evidence_ref],
+                        "numbers": {"target_value": 125260},
+                    }
+                ],
+                state,
+            ),
+            [],
+        )
+        state["draft_claims"] = [{
+            "text": "旧草稿没有合同绑定。",
+            "evidence_refs": [evidence_ref],
+        }]
+        self.assertEqual(_claims_from_llm_or_default([], state), [])
+        state.pop("draft_claims")
+
+        repaired = _claims_from_llm_or_default(
+            [
+                {
+                    "text": "昨天活跃用户低于前天。",
+                    "evidence_refs": [evidence_ref],
+                    "claim_type": "comparative_change",
+                    "claim_strength": "directional",
+                }
+            ],
+            state,
+        )
+
+        self.assertEqual(repaired[0]["evidence_refs"], [evidence_ref])
+        self.assertEqual(repaired[0]["claim_type"], "comparative_change")
+        self.assertEqual(repaired[0]["claim_strength"], "observed")
+        self.assertEqual(repaired[0]["scope"], "market")
+        self.assertEqual(repaired[0]["time_window"], "昨天与前天")
+        self.assertEqual(repaired[0]["numbers"]["absolute_change"], -91560)
+        state["draft_claims"] = repaired
+        self.assertEqual(_claims_from_llm_or_default([], state), repaired)
+        self.assertEqual(_preserved_authority_claims(state), repaired)
+
+    def test_production_short_answer_is_not_rewritten_by_local_narrative_template(self):
+        state = {
+            "request": {"run_mode": "production"},
+            "answer_text": "昨日活跃用户下降。",
+            "draft_claims": [{"text": "昨日活跃用户下降。"}],
+            "evidence": [],
+        }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._business_narrative_answer"
+        ) as local_template:
+            _ensure_business_narrative_answer(state)
+
+        local_template.assert_not_called()
+        self.assertEqual(state["answer_text"], "昨日活跃用户下降。")
+
+    def test_production_semantic_failure_never_uses_local_claim_or_narrative_sanitizer(self):
+        state = {
+            "request": {"run_mode": "production"},
+            "semantic_audit": {
+                "audit_status": "needs_revision",
+                "issues": ["weak_business_interpretation"],
+            },
+            "answer_repair_attempts": 1,
+            "answer_text": "昨日活跃用户下降。",
+            "draft_claims": [],
+        }
+
+        self.assertEqual(_route_after_semantic_audit(state), "verify")
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._sanitize_to_bounded_pattern_answer"
+        ) as local_sanitizer:
+            _sanitize_answer(state)
+
+        local_sanitizer.assert_not_called()
+        self.assertEqual(state["answer_text"], "昨日活跃用户下降。")
+        self.assertEqual(state["draft_claims"], [])
+        self.assertEqual(state["semantic_audit"]["audit_status"], "ready_with_warnings")
+
+    def test_final_llm_audit_warning_does_not_rewrite_answer(self):
+        state = {
+            "request": {"run_mode": "production", "question": "昨日活跃用户如何变化？"},
+            "answer_text": "昨日活跃用户下降。",
+            "final_business_summary": "昨日活跃用户下降。",
+            "draft_claims": [],
+            "verifier": {"errors": []},
+            "evidence": [],
+        }
+        warning = {
+            "display_status": "ready_with_warnings",
+            "hard_blockers": [],
+            "repairable_warnings": ["weak_business_interpretation"],
+            "risk_flags": [],
+            "retry_instruction": "补充业务解释。",
+            "business_audit_summary": "答案可展示。",
+            "blocks_display": False,
+        }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._final_answer_audit",
+            return_value=warning,
+        ), patch("bi_agent.runtime.langgraph_workflow._invoke_llm") as summary_rewrite:
+            _answer_quality_gate(state)
+
+        summary_rewrite.assert_not_called()
+        self.assertEqual(state["final_business_summary"], "昨日活跃用户下降。")
+        self.assertFalse(state["quality_gate"]["blocks_display"])
+
+    def test_final_llm_audit_failure_is_a_nonblocking_risk(self):
+        state = {
+            "request": {"run_mode": "production", "question": "昨日活跃用户如何变化？"},
+            "answer_text": "昨日活跃用户下降。",
+            "final_business_summary": "昨日活跃用户下降。",
+            "draft_claims": [],
+            "verifier": {"errors": []},
+            "evidence": [],
+        }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._final_answer_audit",
+            side_effect=WorkflowFailure("llm_response_timeout", failure_type="llm"),
+        ):
+            _answer_quality_gate(state)
+
+        self.assertEqual(state["final_business_summary"], "昨日活跃用户下降。")
+        self.assertFalse(state["quality_gate"]["blocks_display"])
+        self.assertIn("final_answer_audit_unavailable", state["quality_gate"]["risk_flags"])
+
+    def test_ambiguous_authority_refs_do_not_guess_claim_contract_or_promote_unknown_fields(self):
+        evidence = []
+        for index, scope in enumerate(("market", "channel"), start=1):
+            evidence.append(
+                {
+                    "evidence_ref": f"evidence:{index}",
+                    "binding_manifest_ref": f"binding:{index}",
+                    "input_status": "ready",
+                    "claim_type": "comparative_change",
+                    "supported_claim_types": ("comparative_change",),
+                    "strength": "directional",
+                    "scope": scope,
+                    "time_window": "昨天与前天",
+                    "numeric_facts": {"target_value": index},
+                    "typed_payload": {"target_value": index},
+                }
+            )
+        state = {
+            "intent": {
+                "pattern_family": "custom_baseline",
+                "target_metric": "active_users",
+                "scope": "用户口语范围",
+                "time_window": "用户口语窗口",
+            },
+            "evidence": evidence,
+        }
+
+        claim = _claims_from_llm_or_default(
+            [
+                {
+                    "claim_text": "存在变化。",
+                    "evidence_refs": ["evidence:1", "evidence:2"],
+                    "scope": "用户表达",
+                    "time_window": "用户窗口",
+                    "unknown_value": 999,
+                }
+            ],
+            state,
+        )[0]
+
+        self.assertEqual(claim["claim_type"], "")
+        self.assertEqual(claim["scope"], "用户表达")
+        self.assertEqual(claim["time_window"], "用户窗口")
+        self.assertNotIn("unknown_value", claim["numbers"])
 
     def test_final_summary_display_repair_preserves_complete_numeric_claim_slots(self):
         claim = {
@@ -2625,7 +4783,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
         self.assertEqual(result.answer_package["quality_gate"]["code"], "evidence_verifier_failed")
 
-    def test_final_answer_audit_warning_retries_summary_once_without_blocking_display(self):
+    def test_final_answer_audit_warning_is_recorded_without_rewriting_summary(self):
         class RetryAuditLLM(FakeLLMClient):
             def __init__(self):
                 super().__init__()
@@ -2743,14 +4901,13 @@ class LLMWorkflowTest(unittest.TestCase):
             )
 
         self.assertEqual(result.status, "draft")
-        self.assertEqual(fake.calls.count("final_business_summary"), 2)
-        self.assertEqual(fake.calls.count("final_answer_audit"), 2)
+        self.assertEqual(fake.calls.count("final_business_summary"), 1)
+        self.assertEqual(fake.calls.count("final_answer_audit"), 1)
         self.assertEqual(fake.summary_inputs[0].get("final_answer_retry_instruction"), "")
-        self.assertIn("补一句业务排查方向。", fake.summary_inputs[1].get("final_answer_retry_instruction"))
         self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
         self.assertEqual(result.answer_package["final_answer"], "")
 
-    def test_final_answer_audit_can_retry_summary_twice_without_local_template(self):
+    def test_final_answer_audit_never_rewrites_summary_for_warnings(self):
         class RetryTwiceLLM(FakeLLMClient):
             def __init__(self):
                 super().__init__()
@@ -2850,9 +5007,8 @@ class LLMWorkflowTest(unittest.TestCase):
             )
 
         self.assertEqual(result.status, "draft")
-        self.assertEqual(fake.calls.count("final_business_summary"), 3)
-        self.assertEqual(fake.calls.count("final_answer_audit"), 3)
-        self.assertIn("这是第二次修复", fake.summary_inputs[2]["final_answer_retry_instruction"])
+        self.assertEqual(fake.calls.count("final_business_summary"), 1)
+        self.assertEqual(fake.calls.count("final_answer_audit"), 1)
         self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
         self.assertEqual(result.answer_package["final_answer"], "")
         audit_outputs = [
@@ -2860,13 +5016,13 @@ class LLMWorkflowTest(unittest.TestCase):
             for call in result.answer_package["admin_audit"]["llm_calls"]
             if call["task"] == "final_answer_audit"
         ]
-        self.assertEqual(len(audit_outputs), 3)
+        self.assertEqual(len(audit_outputs), 1)
         self.assertEqual(
             audit_outputs[-1]["repairable_warnings"],
             ["unsupported_material_claim"],
         )
 
-    def test_local_final_summary_display_warning_triggers_retry_even_when_audit_is_ready(self):
+    def test_local_final_summary_display_warning_does_not_trigger_rewrite(self):
         class ReadyAuditBadFirstSummaryLLM(FakeLLMClient):
             def __init__(self):
                 super().__init__()
@@ -2970,12 +5126,8 @@ class LLMWorkflowTest(unittest.TestCase):
             )
 
         self.assertEqual(result.status, "draft")
-        self.assertEqual(fake.calls.count("final_business_summary"), 2)
-        self.assertEqual(fake.calls.count("final_answer_audit"), 2)
-        self.assertIn(
-            "missing_required_summary_markers",
-            fake.summary_inputs[1]["final_answer_retry_instruction"],
-        )
+        self.assertEqual(fake.calls.count("final_business_summary"), 1)
+        self.assertEqual(fake.calls.count("final_answer_audit"), 1)
         self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
         self.assertEqual(result.answer_package["final_answer"], "")
 
@@ -3153,7 +5305,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("blocked_explanation", blocked_fake.calls)
         self.assertIsNone(blocked_result.answer_package)
 
-    def test_business_intent_llm_timeout_falls_back_to_local_intent(self):
+    def test_business_intent_llm_timeout_fails_without_local_intent(self):
         class TimeoutOnIntentLLM(FakeLLMClient):
             def invoke_json(self, *, task, prompt_version, messages, required_keys):
                 if task == "business_intent":
@@ -3177,15 +5329,9 @@ class LLMWorkflowTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(result.status, "draft")
-        intent_audit = next(
-            call
-            for call in result.answer_package["admin_audit"]["llm_calls"]
-            if call["task"] == "business_intent"
-        )
-        self.assertEqual(intent_audit["provider"], "local_fallback")
-        self.assertEqual(intent_audit["failure_type"], "llm_unavailable")
-        self.assertIn("driver_decomposition", result.answer_package["accepted_graph"])
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.failure_reason, "llm_response_timeout")
+        self.assertIsNone(result.answer_package)
 
     def test_workflow_invokes_causal_audit_before_answer_synthesis(self):
         fake = FakeLLMClient()
@@ -3358,6 +5504,496 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertTrue(
             any(item.get("capability_id") == "data_quality_profile" for item in evidence)
         )
+
+    def test_execute_capabilities_dispatches_reviewed_runtime_bound_capability(self):
+        from types import SimpleNamespace
+
+        bound = object()
+        state = {
+            "request": {
+                "role": "analyst",
+                "runtime_rows_source": "analysis_runtime",
+                "bound_capability_inputs": {"market_health_compare": bound},
+            },
+            "run_id": "execute-runtime-market",
+            "budget_state": default_budget("ordinary"),
+            "compiled_graph": SimpleNamespace(
+                mutations=SimpleNamespace(
+                    accepted_graph=("compare_periods", "market_health_compare")
+                )
+            ),
+            "intent": {
+                "question_family": "custom_baseline_comparison",
+                "target_metric": "active_users",
+                "pattern_family": "custom_baseline",
+                "scope": "full_sample",
+                "time_window": "昨天与前天",
+                "target_claim": "comparative_change",
+                "baseline": {"label": "前天"},
+                "target": {"label": "昨天"},
+            },
+        }
+        captured = []
+
+        def execute(request):
+            captured.append(request)
+            return {
+                "evidence_ref": "market-health:evidence",
+                "capability_id": request.capability_id,
+                "typed_payload": {},
+                "numeric_facts": {},
+                "result_refs": (),
+            }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow.execute_capability",
+            side_effect=execute,
+        ):
+            result = _execute_capabilities(state)
+
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].capability_id, "market_health_compare")
+        self.assertIs(captured[0].bound_input, bound)
+        self.assertEqual(result["evidence"][0]["capability_id"], "market_health_compare")
+
+    def test_production_capability_cannot_bypass_blocked_bound_input_with_compatibility_rows(self):
+        from types import SimpleNamespace
+        from bi_agent.runtime.capability_execution import BoundCapabilityInput
+
+        bound = object.__new__(BoundCapabilityInput)
+        for field in BoundCapabilityInput.__annotations__:
+            if field in {"rows_by_slot", "binding_manifest"}:
+                value = {}
+            elif field in {"maximum_claim_strength_rank"}:
+                value = -1
+            elif field.endswith("s") or field.endswith("refs"):
+                value = ()
+            else:
+                value = ""
+            object.__setattr__(bound, field, value)
+        object.__setattr__(bound, "capability_id", "driver_decomposition")
+        object.__setattr__(bound, "status", "blocked")
+        object.__setattr__(bound, "reasons", ("missing_required_query_slot",))
+
+        state = {
+            "request": {
+                "run_mode": "production",
+                "runtime_rows_source": "analysis_runtime",
+                "bound_capability_inputs": {"driver_decomposition": bound},
+                "runtime_rows_by_intent": {
+                    "component_driver_scan": [
+                        {"group": "baseline", "amount": 1, "paid_users": 1},
+                        {"group": "target", "amount": 1_000_000, "paid_users": 1},
+                    ]
+                },
+                "result_refs_by_intent": {
+                    "component_driver_scan": ("result:compatibility-map",)
+                },
+                "role": "analyst",
+            },
+            "run_id": "blocked-driver-cannot-bypass",
+            "sql_hash": "",
+            "budget_state": default_budget("ordinary"),
+            "compiled_graph": SimpleNamespace(
+                mutations=SimpleNamespace(accepted_graph=("driver_decomposition",))
+            ),
+            "intent": {
+                "question_family": "paid_amount_change_explanation",
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "pattern_params": {"group_key": "group", "target_group": "target"},
+                "scope": "full_sample",
+                "time_window": "昨天与前天",
+                "target_claim": "formula_component_contribution",
+                "baseline": {"label": "前天"},
+                "target": {"label": "昨天"},
+            },
+        }
+
+        evidence = _execute_capabilities(state)["evidence"][0]
+
+        self.assertEqual(evidence["input_status"], "blocked")
+        self.assertFalse(_evidence_established(evidence))
+        self.assertNotIn(999999.0, evidence.get("numeric_facts", {}).values())
+        self.assertNotIn("result:compatibility-map", evidence.get("result_refs", ()))
+
+    def test_production_segment_bridge_and_joint_use_exact_bound_slots(self):
+        from types import SimpleNamespace
+        from bi_agent.runtime.capability_execution import BoundCapabilityInput
+
+        def ready_bound(capability_id, slot, rows, result_ref, claim_type):
+            bound = object.__new__(BoundCapabilityInput)
+            for field in BoundCapabilityInput.__annotations__:
+                if field in {"rows_by_slot", "binding_manifest"}:
+                    value = {}
+                elif field == "maximum_claim_strength_rank":
+                    value = 2
+                elif field.endswith("s") or field.endswith("refs"):
+                    value = ()
+                else:
+                    value = ""
+                object.__setattr__(bound, field, value)
+            object.__setattr__(bound, "capability_id", capability_id)
+            object.__setattr__(bound, "status", "ready")
+            object.__setattr__(bound, "rows_by_slot", {slot: tuple(rows)})
+            object.__setattr__(bound, "result_refs", (result_ref,))
+            object.__setattr__(bound, "supported_claim_types", (claim_type,))
+            object.__setattr__(
+                bound,
+                "supported_evidence_types",
+                ("contextual_evidence", "statistical_association"),
+            )
+            object.__setattr__(bound, "maximum_claim_strength", "candidate_driver")
+            object.__setattr__(bound, "claim_strength_taxonomy_version", "v1")
+            object.__setattr__(bound, "input_completeness_statuses", ("complete",))
+            object.__setattr__(bound, "binding_manifest_ref", f"binding:{capability_id}")
+            object.__setattr__(bound, "binding_manifest_digest", f"digest:{capability_id}")
+            return bound
+
+        segment = ready_bound(
+            "segment_bridge",
+            "dimension_contribution_scan",
+            ({"segment": "actual", "amount": 500.0, "n": 50},),
+            "result:segment-bound",
+            "segment_contribution_or_mix_shift",
+        )
+        joint = ready_bound(
+            "joint_attribution",
+            "joint_candidate_scan",
+            (
+                {"group": "baseline", "channel": "ads", "method": "card", "amount": 100.0, "n": 50},
+                {"group": "target", "channel": "ads", "method": "card", "amount": 180.0, "n": 50},
+            ),
+            "result:joint-bound",
+            "candidate_driver",
+        )
+        state = {
+            "request": {
+                "run_mode": "production",
+                "runtime_rows_source": "analysis_runtime",
+                "bound_capability_inputs": {
+                    "segment_bridge": segment,
+                    "joint_attribution": joint,
+                },
+                "segments": ({"segment": "full_sample", "amount": 1.0, "n": 100},),
+                "role": "analyst",
+            },
+            "run_id": "bound-segment-joint",
+            "sql_hash": "",
+            "budget_state": default_budget("ordinary"),
+            "compiled_graph": SimpleNamespace(
+                mutations=SimpleNamespace(
+                    accepted_graph=("segment_bridge", "joint_attribution")
+                )
+            ),
+            "intent": {
+                "question_family": "segment_or_factor_attribution",
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "pattern_params": {
+                    "group_key": "group",
+                    "target_group": "target",
+                    "baseline_group": "baseline",
+                },
+                "scope": "full_sample",
+                "time_window": "昨天与前天",
+                "target_claim": "candidate_driver",
+                "baseline": {"label": "前天"},
+                "target": {"label": "昨天"},
+            },
+        }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow.validate_bound_capability_input",
+            return_value="",
+        ):
+            evidence = _execute_capabilities(state)["evidence"]
+
+        segment_evidence = next(
+            item for item in evidence if item["capability_id"] == "segment_bridge"
+        )
+        joint_evidence = next(
+            item for item in evidence if item["capability_id"] == "joint_attribution"
+        )
+        self.assertEqual(
+            segment_evidence["typed_payload"]["segments"][0]["segment"],
+            "actual",
+        )
+        self.assertEqual(segment_evidence["result_refs"], ("result:segment-bound",))
+        self.assertNotEqual(
+            joint_evidence["typed_payload"].get("reason"),
+            "no_escalation_required",
+        )
+        self.assertEqual(
+            joint_evidence["typed_payload"]["dimension_keys"],
+            ["channel", "method"],
+        )
+
+    def test_production_formula_decompose_uses_all_bound_components(self):
+        from types import SimpleNamespace
+        from bi_agent.runtime.capability_execution import BoundCapabilityInput
+
+        bound = object.__new__(BoundCapabilityInput)
+        for field in BoundCapabilityInput.__annotations__:
+            if field in {"rows_by_slot", "binding_manifest"}:
+                value = {}
+            elif field == "maximum_claim_strength_rank":
+                value = 2
+            elif field.endswith("s") or field.endswith("refs"):
+                value = ()
+            else:
+                value = ""
+            object.__setattr__(bound, field, value)
+        object.__setattr__(bound, "capability_id", "formula_decompose")
+        object.__setattr__(bound, "status", "ready")
+        object.__setattr__(
+            bound,
+            "rows_by_slot",
+            {
+                "component_driver_scan": ({
+                    "paid_amount": 100.0,
+                    "paid_users": 20,
+                    "paid_orders": 30,
+                    "first_paid_users": 5,
+                    "paid_frequency": 1.5,
+                    "avg_order_amount": 3.333,
+                },)
+            },
+        )
+        object.__setattr__(bound, "result_refs", ("result:formula-bound",))
+        object.__setattr__(
+            bound,
+            "supported_claim_types",
+            ("formula_component_contribution",),
+        )
+        object.__setattr__(bound, "supported_evidence_types", ("accounting_contribution",))
+        object.__setattr__(bound, "maximum_claim_strength", "quantified_contribution")
+        object.__setattr__(bound, "claim_strength_taxonomy_version", "v1")
+        object.__setattr__(bound, "input_completeness_statuses", ("complete",))
+        object.__setattr__(bound, "binding_manifest_ref", "binding:formula")
+        object.__setattr__(bound, "binding_manifest_digest", "digest:formula")
+        state = {
+            "request": {
+                "run_mode": "production",
+                "runtime_rows_source": "analysis_runtime",
+                "bound_capability_inputs": {"formula_decompose": bound},
+                "role": "analyst",
+            },
+            "run_id": "bound-formula",
+            "sql_hash": "",
+            "budget_state": default_budget("ordinary"),
+            "compiled_graph": SimpleNamespace(
+                mutations=SimpleNamespace(accepted_graph=("formula_decompose",))
+            ),
+            "intent": {
+                "question_family": "paid_amount_change_explanation",
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "scope": "full_sample",
+                "time_window": "昨天与前天",
+                "target_claim": "formula_component_contribution",
+            },
+        }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow.validate_bound_capability_input",
+            return_value="",
+        ):
+            formula = _execute_capabilities(state)["evidence"][0]
+
+        path = formula["typed_payload"]["covered_paths"][0]
+        self.assertEqual(
+            path["components"],
+            [
+                "paid_users",
+                "paid_orders",
+                "first_paid_users",
+                "paid_frequency",
+                "avg_order_amount",
+            ],
+        )
+        self.assertEqual(formula["result_refs"], ("result:formula-bound",))
+
+    def test_production_degraded_explanation_does_not_create_local_claim(self):
+        from types import SimpleNamespace
+        from bi_agent.runtime.langgraph_workflow import _ensure_degraded_audit
+
+        state = {
+            "request": {"run_mode": "production"},
+            "run_id": "production-degraded-no-local-claim",
+            "intent": {
+                "scope": "full_sample",
+                "time_window": "2026-06-02",
+                "target_metric": "paid_amount",
+            },
+            "analysis_runtime_result": SimpleNamespace(status="degraded"),
+            "evidence": [],
+            "draft_claims": [],
+        }
+
+        _ensure_degraded_audit(state)
+
+        self.assertEqual(state["draft_claims"], [])
+
+    def test_query_contract_repair_sends_exact_failure_reason_to_route_repair(self):
+        from types import SimpleNamespace
+
+        state = {
+            "request": {"attempted_query_signatures": ()},
+            "query_repair_decisions": ({
+                "failed_signature": "signature:failed",
+                "failed_query_contract_ref": "query:failed",
+                "reason": "query_shape_mismatch",
+                "failure_reasons": ("missing_field:paid_users",),
+            },),
+            "repair_attempts": 0,
+            "compiled_graph": SimpleNamespace(
+                mutations=SimpleNamespace(records=())
+            ),
+            "analysis_route": {
+                "requested_nodes": ("driver_decomposition",),
+                "analysis_requirements": {
+                    "target_metrics": ("active_users",),
+                    "claim_intents": ("comparative_change",),
+                    "baselines": ("previous_day",),
+                },
+            },
+            "intent": {
+                "question_family": "custom_baseline_comparison",
+                "question_families": ["custom_baseline_comparison"],
+                "target_metric": "active_users",
+                "claim_intents": ["comparative_change"],
+                "baseline_candidates": ["previous_day"],
+                "requested_nodes": ("driver_decomposition",),
+            },
+        }
+        captured = {}
+
+        def repair_llm(_state, task, payload):
+            captured.update(payload)
+            self.assertEqual(task, "route_repair")
+            return {
+                "requested_nodes": ["market_health_compare"],
+                "repair_summary": "按失败字段修正分析路线。",
+                "decision_summary": "保留目标指标和基线。",
+            }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._invoke_llm",
+            side_effect=repair_llm,
+        ):
+            _repair_analysis_contract(state)
+
+        self.assertEqual(
+            captured["compiler_feedback"][0]["failure_reasons"],
+            ["missing_field:paid_users"],
+        )
+        self.assertEqual(
+            state["request"]["analysis_repair_reasons"],
+            ("query_shape_mismatch",),
+        )
+        self.assertEqual(
+            state["analysis_route"]["requested_nodes"],
+            ("market_health_compare",),
+        )
+
+    def test_typed_runtime_records_real_clickhouse_validator_without_phase4_placeholder(self):
+        from types import SimpleNamespace
+
+        runtime_result = SimpleNamespace(
+            query_results=(
+                SimpleNamespace(
+                    execution_status="succeeded",
+                    result_ref="result:typed",
+                ),
+            ),
+            query_contracts=(),
+            bound_capability_inputs={},
+            repair_decisions=(),
+            to_workflow_payload=lambda: {
+                "runtime_rows_by_intent": {
+                    "daily_metric_baselines": [{"window_role": "target"}]
+                },
+                "result_refs_by_intent": {
+                    "daily_metric_baselines": ["result:typed"]
+                },
+            },
+        )
+        runtime = SimpleNamespace(execute=lambda _request: runtime_result)
+        state = {
+            "request": {
+                "analysis_runtime": runtime,
+                "run_mode": "production",
+                "role": "analyst",
+            },
+            "run_id": "typed-validator",
+            "checkpoint_events": [],
+            "intent": {"pattern_family": "custom_baseline"},
+        }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._analysis_runtime_request",
+            return_value=object(),
+        ):
+            _validate_runtime_binding(state)
+            _fetch_runtime_rows(state)
+
+        validators = state["validator_results"]
+        self.assertFalse(
+            any(item.get("reason") == "phase4_draft_binding" for item in validators)
+        )
+        self.assertIn(
+            {
+                "validator": "clickhouse_runtime",
+                "ok": True,
+                "reason": "provider_rows_loaded",
+                "result_refs": ["result:typed"],
+            },
+            validators,
+        )
+
+    def test_ready_authority_bound_directional_evidence_is_established(self):
+        self.assertTrue(
+            _evidence_established(
+                {
+                    "evidence_type": "statistical_association",
+                    "strength": "directional",
+                    "wording_limit": "quantified",
+                    "input_status": "ready",
+                    "binding_manifest_ref": "capability-binding:market:1",
+                    "claim_type": "comparative_change",
+                    "supported_claim_types": ("comparative_change",),
+                    "supported_evidence_types": ("statistical_association",),
+                    "maximum_claim_strength": "directional",
+                    "limitations": (),
+                }
+            )
+        )
+
+    def test_unbound_or_over_ceiling_directional_evidence_is_not_established(self):
+        base = {
+            "evidence_type": "statistical_association",
+            "strength": "directional",
+            "wording_limit": "quantified",
+            "input_status": "ready",
+            "binding_manifest_ref": "capability-binding:market:1",
+            "claim_type": "comparative_change",
+            "supported_claim_types": ("comparative_change",),
+            "supported_evidence_types": ("statistical_association",),
+            "maximum_claim_strength": "directional",
+            "limitations": (),
+        }
+        variants = (
+            {**base, "binding_manifest_ref": ""},
+            {**base, "input_status": "degraded"},
+            {**base, "limitations": ("partial",)},
+            {**base, "supported_claim_types": ("source_reconciliation",)},
+            {**base, "maximum_claim_strength": "trust_boundary"},
+        )
+
+        for evidence in variants:
+            with self.subTest(evidence=evidence):
+                self.assertFalse(_evidence_established(evidence))
 
     def test_execute_capabilities_pairs_runtime_previous_day_baseline_for_attribution(self):
         compiled = compile_graph(
@@ -3568,7 +6204,7 @@ class LLMWorkflowTest(unittest.TestCase):
 
     def test_reduce_evidence_uses_public_compare_as_primary_evidence(self):
         state = {
-            "request": {},
+            "request": {"run_mode": "fixture"},
             "checkpoint_events": [],
             "intent": {
                 "question_family": "custom_baseline_comparison",
@@ -3699,7 +6335,7 @@ class LLMWorkflowTest(unittest.TestCase):
 
     def test_joint_attribution_promotion_node_uses_rows_and_joint_dimensions(self):
         state = {
-            "request": {},
+            "request": {"run_mode": "fixture"},
             "sql_hash": "sql:test",
             "checkpoint_events": [{}],
             "intent": {
@@ -4372,7 +7008,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("rolling_window_compare", result.answer_package["accepted_graph"])
         self.assertNotIn("metric_timeseries", result.answer_package["accepted_graph"])
 
-    def test_boundary_question_without_user_choice_blocks_without_conclusion(self):
+    def test_boundary_question_without_user_choice_waits_without_conclusion(self):
         fake = FakeLLMClient(
             {
                 "boundary_decision": {
@@ -4385,7 +7021,19 @@ class LLMWorkflowTest(unittest.TestCase):
                         }
                     ],
                     "decision_summary": "Scope could change the answer.",
-                }
+                },
+                "clarification_question": {
+                    "questions": [{
+                        "question": "Which business scope should be used?",
+                        "options": [
+                            "Use the full sample.",
+                            "Use a custom business scope.",
+                            "tell the agent to do differently",
+                        ],
+                    }],
+                    "recommended_assumption": {"option": "Use the full sample."},
+                    "status_message": "Waiting for a business scope choice.",
+                },
             }
         )
 
@@ -4394,12 +7042,14 @@ class LLMWorkflowTest(unittest.TestCase):
                 {"artifact_root": tmpdir, "run_id": "needs-question", "llm_client": fake}
             )
 
-        self.assertEqual(result.status, "draft")
+        self.assertEqual(result.status, "waiting_for_clarification")
         self.assertIn("clarification_question", fake.calls)
-        self.assertIn("blocked_explanation", fake.calls)
-        summary = result.answer_package["sections"][0]["payload"]
-        self.assertFalse(summary["claims"])
-        self.assertEqual(summary["final_explanation"]["status"], "blocked")
+        self.assertNotIn("blocked_explanation", fake.calls)
+        self.assertEqual(result.answer_package["accepted_graph"], [])
+        self.assertEqual(
+            result.answer_package["clarification"]["recommended_assumption"],
+            {"option": "Use the full sample."},
+        )
 
     def test_degrade_suggestion_does_not_drop_established_pattern_answer(self):
         fake = FakeLLMClient({"next_action": {"next_action": "degrade"}})

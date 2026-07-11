@@ -12,6 +12,7 @@ from bi_agent.runtime.evidence_authority import (
 _UNTRUSTED_PROVENANCE_FIELDS = frozenset(
     {
         "claim_ref",
+        "claim_id",
         "claim_digest",
         "context_manifest_ref",
         "result_refs",

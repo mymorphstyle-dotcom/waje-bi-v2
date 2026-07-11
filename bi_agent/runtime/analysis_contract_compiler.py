@@ -514,6 +514,7 @@ def _resolve_snapshots(
                             "use_historical_snapshot_loaded_by_as_of",
                             "wait_for_snapshot_availability",
                         ),
+                        requires_clarification=True,
                         diagnostic_context={
                             "as_of": as_of.astimezone(timezone.utc).isoformat(),
                             "earliest_snapshot_ref": earliest.snapshot_ref,

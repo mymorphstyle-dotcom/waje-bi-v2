@@ -23,6 +23,621 @@ from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
 
 
 class AgentCoreBridgeTest(unittest.TestCase):
+    def test_agent_core_passes_and_persists_fixed_analysis_clock(self):
+        captured = {}
+
+        def workflow(request):
+            captured.update(request)
+            return fake_workflow(request)
+
+        store = InMemoryConversationStore()
+        core = ConversationAgentCore(store, workflow_runner=workflow)
+
+        core.run_message(
+            thread_id="thread-fixed-clock",
+            run_id="run-fixed-clock",
+            user_message="昨天付费金额为什么变化？",
+            analysis_context={"as_of": "2026-06-03T12:00:00+01:00"},
+        )
+
+        self.assertEqual(
+            captured["analysis_context"]["as_of"],
+            "2026-06-03T12:00:00+01:00",
+        )
+        self.assertEqual(
+            store.runs["run-fixed-clock"]["request"]["analysis_context"]["as_of"],
+            "2026-06-03T12:00:00+01:00",
+        )
+
+    def test_agent_core_marks_analysis_runtime_requests_as_production(self):
+        captured = {}
+
+        def workflow(request):
+            captured.update(request)
+            return fake_workflow(request)
+
+        core = ConversationAgentCore(
+            InMemoryConversationStore(),
+            workflow_runner=workflow,
+            analysis_runtime=object(),
+        )
+        core.run_message(
+            thread_id="thread-production-runtime-mode",
+            run_id="run-production-runtime-mode",
+            user_message="昨天活跃用户如何变化？",
+        )
+
+        self.assertEqual(captured["run_mode"], "production")
+
+    def test_agent_core_rejects_untrusted_or_invalid_analysis_clock_override(self):
+        core = ConversationAgentCore(InMemoryConversationStore(), workflow_runner=fake_workflow)
+
+        for context in (
+            {"as_of": "tomorrow"},
+            {"as_of": "2026-06-03T12:00:00+01:00", "source": "gateway"},
+        ):
+            with self.subTest(context=context), self.assertRaisesRegex(
+                (PermissionError, ValueError),
+                "analysis_context",
+            ):
+                core.run_message(
+                    thread_id="thread-untrusted-clock",
+                    user_message="昨天付费金额为什么变化？",
+                    analysis_context=context,
+                )
+
+    def test_runtime_persistence_failure_blocks_answer_publication(self):
+        class FailingStore(InMemoryConversationStore):
+            def save_analysis_runtime_records(self, **kwargs):
+                raise RuntimeError("postgres unavailable")
+
+        def workflow(request):
+            result = fake_workflow(request)
+            return WorkflowRunResult(
+                status=result.status,
+                run_id=result.run_id,
+                answer_package=result.answer_package,
+                artifact_path=result.artifact_path,
+                checkpoint_events=result.checkpoint_events,
+                analysis_runtime_records={"analysis_contract": {}},
+            )
+
+        store = FailingStore()
+        result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
+            thread_id="thread-persistence-failure",
+            run_id="run-persistence-failure",
+            user_message="昨天付费金额为什么变化？",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_reason"], "analysis_runtime_persistence_failed")
+        self.assertNotIn("run-persistence-failure", store.answer_packages)
+        failure_audit = next(
+            item
+            for item in reversed(store.audit_events)
+            if item["event_type"] == "analysis_runtime_persistence_failed"
+        )
+        self.assertEqual(failure_audit["payload"]["reason"], "postgres unavailable")
+
+    def test_verified_delivery_without_runtime_bundle_blocks_publication(self):
+        package, context, _ = _verified_delivery_package(
+            run_id="run-missing-runtime-bundle",
+        )
+
+        result, store = _run_verified_package_through_core(
+            package,
+            context,
+            thread_id="thread-missing-runtime-bundle",
+            run_id="run-missing-runtime-bundle",
+            with_runtime_records=False,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["failure_reason"],
+            "analysis_runtime_persistence_failed",
+        )
+        self.assertNotIn("run-missing-runtime-bundle", store.answer_packages)
+        self.assertNotIn(
+            "run-missing-runtime-bundle",
+            store.analysis_runtime_records,
+        )
+        self.assertFalse(store.analysis_assets)
+        failure = next(
+            event
+            for event in store.audit_events
+            if event["event_type"] == "analysis_runtime_persistence_failed"
+        )
+        self.assertEqual(
+            failure["payload"]["reason"],
+            "analysis_runtime_records_missing",
+        )
+
+    def test_persisted_claim_context_manifest_is_delivery_manifest(self):
+        from tests.phase7.test_analysis_runtime_persistence import _authority_bundle
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-canonical-delivery-context",
+        )
+        captured = {}
+
+        def workflow(request):
+            records = _authority_bundle(
+                run_id=request["run_id"],
+                thread_id=request["thread_id"],
+                topic_id=request["topic_id"],
+            )
+            captured["records"] = records
+            captured["request_manifest"] = request["context_manifest"]
+            return WorkflowRunResult(
+                status="draft",
+                run_id=request["run_id"],
+                answer_package=package,
+                checkpoint_events=(),
+                analysis_runtime_records=records,
+            )
+
+        store = InMemoryConversationStore()
+        core = ConversationAgentCore(
+            store,
+            workflow_runner=workflow,
+            evidence_resolver=context["evidence_resolver"],
+            rows_loader=context["rows_loader"],
+            evidence_writer=context["evidence_resolver"]._runtime_writer(),
+            runtime_registry=context["runtime_registry"],
+        )
+        result = core.run_message(
+            thread_id="thread-canonical-delivery-context",
+            run_id="run-canonical-delivery-context",
+            user_message="Q2 比 Q1 付费金额为什么变了？",
+        )
+
+        canonical = captured["records"]["context_manifests"][0]
+        persisted_claim = captured["records"]["verified_claims"][0]
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(
+            captured["request_manifest"]["manifest_id"].startswith("context-")
+        )
+        self.assertNotEqual(
+            captured["request_manifest"]["manifest_id"],
+            canonical["manifest_id"],
+        )
+        self.assertEqual(result["context_manifest"], canonical)
+        self.assertEqual(
+            result["answer_package"]["verified_claims"][0][
+                "context_manifest_ref"
+            ],
+            canonical["manifest_id"],
+        )
+        self.assertEqual(
+            persisted_claim["context_manifest_ref"],
+            canonical["manifest_id"],
+        )
+        self.assertEqual(
+            store.context_manifests[canonical["manifest_id"]],
+            canonical,
+        )
+        stored_claim = store.analysis_runtime_authority["verified_claim"][
+            persisted_claim["claim_ref"]
+        ]
+        self.assertEqual(
+            stored_claim["context_manifest_ref"],
+            canonical["manifest_id"],
+        )
+        self.assertEqual(
+            store.answer_packages["run-canonical-delivery-context"][
+                "verified_claims"
+            ][0]["context_manifest_ref"],
+            canonical["manifest_id"],
+        )
+
+    def test_query_gap_answer_resumes_same_topic_and_original_analysis_lineage(self):
+        captured = []
+
+        def workflow(request):
+            captured.append(dict(request))
+            if len(captured) == 1:
+                return WorkflowRunResult(
+                    status="waiting_for_clarification",
+                    run_id=request["run_id"],
+                    answer_package={
+                        "status": "waiting_for_clarification",
+                        "accepted_graph": ["compare_periods"],
+                        "analysis_contract": {
+                            "analysis_contract_id": "analysis:query-gap:1",
+                            "as_of": "2026-06-03T12:00:00+01:00",
+                        },
+                        "analysis_route": {
+                            "requested_nodes": ["compare_periods"],
+                            "analysis_requirements": {
+                                "target_metrics": ["paid_amount"],
+                                "baselines": ["previous_day"],
+                            },
+                        },
+                        "clarification": {
+                            "questions": [
+                                {
+                                    "question": "目标日缺数据时怎么继续？",
+                                    "options": [
+                                        "等待目标日刷新后继续。",
+                                        "改用最近完整业务日并重新编译。",
+                                        "tell the agent to do differently",
+                                    ],
+                                }
+                            ],
+                            "recommended_assumption": "改用最近完整业务日并重新编译。",
+                            "choice_actions": [
+                                {
+                                    "choice_id": "wait",
+                                    "action_kind": "wait_for_source",
+                                    "business_label": "等待目标日刷新后继续。",
+                                    "affected_capabilities": ["compare_periods"],
+                                },
+                                {
+                                    "choice_id": "use_complete_day",
+                                    "action_kind": "omit_unavailable_context",
+                                    "business_label": "改用最近完整业务日并重新编译。",
+                                    "affected_capabilities": ["event_evidence"],
+                                },
+                            ],
+                        },
+                    },
+                    analysis_runtime_records={},
+                )
+            return fake_workflow(request)
+
+        store = InMemoryConversationStore()
+        store.save_analysis_runtime_records = lambda **_: "inserted"
+        core = ConversationAgentCore(store, workflow_runner=workflow)
+        first = core.run_message(
+            thread_id="thread-query-gap-resume",
+            run_id="run-query-gap-original",
+            user_message="昨天付费金额为什么变化？",
+            analysis_context={"as_of": "2026-06-03T12:00:00+01:00"},
+        )
+        resumed = core.run_message(
+            thread_id="thread-query-gap-resume",
+            run_id="run-query-gap-resumed",
+            user_message="按推荐继续",
+            clarification={"target_window": "2026-06-01"},
+        )
+
+        self.assertEqual(first["status"], "waiting_for_clarification")
+        self.assertEqual(resumed["topic_id"], first["topic_id"])
+        self.assertEqual(
+            captured[1]["clarification_resume_context"]["resume_run_id"],
+            "run-query-gap-original",
+        )
+        self.assertEqual(
+            captured[1]["clarification_resume_context"]["accepted_graph"],
+            ("compare_periods",),
+        )
+        self.assertEqual(
+            captured[1]["clarification_choice"]["target_window"],
+            "2026-06-01",
+        )
+        self.assertEqual(captured[1]["question"], "昨天付费金额为什么变化？")
+        self.assertEqual(
+            captured[1]["clarification_user_message"],
+            "按推荐继续",
+        )
+        self.assertEqual(
+            captured[1]["clarification_resume_context"]["analysis_route"]
+            ["analysis_requirements"]["target_metrics"],
+            ["paid_amount"],
+        )
+        self.assertEqual(
+            captured[1]["clarification_resume_context"]["selected_query_gap_action"]
+            ["action_kind"],
+            "omit_unavailable_context",
+        )
+
+    def test_recommended_wait_action_stays_waiting_without_running_workflow_again(self):
+        calls = []
+
+        def workflow(request):
+            calls.append(dict(request))
+            if len(calls) > 1:
+                raise AssertionError("wait action must not rerun analysis")
+            return WorkflowRunResult(
+                status="waiting_for_clarification",
+                run_id=request["run_id"],
+                answer_package={
+                    "status": "waiting_for_clarification",
+                    "accepted_graph": ["event_evidence"],
+                    "analysis_contract": {"analysis_contract_id": "analysis:wait:1"},
+                    "analysis_route": {"requested_nodes": ["event_evidence"]},
+                    "clarification": {
+                        "questions": [{
+                            "question": "当前来源不可用，怎么继续？",
+                            "options": [
+                                "等待业务数据就绪",
+                                "跳过背景证据继续",
+                                "tell the agent to do differently",
+                            ],
+                        }],
+                        "recommended_assumption": {"option": "等待业务数据就绪"},
+                        "choice_actions": [
+                            {
+                                "choice_id": "wait-source",
+                                "action_kind": "wait_for_source",
+                                "business_label": "等待业务数据就绪",
+                                "affected_capabilities": ["event_evidence"],
+                            },
+                            {
+                                "choice_id": "omit-context",
+                                "action_kind": "omit_unavailable_context",
+                                "business_label": "跳过背景证据继续",
+                                "affected_capabilities": ["event_evidence"],
+                            },
+                        ],
+                    },
+                },
+                analysis_runtime_records={},
+            )
+
+        store = InMemoryConversationStore()
+        store.save_analysis_runtime_records = lambda **_: "inserted"
+        core = ConversationAgentCore(store, workflow_runner=workflow)
+        first = core.run_message(
+            thread_id="thread-wait-action",
+            run_id="run-wait-action-original",
+            user_message="活动是否影响昨天？",
+        )
+        resumed = core.run_message(
+            thread_id="thread-wait-action",
+            run_id="run-wait-action-resumed",
+            user_message="按推荐继续",
+            clarification={"answer_text": "按推荐继续"},
+        )
+
+        self.assertEqual(first["status"], "waiting_for_clarification")
+        self.assertEqual(resumed["status"], "waiting_for_clarification")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            store.runs["run-wait-action-resumed"]["status"],
+            "waiting_for_clarification",
+        )
+        self.assertNotIn("run-wait-action-resumed", store.answer_packages)
+
+    def test_query_gap_waiting_persists_zero_claim_runtime_bundle_before_return(self):
+        class CapturingStore(InMemoryConversationStore):
+            def save_analysis_runtime_records(self, **kwargs):
+                self.saved_runtime_bundle = kwargs
+                return "inserted"
+
+        records = {
+            "analysis_contract": {"analysis_contract_id": "analysis:waiting:1"},
+            "query_contracts": (),
+            "query_execution_records": (),
+            "rows_records": (),
+            "snapshot_records": (),
+            "completeness_records": (),
+            "capability_binding_records": (),
+            "evidence_manifests": (),
+            "context_manifests": (),
+            "trusted_provenance_records": (),
+            "verified_claims": (),
+            "claim_links": (),
+            "repair_attempts": (),
+        }
+
+        def workflow(request):
+            return WorkflowRunResult(
+                status="waiting_for_clarification",
+                run_id=request["run_id"],
+                answer_package={
+                    "status": "waiting_for_clarification",
+                    "accepted_graph": ["event_evidence"],
+                    "analysis_contract": records["analysis_contract"],
+                    "analysis_route": {"requested_nodes": ["event_evidence"]},
+                    "clarification": {
+                        "questions": [{
+                            "question": "当前来源不可用，怎么继续？",
+                            "options": [
+                                "等待业务数据就绪",
+                                "tell the agent to do differently",
+                            ],
+                        }],
+                        "recommended_assumption": {"option": "等待业务数据就绪"},
+                    },
+                },
+                analysis_runtime_records=records,
+            )
+
+        store = CapturingStore()
+        result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
+            thread_id="thread-waiting-runtime-persistence",
+            run_id="run-waiting-runtime-persistence",
+            user_message="活动是否影响昨天？",
+        )
+
+        self.assertEqual(result["status"], "waiting_for_clarification")
+        self.assertEqual(
+            store.saved_runtime_bundle["analysis_contract"]["analysis_contract_id"],
+            "analysis:waiting:1",
+        )
+        self.assertEqual(store.saved_runtime_bundle["run_id"], result["run_id"])
+
+    def test_typed_query_gap_without_runtime_bundle_fails_closed(self):
+        def workflow(request):
+            return WorkflowRunResult(
+                status="waiting_for_clarification",
+                run_id=request["run_id"],
+                answer_package={
+                    "status": "waiting_for_clarification",
+                    "accepted_graph": ["event_evidence"],
+                    "analysis_contract": {
+                        "analysis_contract_id": "analysis:missing:1"
+                    },
+                    "analysis_route": {"requested_nodes": ["event_evidence"]},
+                    "clarification": {
+                        "questions": [{
+                            "question": "当前来源不可用，怎么继续？",
+                            "options": [
+                                "等待业务数据就绪",
+                                "tell the agent to do differently",
+                            ],
+                        }],
+                        "recommended_assumption": {"option": "等待业务数据就绪"},
+                    },
+                },
+                analysis_runtime_records=None,
+            )
+
+        store = InMemoryConversationStore()
+        result = ConversationAgentCore(
+            store,
+            workflow_runner=workflow,
+            analysis_runtime=object(),
+        ).run_message(
+            thread_id="thread-missing-waiting-runtime-bundle",
+            run_id="run-missing-waiting-runtime-bundle",
+            user_message="活动是否影响昨天？",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["failure_reason"],
+            "analysis_runtime_persistence_failed",
+        )
+        self.assertNotIn(result["run_id"], store.analysis_runtime_records)
+        self.assertEqual(
+            store.get_thread(
+                "thread-missing-waiting-runtime-bundle"
+            ).pending_clarification_id,
+            "",
+        )
+
+    def test_query_gap_user_redirect_opens_free_input_without_rerunning_workflow(self):
+        calls = []
+
+        def workflow(request):
+            calls.append(dict(request))
+            if len(calls) > 1:
+                raise AssertionError("user redirect must not rerun analysis")
+            return WorkflowRunResult(
+                status="waiting_for_clarification",
+                run_id=request["run_id"],
+                answer_package={
+                    "status": "waiting_for_clarification",
+                    "accepted_graph": ["event_evidence"],
+                    "analysis_route": {"requested_nodes": ["event_evidence"]},
+                    "clarification": {
+                        "questions": [{
+                            "question": "当前来源不可用，怎么继续？",
+                            "options": [
+                                "等待业务数据就绪",
+                                "tell the agent to do differently",
+                            ],
+                        }],
+                        "recommended_assumption": {"option": "等待业务数据就绪"},
+                        "choice_actions": [
+                            {
+                                "choice_id": "wait-source",
+                                "action_kind": "wait_for_source",
+                                "business_label": "等待业务数据就绪",
+                                "affected_capabilities": ["event_evidence"],
+                            },
+                            {
+                                "choice_id": "user_redirect",
+                                "action_kind": "user_redirect",
+                                "business_label": "tell the agent to do differently",
+                                "affected_capabilities": [],
+                            },
+                        ],
+                    },
+                },
+            )
+
+        store = InMemoryConversationStore()
+        core = ConversationAgentCore(store, workflow_runner=workflow)
+        core.run_message(
+            thread_id="thread-user-redirect",
+            run_id="run-user-redirect-original",
+            user_message="活动是否影响昨天？",
+        )
+        redirected = core.run_message(
+            thread_id="thread-user-redirect",
+            run_id="run-user-redirect-selected",
+            user_message="tell the agent to do differently",
+            clarification={"answer_text": "tell the agent to do differently"},
+        )
+
+        self.assertEqual(redirected["status"], "waiting_for_clarification")
+        self.assertTrue(redirected["user_redirect"])
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(store.get_open_clarification("thread-user-redirect"))
+
+    def test_general_clarification_resumes_original_intent_without_query_gap_action(self):
+        captured = []
+
+        def workflow(request):
+            captured.append(dict(request))
+            if len(captured) == 1:
+                return WorkflowRunResult(
+                    status="waiting_for_clarification",
+                    run_id=request["run_id"],
+                    answer_package={
+                        "status": "waiting_for_clarification",
+                        "accepted_graph": [],
+                        "analysis_contract": {},
+                        "analysis_route": {
+                            "requested_nodes": [],
+                            "analysis_requirements": {
+                                "target_metrics": ["active_users"],
+                                "baselines": ["previous_day"],
+                            },
+                        },
+                        "original_intent": {
+                            "target_metric": "active_users",
+                            "question_family": "market_health_comparison",
+                        },
+                        "material_slots": {
+                            "target_metrics": ["active_users"],
+                            "baselines": ["previous_day"],
+                        },
+                        "clarification": {
+                            "questions": [{
+                                "question": "按哪个范围继续？",
+                                "options": [
+                                    "保留全样本范围继续。",
+                                    "调整业务范围后继续。",
+                                    "tell the agent to do differently",
+                                ],
+                            }],
+                            "recommended_assumption": {
+                                "option": "保留全样本范围继续。"
+                            },
+                        },
+                    },
+                )
+            return fake_workflow(request)
+
+        store = InMemoryConversationStore()
+        core = ConversationAgentCore(store, workflow_runner=workflow)
+        first = core.run_message(
+            thread_id="thread-general-clarification",
+            run_id="run-general-original",
+            user_message="比较昨天活跃用户并说明范围。",
+            analysis_context={"as_of": "2026-06-03T12:00:00+01:00"},
+        )
+        resumed = core.run_message(
+            thread_id="thread-general-clarification",
+            run_id="run-general-resumed",
+            user_message="保留全样本范围继续。",
+            clarification={"answer_text": "保留全样本范围继续。"},
+        )
+
+        self.assertEqual(first["status"], "waiting_for_clarification")
+        self.assertEqual(resumed["topic_id"], first["topic_id"])
+        resume = captured[1]["clarification_resume_context"]
+        self.assertEqual(resume["resume_run_id"], "run-general-original")
+        self.assertEqual(resume["original_intent"]["target_metric"], "active_users")
+        self.assertEqual(resume["material_slots"]["baselines"], ["previous_day"])
+        self.assertEqual(resume["selected_query_gap_action"], {})
+        self.assertEqual(captured[1]["question"], "比较昨天活跃用户并说明范围。")
+
     def test_resigned_claim_and_evidence_numbers_cannot_extend_persisted_facts(self):
         package, context, _ = _verified_delivery_package(
             run_id="run-agent-core-resigned-facts",
@@ -855,28 +1470,11 @@ class AgentCoreBridgeTest(unittest.TestCase):
         package["llm_calls"] = [{"output": "INJECTED LLM"}]
         package["admin_audit"]["client_note"] = "INJECTED ADMIN"
 
-        def workflow(request):
-            return WorkflowRunResult(
-                status="draft",
-                run_id=request["run_id"],
-                answer_package=package,
-                checkpoint_events=(),
-            )
-
-        store = InMemoryConversationStore()
-        store.create_thread("thread-agent-core-closed-projection", owner_id="analyst-1")
-        core = ConversationAgentCore(
-            store,
-            workflow_runner=workflow,
-            evidence_resolver=context["evidence_resolver"],
-            rows_loader=context["rows_loader"],
-            evidence_writer=context["evidence_resolver"]._runtime_writer(),
-            runtime_registry=context["runtime_registry"],
-        )
-        result = core.run_message(
+        result, _ = _run_verified_package_through_core(
+            package,
+            context,
             thread_id="thread-agent-core-closed-projection",
             run_id="run-agent-core-closed-projection",
-            user_message="Q2 比 Q1 付费金额为什么变了？",
         )
 
         delivered = result["answer_package"]
@@ -954,6 +1552,10 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )
 
         package = result["answer_package"]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_reason"], "delivery_verifier_failed")
+        self.assertNotIn("run-agent-core-forged-pass", store.answer_packages)
+        self.assertNotIn("run-agent-core-forged-pass", store.analysis_runtime_records)
         self.assertEqual(package["status"], "failed")
         self.assertEqual(package["final_answer"], "")
         self.assertEqual(package["llm_calls"], [])
@@ -993,12 +1595,13 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )
 
         returned = result["answer_package"]
-        persisted = store.answer_packages["run-agent-core-scrub"]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_reason"], "delivery_verifier_failed")
         self.assertEqual(returned["status"], "failed")
         self.assertEqual(returned["final_answer"], "")
         self.assertEqual(returned["sections"][0]["payload"]["answer_text"], "")
         self.assertNotIn("42", str(result["quality_review"]))
-        self.assertEqual(returned, persisted)
+        self.assertNotIn("run-agent-core-scrub", store.answer_packages)
 
     def test_agent_core_runs_workflow_and_persists_answer_package(self):
         store = InMemoryConversationStore()
@@ -1019,7 +1622,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertTrue(store.answer_packages)
         package = store.answer_packages["run-agent-core"]
         self.assertEqual(package["run_id"], "run-agent-core")
-        self.assertEqual(package["status"], "failed")
+        self.assertEqual(package["status"], "draft")
         self.assertEqual(package["sections"][0]["payload"]["answer_text"], "")
         topic = store.current_topic("thread-agent-core")
         self.assertIsNotNone(store.latest_artifact_for_topic(topic.topic_id))
@@ -1202,12 +1805,18 @@ class AgentCoreBridgeTest(unittest.TestCase):
         second_turn = result["turns"][1]
         third_turn = result["turns"][2]
         self.assertEqual(clarification_turn["status"], "waiting_for_clarification")
-        self.assertEqual(clarification_turn["resumed_status"], "completed")
+        self.assertEqual(clarification_turn["resumed_status"], "failed")
         self.assertEqual(clarification_turn["topic_id"], clarification_turn["resumed_topic_id"])
         self.assertEqual(result["turns"][0]["topic_id"], result["turns"][1]["topic_id"])
         self.assertEqual(result["turns"][1]["topic_id"], result["turns"][2]["topic_id"])
-        self.assertEqual(second_turn["expectation_review"]["missing_required_capabilities"], [])
-        self.assertEqual(third_turn["expectation_review"]["missing_required_capabilities"], [])
+        self.assertEqual(
+            set(second_turn["expectation_review"]["missing_required_capabilities"]),
+            {"segment_contribution", "joint_attribution"},
+        )
+        self.assertEqual(
+            set(third_turn["expectation_review"]["missing_required_capabilities"]),
+            {"joint_attribution", "answer_verify"},
+        )
         for turn in result["turns"]:
             with self.subTest(turn=turn["index"]):
                 self.assertTrue(turn["expectation_review"]["intent_passed"])
@@ -1224,7 +1833,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     turn["expectation_review"]["missing_final_answer_text"],
                     turn["expectation_review"]["final_answer_contains"],
                 )
-        self.assertIn("outlier_contribution", clarification_turn["resumed_accepted_graph"])
+        self.assertIsNone(clarification_turn["resumed_accepted_graph"])
 
     def test_agent_core_passes_clarification_answer_as_workflow_choice(self):
         captured: dict[str, object] = {}
@@ -1413,8 +2022,8 @@ class AgentCoreBridgeTest(unittest.TestCase):
             "object",
         )
 
-    def test_agent_core_from_environment_real_clickhouse_configures_row_provider(self):
-        from bi_agent.runtime.clickhouse_revenue_rows import ClickHouseRevenueRows
+    def test_agent_core_from_environment_real_clickhouse_configures_analysis_runtime(self):
+        from bi_agent.runtime.analysis_runtime import AnalysisRuntime
 
         with patch(
             "bi_agent.conversation.agent_core.PostgresConversationStore.from_env",
@@ -1422,12 +2031,10 @@ class AgentCoreBridgeTest(unittest.TestCase):
         ):
             core = ConversationAgentCore.from_environment(real_clickhouse=True)
 
-        self.assertIsInstance(core.row_provider, ClickHouseRevenueRows)
+        self.assertIsInstance(core.analysis_runtime, AnalysisRuntime)
+        self.assertIs(core.evidence_resolver, core.analysis_runtime.evidence_resolver)
 
     def test_real_clickhouse_core_refreshes_trusted_release_snapshots_per_plan(self):
-        from bi_agent.runtime.analysis_contracts import query_contract_signature
-        from bi_agent.runtime.clickhouse_revenue_rows import ClickHouseRevenueRows
-        from tests.phase4.test_clickhouse_query_compiler import contract
         from tests.phase7.test_conversation_persistence import (
             _release_ref,
             _release_snapshot_payload,
@@ -1440,15 +2047,13 @@ class AgentCoreBridgeTest(unittest.TestCase):
         ):
             core = ConversationAgentCore.from_environment(real_clickhouse=True)
 
-        self.assertIsInstance(core.row_provider, ClickHouseRevenueRows)
-        self.assertIs(core.row_provider.release_resolver, store)
-        self.assertIs(core.row_provider.executor.release_resolver, store)
+        self.assertIs(core.analysis_runtime.release_resolver, store)
+        self.assertIs(core.analysis_runtime.executor.release_resolver, store)
         self.assertIs(
-            core.row_provider.executor.evidence_resolver,
+            core.analysis_runtime.executor.evidence_resolver,
             core.evidence_resolver,
         )
-        self.assertIs(core.row_provider.executor.rows_loader, core.rows_loader)
-        self.assertTrue(callable(core.row_provider.snapshot_loader))
+        self.assertIs(core.analysis_runtime.executor.rows_loader, core.rows_loader)
 
         seen_refs = []
         for revision in ("load:dynamic-v1", "load:dynamic-v2"):
@@ -1473,65 +2078,22 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 payloads=payloads,
             )
             snapshot_ref = payloads[0]["snapshot_ref"]
-            selected_contract = replace(
-                contract(),
-                dataset_snapshot_refs=(snapshot_ref,),
-                contract_signature="",
-            )
-            selected_contract = replace(
-                selected_contract,
-                contract_signature=query_contract_signature(selected_contract),
-            )
-            plan = core.row_provider.plan(
-                {
-                    "run_id": f"run-{revision}",
-                    "compiler_runtime_plan": {
-                        "query_contracts": (selected_contract.to_dict(),),
-                    },
-                    "dataset_snapshots": (
-                        {
-                            "snapshot_ref": snapshot_ref,
-                            "dataset_id": "market_dashboard",
-                        },
-                    ),
-                },
-                {"time_window": "yesterday"},
-                ("market_health_compare",),
-            )
-            self.assertNotIn("dataset_snapshot_provider_missing", plan.reason)
-            self.assertEqual(tuple(plan.snapshots), (snapshot_ref,))
+            catalog_refs = {
+                item.snapshot_ref
+                for item in core.analysis_runtime._active_catalog().snapshots()
+            }
+            self.assertIn(snapshot_ref, catalog_refs)
             seen_refs.append(snapshot_ref)
 
         self.assertNotEqual(*seen_refs)
         channel_ref = payloads[1]["snapshot_ref"]
-        context_contract = replace(
-            contract(),
-            query_intent="source_reconciliation_probe",
-            dataset_snapshot_refs=(channel_ref,),
-            contract_signature="",
-        )
-        context_contract = replace(
-            context_contract,
-            contract_signature=query_contract_signature(context_contract),
-        )
-        context_plan = core.row_provider.plan(
+        self.assertIn(
+            channel_ref,
             {
-                "run_id": "run-context-snapshot-refresh",
-                "compiler_runtime_plan": {
-                    "query_contracts": (context_contract.to_dict(),),
-                },
-                "dataset_snapshots": (
-                    {
-                        "snapshot_ref": channel_ref,
-                        "dataset_id": "market_dashboard_channel",
-                    },
-                ),
+                item.snapshot_ref
+                for item in core.analysis_runtime._active_catalog().snapshots()
             },
-            {"time_window": "yesterday"},
-            ("source_reconciliation",),
         )
-        self.assertNotIn("dataset_snapshot_provider_missing", context_plan.reason)
-        self.assertIn(channel_ref, context_plan.snapshots)
 
     def test_follow_up_hints_route_user_mix_and_high_value_capabilities(self):
         store = InMemoryConversationStore()
@@ -2545,13 +3107,32 @@ def _resign_reported_verifier(package, context):
             section["payload"]["verifier"] = verifier
 
 
-def _run_verified_package_through_core(package, context, *, thread_id, run_id):
+def _run_verified_package_through_core(
+    package,
+    context,
+    *,
+    thread_id,
+    run_id,
+    with_runtime_records=True,
+):
     def workflow(request):
+        records = None
+        if with_runtime_records:
+            from tests.phase7.test_analysis_runtime_persistence import (
+                _authority_bundle,
+            )
+
+            records = _authority_bundle(
+                run_id=request["run_id"],
+                thread_id=request["thread_id"],
+                topic_id=request["topic_id"],
+            )
         return WorkflowRunResult(
             status="draft",
             run_id=request["run_id"],
             answer_package=package,
             checkpoint_events=(),
+            analysis_runtime_records=records,
         )
 
     store = InMemoryConversationStore()
@@ -2594,32 +3175,27 @@ def fake_workflow(request):
                     "id": "summary",
                     "visibility": "business_summary",
                     "payload": {
-                        "answer_text": "这是持久化的业务回答。",
-                        "claims": [
-                            {
-                                "text": "这是持久化的业务回答。",
-                                "evidence_refs": ["evidence:fake-workflow"],
-                                "context_manifest_ref": str(manifest.get("manifest_id") or ""),
-                                "reuse_decisions": reuse_decisions,
-                            }
-                        ],
+                        "answer_text": "",
+                        "claims": [],
                     },
                 },
                 {
                     "id": "evidence",
                     "visibility": "aggregate_evidence",
                     "payload": {
-                        "evidence": [
-                            {
-                                "evidence_ref": "evidence:fake-workflow",
-                                "evidence_type": "statistical_association",
-                                "strength": "medium",
-                            }
-                        ]
+                        "evidence": []
                     },
                 }
             ],
-            "admin_audit": {"verifier": {"status": "passed"}},
+            "admin_audit": {
+                "verifier": {
+                    "status": "passed",
+                    "errors": [],
+                    "warnings": [],
+                    "accepted_claim_indexes": [],
+                    "rejected_claim_indexes": [],
+                }
+            },
         },
         artifact_path="artifacts/phase-7/run-agent-core/answer_package.json",
         checkpoint_events=({"node": "persist_artifact", "status": "completed"},),

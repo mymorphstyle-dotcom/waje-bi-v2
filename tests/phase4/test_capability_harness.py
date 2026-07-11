@@ -37,6 +37,112 @@ def run_capability(capability_id, params):
 
 
 class CapabilityHarnessTest(unittest.TestCase):
+    def test_market_window_compare_uses_only_bound_rows_and_emits_comparative_facts(self):
+        query_ref = "query:market:1"
+        rows = (
+            {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "active_users": 120},
+            {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "active_users": 100},
+        )
+        result = QueryResultEnvelope(
+            query_contract_ref=query_ref,
+            query_id="provider:market:1",
+            query_hash="hash:market:1",
+            result_ref="result:market:1",
+            execution_status="succeeded",
+            rows_ref="rows:market:1",
+            row_count=2,
+            completeness_report_ref="complete:market:1",
+            rows=rows,
+            observed_windows=("target_day", "previous_day"),
+            source_snapshot_refs=("snapshot:market:1",),
+        )
+        report = CompletenessReport(
+            report_ref="complete:market:1",
+            query_contract_ref=query_ref,
+            result_ref=result.result_ref,
+            completeness_status="complete",
+            analysis_readiness="ready",
+            assertion_results=({"assertion": "execution_succeeded", "passed": True},),
+            failure_reasons=(),
+            coverage_summary={
+                "row_count": 2,
+                "required_windows": ("target_day", "previous_day"),
+                "observed_windows": ("target_day", "previous_day"),
+                "snapshot_ref": "snapshot:market:1",
+            },
+        )
+        with patch.dict(
+            "os.environ",
+            {"WAJE_ALLOW_LEGACY_FIXTURES": "1", "WAJE_RUNTIME_ENV": "test"},
+        ):
+            bound = bind_capability_inputs(
+                CapabilityExecutionPlan(
+                capability_id="market_health_compare",
+                capability_contract_ref="capability:market-health@1",
+                required_input_slots=(
+                    CapabilityInputSlot(
+                        "daily_metric_baselines",
+                        (query_ref,),
+                        True,
+                        ("complete",),
+                        tuple(rows[0]),
+                        ("target_day", "previous_day"),
+                    ),
+                ),
+                optional_input_slots=(),
+                merge_strategy="by_query_family",
+                minimum_readiness={"required_slots": "all", "accepted_completeness": ("complete",)},
+                degradation_policy={"missing_required_input": "block_claim"},
+                supported_evidence_types=("statistical_association",),
+                maximum_claim_strength="directional",
+                analysis_contract_ref="analysis:market:1",
+                supported_claim_types=("comparative_change",),
+                capability_contract_version="1",
+                capability_contract_signature="sha256:market-health",
+                ),
+                results={query_ref: result},
+                reports={query_ref: report},
+                run_mode="fixture",
+            )
+        request = CapabilityRequest(
+            run_id="run-market",
+            accepted_graph_id="graph-market",
+            graph_version=1,
+            capability_id="market_health_compare",
+            question_family="custom_baseline_comparison",
+            target_claim="comparative_change",
+            claim_type="comparative_change",
+            metric="active_users",
+            scope="full_sample",
+            time_window="昨天与前天",
+            baseline={"label": "前天"},
+            target={"label": "昨天"},
+            grain="window",
+            filters={},
+            dimensions=(),
+            contract_versions={},
+            role="analyst",
+            budget_state=BudgetState("research", 0, 50, 100),
+            llm_business_reason="对比已绑定的两个窗口。",
+            params={"rows": ({"active_users": 999},)},
+            bound_input=bound,
+            run_mode="fixture",
+            fixture_input_mode="legacy_unbound_fixture",
+        )
+
+        self.assertEqual((bound.status, bound.reasons), ("ready", ()))
+        with patch.dict(
+            "os.environ",
+            {"WAJE_ALLOW_LEGACY_FIXTURES": "1", "WAJE_RUNTIME_ENV": "test"},
+        ):
+            envelope = execute_capability(request)
+
+        self.assertEqual(envelope.numeric_facts["target_value"], 120)
+        self.assertEqual(envelope.numeric_facts["baseline_value"], 100)
+        self.assertEqual(envelope.numeric_facts["absolute_change"], 20)
+        self.assertEqual(envelope.result_refs, (result.result_ref,))
+        self.assertNotIn("999", repr(envelope.typed_payload))
+
     def test_context_capabilities_use_bound_query_rows_and_ignore_request_injection(self):
         cases = (
             (
