@@ -10,6 +10,7 @@ from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.exploration_budget import default_budget
 from bi_agent.runtime.langgraph_workflow import (
     _answer_synthesis_context,
+    _analysis_runtime_request,
     _answer_quality_gate,
     _accept_analysis_route,
     _build_answer_package_from_state,
@@ -29,6 +30,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _ensure_business_narrative_answer,
     _fetch_runtime_rows,
     _final_business_summary_fallback,
+    _final_business_summary,
     _final_summary_needs_display_repair,
     _legacy_quality_with_final_answer_audit,
     _merge_confirmed_material_requirements,
@@ -45,6 +47,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _group_query_gap_actions,
     _preserved_authority_claims,
     _persist_clarification,
+    _persist_query_gap_clarification,
     _retrying_node,
     _align_route_output_to_requested,
     _normalize_route_requested_nodes,
@@ -141,6 +144,81 @@ def _llm_input_payload(answer_package, task):
 
 
 class LLMWorkflowTest(unittest.TestCase):
+    def test_persisted_query_gap_keeps_waiting_terminal_status(self):
+        compiled = compile_graph(
+            question_family="custom_baseline_comparison",
+            target_metric="paid_amount",
+            requested_nodes=("compare_periods",),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = {
+                "run_id": "query-gap-waiting-status",
+                "request": {"artifact_root": tmpdir},
+                "compiled_graph": compiled,
+                "analysis_route": {"requested_nodes": ["compare_periods"]},
+                "query_gap_clarification": {
+                    "questions": [{"question": "确认口径", "options": ["按推荐继续"]}]
+                },
+            }
+            result = _persist_query_gap_clarification(state)
+
+        self.assertEqual(result["workflow_status"], "waiting_for_clarification")
+        self.assertEqual(
+            result["answer_package"]["status"],
+            "waiting_for_clarification",
+        )
+
+    def test_analysis_runtime_request_binds_all_fixed_eval_windows(self):
+        request = _analysis_runtime_request({
+            "run_id": "fixed-window-request",
+            "request": {
+                "role": "analyst",
+                "run_mode": "production",
+                "analysis_context": {
+                    "as_of": "2026-06-03T12:00:00+01:00",
+                    "target_date": "2026-06-02",
+                    "previous_day": "2026-06-01",
+                    "rolling_7_day_start": "2026-05-26",
+                    "rolling_7_day_end": "2026-06-01",
+                    "same_weekday_last_week": "2026-05-26",
+                    "pattern_history_start": "2026-01-01",
+                    "anomaly_history_start": "2026-05-03",
+                },
+            },
+            "intent": {"question_family": "paid_amount_change_explanation"},
+            "analysis_route": {
+                "requested_nodes": ["pattern_scan", "outlier_scan"],
+                "analysis_requirements": {
+                    "target_metrics": ["paid_amount"],
+                    "baselines": [
+                        "前日付费金额",
+                        "rolling_7d_avg",
+                        "same_day_last_week",
+                    ],
+                },
+            },
+        })
+
+        self.assertEqual(
+            request.proposal["fixed_window_bounds"],
+            {
+                "target_day": ("2026-06-02", "2026-06-02"),
+                "previous_day": ("2026-06-01", "2026-06-01"),
+                "rolling_7_day_baseline": ("2026-05-26", "2026-06-01"),
+                "same_weekday_last_week": ("2026-05-26", "2026-05-26"),
+                "pattern_history": ("2026-01-01", "2026-06-02"),
+                "anomaly_history": ("2026-05-03", "2026-06-01"),
+            },
+        )
+        self.assertEqual(
+            request.proposal["baselines"],
+            (
+                "previous_day",
+                "rolling_7_day_baseline",
+                "same_weekday_last_week",
+            ),
+        )
+
     def test_live_publication_requires_analysis_runtime_binding(self):
         result = _run_pattern_workflow(
             {
@@ -874,6 +952,35 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertEqual(failed_state["workflow_status"], "failed")
+        self.assertEqual(
+            failed_state["workflow_failure_reason"],
+            "delivery_reverify_failed:free_text_without_verified_claim,reported_verifier_mismatch",
+        )
+
+    def test_explicit_failed_graph_output_keeps_reason_and_package(self):
+        class Graph:
+            def invoke(self, state, config):
+                return {
+                    **state,
+                    "workflow_status": "failed",
+                    "workflow_failure_reason": "delivery_reverify_failed:number_mismatch",
+                    "answer_package": {"status": "failed", "owner": "evidence_verifier_owner"},
+                }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow.build_pattern_graph",
+            return_value=Graph(),
+        ):
+            result = run_pattern_workflow(
+                {"run_id": "explicit-failure", "llm_client": FakeLLMClient()}
+            )
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(
+            result.failure_reason,
+            "delivery_reverify_failed:number_mismatch",
+        )
+        self.assertEqual(result.answer_package["owner"], "evidence_verifier_owner")
 
     def test_empty_graph_repairs_material_requirements_and_blocks_boundary_only(self):
         empty = compile_graph(
@@ -939,6 +1046,36 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(waiting, ("market_health_compare", "event_evidence"))
         self.assertEqual(unchanged, route)
+
+        pattern_route = {
+            "analysis_requirements": {
+                "baselines": ["周末 vs 工作日", "月初 vs 月中/月末", "晚间 vs 日间"],
+                "claim_intents": [
+                    "recurring_pattern_existence",
+                    "comparative_change",
+                ],
+            }
+        }
+        _, supported_window_route = _apply_query_gap_action_to_route(
+            ("compare_period_phases",),
+            pattern_route,
+            {"action_kind": "choose_supported_window"},
+            registry,
+        )
+        self.assertEqual(
+            supported_window_route["analysis_requirements"]["baselines"],
+            [],
+        )
+        _, supported_claim_route = _apply_query_gap_action_to_route(
+            ("compare_period_phases",),
+            supported_window_route,
+            {"action_kind": "choose_supported_claim_intent"},
+            registry,
+        )
+        self.assertEqual(
+            supported_claim_route["analysis_requirements"]["claim_intents"],
+            ["recurring_pattern_existence"],
+        )
 
     def test_query_gap_actions_group_atomic_affected_capabilities_and_stage_overflow(self):
         actions = (
@@ -1361,6 +1498,56 @@ class LLMWorkflowTest(unittest.TestCase):
             )
         )
 
+    def test_preexecution_query_contracts_include_snapshot_authority_records(self):
+        from bi_agent.runtime.dataset_catalog import DatasetCatalog
+        from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+        from tests.phase4.test_analysis_contract_compiler import snapshot
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        authority = RuntimeEvidenceAuthority(runtime_registry=registry)
+        runtime = AnalysisRuntime(
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            executor=object(),
+            release_resolver=None,
+            evidence_authority=authority,
+        )
+        request = AnalysisRuntimeRequest.create(
+            run_id="run-preexecution-snapshot-authority",
+            proposal={
+                "question_families": ["recurring_pattern_analysis"],
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["recurring_pattern_existence"],
+                "target_semantic": "yesterday",
+                "baselines": ["previous_day"],
+            },
+            accepted_graph=("pattern_scan", "segment_contribution"),
+            as_of="2026-06-03T12:00:00+01:00",
+            permission_scope="analyst",
+        )
+
+        result = runtime.execute(request)
+        expected_snapshot_refs = {
+            ref
+            for contract in result.query_contracts
+            for ref in contract.dataset_snapshot_refs
+        }
+
+        self.assertTrue(result.query_contracts)
+        self.assertEqual(result.query_results, ())
+        self.assertEqual(
+            {
+                record.snapshot_ref
+                for record in result.persistence_records["snapshot_records"]
+            },
+            expected_snapshot_refs,
+        )
+
     def test_analysis_runtime_passes_release_authority_to_query_validation(self):
         from bi_agent.conversation.store import InMemoryConversationStore
         from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult
@@ -1538,9 +1725,11 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         runtime = object.__new__(AnalysisRuntime)
-        runtime._catalog_provider = lambda: object()
+        runtime._catalog_provider = lambda: SimpleNamespace(snapshots=lambda: ())
         runtime._compile_with_catalog = lambda request, catalog: outcome
-        runtime._authority_records = lambda compiled, results, bound: {}
+        runtime._authority_records = (
+            lambda compiled, results, bound, **kwargs: {}
+        )
         result = runtime.execute(
             AnalysisRuntimeRequest.create(
                 run_id="run-no-query-before-clarify",
@@ -2603,6 +2792,58 @@ class LLMWorkflowTest(unittest.TestCase):
             result["request"]["node_retry_feedback"]["reason"],
         )
 
+    def test_general_clarification_contract_gets_three_reasoned_attempts(self):
+        from bi_agent.runtime.langgraph_workflow import _generate_clarification
+
+        state = {
+            "run_id": "run-general-three-attempts",
+            "request": {},
+            "intent": {"target_metric": "paid_amount"},
+            "boundary_decision": {
+                "boundary_status": "needs_question",
+                "clarification_questions": [],
+            },
+            "next_action": {"next_action": "ask_question"},
+            "checkpoint_events": [],
+        }
+        payloads = []
+
+        def clarify(_state, task, payload):
+            self.assertEqual(task, "clarification_question")
+            payloads.append(payload)
+            options = (
+                ["只有一个业务选项", "tell the agent to do differently"]
+                if len(payloads) < 3
+                else [
+                    "保留当前口径继续",
+                    "调整业务口径后继续",
+                    "tell the agent to do differently",
+                ]
+            )
+            return {
+                "questions": [{"question": "按哪个口径继续？", "options": options}],
+                "recommended_assumption": {"option": "保留当前口径继续"},
+            }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._invoke_llm",
+            side_effect=clarify,
+        ):
+            result = _retrying_node(
+                "generate_clarification",
+                _generate_clarification,
+            )(state)
+
+        self.assertEqual(len(payloads), 3)
+        self.assertIn(
+            "general_clarification_contract_invalid:options",
+            payloads[1]["retry_context"]["reason"],
+        )
+        self.assertEqual(
+            result["clarification_outcome"]["recommended_assumption"],
+            {"option": "保留当前口径继续"},
+        )
+
     def test_segment_causal_followup_defaults_to_observational_boundary(self):
         state = {
             "request": {"allow_question_interrupt": True},
@@ -2983,6 +3224,49 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("weak_direction", text)
         self.assertIn("fewer valid comparable periods than the run requires", text)
         self.assertIn("Do not suggest changing, adjusting, or relaxing thresholds", text)
+
+    def test_degraded_explanation_receives_fixed_analysis_contract_windows(self):
+        from bi_agent.runtime.langgraph_workflow import _generate_degraded_explanation
+
+        contract = {
+            "as_of": "2026-06-03T12:00:00+01:00",
+            "resolved_windows": [
+                {"window_id": "target_day", "label": "2026-06-02"},
+                {"window_id": "previous_day", "label": "2026-06-01"},
+            ],
+        }
+        state = {
+            "request": {"run_mode": "production", "analysis_contract": contract},
+            "run_id": "fixed-degraded-window",
+            "intent": {
+                "scope": "full_sample",
+                "time_window": "yesterday",
+                "target_metric": "paid_amount",
+            },
+            "evidence_brief": {},
+            "verifier": {},
+            "evidence": [],
+            "draft_claims": [],
+        }
+        captured = {}
+
+        def explain(_state, task, payload):
+            self.assertEqual(task, "degraded_explanation")
+            captured.update(payload)
+            return {
+                "status": "degraded",
+                "explanation": "固定目标日的数据源尚未绑定。",
+                "owner": "data_owner",
+                "repair_path": "注册数据集快照后重试。",
+            }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._invoke_llm",
+            side_effect=explain,
+        ):
+            _generate_degraded_explanation(state)
+
+        self.assertEqual(captured["analysis_contract"], contract)
 
     def test_final_summary_prompt_uses_business_wording_for_simple_comparison(self):
         messages = build_prompt("final_business_summary", {"intent": {}}).messages
@@ -4783,6 +5067,38 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
         self.assertEqual(result.answer_package["quality_gate"]["code"], "evidence_verifier_failed")
 
+    def test_empty_final_business_summary_is_retried_with_failure_reason(self):
+        state = {
+            "request": {"question": "昨天的收入证据充分吗？"},
+            "intent": {"pattern_family": ""},
+            "draft_claims": [],
+        }
+        payloads = []
+
+        def summarize(_state, task, payload):
+            self.assertEqual(task, "final_business_summary")
+            payloads.append(payload)
+            if len(payloads) == 1:
+                return {"summary_text": ""}
+            return {"summary_text": "当前数据证据不足，需要检查支付状态数据。"}
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._invoke_llm",
+            side_effect=summarize,
+        ):
+            _final_business_summary(state)
+
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(payloads[0]["final_answer_retry_instruction"], "")
+        self.assertIn(
+            "上一次输出为空",
+            payloads[1]["final_answer_retry_instruction"],
+        )
+        self.assertEqual(
+            state["final_business_summary"],
+            "当前数据证据不足，需要检查支付状态数据。",
+        )
+
     def test_final_answer_audit_warning_is_recorded_without_rewriting_summary(self):
         class RetryAuditLLM(FakeLLMClient):
             def __init__(self):
@@ -5332,6 +5648,31 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.failure_reason, "llm_response_timeout")
         self.assertIsNone(result.answer_package)
+
+    def test_message_less_provider_failure_retains_exception_type(self):
+        class EmptyFailureOnIntentLLM(FakeLLMClient):
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                if task == "business_intent":
+                    raise AssertionError
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_pattern_workflow(
+                {
+                    "artifact_root": tmpdir,
+                    "run_id": "intent-empty-provider-failure",
+                    "llm_client": EmptyFailureOnIntentLLM(),
+                    "question": "Q2相比Q1付费金额提升的主要原因是什么？",
+                }
+            )
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.failure_reason, "AssertionError")
 
     def test_workflow_invokes_causal_audit_before_answer_synthesis(self):
         fake = FakeLLMClient()
@@ -7273,6 +7614,102 @@ class LLMWorkflowTest(unittest.TestCase):
 
         with self.assertRaisesRegex(WorkflowFailure, "materiality_drift"):
             _sanitize_terminal_explanation(output, state, "degraded")
+
+    def test_degraded_explanation_rejects_target_metric_substitution(self):
+        state = {
+            "intent": {"target_metric": "paid_amount"},
+            "evidence_brief": {"limitations": ["source_unbound"]},
+            "validator_results": [],
+        }
+        output = {
+            "status": "degraded",
+            "explanation": "利润指标所需数据暂时不可用。",
+            "owner": "数据工程团队",
+            "repair_path": "补齐数据源后重跑。",
+        }
+
+        with self.assertRaisesRegex(WorkflowFailure, "target_metric_drift"):
+            _sanitize_terminal_explanation(output, state, "degraded")
+
+    def test_degraded_explanation_rejects_substitution_for_any_bound_metric(self):
+        state = {
+            "intent": {"target_metric": "payment_success_rate"},
+            "evidence_brief": {"limitations": ["source_unbound"]},
+            "validator_results": [],
+        }
+        output = {
+            "status": "degraded",
+            "explanation": "利润指标所需数据暂时不可用。",
+            "owner": "数据工程团队",
+            "repair_path": "补齐数据源后重跑。",
+        }
+
+        with self.assertRaisesRegex(WorkflowFailure, "target_metric_drift"):
+            _sanitize_terminal_explanation(output, state, "degraded")
+
+    def test_degraded_explanation_allows_target_and_other_metric_context(self):
+        state = {
+            "intent": {"target_metric": "payment_success_rate"},
+            "evidence_brief": {"limitations": ["source_unbound"]},
+            "validator_results": [],
+        }
+        output = {
+            "status": "degraded",
+            "explanation": "支付成功率暂时不可核验，付费金额仅作为相关缺口背景。",
+            "owner": "数据工程团队",
+            "repair_path": "补齐数据源后重跑。",
+        }
+
+        result = _sanitize_terminal_explanation(output, state, "degraded")
+
+        self.assertIn("支付成功率", result["explanation"])
+
+    def test_degraded_explanation_retries_semantic_rejection_with_reason(self):
+        from bi_agent.runtime.langgraph_workflow import _generate_degraded_explanation
+
+        state = {
+            "request": {"run_mode": "production"},
+            "run_id": "degraded-semantic-retry",
+            "intent": {
+                "target_metric": "paid_amount",
+                "scope": "full_sample",
+                "time_window": "yesterday",
+            },
+            "evidence_brief": {"limitations": ["source_unbound"]},
+            "validator_results": [],
+            "verifier": {},
+            "evidence": [],
+            "draft_claims": [],
+        }
+        payloads = []
+
+        def explain(_state, task, payload):
+            self.assertEqual(task, "degraded_explanation")
+            payloads.append(payload)
+            if len(payloads) == 1:
+                return {
+                    "explanation": "利润指标所需数据暂时不可用。",
+                    "owner": "数据工程团队",
+                    "repair_path": "补齐数据源后重跑。",
+                }
+            return {
+                "explanation": "付费金额所需数据暂时不可用。",
+                "owner": "数据工程团队",
+                "repair_path": "补齐数据源后重跑。",
+            }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._invoke_llm",
+            side_effect=explain,
+        ):
+            _generate_degraded_explanation(state)
+
+        self.assertEqual(len(payloads), 2)
+        self.assertIn(
+            "target_metric_drift",
+            payloads[1]["retry_context"]["failure_reason"],
+        )
+        self.assertIn("付费金额", state["final_explanation"]["explanation"])
 
     def test_degraded_explanation_reassigns_quality_owner_when_limits_are_business(self):
         state = {

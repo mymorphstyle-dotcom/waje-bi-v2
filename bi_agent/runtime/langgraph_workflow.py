@@ -146,6 +146,7 @@ class WorkflowState(TypedDict, total=False):
     query_repair_decisions: tuple[dict[str, Any], ...]
     query_gap_clarification: dict[str, Any]
     workflow_status: str
+    workflow_failure_reason: str
 
 
 @dataclass(frozen=True)
@@ -164,6 +165,10 @@ class WorkflowFailure(Exception):
     def __init__(self, message: str, *, failure_type: str = "technical"):
         super().__init__(message)
         self.failure_type = failure_type
+
+
+def _exception_reason(exc: BaseException) -> str:
+    return str(exc).strip() or type(exc).__name__
 
 
 def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRunResult:
@@ -188,7 +193,7 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
             return WorkflowRunResult(
                 status="failed",
                 run_id=state["run_id"],
-                failure_reason=f"llm_binding_failed:{exc}",
+                failure_reason=f"llm_binding_failed:{_exception_reason(exc)}",
                 checkpoint_events=tuple(state["checkpoint_events"]),
             )
 
@@ -201,14 +206,14 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
         return WorkflowRunResult(
             status="failed",
             run_id=state["run_id"],
-            failure_reason=str(exc),
+            failure_reason=_exception_reason(exc),
             checkpoint_events=tuple(state["checkpoint_events"]),
         )
     except Exception as exc:
         return WorkflowRunResult(
             status="failed",
             run_id=state["run_id"],
-            failure_reason=f"langgraph_execution_failed:{exc}",
+            failure_reason=f"langgraph_execution_failed:{_exception_reason(exc)}",
             checkpoint_events=tuple(state["checkpoint_events"]),
         )
 
@@ -217,6 +222,7 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
         run_id=output["run_id"],
         answer_package=output.get("answer_package"),
         artifact_path=str(output.get("artifact_path") or ""),
+        failure_reason=str(output.get("workflow_failure_reason") or ""),
         checkpoint_events=tuple(output["checkpoint_events"]),
         analysis_runtime_records=(
             output.get("analysis_runtime_result").persistence_records
@@ -410,7 +416,7 @@ def build_pattern_graph():
 
 def _retrying_node(node_name, func):
     def run(state: WorkflowState) -> WorkflowState:
-        max_attempts = 2
+        max_attempts = 3 if node_name == "generate_clarification" else 2
         for attempt in range(1, max_attempts + 1):
             started = perf_counter()
             event = _checkpoint(state, node_name, attempt)
@@ -422,7 +428,7 @@ def _retrying_node(node_name, func):
                 return result
             except WorkflowFailure as exc:
                 event["failure_type"] = exc.failure_type
-                event["reason"] = str(exc)
+                event["reason"] = _exception_reason(exc)
                 if (
                     exc.failure_type not in NON_RETRYABLE_FAILURE_TYPES
                     and attempt < max_attempts
@@ -431,7 +437,7 @@ def _retrying_node(node_name, func):
                         "node": node_name,
                         "attempt": attempt,
                         "failure_type": exc.failure_type,
-                        "reason": str(exc),
+                        "reason": _exception_reason(exc),
                     }
                     _finish_checkpoint(event, "retrying", started)
                     continue
@@ -439,12 +445,14 @@ def _retrying_node(node_name, func):
                 raise
             except Exception as exc:
                 event["failure_type"] = "technical"
-                event["reason"] = str(exc)
+                event["reason"] = _exception_reason(exc)
                 if attempt < max_attempts:
                     _finish_checkpoint(event, "retrying", started)
                     continue
                 _finish_checkpoint(event, "failed", started)
-                raise WorkflowFailure(str(exc), failure_type="technical")
+                raise WorkflowFailure(
+                    _exception_reason(exc), failure_type="technical"
+                )
         return state
 
     return run
@@ -925,6 +933,10 @@ def _generate_clarification(state: WorkflowState) -> WorkflowState:
         "intent": state.get("intent", {}),
         "boundary_decision": state.get("boundary_decision", {}),
         "clarification_choice": choice,
+        "retry_context": state.get("request", {}).get(
+            "node_retry_feedback",
+            {},
+        ),
     }
     raw_output = _invoke_llm(state, "clarification_question", clarification_payload)
     try:
@@ -1445,7 +1457,47 @@ def _apply_query_gap_action_to_route(
     action: Mapping[str, Any],
     registry: RuntimeContractRegistry,
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
-    if str(action.get("action_kind") or "") != "omit_unavailable_context":
+    action_kind = str(action.get("action_kind") or "")
+    if action_kind == "choose_supported_window":
+        output = dict(route)
+        requirements = dict(output.get("analysis_requirements") or {})
+        supported = {
+            "previous_day",
+            "rolling_7_day_baseline",
+            "same_weekday_last_week",
+        }
+        requirements["baselines"] = [
+            baseline
+            for baseline in _canonical_baselines(
+                requirements.get("baselines") or ()
+            )
+            if baseline in supported
+        ]
+        output["analysis_requirements"] = requirements
+        output["decision_summary"] = "已采用合同支持的业务时间窗口。"
+        return requested, output
+    if action_kind == "choose_supported_claim_intent":
+        output = dict(route)
+        requirements = dict(output.get("analysis_requirements") or {})
+        supported_claims: set[str] = set()
+        for capability_id in requested:
+            try:
+                contract = registry.capability_inputs(capability_id)
+            except KeyError:
+                continue
+            supported_claims.update(
+                str(claim_type)
+                for claim_type in contract.get("supported_claim_types", ())
+            )
+        requirements["claim_intents"] = [
+            str(claim_type)
+            for claim_type in requirements.get("claim_intents") or ()
+            if str(claim_type) in supported_claims
+        ]
+        output["analysis_requirements"] = requirements
+        output["decision_summary"] = "已采用合同支持的声明强度继续。"
+        return requested, output
+    if action_kind != "omit_unavailable_context":
         return requested, dict(route)
     affected = {
         str(capability)
@@ -1632,10 +1684,18 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
                 proposal[key] = choice[key]
         if choice.get("target_window"):
             proposal["target_semantic"] = str(choice["target_window"])
-    as_of = (request.get("analysis_context") or {}).get("as_of")
+    proposal["baselines"] = _canonical_baselines(
+        proposal.get("baselines") or ()
+    )
+    analysis_context = request.get("analysis_context") or {}
+    as_of = analysis_context.get("as_of")
     resume_context = request.get("clarification_resume_context") or {}
     if not as_of and isinstance(resume_context, Mapping):
-        as_of = (resume_context.get("analysis_context") or {}).get("as_of")
+        analysis_context = resume_context.get("analysis_context") or {}
+        as_of = analysis_context.get("as_of")
+    fixed_window_bounds = _fixed_window_bounds(analysis_context)
+    if fixed_window_bounds:
+        proposal["fixed_window_bounds"] = fixed_window_bounds
     if not as_of:
         as_of = datetime.now(timezone.utc)
     return AnalysisRuntimeRequest.create(
@@ -1647,6 +1707,67 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
         attempted_signatures=tuple(request.get("attempted_query_signatures") or ()),
         run_mode=str(request.get("run_mode") or "production"),
     )
+
+
+def _fixed_window_bounds(
+    analysis_context: Mapping[str, Any],
+) -> dict[str, tuple[str, str]]:
+    target = str(analysis_context.get("target_date") or "")
+    previous = str(analysis_context.get("previous_day") or "")
+    rolling_start = str(analysis_context.get("rolling_7_day_start") or "")
+    rolling_end = str(analysis_context.get("rolling_7_day_end") or "")
+    same_weekday = str(analysis_context.get("same_weekday_last_week") or "")
+    pattern_start = str(analysis_context.get("pattern_history_start") or "")
+    anomaly_start = str(analysis_context.get("anomaly_history_start") or "")
+    bounds = {
+        "target_day": (target, target),
+        "previous_day": (previous, previous),
+        "rolling_7_day_baseline": (rolling_start, rolling_end),
+        "same_weekday_last_week": (same_weekday, same_weekday),
+        "pattern_history": (pattern_start, target),
+        "anomaly_history": (anomaly_start, previous),
+    }
+    return {
+        window_id: value
+        for window_id, value in bounds.items()
+        if all(value)
+    }
+
+
+def _canonical_baselines(values: Sequence[Any]) -> tuple[str, ...]:
+    aliases = {
+        "rolling_7d_avg": "rolling_7_day_baseline",
+        "rolling_7_day_mean": "rolling_7_day_baseline",
+        "近7日均值": "rolling_7_day_baseline",
+        "same_day_last_week": "same_weekday_last_week",
+        "same_weekday_previous_week": "same_weekday_last_week",
+        "上周同日": "same_weekday_last_week",
+        "前一天": "previous_day",
+    }
+    if isinstance(values, (str, bytes, bytearray)):
+        values = (values,)
+    return tuple(
+        dict.fromkeys(
+            _canonical_baseline(str(value), aliases)
+            for value in values
+            if str(value)
+        )
+    )
+
+
+def _canonical_baseline(value: str, aliases: Mapping[str, str]) -> str:
+    if value in aliases:
+        return aliases[value]
+    compact = value.replace(" ", "")
+    if "上周同日" in compact or "上周同期" in compact:
+        return "same_weekday_last_week"
+    if "7" in compact and any(
+        marker in compact for marker in ("日均", "天均", "均值", "平均")
+    ):
+        return "rolling_7_day_baseline"
+    if "前日" in compact or "前一天" in compact:
+        return "previous_day"
+    return value
 
 
 def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
@@ -2335,6 +2456,7 @@ def _business_query_gap_projection(
         "register_dataset_snapshot": "由数据负责人补齐业务数据",
         "bind_source": "由数据合同负责人绑定业务来源",
         "choose_supported_window": "改用受支持的业务时间窗口",
+        "choose_supported_claim_intent": "改用受支持的结论口径",
         "clarify_window_contract": "确认业务时间口径",
         "use_supported_grain": "改用受支持的业务明细层级",
         "remove_dimension_path": "取消该明细拆分",
@@ -2632,6 +2754,7 @@ def _persist_query_gap_clarification(state: WorkflowState) -> WorkflowState:
             state.get("staged_query_gap_actions") or ()
         ),
     }
+    state["workflow_status"] = "waiting_for_clarification"
     state["answer_package"] = package
     state["artifact_path"] = persist_artifact(
         package,
@@ -4439,12 +4562,17 @@ def _generate_degraded_explanation(state: WorkflowState) -> WorkflowState:
     contract_gap_diagnostics = _refresh_contract_gap_diagnostics(state)
     explanation_payload = {
         "intent": state.get("intent", {}),
+        "analysis_contract": state.get("request", {}).get("analysis_contract") or {},
         "evidence_brief": state.get("evidence_brief", {}),
         "verifier": state.get("verifier", {}),
         "contract_gap_diagnostics": contract_gap_diagnostics,
     }
-    output = _invoke_llm(state, "degraded_explanation", explanation_payload)
-    state["final_explanation"] = _sanitize_terminal_explanation(output, state, "degraded")
+    state["final_explanation"] = _invoke_terminal_explanation(
+        state,
+        task="degraded_explanation",
+        payload=explanation_payload,
+        status="degraded",
+    )
     rejected_answer = bool(state.get("verifier", {}).get("errors")) or str(
         state.get("retry_context", {}).get("failure_type") or ""
     ) in {"semantic_audit", "verifier"}
@@ -4546,8 +4674,12 @@ def _generate_blocked_explanation(state: WorkflowState) -> WorkflowState:
             "validator_results": state.get("validator_results", []),
             "contract_gap_diagnostics": contract_gap_diagnostics,
         }
-        output = _invoke_llm(state, "blocked_explanation", explanation_payload)
-        state["final_explanation"] = _sanitize_terminal_explanation(output, state, "blocked")
+        state["final_explanation"] = _invoke_terminal_explanation(
+            state,
+            task="blocked_explanation",
+            payload=explanation_payload,
+            status="blocked",
+        )
         state["verifier"] = {"status": "terminal_explanation", "errors": [], "warnings": []}
     if "evidence" not in state:
         state["evidence"] = []
@@ -4555,6 +4687,32 @@ def _generate_blocked_explanation(state: WorkflowState) -> WorkflowState:
         state["draft_claims"] = []
     _ensure_blocked_boundary_audit(state)
     return state
+
+
+def _invoke_terminal_explanation(
+    state: WorkflowState,
+    *,
+    task: str,
+    payload: Mapping[str, Any],
+    status: str,
+) -> dict[str, Any]:
+    current_payload = dict(payload)
+    for attempt in range(1, 4):
+        output = _invoke_llm(state, task, current_payload)
+        try:
+            return _sanitize_terminal_explanation(output, state, status)
+        except WorkflowFailure as exc:
+            if attempt >= 3:
+                raise
+            current_payload = {
+                **dict(payload),
+                "retry_context": _retry_context(
+                    task,
+                    "llm_output_validation",
+                    str(exc),
+                ),
+            }
+    raise AssertionError("terminal_explanation_retry_unreachable")
 
 
 def _ensure_blocked_boundary_audit(state: WorkflowState) -> None:
@@ -4762,19 +4920,37 @@ def _coverage_block_reason_text(coverage: Mapping[str, Any]) -> str:
 
 def _final_business_summary(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "final_business_summary")
-    summary_payload = _final_business_summary_payload(state)
-    try:
-        output = _invoke_llm(state, "final_business_summary", summary_payload)
-    except WorkflowFailure as exc:
-        if not _is_timeout_failure(exc) or not state.get("answer_text"):
-            raise
-        state["final_business_summary"] = state["answer_text"]
-        state["final_summary_display_warnings"] = sorted(
-            {*state.get("final_summary_display_warnings", []), "final_summary_timeout"}
+    retry_instruction = ""
+    for attempt in range(1, 4):
+        summary_payload = _final_business_summary_payload(
+            state,
+            retry_instruction=retry_instruction,
         )
-        return state
-    _apply_final_business_summary_output(state, output)
-    return state
+        try:
+            output = _invoke_llm(state, "final_business_summary", summary_payload)
+        except WorkflowFailure as exc:
+            if not _is_timeout_failure(exc) or not state.get("answer_text"):
+                raise
+            state["final_business_summary"] = state["answer_text"]
+            state["final_summary_display_warnings"] = sorted(
+                {
+                    *state.get("final_summary_display_warnings", []),
+                    "final_summary_timeout",
+                }
+            )
+            return state
+        _apply_final_business_summary_output(state, output)
+        if str(state.get("final_business_summary") or "").strip():
+            return state
+        retry_instruction = (
+            "上一次输出为空，无法形成用户可见答案。"
+            "请基于输入中的证据、限制和合同缺口输出完整中文业务答案；"
+            f"这是第 {attempt + 1} 次尝试。"
+        )
+    raise WorkflowFailure(
+        "final_business_summary_empty_after_3_attempts",
+        failure_type="llm",
+    )
 
 
 def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
@@ -4950,6 +5126,15 @@ def _delivery_reverify_with_answer_repair(state: WorkflowState) -> dict[str, Any
         delivered = verify(authority_package)
     if str(delivered.get("status") or "") == "failed":
         state["workflow_status"] = "failed"
+        errors = tuple(
+            str(item.get("code") or "")
+            for item in delivered.get("admin_audit", {}).get("verifier", {}).get("errors", ())
+            if isinstance(item, Mapping) and item.get("code")
+        )
+        state["workflow_failure_reason"] = (
+            "delivery_reverify_failed"
+            + (f":{','.join(errors)}" if errors else "")
+        )
         return delivered
     return authority_package
 
@@ -5976,7 +6161,7 @@ def _invoke_llm(state: WorkflowState, task: str, payload: dict[str, Any]) -> dic
             required_keys=spec.required_keys,
         )
     except Exception as exc:
-        raise WorkflowFailure(str(exc), failure_type="llm") from exc
+        raise WorkflowFailure(_exception_reason(exc), failure_type="llm") from exc
     state["llm_calls"].append(result.audit)
     return result.output
 
@@ -7217,6 +7402,14 @@ def _sanitize_terminal_explanation(
         raise WorkflowFailure(f"{status}_explanation_rejected:unsupported_period_drift", failure_type="llm")
     if _has_degraded_data_collection_or_contract_drift(visible_text, state):
         raise WorkflowFailure(f"{status}_explanation_rejected:data_or_contract_drift", failure_type="llm")
+    if _terminal_target_metric_drift(
+        str(value.get("explanation") or ""),
+        state,
+    ):
+        raise WorkflowFailure(
+            f"{status}_explanation_rejected:target_metric_drift",
+            failure_type="llm",
+        )
     owner = str(value.get("owner") or "")
     if (
         not owner
@@ -7230,6 +7423,27 @@ def _sanitize_terminal_explanation(
     if _repair_path_invents_fixed_future_window(repair_path):
         value["repair_path"] = _terminal_repair_path(state, status)
     return value
+
+
+def _terminal_target_metric_drift(text: str, state: WorkflowState) -> bool:
+    target = str((state.get("intent") or {}).get("target_metric") or "")
+    registry = state.get("request", {}).get("runtime_registry")
+    if not isinstance(registry, RuntimeContractRegistry):
+        registry = RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        )
+    try:
+        target_labels = registry.metric_business_labels(target)
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not target_labels or any(label in text for label in target_labels):
+        return False
+    return any(
+        label in text
+        for metric in registry.metric_ids
+        if metric != target
+        for label in registry.metric_business_labels(metric)
+    )
 
 
 def _blocked_terminal_text_contradicts_status(text: str) -> bool:

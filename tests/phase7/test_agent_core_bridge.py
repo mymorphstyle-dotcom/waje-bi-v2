@@ -17,7 +17,7 @@ from bi_agent.runtime.answer_package import (
     collect_visible_limitations,
     verify_answer_package,
 )
-from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_value
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
 
@@ -25,6 +25,16 @@ from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
 class AgentCoreBridgeTest(unittest.TestCase):
     def test_agent_core_passes_and_persists_fixed_analysis_clock(self):
         captured = {}
+        fixed_context = {
+            "as_of": "2026-06-03T12:00:00+01:00",
+            "target_date": "2026-06-02",
+            "previous_day": "2026-06-01",
+            "rolling_7_day_start": "2026-05-26",
+            "rolling_7_day_end": "2026-06-01",
+            "same_weekday_last_week": "2026-05-26",
+            "pattern_history_start": "2026-01-01",
+            "anomaly_history_start": "2026-05-03",
+        }
 
         def workflow(request):
             captured.update(request)
@@ -37,16 +47,13 @@ class AgentCoreBridgeTest(unittest.TestCase):
             thread_id="thread-fixed-clock",
             run_id="run-fixed-clock",
             user_message="昨天付费金额为什么变化？",
-            analysis_context={"as_of": "2026-06-03T12:00:00+01:00"},
+            analysis_context=fixed_context,
         )
 
+        self.assertEqual(captured["analysis_context"], fixed_context)
         self.assertEqual(
-            captured["analysis_context"]["as_of"],
-            "2026-06-03T12:00:00+01:00",
-        )
-        self.assertEqual(
-            store.runs["run-fixed-clock"]["request"]["analysis_context"]["as_of"],
-            "2026-06-03T12:00:00+01:00",
+            store.runs["run-fixed-clock"]["request"]["analysis_context"],
+            fixed_context,
         )
 
     def test_agent_core_marks_analysis_runtime_requests_as_production(self):
@@ -1734,6 +1741,44 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertIn("context_manifest", result)
         self.assertTrue(result["context_manifest"])
 
+    def test_agent_core_failed_workflow_retains_boundary_package_and_owner(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-boundary-failure", owner_id="analyst-1")
+
+        def workflow(request):
+            return WorkflowRunResult(
+                status="failed",
+                run_id=request["run_id"],
+                failure_reason="delivery_reverify_failed:number_mismatch",
+                answer_package={
+                    "status": "failed",
+                    "admin_audit": {
+                        "verifier": {
+                            "status": "failed",
+                            "errors": [{"code": "number_mismatch"}],
+                        }
+                    },
+                },
+                artifact_path="artifacts/phase-7/boundary-failure/answer_package.json",
+            )
+
+        result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
+            thread_id="thread-boundary-failure",
+            run_id="run-boundary-failure",
+            user_message="昨天付费金额为什么变化？",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_owner"], "evidence_verifier_owner")
+        self.assertEqual(
+            result["answer_package"]["admin_audit"]["verifier"]["errors"],
+            [{"code": "number_mismatch"}],
+        )
+        self.assertEqual(
+            result["artifact_path"],
+            "artifacts/phase-7/boundary-failure/answer_package.json",
+        )
+
     def test_live_conversation_case_schema_supports_clarification_resume(self):
         from tools.phase7.run_live_conversation_system_test import load_cases
 
@@ -2208,6 +2253,29 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )
 
         self.assertEqual(case["group"], "production_revenue_diagnostics")
+        self.assertEqual(
+            case["analysis_context"],
+            {
+                "as_of": "2026-06-03T12:00:00+01:00",
+                "target_date": "2026-06-02",
+                "previous_day": "2026-06-01",
+                "rolling_7_day_start": "2026-05-26",
+                "rolling_7_day_end": "2026-06-01",
+                "same_weekday_last_week": "2026-05-26",
+                "pattern_history_start": "2026-01-01",
+                "anomaly_history_start": "2026-05-03",
+            },
+        )
+        self.assertEqual(
+            case["required_datasets"],
+            [
+                "paid_order_success",
+                "payment_attempt",
+                "market_dashboard",
+                "gameplay",
+                "external_event",
+            ],
+        )
         self.assertEqual([turn["user"] for turn in case["turns"]], expected_questions)
         self.assertEqual(case["turns"][0]["expect"]["topic_relation"], "create")
         self.assertTrue(
@@ -2480,7 +2548,532 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertFalse(review["real_clickhouse_verified"])
         self.assertIn("missing_clickhouse_result_refs", review["issues"])
 
-    def test_live_harness_verifies_real_clickhouse_with_validator_and_refs(self):
+    def test_live_harness_passes_fixed_analysis_context_on_clarification_resume(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import run_case
+
+        calls = []
+        manifest = {
+            "manifest_id": "context-fixed",
+            "can_support_claims": True,
+            "items": [],
+        }
+
+        class Core:
+            evidence_resolver = None
+
+            def run_message(self, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    return {
+                        "status": "waiting_for_clarification",
+                        "run_id": "run-fixed-1",
+                        "topic_id": "topic-fixed",
+                        "intent": "new_topic",
+                        "topic_relation": "new_topic",
+                        "context_manifest": manifest,
+                    }
+                return {
+                    "status": "completed",
+                    "run_id": "run-fixed-2",
+                    "topic_id": "topic-fixed",
+                    "intent": "follow_up",
+                    "topic_relation": "inherit_current",
+                    "answer_package": {"sections": []},
+                    "context_manifest": manifest,
+                    "accepted_graph": [],
+                    "llm_calls": [],
+                }
+
+        fixed = {"as_of": "2026-06-03T12:00:00+01:00"}
+        case = {
+            "id": "fixed-context-resume",
+            "analysis_context": fixed,
+            "turns": [{
+                "user": "昨天付费金额为什么变化？",
+                "clarification_response": "按推荐继续。",
+                "expect": {"allow_clarification": True},
+            }],
+        }
+        with TemporaryDirectory() as tmpdir:
+            run_case(Core(), case, Path(tmpdir))
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["analysis_context"], fixed)
+        self.assertEqual(calls[1]["analysis_context"], fixed)
+
+    def test_live_harness_accepts_recommended_clarification_without_fixture_text(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import run_case
+
+        calls = []
+        manifest = {
+            "manifest_id": "context-auto-clarification",
+            "can_support_claims": True,
+            "items": [],
+        }
+
+        class Core:
+            evidence_resolver = None
+
+            def run_message(self, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    return {
+                        "status": "waiting_for_clarification",
+                        "run_id": "run-auto-1",
+                        "topic_id": "topic-auto",
+                        "intent": "new_topic",
+                        "topic_relation": "new_topic",
+                        "context_manifest": manifest,
+                        "clarification": {
+                            "recommended_choice_id": "choice-supported",
+                            "recommended_assumption": {
+                                "option": "使用受支持口径继续"
+                            },
+                            "choice_actions": [{
+                                "choice_id": "choice-supported",
+                                "business_label": "使用受支持口径继续",
+                                "action_kind": "choose_supported_contract",
+                            }],
+                        },
+                    }
+                return {
+                    "status": "completed",
+                    "run_id": "run-auto-2",
+                    "topic_id": "topic-auto",
+                    "intent": "clarification_answer",
+                    "topic_relation": "inherit_current",
+                    "answer_package": {"final_answer": "已按受支持口径完成。", "sections": []},
+                    "context_manifest": manifest,
+                    "accepted_graph": [],
+                    "llm_calls": [],
+                }
+
+        case = {
+            "id": "auto-clarification",
+            "analysis_context": {"as_of": "2026-06-03T12:00:00+01:00"},
+            "turns": [{
+                "user": "昨天付费金额为什么变化？",
+                "expect": {"allow_clarification": True},
+            }],
+        }
+        with TemporaryDirectory() as tmpdir:
+            output = run_case(Core(), case, Path(tmpdir))
+
+        turn = output["turns"][0]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1]["user_message"], "使用受支持口径继续")
+        self.assertEqual(turn["clarification_response"], "使用受支持口径继续")
+        self.assertEqual(turn["resumed_status"], "completed")
+        self.assertEqual(turn["topic_id"], turn["resumed_topic_id"])
+
+    def test_live_harness_prefers_progressing_contract_action_over_wait(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _automatic_clarification_response,
+        )
+
+        response = _automatic_clarification_response({
+            "clarification": {
+                "recommended_choice_id": "wait",
+                "choice_actions": [
+                    {
+                        "choice_id": "omit",
+                        "action_kind": "omit_unavailable_context",
+                        "business_label": "继续主指标分析并保留缺口",
+                    },
+                    {
+                        "choice_id": "wait",
+                        "action_kind": "wait_for_source",
+                        "business_label": "等待数据源",
+                    },
+                ],
+            }
+        })
+
+        self.assertEqual(response, "继续主指标分析并保留缺口")
+
+    def test_live_harness_uses_exact_recommended_option_without_typed_actions(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _automatic_clarification_response,
+        )
+
+        response = _automatic_clarification_response({
+            "clarification": {
+                "recommended_assumption": {
+                    "option": "按已设定的基线继续分析"
+                },
+                "questions": [{
+                    "question": "请选择基线",
+                    "options": [
+                        "按已设定的基线继续分析",
+                        "改用其他基线",
+                        "tell the agent to do differently",
+                    ],
+                }],
+            }
+        })
+
+        self.assertEqual(response, "按已设定的基线继续分析")
+
+    def test_live_harness_rejects_partial_authoritative_query_result(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _real_clickhouse_review,
+        )
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-partial-authority-review",
+        )
+        base = context["evidence_resolver"]
+        binding = base.resolve_capability_binding(context["binding_manifest_ref"])
+        partial_ref = binding.completeness_record_refs[0]
+
+        class PartialResolver:
+            def __getattr__(self, name):
+                return getattr(base, name)
+
+            def resolve_completeness(self, ref):
+                record = base.resolve_completeness(ref)
+                if ref != partial_ref:
+                    return record
+                return replace(
+                    record,
+                    report_payload={
+                        **dict(record.report_payload),
+                        "completeness_status": "partial",
+                        "analysis_readiness": "blocked",
+                    },
+                )
+
+        review = _real_clickhouse_review(
+            {
+                "answer_package": package,
+                "context_manifest": {
+                    "manifest_id": "context-manifest:partial",
+                    "can_support_claims": True,
+                    "sources": [],
+                },
+            },
+            real_clickhouse=True,
+            evidence_resolver=PartialResolver(),
+            required_datasets=("paid_order_success",),
+            analysis_context={"target_date": "2026-06-02"},
+        )
+
+        query_ref = binding.query_contract_refs[0]
+        self.assertFalse(review["real_clickhouse_verified"])
+        self.assertIn(
+            f"incomplete_clickhouse_query:{query_ref}",
+            review["issues"],
+        )
+
+    def test_live_harness_accepts_partial_when_persisted_slot_contract_allows_it(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _real_clickhouse_review,
+        )
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-contract-partial-authority-review",
+        )
+        package["verified_claims"] = []
+        for section in package.get("sections", []):
+            payload = section.get("payload") or {}
+            if "claims" in payload:
+                payload["claims"] = []
+        base = context["evidence_resolver"]
+        binding = base.resolve_capability_binding(context["binding_manifest_ref"])
+        completeness_ref = binding.completeness_record_refs[0]
+        plan_payload = canonical_value(binding.plan_payload)
+        plan_payload["minimum_readiness"]["accepted_completeness"] = [
+            "complete",
+            "partial",
+        ]
+        for slot in plan_payload["required_input_slots"]:
+            slot["accepted_completeness"] = ["complete", "partial"]
+        degraded_binding = replace(
+            binding,
+            status="degraded",
+            input_completeness_statuses=("partial",),
+            plan_payload=plan_payload,
+        )
+
+        class ContractPartialResolver:
+            def __getattr__(self, name):
+                return getattr(base, name)
+
+            def resolve_capability_binding(self, ref):
+                if ref == binding.record_ref:
+                    return degraded_binding
+                return base.resolve_capability_binding(ref)
+
+            def resolve_completeness(self, ref):
+                record = base.resolve_completeness(ref)
+                if ref != completeness_ref:
+                    return record
+                payload = canonical_value(record.report_payload)
+                payload.update({
+                    "completeness_status": "partial",
+                    "analysis_readiness": "degraded",
+                    "assertion_results": [
+                        {
+                            "assertion": "execution_succeeded",
+                            "passed": True,
+                            "failure_reasons": [],
+                            "details": {},
+                        },
+                        {
+                            "assertion": "data_quality_warning",
+                            "passed": False,
+                            "failure_reasons": ["null_bucket_present"],
+                            "details": {},
+                        },
+                    ],
+                    "failure_reasons": ["null_bucket_present"],
+                })
+                return replace(record, report_payload=payload)
+
+        review = _real_clickhouse_review(
+            {"answer_package": package, "context_manifest": {}},
+            real_clickhouse=True,
+            evidence_resolver=ContractPartialResolver(),
+            required_datasets=("paid_order_success",),
+            analysis_context={"target_date": "2026-06-02"},
+        )
+
+        self.assertTrue(review["real_clickhouse_verified"], review["issues"])
+        self.assertTrue(
+            review["runtime_correctness"]["all_required_queries_complete"]
+        )
+
+    def test_live_harness_rejects_shifted_pattern_history_window(self):
+        from bi_agent.runtime.analysis_contracts import ResolvedWindow
+        from tools.phase7.run_live_conversation_system_test import (
+            _real_clickhouse_review,
+        )
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-shifted-pattern-history",
+        )
+        base = context["evidence_resolver"]
+        binding = base.resolve_capability_binding(context["binding_manifest_ref"])
+        result_ref = binding.result_refs[0]
+
+        class ShiftedResolver:
+            def __getattr__(self, name):
+                return getattr(base, name)
+
+            def resolve_query_execution(self, ref):
+                record = base.resolve_query_execution(ref)
+                if ref != result_ref:
+                    return record
+                shifted = ResolvedWindow(
+                    window_id="pattern_history",
+                    role="reference",
+                    label="2026-02-01..2026-06-02",
+                    start_inclusive="2026-02-01",
+                    end_exclusive="2026-06-03",
+                    timezone="Africa/Lagos",
+                    aggregation="daily_series",
+                    required_complete_days=122,
+                    source_watermark_requirement="2026-06-02",
+                )
+                contract = replace(
+                    record.contract,
+                    window_refs=(*record.contract.window_refs, "pattern_history"),
+                    resolved_windows=(*record.contract.resolved_windows, shifted),
+                )
+                return replace(record, contract=contract)
+
+        review = _real_clickhouse_review(
+            {"answer_package": package, "context_manifest": {}},
+            real_clickhouse=True,
+            evidence_resolver=ShiftedResolver(),
+            required_datasets=("paid_order_success",),
+            analysis_context={
+                "target_date": "2026-06-02",
+                "pattern_history_start": "2026-01-01",
+            },
+        )
+
+        self.assertIn(
+            f"fixed_window_mismatch:{binding.query_contract_refs[0]}:pattern_history",
+            review["issues"],
+        )
+
+    def test_live_harness_accepts_complete_runtime_authority_and_sources_manifest(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _real_clickhouse_review,
+        )
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-complete-authority-review",
+        )
+        binding = context["evidence_resolver"].resolve_capability_binding(
+            context["binding_manifest_ref"]
+        )
+        evidence_ref = package["sections"][1]["payload"]["evidence"][0][
+            "evidence_ref"
+        ]
+        manifest = package["admin_audit"]["context_manifest"]
+        verified_claim = package["admin_audit"]["verified_claims"][0]
+        provenance = package["admin_audit"][
+            "trusted_claim_provenance_records"
+        ][0]
+        package["verified_claims"] = [verified_claim]
+
+        class ClaimResolver:
+            def __getattr__(self, name):
+                return getattr(context["evidence_resolver"], name)
+
+            def resolve_verified_claim(self, claim_ref):
+                return verified_claim if claim_ref == verified_claim["claim_ref"] else None
+
+            def resolve_claim_provenance(self, record_ref):
+                return provenance if record_ref == provenance["record_ref"] else None
+
+        review = _real_clickhouse_review(
+            {"answer_package": package, "context_manifest": manifest},
+            real_clickhouse=True,
+            evidence_resolver=ClaimResolver(),
+            required_datasets=("paid_order_success",),
+            analysis_context={"target_date": "2026-06-02"},
+        )
+
+        self.assertTrue(review["real_clickhouse_verified"], review["issues"])
+        self.assertEqual(
+            review["runtime_correctness"],
+            {
+                "all_required_queries_complete": True,
+                "all_capabilities_bound": True,
+                "all_claims_traceable": True,
+            },
+        )
+
+    def test_live_harness_rejects_unpersisted_verified_claim_identity(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _real_clickhouse_review,
+        )
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-unpersisted-claim-review",
+        )
+        manifest = package["admin_audit"]["context_manifest"]
+        forged = dict(package["admin_audit"]["verified_claims"][0])
+        forged.pop("claim_digest")
+        forged.pop("provenance_record_ref")
+        package["verified_claims"] = [forged]
+
+        review = _real_clickhouse_review(
+            {"answer_package": package, "context_manifest": manifest},
+            real_clickhouse=True,
+            evidence_resolver=context["evidence_resolver"],
+            required_datasets=("paid_order_success",),
+            analysis_context={"target_date": "2026-06-02"},
+        )
+
+        self.assertFalse(review["runtime_correctness"]["all_claims_traceable"])
+        self.assertIn(
+            f"untraceable_verified_claim:{forged['claim_ref']}",
+            review["issues"],
+        )
+
+    def test_live_harness_rejects_malformed_verified_claim_as_hard_failure(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _real_clickhouse_review,
+        )
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-malformed-claim-review",
+        )
+        package["verified_claims"] = [None]
+
+        review = _real_clickhouse_review(
+            {"answer_package": package, "context_manifest": {}},
+            real_clickhouse=True,
+            evidence_resolver=context["evidence_resolver"],
+            required_datasets=("paid_order_success",),
+            analysis_context={"target_date": "2026-06-02"},
+        )
+
+        self.assertFalse(review["real_clickhouse_verified"])
+        self.assertFalse(review["runtime_correctness"]["all_claims_traceable"])
+        self.assertIn("malformed_verified_claim:0", review["issues"])
+
+    def test_live_harness_aggregate_requires_all_runtime_correctness_dimensions(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _aggregate_real_clickhouse_review,
+        )
+
+        aggregate = _aggregate_real_clickhouse_review(
+            [{
+                "real_clickhouse_review": {
+                    "real_clickhouse_verified": True,
+                    "clickhouse_result_refs": ["result:1"],
+                    "observed_datasets": ["paid_order_success"],
+                    "issues": [],
+                    "runtime_correctness": {
+                        "all_required_queries_complete": True,
+                        "all_capabilities_bound": True,
+                        "all_claims_traceable": False,
+                    },
+                }
+            }],
+            True,
+            ("paid_order_success",),
+        )
+
+        self.assertFalse(aggregate["real_clickhouse_verified"])
+        self.assertFalse(aggregate["runtime_correctness"]["all_claims_traceable"])
+
+    def test_live_harness_rejects_legacy_authority_result_ref(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _real_clickhouse_review,
+        )
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-legacy-authority-review",
+        )
+        base = context["evidence_resolver"]
+        binding = base.resolve_capability_binding(context["binding_manifest_ref"])
+        original_ref = binding.result_refs[0]
+        legacy_ref = "legacy-hash"
+        legacy_binding = replace(
+            binding,
+            result_refs=(legacy_ref,),
+        )
+
+        class LegacyResolver:
+            def __getattr__(self, name):
+                return getattr(base, name)
+
+            def resolve_capability_binding(self, ref):
+                return legacy_binding if ref == binding.record_ref else None
+
+            def resolve_query_execution(self, ref):
+                record = base.resolve_query_execution(original_ref)
+                return replace(record, result_ref=legacy_ref) if ref == legacy_ref else None
+
+            def resolve_completeness(self, ref):
+                record = base.resolve_completeness(ref)
+                if ref != binding.completeness_record_refs[0]:
+                    return record
+                return replace(record, result_ref=legacy_ref)
+
+        review = _real_clickhouse_review(
+            {"answer_package": package, "context_manifest": {}},
+            real_clickhouse=True,
+            evidence_resolver=LegacyResolver(),
+        )
+
+        self.assertFalse(review["real_clickhouse_verified"])
+        self.assertIn(
+            f"legacy_clickhouse_result_ref:{legacy_ref}",
+            review["issues"],
+        )
+
+    def test_live_harness_does_not_trust_client_validator_and_refs(self):
         from tools.phase7.run_live_conversation_system_test import _real_clickhouse_review
 
         review = _real_clickhouse_review(
@@ -2508,8 +3101,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
             real_clickhouse=True,
         )
 
-        self.assertTrue(review["real_clickhouse_verified"])
-        self.assertEqual(review["clickhouse_result_refs"], ["hash-real"])
+        self.assertFalse(review["real_clickhouse_verified"])
+        self.assertIn("missing_runtime_authority_resolver", review["issues"])
+        self.assertEqual(review["clickhouse_result_refs"], [])
 
     def test_live_harness_checks_each_clickhouse_query_intent_executed(self):
         from tools.phase7.run_live_conversation_system_test import _real_clickhouse_review
@@ -2559,7 +3153,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         self.assertFalse(review["real_clickhouse_verified"])
         self.assertIn(
-            "missing_clickhouse_query_intent:dimension_scan",
+            "missing_runtime_authority_resolver",
             review["issues"],
         )
 
@@ -2586,6 +3180,48 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertFalse(result["real_clickhouse_review"]["real_clickhouse_verified"])
         self.assertFalse(result["turns"][0]["real_clickhouse_review"]["real_clickhouse_verified"])
+
+    def test_live_harness_uses_internal_artifact_only_for_runtime_audit(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import (
+            _runtime_audit_package,
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            artifact = Path(tmpdir) / "answer_package.json"
+            artifact.write_text(
+                json.dumps({
+                    "run_id": "run-internal-audit",
+                    "final_answer": "内部完整答案",
+                    "sections": [{
+                        "section_id": "evidence",
+                        "payload": {"evidence": [{"evidence_ref": "evidence:1"}]},
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            result = {
+                "run_id": "run-internal-audit",
+                "artifact_path": str(artifact),
+                "answer_package": {
+                    "run_id": "run-internal-audit",
+                    "final_answer": "客户端安全答案",
+                    "sections": [],
+                },
+            }
+
+            audited = _runtime_audit_package(result)
+
+        self.assertEqual(audited["final_answer"], "内部完整答案")
+        self.assertEqual(
+            audited["sections"][0]["payload"]["evidence"][0]["evidence_ref"],
+            "evidence:1",
+        )
+        self.assertEqual(
+            result["answer_package"]["final_answer"],
+            "客户端安全答案",
+        )
 
     def test_live_harness_writes_partial_case_artifact_after_each_turn(self):
         from tempfile import TemporaryDirectory
@@ -2669,6 +3305,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     "business_insight_present": True,
                     "followups_one_intent": False,
                     "issues": ["missing_verified_claim"],
+                    "risk_flags": ["causal_wording_risk"],
                 }
             }
         )
@@ -2685,6 +3322,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     "missing_verified_claim",
                     "missing_business_interpretation",
                 ],
+                "risk_markers": ["causal_wording_risk"],
                 "direct_answer": True,
                 "has_verified_claims": True,
                 "verified_claim_preserved": False,
@@ -2695,6 +3333,211 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertFalse(_strict_quality_failed({"quality_review": review}))
         self.assertTrue(
             _strict_quality_failed({"quality_review": {**review, "blocks_display": True}})
+        )
+
+    def test_eval_review_tool_emits_nonblocking_runtime_and_quality_scorecards(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.review_analysis_contract_eval import review_artifact
+
+        artifact = {
+            "case_id": "fixed-review",
+            "turns": [{
+                "index": 1,
+                "real_clickhouse_review": {
+                    "runtime_correctness": {
+                        "all_required_queries_complete": True,
+                        "all_capabilities_bound": True,
+                        "all_claims_traceable": True,
+                    },
+                    "issues": [],
+                },
+                "quality_review": {
+                    "direct_answer": True,
+                    "business_insight_present": True,
+                    "followups_one_intent": False,
+                    "has_verified_claims": True,
+                    "verified_claim_preserved": True,
+                    "quality_warnings": ["weak_followup"],
+                    "risk_markers": ["causal_wording_risk"],
+                },
+                "answer_package": {"final_answer": "已验证结论。"},
+            }],
+        }
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "artifact.json"
+            path.write_text(json.dumps(artifact), encoding="utf-8")
+            review = review_artifact(path)
+
+        self.assertEqual(
+            review["runtime_correctness"],
+            {
+                "all_required_queries_complete": True,
+                "all_capabilities_bound": True,
+                "all_claims_traceable": True,
+            },
+        )
+        self.assertEqual(
+            set(review["answer_quality"]),
+            {
+                "directness",
+                "insight",
+                "actionability",
+                "evidence_discipline",
+                "risk_markers",
+            },
+        )
+        self.assertTrue(
+            all(
+                1 <= review["answer_quality"][key] <= 5
+                for key in (
+                    "directness",
+                    "insight",
+                    "actionability",
+                    "evidence_discipline",
+                )
+            )
+        )
+        self.assertEqual(
+            review["final_answer_audit_coverage"],
+            {"available": 0, "unavailable": 1},
+        )
+        self.assertIn(
+            "final_answer_audit_unavailable",
+            review["answer_quality"]["risk_markers"],
+        )
+        self.assertFalse(review["quality_scores_block_display"])
+
+    def test_eval_review_tool_reads_run_matched_internal_final_llm_audit(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.review_analysis_contract_eval import review_artifact
+
+        with TemporaryDirectory() as tmpdir:
+            artifact_root = Path(tmpdir) / "artifacts"
+            eval_dir = artifact_root / "phase7" / "eval"
+            internal_dir = artifact_root / "phase-7" / "run-reviewed"
+            eval_dir.mkdir(parents=True)
+            internal_dir.mkdir(parents=True)
+            internal_path = internal_dir / "answer_package.json"
+            internal_path.write_text(
+                json.dumps({
+                    "run_id": "run-reviewed",
+                    "final_answer": "内部完整业务回答。",
+                    "quality_gate": {
+                        "direct_answer": True,
+                        "business_insight_present": True,
+                        "followups_one_intent": False,
+                        "has_verified_claims": True,
+                        "verified_claim_preserved": True,
+                        "repairable_warnings": ["weak_followup"],
+                        "risk_flags": ["causal_wording_risk"],
+                    },
+                    "llm_calls": [{
+                        "task": "final_answer_audit",
+                        "structured_output": {
+                            "display_status": "ready_with_warnings",
+                            "repairable_warnings": ["weak_followup"],
+                        },
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            case_path = eval_dir / "case.json"
+            case_path.write_text(
+                json.dumps({
+                    "case_id": "fixed-review",
+                    "turns": [{
+                        "index": 1,
+                        "run_id": "run-reviewed",
+                        "artifact_path": str(internal_path),
+                        "real_clickhouse_review": {
+                            "runtime_correctness": {
+                                "all_required_queries_complete": True,
+                                "all_capabilities_bound": True,
+                                "all_claims_traceable": True,
+                            },
+                            "issues": [],
+                        },
+                        "quality_review": {
+                            "direct_answer": False,
+                            "business_insight_present": False,
+                            "followups_one_intent": False,
+                            "has_verified_claims": False,
+                            "verified_claim_preserved": False,
+                            "quality_warnings": [],
+                            "risk_markers": [],
+                        },
+                        "answer_package": {"final_answer": "客户端安全回答。"},
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            review = review_artifact(case_path)
+
+        turn = review["turns"][0]
+        self.assertEqual(turn["final_answer_audit_status"], "available")
+        self.assertEqual(
+            turn["answer_quality"],
+            {
+                "directness": 5,
+                "insight": 5,
+                "actionability": 2,
+                "evidence_discipline": 5,
+                "risk_markers": ["causal_wording_risk", "weak_followup"],
+            },
+        )
+
+    def test_eval_review_tool_fails_closed_on_mismatched_internal_run(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.review_analysis_contract_eval import review_artifact
+
+        with TemporaryDirectory() as tmpdir:
+            artifact_root = Path(tmpdir) / "artifacts"
+            eval_dir = artifact_root / "phase7" / "eval"
+            internal_dir = artifact_root / "phase-7" / "run-other"
+            eval_dir.mkdir(parents=True)
+            internal_dir.mkdir(parents=True)
+            internal_path = internal_dir / "answer_package.json"
+            internal_path.write_text(
+                json.dumps({
+                    "run_id": "run-other",
+                    "quality_gate": {"direct_answer": True},
+                    "llm_calls": [{"task": "final_answer_audit"}],
+                }),
+                encoding="utf-8",
+            )
+            case_path = eval_dir / "case.json"
+            case_path.write_text(
+                json.dumps({
+                    "case_id": "fixed-review",
+                    "turns": [{
+                        "index": 1,
+                        "run_id": "run-expected",
+                        "artifact_path": str(internal_path),
+                        "real_clickhouse_review": {
+                            "runtime_correctness": {
+                                "all_required_queries_complete": True,
+                                "all_capabilities_bound": True,
+                                "all_claims_traceable": True,
+                            },
+                            "issues": [],
+                        },
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            review = review_artifact(case_path)
+
+        turn = review["turns"][0]
+        self.assertEqual(turn["final_answer_audit_status"], "run_id_mismatch")
+        self.assertEqual(turn["answer_quality"]["directness"], 1)
+        self.assertIn(
+            "final_answer_audit_unavailable",
+            turn["answer_quality"]["risk_markers"],
         )
 
     def test_strict_eval_treats_final_wording_anchor_as_warning(self):
@@ -2847,6 +3690,10 @@ def _verified_delivery_package(
     channel="A",
     claim_selector_mode="",
 ):
+    from bi_agent.runtime.claim_provenance import (
+        build_trusted_claim_provenance_record,
+    )
+
     resolved_windows = {
         "target_day": {
             "start_inclusive": "2026-06-02",
@@ -3059,6 +3906,12 @@ def _verified_delivery_package(
         artifact_audit={"artifact_ref": "artifact:test"},
         answer_text=claim_text,
         final_business_summary=claim_text,
+        trusted_claim_provenance_record=build_trusted_claim_provenance_record(
+            run_id=run_id,
+            artifact_refs=("artifact:test",),
+            memory_refs=("memory:test",),
+            reuse_decisions=({"source_ref": "asset:test", "decision": "reuse"},),
+        ),
     )
     return package, context, claim_text
 

@@ -694,6 +694,21 @@ conversation_cases:
           final_answer_contains: ["投放"]
   - id: paid_amount_revenue_diagnostics_8_question_set
     group: production_revenue_diagnostics
+    analysis_context:
+      as_of: "2026-06-03T12:00:00+01:00"
+      target_date: "2026-06-02"
+      previous_day: "2026-06-01"
+      rolling_7_day_start: "2026-05-26"
+      rolling_7_day_end: "2026-06-01"
+      same_weekday_last_week: "2026-05-26"
+      pattern_history_start: "2026-01-01"
+      anomaly_history_start: "2026-05-03"
+    required_datasets:
+      - paid_order_success
+      - payment_attempt
+      - market_dashboard
+      - gameplay
+      - external_event
     turns:
       - user: "昨天付费金额为什么上涨/下跌？主要是首充人数、付费频次、单笔付费金额，还是支付成功率等因素变化导致的"
         expect:

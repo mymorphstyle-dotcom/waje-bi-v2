@@ -160,9 +160,8 @@ def _compile_clickhouse_query_with_registry(
     parameters.update(physical_parameters)
 
     if contract.query_intent == "event_context_probe":
-        context_row_bound = registry.query_shape(contract.query_intent).get(
-            "max_context_rows"
-        )
+        query_shape = registry.query_shape(contract.query_intent)
+        context_row_bound = query_shape.get("max_context_rows")
         if (
             isinstance(context_row_bound, bool)
             or not isinstance(context_row_bound, int)
@@ -171,11 +170,21 @@ def _compile_clickhouse_query_with_registry(
             raise ValueError(
                 f"reviewed_context_row_bound_invalid:{contract.query_intent}"
             )
+        source_fields = query_shape.get("source_fields")
+        if (
+            not isinstance(source_fields, list)
+            or not source_fields
+            or any(type(field) is not str or not field for field in source_fields)
+        ):
+            raise ValueError(
+                f"reviewed_source_fields_invalid:{contract.query_intent}"
+            )
         sql_text = _compile_event_context_query(
             contract,
             snapshot,
             filter_sql=filter_sql,
             max_context_rows=context_row_bound,
+            required_fields=tuple(source_fields),
         )
     elif contract.query_intent == "high_value_scan":
         _verify_high_value_semantics(contract)
@@ -307,26 +316,10 @@ def _compile_event_context_query(
     *,
     filter_sql: tuple[str, ...],
     max_context_rows: int,
+    required_fields: tuple[str, ...],
 ) -> str:
     if contract.metric_bindings or contract.dimension_bindings:
         raise ValueError("event_context_probe_bindings_unsupported")
-    required_fields = (
-        "source_family",
-        "event_id",
-        "event_type",
-        "event_start_date",
-        "event_end_date",
-        "affected_scope",
-        "authority",
-        "evidence_level",
-        "wording_limit",
-        "recurrence_kind",
-        "recurrence_month_start",
-        "recurrence_day_start",
-        "recurrence_month_end",
-        "recurrence_day_end",
-        "payload",
-    )
     missing = tuple(field for field in required_fields if field not in snapshot.schema_fields)
     if missing:
         raise ValueError("event_context_fields_missing:" + ",".join(missing))

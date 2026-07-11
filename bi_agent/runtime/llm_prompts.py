@@ -5,7 +5,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-11.v34"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-11.v35"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 
 
@@ -640,6 +640,9 @@ def _task_rules(task: str) -> str:
         "degraded_explanation": (
             "Explain the degraded result with supported conclusion boundary, visible "
             "limitation, owner, and repair path. Do not publish unsupported main claims. "
+            "When analysis_contract supplies as_of and resolved_windows, use those exact "
+            "dates and labels; never replace them with the current system date or infer a "
+            "different yesterday. "
             "Interpret limitation tokens correctly before writing business text: "
             "below_materiality_floor means the observed change size is below the current "
             "importance threshold, not data volume; weak_direction means the direction "

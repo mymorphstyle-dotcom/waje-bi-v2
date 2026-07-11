@@ -658,6 +658,108 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             key: value for key, value in payload.items() if key != "contract_signature"
         })
 
+    def test_analysis_contract_allows_same_metric_across_distinct_datasets(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
+
+        payload = {
+            key: value
+            for key, value in _authority_bundle()["analysis_contract"].items()
+            if key != "contract_signature"
+        }
+        primary = dict(payload["metric_bindings"][0])
+        secondary = {
+            **primary,
+            "dataset_id": "market_dashboard",
+            "contract_ref": "contracts/sources/market-dashboard.source.yaml@0.2",
+            "expression": "sum(paid_amount)",
+        }
+        primary_dimension = dict(payload["dimension_bindings"][0])
+        secondary_dimension = {
+            **primary_dimension,
+            "dataset_id": "market_dashboard",
+            "contract_ref": "contracts/sources/market-dashboard.source.yaml@0.2",
+        }
+        payload["metric_bindings"] = [primary, secondary]
+        payload["dimension_bindings"] = [
+            primary_dimension,
+            secondary_dimension,
+        ]
+        payload["dataset_requirements"] = [
+            *payload["dataset_requirements"],
+            "market_dashboard",
+        ]
+
+        parsed = analysis_contract_from_dict(payload)
+
+        self.assertEqual(
+            [(item.metric_id, item.dataset_id) for item in parsed.metric_bindings],
+            [
+                (primary["metric_id"], primary["dataset_id"]),
+                (primary["metric_id"], "market_dashboard"),
+            ],
+        )
+        self.assertEqual(
+            [
+                (item.dimension_id, item.dataset_id)
+                for item in parsed.dimension_bindings
+            ],
+            [
+                (primary_dimension["dimension_id"], primary_dimension["dataset_id"]),
+                (primary_dimension["dimension_id"], "market_dashboard"),
+            ],
+        )
+
+    def test_analysis_contract_rejects_duplicate_binding_within_one_dataset(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
+
+        payload = {
+            key: value
+            for key, value in _authority_bundle()["analysis_contract"].items()
+            if key != "contract_signature"
+        }
+        payload["metric_bindings"] = [
+            payload["metric_bindings"][0],
+            dict(payload["metric_bindings"][0]),
+        ]
+
+        with self.assertRaisesRegex(
+            ValueError, "analysis_contract.metric_bindings:duplicate"
+        ):
+            analysis_contract_from_dict(payload)
+
+    def test_each_capability_binding_validates_only_its_query_subset(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
+        from bi_agent.runtime.runtime_persistence import (
+            _validate_capability_binding_analysis_closure,
+        )
+
+        bundle = _authority_bundle()
+        analysis = analysis_contract_from_dict(
+            {
+                key: value
+                for key, value in bundle["analysis_contract"].items()
+                if key != "contract_signature"
+            }
+        )
+        own_query = bundle["query_contracts"][0]
+        unrelated_query = replace(
+            own_query,
+            query_contract_id="query:unrelated-capability:1",
+            query_role_ref="query-role:unrelated-capability:1",
+        )
+
+        _validate_capability_binding_analysis_closure(
+            analysis,
+            bundle["capability_binding_records"][0],
+            {
+                **{
+                    query.query_contract_id: query
+                    for query in bundle["query_contracts"]
+                },
+                unrelated_query.query_contract_id: unrelated_query,
+            },
+        )
+
     def test_analysis_contract_envelope_rejects_shape_and_nested_drift(self):
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature
 
@@ -814,6 +916,60 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                     "clarify_window_contract",
                 ],
                 "requires_clarification": True,
+                "diagnostic_context": {},
+            }],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle.update(
+            {
+                "analysis_contract": analysis,
+                "query_contracts": (),
+                "query_execution_records": (),
+                "rows_records": (),
+                "snapshot_records": (),
+                "completeness_records": (),
+                "capability_binding_records": (),
+                "evidence_manifests": (),
+                "context_manifests": (),
+                "trusted_provenance_records": (),
+                "verified_claims": (),
+                "claim_links": (),
+                "repair_attempts": (),
+            }
+        )
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            ),
+            "published",
+        )
+
+    def test_source_unbound_terminal_boundary_persists_zero_claim_contract(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _authority_bundle()
+        claim_intent = bundle["analysis_contract"]["claim_intents"][0]
+        boundary_claim_intent = "contract_coverage_and_trust_boundary"
+        analysis = {
+            **bundle["analysis_contract"],
+            "claim_intents": [claim_intent, boundary_claim_intent],
+            "capability_requirements": [
+                *bundle["analysis_contract"]["capability_requirements"],
+                "data_quality_profile",
+            ],
+            "contract_gaps": [{
+                "gap_type": "source_unbound",
+                "gap_id": "dataset:paid_order_success:source_unbound",
+                "dataset_id": "paid_order_success",
+                "affected_capabilities": [
+                    *bundle["analysis_contract"]["capability_requirements"],
+                    "data_quality_profile",
+                ],
+                "affected_claim_types": [claim_intent, boundary_claim_intent],
+                "owner": "data_owner",
+                "repair_options": ["register_dataset_snapshot", "bind_source"],
+                "requires_clarification": False,
                 "diagnostic_context": {},
             }],
         }
@@ -1721,6 +1877,48 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                     PostgresRuntimeEvidenceResolver(FakeConnection(rows=[row])), method
                 )(getattr(record, selector))
                 self.assertEqual(resolved, record)
+
+    def test_postgres_resolver_validates_persisted_claim_identity_and_provenance(self):
+        from bi_agent.runtime.runtime_persistence import (
+            PostgresRuntimeEvidenceResolver,
+        )
+
+        bundle = _authority_bundle()
+        claim = bundle["verified_claims"][0]
+        provenance = bundle["trusted_provenance_records"][0]
+        claim_row = {
+            key: claim[key]
+            for key in (
+                "claim_ref", "claim_digest", "run_id", "context_manifest_ref",
+                "provenance_record_ref",
+            )
+        }
+        claim_row["payload"] = json.dumps(claim)
+        provenance_row = {
+            key: provenance[key]
+            for key in ("record_ref", "record_digest", "run_id")
+        }
+        provenance_row["payload"] = json.dumps(provenance)
+
+        resolved_claim = PostgresRuntimeEvidenceResolver(
+            FakeConnection(rows=[claim_row])
+        ).resolve_verified_claim(claim["claim_ref"])
+        resolved_provenance = PostgresRuntimeEvidenceResolver(
+            FakeConnection(rows=[provenance_row])
+        ).resolve_claim_provenance(provenance["record_ref"])
+
+        self.assertEqual(canonical_value(resolved_claim), canonical_value(claim))
+        self.assertEqual(
+            canonical_value(resolved_provenance), canonical_value(provenance)
+        )
+
+        claim_row["claim_digest"] = "0" * 64
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError, "verified_claim_column_mismatch:claim_digest"
+        ):
+            PostgresRuntimeEvidenceResolver(
+                FakeConnection(rows=[claim_row])
+            ).resolve_verified_claim(claim["claim_ref"])
 
     def test_postgres_resolver_rejects_payload_kind_spoof(self):
         from bi_agent.runtime.runtime_persistence import (

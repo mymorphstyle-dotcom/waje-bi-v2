@@ -441,6 +441,21 @@ def canonical_rows_storage_ref(rows: Sequence[Mapping[str, Any]]) -> str:
     return f"rows-storage:sha256:{digest}"
 
 
+def snapshot_authority_record(snapshot: DatasetSnapshot) -> SnapshotRecord:
+    if type(snapshot) is not DatasetSnapshot:
+        raise EvidenceIntegrityError("snapshot_record_write_type_invalid")
+    payload = _canonical_value(asdict(snapshot))
+    digest = canonical_digest(payload)
+    return SnapshotRecord(
+        record_ref=f"snapshot-record:{snapshot.snapshot_ref}:{digest}",
+        record_digest=digest,
+        snapshot_ref=snapshot.snapshot_ref,
+        payload=_deep_freeze(payload),
+        payload_digest=digest,
+        snapshot=snapshot,
+    )
+
+
 def _content_addressed_storage_ref(value: Any) -> bool:
     text = str(value or "")
     prefix = "rows-storage:sha256:"
@@ -498,16 +513,7 @@ def _write_query_execution(
         snapshot = snapshots[snapshot_ref]
         if snapshot.snapshot_ref != snapshot_ref:
             raise EvidenceIntegrityError("snapshot_mapping_ref_mismatch")
-        payload = _canonical_value(asdict(snapshot))
-        digest = canonical_digest(payload)
-        snapshot_record = SnapshotRecord(
-            record_ref=f"snapshot-record:{snapshot_ref}:{digest}",
-            record_digest=digest,
-            snapshot_ref=snapshot_ref,
-            payload=_deep_freeze(payload),
-            payload_digest=digest,
-            snapshot=snapshot,
-        )
+        snapshot_record = snapshot_authority_record(snapshot)
         put_typed(
             "snapshot",
             snapshot_ref,

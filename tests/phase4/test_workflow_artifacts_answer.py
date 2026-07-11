@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from bi_agent.runtime.answer_package import (
+    _terminal_explanation_projection,
     build_answer_package,
     reverify_answer_package_for_delivery,
     scrub_answer_package_for_delivery,
@@ -48,6 +49,59 @@ def _llm_input_payload(answer_package, task):
 
 
 class WorkflowArtifactsAnswerTest(unittest.TestCase):
+    def test_authority_bound_blocked_evidence_can_project_terminal_explanation(self):
+        from types import SimpleNamespace
+
+        candidate = {
+            "status": "draft",
+            "final_explanation": {
+                "status": "degraded",
+                "explanation": "当前比较证据不足，无法发布收入变化结论。",
+                "owner": "业务分析负责人",
+                "repair_path": "补齐可比较窗口后重跑。",
+            },
+            "admin_audit": {
+                "compiler_runtime_plan": {
+                    "analysis_contract": {"contract_gaps": []}
+                },
+                "validator_results": [{"ok": True}],
+            },
+        }
+        evidence = ({
+            "evidence_ref": "evidence:blocked",
+            "wording_limit": "blocked",
+            "limitations": ["window_pair_cardinality_invalid"],
+            "binding_manifest_ref": "binding:blocked",
+            "result_refs": ["result:blocked"],
+            "completeness_record_refs": ["completeness-record:blocked"],
+        },)
+        binding = SimpleNamespace(
+            result_refs=("result:blocked",),
+            validation_result_refs=(),
+            completeness_record_refs=("completeness-record:blocked",),
+            validation_completeness_record_refs=(),
+        )
+
+        class Resolver:
+            def resolve_capability_binding(self, ref):
+                return binding if ref == "binding:blocked" else None
+
+        with patch(
+            "bi_agent.runtime.answer_package.validate_authoritative_query_chain",
+            return_value=SimpleNamespace(),
+        ):
+            projected = _terminal_explanation_projection(
+                candidate,
+                evidence=evidence,
+                evidence_resolver=Resolver(),
+                rows_loader=object(),
+                runtime_registry=object(),
+                release_resolver=None,
+            )
+
+        self.assertEqual(projected["status"], "degraded")
+        self.assertIn("比较证据不足", projected["explanation"])
+
     def test_blocked_runtime_completeness_keeps_degraded_terminal_at_zero_claims(self):
         from types import SimpleNamespace
 

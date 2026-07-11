@@ -37,6 +37,7 @@ from bi_agent.runtime.evidence_authority import (
     RuntimeEvidenceAuthority,
     SnapshotRecord,
     canonical_value,
+    snapshot_authority_record,
 )
 from bi_agent.runtime.query_completeness import validate_query_result, validate_query_set
 from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
@@ -342,8 +343,11 @@ class AnalysisRuntime:
         )
         catalog = self._active_catalog()
         compiled = self._compile_with_catalog(typed, catalog)
+        snapshots = {item.snapshot_ref: item for item in catalog.snapshots()}
         if analysis_outcome_requires_preexecution_clarification(compiled):
-            persistence = self._authority_records(compiled, (), {})
+            persistence = self._authority_records(
+                compiled, (), {}, snapshots=snapshots
+            )
             return AnalysisRuntimeResult(
                 analysis_contract=compiled.analysis_contract,
                 query_contracts=compiled.query_contracts,
@@ -358,7 +362,6 @@ class AnalysisRuntime:
                 ),
                 persistence_records=MappingProxyType(persistence),
             )
-        snapshots = {item.snapshot_ref: item for item in catalog.snapshots()}
         results: list[QueryResultEnvelope] = []
         reports: list[CompletenessReport] = []
         decisions: list[QueryRepairDecision] = []
@@ -424,7 +427,9 @@ class AnalysisRuntime:
                 release_resolver=self.release_resolver,
                 run_mode=typed.run_mode,
             )
-        persistence = self._authority_records(compiled, results, bound)
+        persistence = self._authority_records(
+            compiled, results, bound, snapshots=snapshots
+        )
         gaps = tuple(item.to_dict() for item in compiled.analysis_contract.contract_gaps)
         return AnalysisRuntimeResult(
             analysis_contract=compiled.analysis_contract,
@@ -443,6 +448,8 @@ class AnalysisRuntime:
         compiled: AnalysisCompileOutcome,
         results: Sequence[QueryResultEnvelope],
         bound: Mapping[str, BoundCapabilityInput],
+        *,
+        snapshots: Mapping[str, DatasetSnapshot],
     ) -> dict[str, Any]:
         query_records = tuple(
             record
@@ -455,13 +462,21 @@ class AnalysisRuntime:
             for query in query_records
             if (record := self.evidence_resolver.resolve_rows(query.rows_ref)) is not None
         )
-        snapshot_refs = tuple(
-            dict.fromkeys(ref for query in query_records for ref in query.source_snapshot_refs)
-        )
+        snapshot_refs = tuple(dict.fromkeys(
+            (
+                *(ref for query in query_records for ref in query.source_snapshot_refs),
+                *(
+                    ref
+                    for contract in compiled.query_contracts
+                    for ref in contract.dataset_snapshot_refs
+                ),
+            )
+        ))
         snapshot_records = tuple(
-            record
+            record or snapshot_authority_record(snapshots[ref])
             for ref in snapshot_refs
-            if (record := self.evidence_resolver.resolve_snapshot(ref)) is not None
+            if ref in snapshots
+            for record in (self.evidence_resolver.resolve_snapshot(ref),)
         )
         binding_records = tuple(
             record

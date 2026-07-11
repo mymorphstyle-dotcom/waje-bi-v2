@@ -117,7 +117,7 @@
 - Produces: `resolve_revenue_windows(target_semantic, baselines, as_of, timezone_name, dataset_watermarks, affected_capabilities, affected_claim_types) -> WindowResolution`.
 - Consumed by: Tasks 2-11.
 
-- [ ] **Step 1: 写失败测试，锁定日期、watermark 和重叠窗口行为**
+- [x] **Step 1: 写失败测试，锁定日期、watermark 和重叠窗口行为**
 
 Create `tests/phase4/test_analysis_contracts.py`:
 
@@ -196,7 +196,7 @@ The same module also constructs `AnalysisContract`, `QueryContract`,
 structured readiness/degradation mappings, non-empty gap impact fields, and
 distinct gap ids for two requested target dates sharing one dataset watermark.
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run:
 
@@ -206,7 +206,7 @@ python3 -m unittest tests.phase4.test_analysis_contracts -v
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'bi_agent.runtime.analysis_contracts'`.
 
-- [ ] **Step 3: 实现合同类型和稳定序列化**
+- [x] **Step 3: 实现合同类型和稳定序列化**
 
 Create `bi_agent/runtime/analysis_contracts.py` with these concrete definitions:
 
@@ -398,7 +398,7 @@ class CompletenessReport:
         return asdict(self)
 ```
 
-- [ ] **Step 4: 实现 deterministic window resolver**
+- [x] **Step 4: 实现 deterministic window resolver**
 
 Create `bi_agent/runtime/window_resolver.py`:
 
@@ -510,7 +510,7 @@ def _day_window(window_id: str, role: str, day: date, timezone_name: str) -> Res
     )
 ```
 
-- [ ] **Step 5: 运行 Task 1 验证**
+- [x] **Step 5: 运行 Task 1 验证**
 
 Run:
 
@@ -521,7 +521,7 @@ python3 -m pytest tests/phase4/test_revenue_runtime_plan.py -q
 
 Expected: new tests PASS; existing revenue plan tests remain PASS.
 
-- [ ] **Step 6: 提交 Task 1**
+- [x] **Step 6: 提交 Task 1**
 
 ```bash
 git add bi_agent/runtime/analysis_contracts.py bi_agent/runtime/window_resolver.py tests/phase4/test_analysis_contracts.py
@@ -551,7 +551,7 @@ git commit -m "feat: add deterministic analysis contract windows"
 - PostgreSQL snapshot upsert plus audit insertion is one explicit transaction. An upsert, audit, or commit exception triggers rollback and is re-raised unchanged.
 - InMemory save, list, and audit-read boundaries use canonical deep copies so callers cannot mutate stored snapshots or audit history through shared nested values.
 
-- [ ] **Step 1: 写 catalog 和 persistence 失败测试**
+- [x] **Step 1: 写 catalog 和 persistence 失败测试**
 
 Create `tests/phase4/test_dataset_catalog.py`:
 
@@ -647,7 +647,7 @@ Add persistence regression tests for:
 - saving a reused `snapshot_ref` replaces the complete in-memory snapshot and removes it from the previous dataset filter;
 - nested `schema_fields` and `permission_scopes` cannot be mutated through the original input, list return values, or audit reads.
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```bash
 python3 -m unittest tests.phase4.test_dataset_catalog -v
@@ -656,7 +656,7 @@ python3 -m unittest tests.phase7.test_conversation_persistence.ConversationPersi
 
 Expected: first command fails on missing module; second fails because schema/store method is absent.
 
-- [ ] **Step 3: 实现 dataset catalog**
+- [x] **Step 3: 实现 dataset catalog**
 
 Create `bi_agent/runtime/dataset_catalog.py`:
 
@@ -732,7 +732,7 @@ def _aware_utc(value: datetime, *, field: str) -> datetime:
     return value.astimezone(timezone.utc)
 ```
 
-- [ ] **Step 4: 增加 PostgreSQL snapshot 表和两个 store 实现**
+- [x] **Step 4: 增加 PostgreSQL snapshot 表和两个 store 实现**
 
 Append to `tools/runtime/conversation-runtime.sql` before indexes:
 
@@ -807,7 +807,7 @@ The in-memory implementation uses `copy.deepcopy` when saving snapshot payloads,
 when returning listed snapshots, when recording audit payloads, and when exposing
 audit events to readers.
 
-- [ ] **Step 5: 运行 Task 2 验证**
+- [x] **Step 5: 运行 Task 2 验证**
 
 ```bash
 python3 -m unittest tests.phase4.test_dataset_catalog -v
@@ -817,7 +817,7 @@ ruby tools/runtime/load-conversation-runtime-schema.rb
 
 Expected: tests PASS; schema loader prints `Loaded conversation runtime schema`.
 
-- [ ] **Step 6: 提交 Task 2**
+- [x] **Step 6: 提交 Task 2**
 
 ```bash
 git add bi_agent/runtime/dataset_catalog.py tests/phase4/test_dataset_catalog.py tools/runtime/conversation-runtime.sql bi_agent/conversation/store.py bi_agent/conversation/postgres_store.py tests/phase7/test_conversation_persistence.py
@@ -842,7 +842,7 @@ git commit -m "feat: register versioned analytical dataset snapshots"
 - Produces: `AnalysisCompileOutcome(analysis_contract, query_contracts, capability_plans)`; compiler gaps live only in `analysis_contract.contract_gaps`.
 - Keeps: `CompiledGraph.runtime_plan` as a JSON compatibility projection until Task 10 removes legacy row selection.
 
-- [ ] **Step 1: 写失败测试，证明 compiler 只依赖 proposal 与合同**
+- [x] **Step 1: 写失败测试，证明 compiler 只依赖 proposal 与合同**
 
 Create `tests/phase4/test_analysis_contract_compiler.py`:
 
@@ -974,7 +974,7 @@ if __name__ == "__main__":
 
 The Task 3 suite also locks: explicit claim ceiling rejection; dataset execution-contract validation for missing/empty/dual date sources and non-empty required fields; valid `date_field` and `date_expression` paths; dataset date/metric/dimension snapshot schema closure; run-independent canonical signatures and filter/snapshot/binding/workload sensitivity; dynamic public + canonical capability binding coverage; typed unsupported/duplicate window advisory gaps; precise payment/event/target-only dependency owners; and future-vs-eligible permission classification.
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```bash
 python3 -m unittest tests.phase4.test_analysis_contract_compiler -v
@@ -982,7 +982,7 @@ python3 -m unittest tests.phase4.test_analysis_contract_compiler -v
 
 Expected: FAIL on missing compiler/registry modules.
 
-- [ ] **Step 3: 增加 reviewed runtime binding YAML**
+- [x] **Step 3: 增加 reviewed runtime binding YAML**
 
 Create `contracts/runtime/clickhouse-analysis-bindings.yaml` with these required sections and all existing revenue capability IDs:
 
@@ -1092,7 +1092,7 @@ capability_inputs:
 
 The implementation must load this YAML with `load_contract()` and reject missing sections or duplicate ids. The reviewed artifact also carries `query_shapes` keyed by query family so `ResultShape` and query parameters are contract-driven; daily observation shapes include `window_id`, `window_role`, and `observation_key`, with `observation_key` in the unique key and grain. `high_value_scan` carries reviewed `threshold_quantile=0.95`, `threshold_reference=within_window_user_paid_amount`, and `aggregation_grain=[window_id, observation_key, user_id]`. Runtime bindings cover every id from `public_capability_ids()` plus canonical legacy graph aliases. Coverage tests derive this set dynamically from the canonical registries.
 
-- [ ] **Step 4: 实现 registry 和 compiler**
+- [x] **Step 4: 实现 registry 和 compiler**
 
 Create `RuntimeContractRegistry` with `metric()`, `dimension()`, `capability_inputs()`, and `dataset()` accessors that return copied mappings. Query semantic identity is defined once by shared `query_contract_semantic_body()` / `query_contract_signature()` helpers in `analysis_contracts.py`; Task 3 dedupe and final signatures use those helpers. The body covers query intent, snapshot refs, complete metric and dimension bindings, windows, filters, result shape, assertions, permission, workload, and reviewed `query_parameters`, while excluding identity and signature. Query-family parameters are copied from the reviewed `query_shapes` entry. Explicit proposal claim intents remain advisory: the compiler intersects them with the union of accepted capability `supported_claim_types`; no-query verifier/reducer contracts with empty claim support do not expand that ceiling. Unsupported explicit intents produce typed gaps and never enter `AnalysisContract.claim_intents`; when none remain, `unbound_claim_intent` keeps resolver attribution non-empty. Implicit binding then uses accepted capability claim types, metric claim types only when capability contracts provide none, then a typed unbound gap. `maximum_claim_strength` stays a plan/verifier boundary and is never interpreted as a claim type.
 
@@ -1254,7 +1254,7 @@ immutable `resolved_windows` snapshot on every query. One canonical semantic bod
 structured `minimum_readiness` and `degradation_policy` mappings from reviewed
 capability contracts; plans remain only on `AnalysisCompileOutcome`. `_reconcile_capability_inputs()` compares required windows, context sources, dimensions, and required query slots with the compiled result and emits typed gaps instead of leaving an accepted capability with silently empty or semantically invalid inputs.
 
-- [ ] **Step 5: 将新 outcome 挂到 CompiledGraph，保留兼容 projection**
+- [x] **Step 5: 将新 outcome 挂到 CompiledGraph，保留兼容 projection**
 
 Add defaulted fields to `CompiledGraph`:
 
@@ -1266,7 +1266,7 @@ capability_execution_plans: tuple[dict[str, Any], ...] = ()
 
 Update `build_revenue_runtime_plan()` to return a compatibility dict containing `analysis_contract`, `query_contracts`, and `capability_execution_plans`. Existing legacy fields remain until Task 10. No new question-text branch is added.
 
-- [ ] **Step 6: 运行 Task 3 验证**
+- [x] **Step 6: 运行 Task 3 验证**
 
 ```bash
 python3 -m unittest tests.phase4.test_analysis_contract_compiler -v
@@ -1276,7 +1276,7 @@ ruby tools/contracts/validate-contracts.rb
 
 Expected: all commands PASS.
 
-- [ ] **Step 7: 提交 Task 3**
+- [x] **Step 7: 提交 Task 3**
 
 ```bash
 git add contracts/runtime/clickhouse-analysis-bindings.yaml bi_agent/runtime/runtime_contract_registry.py bi_agent/runtime/analysis_contract_compiler.py bi_agent/runtime/models.py bi_agent/runtime/revenue_runtime_plan.py bi_agent/runtime/compiler.py tests/phase4/test_analysis_contract_compiler.py
@@ -1307,7 +1307,7 @@ git commit -m "feat: compile llm proposals into analysis contracts"
 - Produces: `CompiledQuery(sql_text, parameters, settings, query_contract_ref)`.
 - Produces: `ClickHouseQueryExecutor.execute(contract, snapshots) -> QueryResultEnvelope`.
 
-- [ ] **Step 1: 写失败测试，锁定重叠窗口和禁止 `now()`**
+- [x] **Step 1: 写失败测试，锁定重叠窗口和禁止 `now()`**
 
 Create `tests/phase4/test_clickhouse_query_compiler.py`:
 
@@ -1362,7 +1362,7 @@ if __name__ == "__main__":
 
 Extend `tests/phase4/test_clickhouse_revenue_rows.py` with a fake client test asserting query parameters/settings reach the client and `QueryResultEnvelope` preserves provider stats plus `rows_ref`, `row_count`, and `completeness_report_ref`.
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```bash
 python3 -m unittest tests.phase4.test_clickhouse_query_compiler -v
@@ -1370,7 +1370,7 @@ python3 -m unittest tests.phase4.test_clickhouse_query_compiler -v
 
 Expected: FAIL on missing query compiler.
 
-- [ ] **Step 3: 扩展 ClickHouseRuntime 为参数化、安全、可审计执行**
+- [x] **Step 3: 扩展 ClickHouseRuntime 为参数化、安全、可审计执行**
 
 Change `ClickHouseRuntime.aggregate()` to:
 
@@ -1394,7 +1394,7 @@ def aggregate(
 
 Pass `parameters` and `settings` to `client.query()`. Compatibility retry may remove only an explicitly unsupported `query_id`. Typed `parameters` and `settings` are required safety inputs: an explicit rejection returns a precise failed result after one provider call, and broad internal `TypeError` values propagate. Add `provider_stats` to `ClickHouseQueryResult`, sourced from `result.summary` and `result.query_id` where available. Configure aggregate queries with `result_overflow_mode='throw'`; runtime never accepts server-side break/truncation as success.
 
-- [ ] **Step 4: 实现 source adapters and window relation**
+- [x] **Step 4: 实现 source adapters and window relation**
 
 Create `clickhouse_query_compiler.py` with:
 
@@ -1441,7 +1441,7 @@ def compile_clickhouse_query(contract: QueryContract, snapshots: Mapping[str, Da
 
 At entry, the compiler validates the concrete `QueryContract` nested runtime types and every snapshot value before reading attributes, so malformed direct typed objects produce explicit `TypeError` or `ValueError` boundaries that the executor maps to blocked envelopes. Snapshot scalar metadata must be non-empty, watermark must be an ISO date, and loaded-at must be a timezone-aware ISO datetime. After this structural gate it recomputes the shared semantic signature and fails closed on mismatch. The non-empty, ordered, unique resolved window ids must exactly equal `window_refs`; `ResultShape.required_window_ids` must match the same tuple; each resolved window must have non-empty typed fields plus a valid timezone, date interval, watermark requirement, and complete-day bound. Metric and dimension bindings, query shape parameters, and dataset date adapters are compared exactly with reviewed registry entries. Lexical defense applies function allowlists and structural-keyword rejection after masking quoted literals and identifiers. Implement dedicated branches for `payment_attempt`, `time_bucket_scan`, `data_quality_probe`, `high_value_scan`, and event datasets. Each branch uses only active contract expressions and logical snapshot bindings. `high_value_scan` reads its threshold quantile, reference, and aggregation grain from reviewed `query_parameters`, passes the quantile as a ClickHouse parameter, and uses separate user totals, threshold, classification, and final aggregate layers so the output contains aggregate buckets without user ids or aggregate alias shadowing. Its reviewed grain is `[window_id, observation_key, user_id]`; dimension bindings are rejected until a versioned registry grain/template explicitly defines per-dimension thresholds.
 
-- [ ] **Step 5: 实现 executor envelope and compatibility wrapper**
+- [x] **Step 5: 实现 executor envelope and compatibility wrapper**
 
 `ClickHouseQueryExecutor.execute()` validates SQL with
 `validate_select_only(..., aggregate=True)`, calls `ClickHouseRuntime.aggregate()`,
@@ -1469,7 +1469,7 @@ because the reviewed function is a stricter ClickHouse variant.
 
 Update `ClickHouseRevenueRows` to delegate typed contracts to the executor. Keep the old `build_clickhouse_query_specs()` path only when `compiler_runtime_plan.query_contracts` is absent. Mark legacy query results with `contract_mode="legacy"`; they cannot satisfy the new completeness acceptance in Task 11.
 
-- [ ] **Step 6: 运行 Task 4 验证**
+- [x] **Step 6: 运行 Task 4 验证**
 
 ```bash
 python3 -m unittest tests.phase4.test_clickhouse_query_compiler -v
@@ -1478,7 +1478,7 @@ python3 -m pytest tests/phase4/test_clickhouse_query_planner.py tests/phase4/tes
 
 Expected: all tests PASS; no generated typed query contains `now(` or `LIMIT 5000`.
 
-- [ ] **Step 7: 提交 Task 4**
+- [x] **Step 7: 提交 Task 4**
 
 ```bash
 git add bi_agent/runtime/clickhouse_query_compiler.py bi_agent/runtime/query_executor.py bi_agent/runtime/clickhouse_runtime.py bi_agent/runtime/clickhouse_query_planner.py bi_agent/runtime/clickhouse_revenue_rows.py tests/phase4/test_clickhouse_query_compiler.py tests/phase4/test_clickhouse_revenue_rows.py
@@ -2825,7 +2825,7 @@ git commit -m "feat: run analysis contracts through conversation core"
 - Harness verifies query contracts, snapshots, completeness, capability readiness, claim provenance, and user-visible answer independently.
 - Review tool emits runtime correctness and LLM quality scorecards without turning quality warnings into display gates.
 
-- [ ] **Step 1: 写 fixed eval contract and review failures**
+- [x] **Step 1: 写 fixed eval contract and review failures**
 
 Extend the case:
 
@@ -2851,7 +2851,7 @@ Extend the case:
 
 Add tests asserting the dates and required datasets remain fixed. Add harness tests where a query hash exists but completeness is partial; `_real_clickhouse_review()` must fail with `incomplete_clickhouse_query:<query_contract_ref>`.
 
-- [ ] **Step 2: 运行 tests and confirm failure**
+- [x] **Step 2: 运行 tests and confirm failure**
 
 ```bash
 python3 -m pytest tests/phase7/test_agent_core_bridge.py -k "revenue_diagnostic_question_set or clickhouse_query" -q
@@ -2859,7 +2859,7 @@ python3 -m pytest tests/phase7/test_agent_core_bridge.py -k "revenue_diagnostic_
 
 Expected: FAIL because fixed context and completeness review are absent.
 
-- [ ] **Step 3: Upgrade the live harness**
+- [x] **Step 3: Upgrade the live harness**
 
 `run_case()` passes `case.analysis_context` to every `ConversationAgentCore.run_message()` call, including clarification resume. `_real_clickhouse_review()` verifies:
 
@@ -2872,7 +2872,7 @@ Expected: FAIL because fixed context and completeness review are absent.
 
 Do not require fixed answer words except hard boundary text already present in the scenario. Final answer quality is evaluated by LLM and human scorecard fields.
 
-- [ ] **Step 4: Implement eval review tool**
+- [x] **Step 4: Implement eval review tool**
 
 `review_analysis_contract_eval.py` reads the artifact and returns nonblocking quality dimensions for each turn:
 
@@ -2895,7 +2895,7 @@ Do not require fixed answer words except hard boundary text already present in t
 
 Scores use a documented 1-5 rubric and the real LLM final-audit output. The tool reports quality regressions and never changes the displayed answer or process exit based solely on style scores.
 
-- [ ] **Step 5: Apply schemas, contracts, and source manifests**
+- [x] **Step 5: Apply schemas, contracts, and source manifests**
 
 ```bash
 ruby tools/runtime/load-conversation-runtime-schema.rb
@@ -2907,7 +2907,7 @@ npm run build
 
 Expected: all commands PASS. Register successful loader manifests from Tasks 7-8 in PostgreSQL. Record absent source files and internal-operation events with missing item and owner; do not synthesize success.
 
-- [ ] **Step 6: Run one-turn fixed-window smoke through ConversationAgentCore**
+- [x] **Step 6: Run one-turn fixed-window smoke through ConversationAgentCore**
 
 ```bash
 python3 -m bi_agent.conversation.agent_core \
@@ -2920,7 +2920,7 @@ python3 -m bi_agent.conversation.agent_core \
 
 Expected: status `completed` or a real `waiting_for_clarification`; Answer Package includes target `2026-06-02`, all three baselines, query contracts, result refs, completeness reports, and no missing-target misclassification.
 
-- [ ] **Step 7: Run full real LLM + ClickHouse + PostgreSQL eval twice**
+- [x] **Step 7: Run full real LLM + ClickHouse + PostgreSQL eval twice**
 
 ```bash
 python3 tools/phase7/run_live_conversation_system_test.py \
@@ -2940,7 +2940,7 @@ python3 tools/phase7/run_live_conversation_system_test.py \
 
 Do not set an external short timeout. Wait for every high-value LLM answer. If provider transport fails after the centralized three attempts, retain the exact failure and owner.
 
-- [ ] **Step 8: Review both artifacts and compare with baseline**
+- [x] **Step 8: Review both artifacts and compare with baseline**
 
 ```bash
 python3 tools/phase7/review_analysis_contract_eval.py \
@@ -2969,7 +2969,7 @@ Acceptance requires:
 - final LLM audit warnings remain visible and nonblocking;
 - answer-quality scorecard documents directness, insight, actionability, and evidence discipline relative to baseline.
 
-- [ ] **Step 9: 提交 Task 11**
+- [x] **Step 9: 提交 Task 11**
 
 ```bash
 git add tools/phase7/review_analysis_contract_eval.py evals/phase7/conversation_scenarios.yaml tools/phase7/run_live_conversation_system_test.py tests/phase7/test_agent_core_bridge.py docs/phase-7-live-conversation-eval.md

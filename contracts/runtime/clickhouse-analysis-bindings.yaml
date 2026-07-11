@@ -30,6 +30,23 @@ metric_display_policies:
     - {value_semantics: scalar_ratio, display_format: percent}
     - {value_semantics: gameplay_activity_amount, display_format: number}
 
+metric_business_labels:
+  version: "1"
+  labels:
+    player_bet_amount: [玩家下注金额, 下注金额]
+    paid_amount: [付费金额, 收入]
+    paid_users: [付费人数, 付费用户数]
+    paid_orders: [付费订单数, 支付订单数]
+    first_paid_users: [首充人数, 首次付费人数]
+    paid_frequency: [付费频次, 付费次数]
+    avg_order_amount: [单笔付费金额, 客单价]
+    payment_success_rate: [支付成功率]
+    active_users: [活跃用户, 日活]
+    new_users: [新增用户, 新用户]
+    registrations: [注册人数, 注册用户, 注册]
+    aggregate_marketing_cost: [投放成本, 营销成本]
+    profit: [利润]
+
 datasets:
   paid_order_success:
     date_field: business_date_lagos
@@ -361,7 +378,14 @@ query_shapes:
   joint_candidate_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: joint, dimension_presence_policy: paired_required}
   time_bucket_scan: {required_fields: [window_id, window_role, observation_key, calendar_week, weekday, month_phase], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
   data_quality_probe: {required_fields: [window_id, window_role, observation_key, source_row_count], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
-  event_context_probe: {required_fields: [window_id, window_role, observation_key, event_count, source_family, event_id, event_type, event_start_date, event_end_date, affected_scope, authority, evidence_level, wording_limit, recurrence_kind, recurrence_month_start, recurrence_day_start, recurrence_month_end, recurrence_day_end, payload], unique_key: [window_id, event_id], grain: [window_id, event_id], result_semantics: complete_context_rows, max_context_rows: 5000, dimension_presence_policy: sparse_allowed}
+  event_context_probe:
+    required_fields: [window_id, window_role, observation_key, event_count, source_family, event_id, event_type, event_start_date, event_end_date, affected_scope, authority, evidence_level, wording_limit, recurrence_kind, recurrence_month_start, recurrence_day_start, recurrence_month_end, recurrence_day_end, payload]
+    source_fields: [source_family, event_id, event_type, event_start_date, event_end_date, affected_scope, authority, evidence_level, wording_limit, recurrence_kind, recurrence_month_start, recurrence_day_start, recurrence_month_end, recurrence_day_end, payload]
+    unique_key: [window_id, event_id]
+    grain: [window_id, event_id]
+    result_semantics: complete_context_rows
+    max_context_rows: 5000
+    dimension_presence_policy: sparse_allowed
   gameplay_activity_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: sparse_allowed}
   channel_context_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key, channel], grain: [window_id, observation_key, channel], dimension_topology: joint, dimension_presence_policy: paired_required}
   source_reconciliation_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}

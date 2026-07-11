@@ -27,6 +27,7 @@ _REQUIRED_SECTIONS = (
     "business_timezone",
     "claim_strength_taxonomy",
     "metric_display_policies",
+    "metric_business_labels",
     *_MAPPING_SECTIONS,
 )
 _REQUIRED_CLAIM_STRENGTHS = frozenset(
@@ -72,6 +73,10 @@ class RuntimeContractRegistry:
                     raise ValueError(f"runtime_contract_entry_must_be_mapping:{section}:{item_id}")
         _validate_claim_strength_taxonomy(payload["claim_strength_taxonomy"])
         _validate_metric_display_policies(payload["metric_display_policies"])
+        _validate_metric_business_labels(
+            payload["metric_business_labels"],
+            tuple(str(item) for item in payload["metrics"]),
+        )
         _validate_query_shapes(payload.get("query_shapes") or {})
         maximum_ranks = payload["claim_strength_taxonomy"]["maximum_strength_ranks"]
         for capability_id, contract in payload["capability_inputs"].items():
@@ -141,6 +146,13 @@ class RuntimeContractRegistry:
 
     def metric_sources(self, metric_id: str) -> dict[str, dict[str, Any]]:
         return self._source_entries("metrics", metric_id, "metric")
+
+    def metric_business_labels(self, metric_id: str) -> tuple[str, ...]:
+        try:
+            labels = self._payload["metric_business_labels"]["labels"][metric_id]
+        except KeyError as exc:
+            raise KeyError(f"unknown_metric:{metric_id}") from exc
+        return tuple(str(item) for item in labels)
 
     def dimension_sources(self, dimension_id: str) -> dict[str, dict[str, Any]]:
         return self._source_entries("dimensions", dimension_id, "dimension")
@@ -351,6 +363,25 @@ def _validate_metric_display_policies(value: Any) -> None:
         pairs.add(pair)
 
 
+def _validate_metric_business_labels(
+    value: Any,
+    metric_ids: tuple[str, ...],
+) -> None:
+    if not isinstance(value, Mapping) or not str(value.get("version") or ""):
+        raise ValueError("runtime_metric_business_labels_invalid")
+    labels = value.get("labels")
+    if not isinstance(labels, Mapping) or set(labels) != set(metric_ids):
+        raise ValueError("runtime_metric_business_labels_incomplete")
+    for metric_id, values in labels.items():
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(type(item) is not str or not item.strip() for item in values)
+            or len(values) != len(set(values))
+        ):
+            raise ValueError(f"runtime_metric_business_labels_invalid:{metric_id}")
+
+
 def _validate_query_shapes(value: Any) -> None:
     if not isinstance(value, Mapping):
         raise ValueError("runtime_query_shapes_invalid")
@@ -364,6 +395,16 @@ def _validate_query_shapes(value: Any) -> None:
             raise ValueError(
                 "runtime_query_shape_dimension_presence_policy:"
                 f"{query_family}:{policy or 'missing'}"
+            )
+        source_fields = shape.get("source_fields")
+        if source_fields is not None and (
+            not isinstance(source_fields, list)
+            or not source_fields
+            or any(type(field) is not str or not field for field in source_fields)
+            or len(source_fields) != len(set(source_fields))
+        ):
+            raise ValueError(
+                f"runtime_query_shape_source_fields:{query_family}"
             )
 
 

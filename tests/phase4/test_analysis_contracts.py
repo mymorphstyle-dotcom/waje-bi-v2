@@ -38,6 +38,45 @@ class AnalysisContractsTest(unittest.TestCase):
         self.assertTrue(all(window.membership_policy == "allow_overlap" for window in result.windows))
         self.assertEqual(result.gaps, ())
 
+    def test_fixed_eval_adds_pattern_and_anomaly_history_windows(self):
+        result = resolve_revenue_windows(
+            target_semantic="yesterday",
+            baselines=(),
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            timezone_name="Africa/Lagos",
+            dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
+            affected_capabilities=("pattern_scan", "outlier_scan"),
+            affected_claim_types=(
+                "recurring_pattern_existence",
+                "external_shock_candidate_or_anomaly",
+            ),
+            fixed_window_bounds={
+                "target_day": ("2026-06-02", "2026-06-02"),
+                "previous_day": ("2026-06-01", "2026-06-01"),
+                "rolling_7_day_baseline": ("2026-05-26", "2026-06-01"),
+                "same_weekday_last_week": ("2026-05-26", "2026-05-26"),
+                "pattern_history": ("2026-01-01", "2026-06-02"),
+                "anomaly_history": ("2026-05-03", "2026-06-01"),
+            },
+        )
+
+        windows = {window.window_id: window for window in result.windows}
+        self.assertEqual(windows["previous_day"].start_inclusive, "2026-06-01")
+        self.assertEqual(
+            windows["rolling_7_day_baseline"].aggregation,
+            "mean_of_complete_days",
+        )
+        self.assertEqual(
+            windows["same_weekday_last_week"].start_inclusive,
+            "2026-05-26",
+        )
+        self.assertEqual(windows["pattern_history"].start_inclusive, "2026-01-01")
+        self.assertEqual(windows["pattern_history"].end_exclusive, "2026-06-03")
+        self.assertEqual(windows["anomaly_history"].start_inclusive, "2026-05-03")
+        self.assertEqual(windows["anomaly_history"].end_exclusive, "2026-06-02")
+        self.assertEqual(windows["pattern_history"].required_complete_days, 153)
+        self.assertEqual(windows["anomaly_history"].required_complete_days, 30)
+
     def test_reports_requested_target_missing_without_shifting_it(self):
         result = resolve_revenue_windows(
             target_semantic="yesterday",

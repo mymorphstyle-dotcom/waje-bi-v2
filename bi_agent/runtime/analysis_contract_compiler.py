@@ -122,6 +122,11 @@ def compile_analysis_contract(
         },
         affected_capabilities=affected_capabilities,
         affected_claim_types=accepted_claim_intents,
+        fixed_window_bounds=(
+            proposal.get("fixed_window_bounds")
+            if isinstance(proposal.get("fixed_window_bounds"), Mapping)
+            else {}
+        ),
     )
     analysis_contract_id = f"analysis:{run_id}:1"
     query_contracts, query_refs_by_capability = _build_query_contracts(
@@ -599,6 +604,7 @@ def _snapshot_evidence_gaps(
                 if not _snapshot_supports_query(
                     snapshot,
                     query_family,
+                    registry=registry,
                     has_dimensions=(
                         str(capability.get("dimension_mode") or "") == "requested"
                     ),
@@ -629,8 +635,16 @@ def _snapshot_supports_query(
     snapshot: DatasetSnapshot,
     query_family: str,
     *,
+    registry: RuntimeContractRegistry,
     has_dimensions: bool,
 ) -> bool:
+    try:
+        query_shape = registry.query_shape(query_family)
+    except KeyError:
+        return False
+    source_fields = _mapping_values(query_shape, "source_fields")
+    if source_fields and not set(source_fields).issubset(snapshot.schema_fields):
+        return False
     context_families = {
         "data_quality_probe",
         "event_context_probe",
@@ -990,6 +1004,7 @@ def _resolve_advisory_windows(
     dataset_watermarks: Mapping[str, date],
     affected_capabilities: tuple[str, ...],
     affected_claim_types: tuple[str, ...],
+    fixed_window_bounds: Mapping[str, tuple[str, str]],
 ) -> WindowResolution:
     try:
         return resolve_revenue_windows(
@@ -1000,6 +1015,7 @@ def _resolve_advisory_windows(
             dataset_watermarks=dataset_watermarks,
             affected_capabilities=affected_capabilities,
             affected_claim_types=affected_claim_types,
+            fixed_window_bounds=fixed_window_bounds,
         )
     except ValueError as exc:
         reason = str(exc)
@@ -1167,10 +1183,15 @@ def _build_query_contracts(
                 for binding in metric_bindings
                 if binding.metric_id == metric_id
                 and (
-                    str(capability.get("metric_mode") or "") != "requested"
+                    query_family == "data_quality_probe"
                     or not _mapping_values(capability, "allowed_datasets")
                     or binding.dataset_id
                     in _mapping_values(capability, "allowed_datasets")
+                    or _source_overrides(
+                        proposal,
+                        "metric_dataset_overrides",
+                    ).get(metric_id)
+                    == binding.dataset_id
                 )
             )
             by_dataset: dict[str, list[MetricBinding]] = {}
@@ -1190,6 +1211,7 @@ def _build_query_contracts(
                 if not _snapshot_supports_query(
                     snapshot,
                     query_family,
+                    registry=registry,
                     has_dimensions=include_dimensions,
                 ):
                     continue

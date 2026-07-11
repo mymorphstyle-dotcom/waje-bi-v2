@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
@@ -428,6 +428,11 @@ class ConversationAgentCore:
                 "artifact_path": result.artifact_path,
             }
         if result.status != "draft" or not result.answer_package:
+            failure_owner = (
+                "evidence_verifier_owner"
+                if str(result.failure_reason).startswith("delivery_reverify_failed")
+                else "workflow_runtime_owner"
+            )
             self.store.upsert_run(
                 run_id,
                 thread_id=thread_id,
@@ -437,6 +442,7 @@ class ConversationAgentCore:
                 request={
                     **_persistable_request(request),
                     "failure_reason": result.failure_reason,
+                    "failure_owner": failure_owner,
                 },
             )
             self.store.add_audit_event(
@@ -444,7 +450,10 @@ class ConversationAgentCore:
                 thread_id=thread_id,
                 topic_id=turn.topic_id or "",
                 run_id=run_id,
-                payload={"failure_reason": result.failure_reason},
+                payload={
+                    "failure_reason": result.failure_reason,
+                    "failure_owner": failure_owner,
+                },
             )
             return {
                 "status": "failed",
@@ -455,6 +464,12 @@ class ConversationAgentCore:
                 "topic_relation": turn.topic_relation,
                 "context_manifest": context_manifest,
                 "failure_reason": result.failure_reason,
+                "failure_owner": failure_owner,
+                "answer_package": result.answer_package,
+                "artifact_path": result.artifact_path,
+                "llm_calls": list(
+                    (result.answer_package or {}).get("llm_calls") or ()
+                ),
             }
 
         internal_verifier_audit: dict[str, Any] = {}
@@ -733,7 +748,21 @@ def _validated_analysis_context(
 ) -> dict[str, str]:
     if value is None:
         return {}
-    if not isinstance(value, Mapping) or set(value) != {"as_of"}:
+    allowed = {
+        "as_of",
+        "target_date",
+        "previous_day",
+        "rolling_7_day_start",
+        "rolling_7_day_end",
+        "same_weekday_last_week",
+        "pattern_history_start",
+        "anomaly_history_start",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or "as_of" not in value
+        or not set(value).issubset(allowed)
+    ):
         raise PermissionError("analysis_context_external_override_rejected")
     raw = value.get("as_of")
     if not isinstance(raw, str):
@@ -744,7 +773,18 @@ def _validated_analysis_context(
         raise ValueError("analysis_context_as_of_invalid") from exc
     if parsed.tzinfo is None:
         raise ValueError("analysis_context_as_of_timezone_required")
-    return {"as_of": parsed.isoformat()}
+    normalized = {"as_of": parsed.isoformat()}
+    for key in allowed - {"as_of"}:
+        if key not in value:
+            continue
+        raw_date = value[key]
+        if not isinstance(raw_date, str):
+            raise ValueError(f"analysis_context_{key}_invalid")
+        try:
+            normalized[key] = date.fromisoformat(raw_date).isoformat()
+        except ValueError as exc:
+            raise ValueError(f"analysis_context_{key}_invalid") from exc
+    return normalized
 
 
 def _persistable_request(request: dict[str, Any]) -> dict[str, Any]:

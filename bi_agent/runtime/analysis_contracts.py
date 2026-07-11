@@ -365,10 +365,19 @@ def analysis_contract_from_dict(value: Mapping[str, Any]) -> AnalysisContract:
     )
     for name, values in (
         ("resolved_windows", tuple(item.window_id for item in contract.resolved_windows)),
-        ("metric_bindings", tuple(item.metric_id for item in contract.metric_bindings)),
+        (
+            "metric_bindings",
+            tuple(
+                (item.metric_id, item.dataset_id)
+                for item in contract.metric_bindings
+            ),
+        ),
         (
             "dimension_bindings",
-            tuple(item.dimension_id for item in contract.dimension_bindings),
+            tuple(
+                (item.dimension_id, item.dataset_id)
+                for item in contract.dimension_bindings
+            ),
         ),
         ("dataset_requirements", contract.dataset_requirements),
         ("capability_requirements", contract.capability_requirements),

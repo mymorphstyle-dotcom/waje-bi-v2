@@ -517,9 +517,13 @@ def _validate_query_contract_analysis_semantics(
     analysis: AnalysisContract,
     contract: QueryContract,
 ) -> None:
-    metrics = {item.metric_id: item for item in analysis.metric_bindings}
+    metrics = {
+        (item.metric_id, item.dataset_id): item
+        for item in analysis.metric_bindings
+    }
     dimensions = {
-        item.dimension_id: item for item in analysis.dimension_bindings
+        (item.dimension_id, item.dataset_id): item
+        for item in analysis.dimension_bindings
     }
     windows = {item.window_id: item for item in analysis.resolved_windows}
     datasets = set(analysis.dataset_requirements)
@@ -541,7 +545,7 @@ def _validate_query_contract_analysis_semantics(
             "runtime_persistence_query_permission_scope_mismatch"
         )
     for metric in contract.metric_bindings:
-        if canonical_value(metrics.get(metric.metric_id)) != canonical_value(metric):
+        if canonical_value(metrics.get((metric.metric_id, metric.dataset_id))) != canonical_value(metric):
             raise EvidenceIntegrityError(
                 "runtime_persistence_query_metric_binding_mismatch"
             )
@@ -550,9 +554,9 @@ def _validate_query_contract_analysis_semantics(
                 "runtime_persistence_query_dataset_requirement_mismatch"
             )
     for dimension in contract.dimension_bindings:
-        if canonical_value(dimensions.get(dimension.dimension_id)) != canonical_value(
-            dimension
-        ):
+        if canonical_value(
+            dimensions.get((dimension.dimension_id, dimension.dataset_id))
+        ) != canonical_value(dimension):
             raise EvidenceIntegrityError(
                 "runtime_persistence_query_dimension_binding_mismatch"
             )
@@ -585,14 +589,42 @@ def _validated_unbound_claim_intents(
         for metric in analysis.metric_bindings
         for claim_type in metric.claim_types
     }
-    clarification_claim_intents = {
-        claim_type
+    boundary_gaps = tuple(
+        gap
         for gap in analysis.contract_gaps
         if gap.requires_clarification
+        or gap.gap_type in {
+            "source_unbound",
+            "permission_blocked",
+            "contract_partial",
+        }
+    )
+    boundary_claim_intents = {
+        claim_type
+        for gap in boundary_gaps
         for claim_type in gap.affected_claim_types
     }
+    try:
+        registry = RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        )
+        capability_claim_intents = {
+            claim_type
+            for gap in boundary_gaps
+            for capability_id in gap.affected_capabilities
+            if capability_id in analysis.capability_requirements
+            for claim_type in registry.capability_inputs(capability_id).get(
+                "supported_claim_types", ()
+            )
+        }
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise EvidenceIntegrityError(
+            "runtime_persistence_analysis_claim_contract_invalid"
+        ) from exc
     if not unsupported.issubset(
-        metric_claim_intents.intersection(clarification_claim_intents)
+        (metric_claim_intents | capability_claim_intents).intersection(
+            boundary_claim_intents
+        )
     ):
         raise EvidenceIntegrityError(
             "runtime_persistence_analysis_claim_intent_unsupported"
@@ -727,11 +759,26 @@ def _validate_capability_binding_analysis_closure(
         raise EvidenceIntegrityError(
             "runtime_persistence_binding_capability_requirement_mismatch"
         )
+    scoped_query_by_ref = query_by_ref
+    if query_by_ref is not None:
+        binding_query_refs = tuple(
+            dict.fromkeys(
+                (
+                    *binding.query_contract_refs,
+                    *binding.validation_query_contract_refs,
+                )
+            )
+        )
+        scoped_query_by_ref = {
+            ref: query_by_ref[ref]
+            for ref in binding_query_refs
+            if ref in query_by_ref
+        }
     try:
         validate_capability_binding_plan_semantics(
             binding,
             RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
-            query_by_ref,
+            scoped_query_by_ref,
         )
     except (AuthoritativeQueryChainError, KeyError, OSError, TypeError, ValueError) as exc:
         raise EvidenceIntegrityError(
@@ -1025,6 +1072,61 @@ class PostgresRuntimeEvidenceResolver(RuntimeEvidenceResolver):
         )
         _validate_binding_join(record, row)
         return record
+
+    def resolve_verified_claim(self, claim_ref: str) -> Mapping[str, Any] | None:
+        row = self._one(
+            """
+            SELECT claim_ref, claim_digest, run_id, context_manifest_ref,
+                   provenance_record_ref, payload
+            FROM waje_runtime.verified_claims
+            WHERE claim_ref = %(ref)s
+            """,
+            {"ref": str(claim_ref)},
+        )
+        if row is None:
+            return None
+        row = _row_mapping(
+            row,
+            (
+                "claim_ref", "claim_digest", "run_id", "context_manifest_ref",
+                "provenance_record_ref", "payload",
+            ),
+        )
+        payload = _authority_mapping(row.get("payload"), "verified_claim")
+        for key in (
+            "claim_ref", "claim_digest", "run_id", "context_manifest_ref",
+            "provenance_record_ref",
+        ):
+            if str(payload.get(key) or "") != str(row.get(key) or ""):
+                raise EvidenceIntegrityError(
+                    f"verified_claim_column_mismatch:{key}"
+                )
+        return payload
+
+    def resolve_claim_provenance(
+        self, record_ref: str
+    ) -> Mapping[str, Any] | None:
+        row = self._one(
+            """
+            SELECT record_ref, record_digest, run_id, payload
+            FROM waje_runtime.claim_provenance_records
+            WHERE record_ref = %(ref)s
+            """,
+            {"ref": str(record_ref)},
+        )
+        if row is None:
+            return None
+        row = _row_mapping(
+            row, ("record_ref", "record_digest", "run_id", "payload")
+        )
+        payload = _authority_mapping(row.get("payload"), "claim_provenance")
+        for key in ("record_ref", "record_digest", "run_id"):
+            if str(payload.get(key) or "") != str(row.get(key) or ""):
+                raise EvidenceIntegrityError(
+                    f"claim_provenance_column_mismatch:{key}"
+                )
+        validate_trusted_claim_provenance_record(payload)
+        return payload
 
     def _one(self, statement: str, params: Mapping[str, Any]) -> Any:
         return self.connection.execute(statement, dict(params)).fetchone()
@@ -1474,3 +1576,10 @@ def _json_value(value: Any) -> Any:
         except json.JSONDecodeError:
             return value
     return canonical_thaw(value)
+
+
+def _authority_mapping(value: Any, kind: str) -> Mapping[str, Any]:
+    payload = _json_value(value)
+    if not isinstance(payload, Mapping):
+        raise EvidenceIntegrityError(f"{kind}_payload_invalid")
+    return canonical_value(payload)

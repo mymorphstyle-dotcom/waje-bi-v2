@@ -653,7 +653,10 @@ def reverify_answer_package_for_delivery(
         verifier=recomputed,
         claims=projected_claims,
         evidence=evidence,
+        evidence_resolver=evidence_resolver,
+        rows_loader=rows_loader,
         runtime_registry=runtime_registry,
+        release_resolver=release_resolver,
     )
 
 
@@ -1761,7 +1764,10 @@ def _project_client_answer_package(
     verifier: Mapping[str, Any],
     claims: Sequence[Mapping[str, Any]],
     evidence: Sequence[Mapping[str, Any]],
+    evidence_resolver: RuntimeEvidenceResolver | None,
+    rows_loader: RowsPayloadLoader | None,
     runtime_registry: RuntimeContractRegistry | None,
+    release_resolver: DatasetReleaseResolver | None,
 ) -> dict[str, Any]:
     passed = verifier.get("status") in {"passed", "passed_with_warnings"} and not (
         verifier.get("errors") or verifier.get("rejected_claim_indexes")
@@ -1810,7 +1816,14 @@ def _project_client_answer_package(
         if str(claim.get("text") or "").strip()
     )
     terminal_explanation = (
-        _terminal_explanation_projection(candidate)
+        _terminal_explanation_projection(
+            candidate,
+            evidence=evidence,
+            evidence_resolver=evidence_resolver,
+            rows_loader=rows_loader,
+            runtime_registry=runtime_registry,
+            release_resolver=release_resolver,
+        )
         if passed and not accepted_claims
         else {}
     )
@@ -2834,7 +2847,15 @@ def _is_terminal_explanation_delivery(value: Any) -> bool:
     return True
 
 
-def _terminal_explanation_projection(candidate: Mapping[str, Any]) -> dict[str, str]:
+def _terminal_explanation_projection(
+    candidate: Mapping[str, Any],
+    *,
+    evidence: Sequence[Mapping[str, Any]] = (),
+    evidence_resolver: RuntimeEvidenceResolver | None = None,
+    rows_loader: RowsPayloadLoader | None = None,
+    runtime_registry: RuntimeContractRegistry | None = None,
+    release_resolver: DatasetReleaseResolver | None = None,
+) -> dict[str, str]:
     if not _is_terminal_explanation_delivery(
         {"final_explanation": candidate.get("final_explanation")}
     ):
@@ -2860,7 +2881,19 @@ def _terminal_explanation_projection(candidate: Mapping[str, Any]) -> dict[str, 
         and str(candidate.get("final_answer") or "")
         == _render_terminal_explanation(raw)
     )
-    if not typed_gaps and not failed_validators and not prior_terminal_projection:
+    authority_boundary = _authority_bound_terminal_boundary(
+        evidence,
+        evidence_resolver=evidence_resolver,
+        rows_loader=rows_loader,
+        runtime_registry=runtime_registry,
+        release_resolver=release_resolver,
+    )
+    if (
+        not typed_gaps
+        and not failed_validators
+        and not prior_terminal_projection
+        and not authority_boundary
+    ):
         return {}
     return {
         "status": str(raw.get("status") or ""),
@@ -2868,6 +2901,61 @@ def _terminal_explanation_projection(candidate: Mapping[str, Any]) -> dict[str, 
         "owner": str(raw.get("owner") or "").strip(),
         "repair_path": str(raw.get("repair_path") or "").strip(),
     }
+
+
+def _authority_bound_terminal_boundary(
+    evidence: Sequence[Mapping[str, Any]],
+    *,
+    evidence_resolver: RuntimeEvidenceResolver | None,
+    rows_loader: RowsPayloadLoader | None,
+    runtime_registry: RuntimeContractRegistry | None,
+    release_resolver: DatasetReleaseResolver | None,
+) -> bool:
+    if (
+        evidence_resolver is None
+        or rows_loader is None
+        or runtime_registry is None
+    ):
+        return False
+    for item in evidence:
+        if (
+            str(item.get("wording_limit") or "") not in {"blocked", "insufficient"}
+            or not tuple(item.get("limitations") or ())
+        ):
+            continue
+        binding_ref = str(item.get("binding_manifest_ref") or "")
+        result_refs = tuple(str(ref) for ref in item.get("result_refs") or ())
+        completeness_refs = tuple(
+            str(ref) for ref in item.get("completeness_record_refs") or ()
+        )
+        if not binding_ref or not result_refs or not completeness_refs:
+            continue
+        try:
+            binding = evidence_resolver.resolve_capability_binding(binding_ref)
+            if binding is None:
+                continue
+            validate_authoritative_query_chain(
+                binding,
+                resolver=evidence_resolver,
+                rows_loader=rows_loader,
+                runtime_registry=runtime_registry,
+                release_resolver=release_resolver,
+            )
+        except (AuthoritativeQueryChainError, KeyError, TypeError, ValueError):
+            continue
+        bound_results = {
+            *binding.result_refs,
+            *binding.validation_result_refs,
+        }
+        bound_completeness = {
+            *binding.completeness_record_refs,
+            *binding.validation_completeness_record_refs,
+        }
+        if set(result_refs).issubset(bound_results) and set(
+            completeness_refs
+        ).issubset(bound_completeness):
+            return True
+    return False
 
 
 def _render_terminal_explanation(value: Mapping[str, Any]) -> str:

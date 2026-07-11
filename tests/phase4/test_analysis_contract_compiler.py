@@ -640,6 +640,26 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             original,
         )
 
+    def test_runtime_metric_business_labels_cover_every_bound_metric(self):
+        payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
+        registry = RuntimeContractRegistry(payload)
+
+        self.assertEqual(
+            registry.metric_business_labels("payment_success_rate"),
+            ("支付成功率",),
+        )
+        self.assertEqual(
+            set(payload["metric_business_labels"]["labels"]),
+            set(registry.metric_ids),
+        )
+
+        del payload["metric_business_labels"]["labels"]["payment_success_rate"]
+        with self.assertRaisesRegex(
+            ValueError,
+            "runtime_metric_business_labels_incomplete",
+        ):
+            RuntimeContractRegistry(payload)
+
     def test_claim_strength_taxonomy_rejects_reversed_duplicate_and_unknown_ranks(self):
         cases = {
             "reversed": lambda value: value["claim_strength_ranks"].update(
@@ -880,6 +900,66 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         self.assertEqual(query.join_expectation.max_duplicate_keys, 0)
         self.assertEqual(query.join_expectation.max_unmatched_rows, 0)
         self.assertEqual(query.contract_signature, query_contract_signature(query))
+
+    def test_capability_queries_only_use_their_reviewed_datasets(self):
+        from bi_agent.runtime.analysis_contract_compiler import (
+            _bind_metrics,
+            _build_query_contracts,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        dashboard, _ = _market_dashboard_snapshots()
+        paid = snapshot("paid_order_success", "paid", "2026-07-04")
+        base = compile_analysis_contract(
+            run_id="run-capability-reviewed-datasets-base",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["candidate_driver"],
+            },
+            accepted_capabilities=("high_value_user_contribution",),
+            catalog=DatasetCatalog((paid,)),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+        bindings, gaps = _bind_metrics(
+            ("paid_amount",),
+            registry,
+            (paid, dashboard),
+            {"paid_amount": ("high_value_user_contribution",)},
+            {"paid_amount": ("paid_order_success", "market_dashboard")},
+        )
+        self.assertFalse(gaps)
+        queries, _ = _build_query_contracts(
+            "run-capability-reviewed-datasets",
+            "analysis:run-capability-reviewed-datasets:1",
+            ("high_value_user_contribution",),
+            proposal={
+                "target_metrics": ["paid_amount"],
+            },
+            snapshots=(paid, dashboard),
+            windows=base.analysis_contract.resolved_windows,
+            metric_bindings=bindings,
+            dimension_bindings=(),
+            registry=registry,
+            permission_scope="analyst",
+        )
+
+        high_value_queries = tuple(
+            query
+            for query in queries
+            if query.query_intent == "high_value_scan"
+        )
+        self.assertTrue(high_value_queries)
+        self.assertEqual(
+            {
+                query.dataset_snapshot_refs[0]
+                for query in high_value_queries
+            },
+            {paid.snapshot_ref},
+        )
 
     def test_explicit_claim_outside_capability_ceiling_is_rejected(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
@@ -1318,6 +1398,35 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             if gap.gap_id == "dataset:internal_operation_event:source_unbound"
         )
         self.assertEqual(gap.affected_capabilities, ("event_evidence",))
+
+    def test_context_query_is_not_bound_to_schema_incompatible_source(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-incompatible-context-source",
+            proposal={
+                "requested_context_sources": ["paid_order_success"],
+                "claim_intents": ["candidate_mechanism"],
+            },
+            accepted_capabilities=("event_evidence",),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertFalse(outcome.query_contracts)
+        self.assertTrue(
+            any(
+                gap.gap_type == "contract_partial"
+                and gap.dataset_id == "paid_order_success"
+                and gap.affected_capabilities == ("event_evidence",)
+                for gap in outcome.analysis_contract.contract_gaps
+            )
+        )
 
     def test_target_only_source_gap_uses_analysis_contract_owner(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
