@@ -1319,6 +1319,9 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 "analysis_route": {
                     "requested_nodes": ["data_quality_profile", "answer_verify"],
                 },
+                "final_business_summary": {
+                    "summary_text": "当前支付状态与重复订单合同仍有缺口，需要补齐合同后继续。"
+                },
             }
         )
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1333,7 +1336,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(result.status, "draft")
+        self.assertEqual(result.status, "draft", result.failure_reason)
         payload = _llm_input_payload(result.answer_package, "blocked_explanation")
         diagnostics = {item["gap_id"]: item for item in payload["contract_gap_diagnostics"]}
         self.assertEqual(diagnostics["payment_status_contract_missing"]["status"], "contract_absent")
@@ -1370,6 +1373,9 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                     "explanation": "当前缺少活动事件上下文合同与数据，不能判断这些事件是否影响了付费金额。",
                     "owner": "语义合同 owner",
                     "repair_path": "补活动事件上下文合同与数据后重跑。",
+                },
+                "final_business_summary": {
+                    "summary_text": "当前缺少活动事件上下文合同与数据，暂不能判断事件影响。"
                 },
             }
         )

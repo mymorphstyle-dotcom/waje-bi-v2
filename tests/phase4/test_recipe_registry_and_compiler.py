@@ -139,6 +139,11 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
             first.mutations.accepted_graph,
             second.mutations.accepted_graph,
         )
+        self.assertEqual(first.runtime_plan, second.runtime_plan)
+        self.assertEqual(
+            first.runtime_plan["row_shapes"],
+            second.runtime_plan["row_shapes"],
+        )
 
     def test_registry_has_eight_recipe_entries(self):
         registry = load_recipe_registry()

@@ -10,7 +10,10 @@ from bi_agent.runtime.models import (
 )
 from bi_agent.runtime.capability_registry import get_capability_card, public_capability_ids
 from bi_agent.runtime.recipe_registry import load_recipe_registry
-from bi_agent.runtime.revenue_runtime_plan import build_revenue_runtime_plan
+from bi_agent.runtime.revenue_runtime_plan import (
+    build_revenue_runtime_plan,
+    project_reviewed_contract_gaps,
+)
 from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
     resolve_analysis_obligations,
@@ -169,17 +172,6 @@ def compile_graph(
         bound_context=bound_context or {},
     )
     diagnostic_axes = obligation_request.diagnostic_tags
-    runtime_plan_axes = _dedupe(
-        (
-            *diagnostic_axes,
-            *_revenue_diagnostic_axes(
-                question_text=question_text,
-                question_family=question_family,
-                pattern_family=pattern_family,
-                requested_nodes=base_proposed_graph,
-            ),
-        )
-    )
     try:
         obligation_resolution = resolve_analysis_obligations(
             obligation_request, runtime_registry
@@ -197,6 +189,12 @@ def compile_graph(
         else ()
     )
     proposed_graph = _dedupe((*base_proposed_graph, *obligation_nodes))
+    reviewed_gap_axes = _reviewed_gap_axes(
+        question_family=question_family,
+        question_families=tuple(question_families),
+        accepted_graph=proposed_graph,
+        diagnostic_axes=diagnostic_axes,
+    )
 
     supported_families = frozenset(obligation_request.question_families)
     unknown = tuple(node for node in proposed_graph if node not in SUPPORTED_CAPABILITIES)
@@ -258,13 +256,16 @@ def compile_graph(
             ),
         )
     def make_runtime_plan(accepted: tuple[str, ...]) -> dict:
-        return build_revenue_runtime_plan(
-            target_metric=target_metric,
-            accepted_graph=accepted,
-            diagnostic_axes=runtime_plan_axes,
-            question_text=question_text,
-            bound_context=bound_context,
-            prior_assets=prior_analysis_assets,
+        return project_reviewed_contract_gaps(
+            build_revenue_runtime_plan(
+                target_metric=target_metric,
+                accepted_graph=accepted,
+                diagnostic_axes=diagnostic_axes,
+                question_text="",
+                bound_context=bound_context,
+                prior_assets=prior_analysis_assets,
+            ),
+            reviewed_gap_axes,
         )
 
     if obligation_error:
@@ -579,6 +580,22 @@ def _order_capabilities(nodes: tuple[str, ...], diagnostic_axes: tuple[str, ...]
     indexed = list(enumerate(nodes))
     indexed.sort(key=lambda item: (CAPABILITY_ORDER.get(item[1], 500), item[0]))
     return tuple(node for _, node in indexed)
+
+
+def _reviewed_gap_axes(
+    *,
+    question_family: str,
+    question_families: tuple[str, ...],
+    accepted_graph: tuple[str, ...],
+    diagnostic_axes: tuple[str, ...],
+) -> tuple[str, ...]:
+    families = set((question_family, *question_families))
+    axes = list(diagnostic_axes)
+    if "data_quality_or_evidence_review" in families:
+        axes.append("evidence_quality")
+    if "event_evidence" in accepted_graph or "event_window_compare" in accepted_graph:
+        axes.append("event_impact")
+    return _dedupe(axes)
 
 
 def _has_any(text: str, tokens: tuple[str, ...]) -> bool:

@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 import multiprocessing
 import tempfile
 import time
@@ -31,7 +32,6 @@ from bi_agent.runtime.langgraph_workflow import (
     _execute_joint_attribution,
     _ensure_business_narrative_answer,
     _fetch_runtime_rows,
-    _final_business_summary_fallback,
     _final_business_summary,
     _final_summary_needs_display_repair,
     _legacy_quality_with_final_answer_audit,
@@ -91,6 +91,7 @@ from bi_agent.runtime.llm_client import (
     _localize_narrative_fields,
 )
 from bi_agent.runtime.llm_prompts import build_prompt, validate_prompt_specs
+from bi_agent.runtime.data_contract_diagnostics import diagnose_contract_gaps
 from tests.phase4.fake_llm import FakeLLMClient
 from tests.phase4.fake_llm import FakeLLMResult
 
@@ -192,6 +193,16 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("payment_attempt", state["final_explanation"]["explanation"])
 
     def test_available_evidence_brief_projects_only_verified_authority_and_scoped_gaps(self):
+        gaps = diagnose_contract_gaps(
+            contract_gaps=({
+                "gap_id": "gap:paid:1",
+                "fields": ("payment_attempt",),
+            },),
+            available_fields=(),
+            contract_fields=(),
+            permission_denied_fields=(),
+            unsupported_grains=(),
+        )
         brief = build_available_evidence_brief(
             verified_claims=(
                 {
@@ -216,14 +227,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 {"capability_id": "paid_driver", "status": "degraded"},
                 {"capability_id": "event_evidence", "status": "blocked"},
             ),
-            contract_gaps=(
-                {
-                    "gap_id": "gap:paid:1",
-                    "dataset_id": "payment_attempt",
-                    "affected_capabilities": ["paid_driver"],
-                    "repair_options": ["绑定 payment_attempt 来源"],
-                },
-            ),
+            contract_gaps=gaps,
             obligation_resolution={"unresolved": ["event_evidence_required"]},
         )
 
@@ -235,9 +239,105 @@ class LLMWorkflowTest(unittest.TestCase):
             brief["verified_capabilities"],
             ["market_compare", "paid_driver"],
         )
-        self.assertEqual(brief["omitted_factors"], ["payment_attempt"])
+        self.assertEqual(brief["omitted_factors"], ["gap:paid:1"])
+        self.assertEqual(
+            brief["business_next_actions"],
+            [gaps[0]["repair_path"]],
+        )
         self.assertEqual(
             brief["unresolved_obligations"], ["event_evidence_required"]
+        )
+
+    def test_accepted_degradation_choice_reaches_proposal_graph_package_and_reuse_signature(self):
+        choice = {
+            "choice_id": "omit_event_source",
+            "action_kind": "omit_unavailable_context",
+            "business_label": "保留大盘证据继续。",
+            "affected_capabilities": ["event_evidence"],
+            "source_run_id": "run-clarify-1",
+        }
+        state = {
+            "run_id": "run-resumed-choice",
+            "request": {
+                "run_id": "run-resumed-choice",
+                "question": "分析昨天付费金额变化。",
+                "role": "analyst",
+                "accepted_degradation_choice": choice,
+                "context_manifest": {
+                    "manifest_id": "context-choice-1",
+                    "thread_id": "thread-choice-1",
+                    "topic_id": "topic-choice-1",
+                    "accepted_assumptions": [choice],
+                    "permission_context": {"role": "analyst"},
+                },
+                "analysis_context": {"as_of": "2026-06-03T12:00:00+01:00"},
+            },
+            "intent": {
+                "question_family": "custom_baseline_comparison",
+                "question_families": ["custom_baseline_comparison"],
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "requested_nodes": ("compare_periods",),
+                "scope": "full_sample",
+                "time_window": "昨天",
+            },
+            "analysis_route": {
+                "requested_nodes": ("compare_periods",),
+                "analysis_requirements": {"target_metrics": ["paid_amount"]},
+            },
+            "checkpoint_events": [],
+            "draft_claims": [],
+            "evidence": [],
+            "validator_results": [],
+            "final_explanation": {
+                "status": "degraded",
+                "explanation": "事件来源未绑定。",
+                "owner": "data_owner",
+                "repair_path": "绑定事件来源后补充。",
+            },
+        }
+        alternate_state = deepcopy(state)
+        alternate_choice = {
+            **choice,
+            "choice_id": "wait_for_event_source",
+            "business_label": "等待事件来源。",
+        }
+        alternate_state["request"]["accepted_degradation_choice"] = alternate_choice
+        alternate_state["request"]["context_manifest"]["accepted_assumptions"] = [
+            alternate_choice
+        ]
+
+        _accept_analysis_route(state)
+        _accept_analysis_route(alternate_state)
+        runtime_request = _analysis_runtime_request(state)
+        package = _build_answer_package_from_state(state)
+
+        self.assertEqual(runtime_request.proposal["accepted_degradation_choice"], choice)
+        self.assertEqual(
+            state["compiled_graph"].runtime_plan["graph_metadata"]
+            ["accepted_assumptions"],
+            [choice],
+        )
+        self.assertIn(
+            "accepted_degradation_choice",
+            state["compiled_graph"].runtime_plan["asset_reuse_contract"]
+            ["contract_versions"],
+        )
+        self.assertNotEqual(
+            state["compiled_graph"].runtime_plan["asset_reuse_contract"]
+            ["contract_signature"],
+            alternate_state["compiled_graph"].runtime_plan["asset_reuse_contract"]
+            ["contract_signature"],
+        )
+        self.assertEqual(package["accepted_degradation_choice"], choice)
+        self.assertEqual(
+            package["accepted_graph_metadata"]["accepted_assumptions"], [choice]
+        )
+        self.assertEqual(package["context_assumptions"], [choice])
+        self.assertEqual(
+            package["admin_audit"]["clarification_outcome"]
+            ["accepted_degradation_choice"],
+            choice,
         )
 
     def test_persisted_query_gap_keeps_waiting_terminal_status(self):
@@ -4933,68 +5033,6 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertFalse(_final_summary_needs_display_repair(complete_summary, state))
 
-    def test_degraded_final_summary_fallback_uses_business_language(self):
-        summary = _final_business_summary_fallback(
-            {
-                "intent": {
-                    "pattern_family": "intra_period",
-                    "target_metric": "paid_amount",
-                    "scope": "full_sample",
-                    "time_window": "2026-01-01..2026-06-30",
-                },
-                "request": {"question": "月边界窗口相比月中是否更高？"},
-                "draft_claims": [],
-                "final_explanation": {
-                    "explanation": "变化幅度低于重要性阈值，方向不一致。",
-                    "repair_path": "持续观察新周期并复核方向一致性。",
-                },
-            }
-        )
-
-        self.assertNotIn("系统", summary)
-        self.assertNotIn("降级", summary)
-        self.assertIn("当前证据不足以发布这个主结论", summary)
-
-    def test_degraded_final_summary_fallback_includes_primary_evidence_numbers(self):
-        state = {
-            "intent": {
-                "pattern_family": "intra_period",
-                "target_metric": "paid_amount",
-                "scope": "full_sample",
-                "time_window": "2024-01-01..2026-06-30",
-            },
-            "request": {"question": "月末21号以后付费金额是否高于月中？"},
-            "draft_claims": [],
-            "evidence": [
-                {
-                    "capability_id": "compare_period_phases",
-                    "typed_payload": {
-                        "pattern_family": "intra_period",
-                        "median_uplift": 0.039385402448221585,
-                        "direction_ratio": 0.5666666666666667,
-                        "comparable_periods": 30,
-                        "min_periods": 30,
-                        "materiality_floor": 0.03,
-                    },
-                    "limitations": ["weak_direction"],
-                    "strength": "low",
-                    "wording_limit": "tendency",
-                }
-            ],
-            "evidence_brief": {"limitations": ["weak_direction"]},
-            "final_explanation": {
-                "explanation": "当前证据不足，不能发布主业务结论。",
-                "repair_path": "继续观察新周期并复核方向一致性。",
-            },
-        }
-
-        summary = _final_business_summary_fallback(state)
-
-        self.assertIn("中位提升 3.9%", summary)
-        self.assertIn("方向一致比例 56.7%", summary)
-        self.assertIn("达到重要性阈值的比例 56.7%", summary)
-        self.assertIn("30 个可比周期", summary)
-
     def test_degraded_final_summary_without_primary_numbers_needs_repair(self):
         state = {
             "intent": {
@@ -5093,10 +5131,6 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertTrue(_final_summary_needs_display_repair(incomplete, state))
-        fallback = _final_business_summary_fallback(state)
-        self.assertIn("65.4%", fallback)
-        self.assertIn("34.6%", fallback)
-        self.assertIn("单付费用户金额", fallback)
 
     def test_next_action_ask_degrades_when_evidence_has_terminal_business_boundary(self):
         state = {
@@ -5975,7 +6009,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(final_answer, "")
         self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
 
-    def test_final_business_summary_timeout_keeps_answer_synthesis_with_audit_marker(self):
+    def test_final_business_summary_timeout_fails_without_local_answer_fallback(self):
         class TimeoutOnFinalSummaryLLM(FakeLLMClient):
             def invoke_json(self, *, task, prompt_version, messages, required_keys):
                 if task == "final_business_summary":
@@ -5999,11 +6033,10 @@ class LLMWorkflowTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(result.status, "draft")
+        self.assertEqual(result.status, "failed")
         self.assertIn("final_business_summary", fake.calls)
-        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
-        self.assertEqual(summary, "")
-        self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
+        self.assertIsNone(result.answer_package)
+        self.assertIn("final_business_summary", result.failure_reason)
 
     def test_terminal_explanation_rejected_output_fails_without_local_fallback(self):
         degraded_fake = FakeLLMClient(

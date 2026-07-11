@@ -190,6 +190,38 @@ def build_revenue_runtime_plan(
     }
 
 
+def project_reviewed_contract_gaps(
+    plan: Mapping[str, Any],
+    stable_business_axes: Iterable[str],
+) -> dict[str, Any]:
+    """Merge reviewed gap descriptors without changing executable plan structure."""
+
+    projected = dict(plan)
+    axes = tuple(dict.fromkeys(str(item) for item in stable_business_axes if item))
+    gap_ids: list[str] = []
+    if "event_impact" in axes:
+        gap_ids.append("event_context_contract_missing")
+    if "evidence_quality" in axes:
+        gap_ids.extend(
+            ("payment_status_contract_missing", "duplicate_order_contract_missing")
+        )
+    rows = []
+    for raw in plan.get("row_shapes") or ():
+        row = dict(raw)
+        gaps = [dict(item) for item in row.get("contract_gaps") or ()]
+        for gap_id in gap_ids:
+            _append_contract_gap(gaps, gap_id)
+        row["contract_gaps"] = tuple(gaps)
+        rows.append(row)
+    projected["row_shapes"] = tuple(rows)
+    projected["contract_gaps"] = tuple(
+        gap
+        for row in rows
+        for gap in row.get("contract_gaps") or ()
+    )
+    return projected
+
+
 def _contract_projection(
     bound_context: Mapping[str, Any],
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:

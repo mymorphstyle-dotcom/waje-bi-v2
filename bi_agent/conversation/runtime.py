@@ -92,6 +92,25 @@ class ConversationRuntime:
             and bool(thread.pending_clarification_id)
             and _looks_like_legacy_clarification_answer(text)
         )
+        prior_request: dict[str, Any] = {}
+        selected_query_gap_action: dict[str, Any] = {}
+        accepted_degradation_choice: dict[str, Any] = {}
+        if open_clarification and matches_open_clarification:
+            get_run_request = getattr(self.store, "get_run_request", None)
+            if callable(get_run_request):
+                prior_request = dict(get_run_request(open_clarification.run_id) or {})
+                prior_clarification = dict(prior_request.get("clarification") or {})
+                selected_query_gap_action = _selected_query_gap_action(
+                    prior_clarification,
+                    user_message,
+                )
+                if selected_query_gap_action and str(
+                    selected_query_gap_action.get("action_kind") or ""
+                ) not in {"wait_for_source", "user_redirect"}:
+                    accepted_degradation_choice = {
+                        **selected_query_gap_action,
+                        "source_run_id": open_clarification.run_id,
+                    }
         if open_clarification and matches_open_clarification:
             self.store.set_pending_clarification(
                 thread_id,
@@ -153,6 +172,7 @@ class ConversationRuntime:
             owner_scope,
             combined_prior_assets,
             pending_clarification_id if intent_name == "clarification_answer" else "",
+            accepted_assumptions=(accepted_degradation_choice,),
         )
         memory_proposals = self._memory_proposals(
             thread_id,
@@ -192,25 +212,9 @@ class ConversationRuntime:
         if not needs_clarification and _should_run(intent_name, topic_relation):
             clarification_resume_context = {}
             if intent_name == "clarification_answer" and open_clarification:
-                get_run_request = getattr(self.store, "get_run_request", None)
-                if callable(get_run_request):
-                    prior_request = get_run_request(open_clarification.run_id)
+                if prior_request:
                     prior_clarification = dict(
                         prior_request.get("clarification") or {}
-                    )
-                    selected_query_gap_action = _selected_query_gap_action(
-                        prior_clarification,
-                        user_message,
-                    )
-                    accepted_degradation_choice = (
-                        {
-                            **selected_query_gap_action,
-                            "source_run_id": open_clarification.run_id,
-                        }
-                        if selected_query_gap_action
-                        and str(selected_query_gap_action.get("action_kind") or "")
-                        not in {"wait_for_source", "user_redirect"}
-                        else {}
                     )
                     clarification_resume_context = {
                         "resume_run_id": open_clarification.run_id,
@@ -446,6 +450,7 @@ class ConversationRuntime:
         owner_scope: str,
         analysis_assets: tuple[dict[str, Any], ...],
         pending_clarification_id: str = "",
+        accepted_assumptions: tuple[Mapping[str, Any], ...] = (),
     ) -> ContextManifest:
         items: list[ContextItem] = []
         if pending_clarification_id:
@@ -560,6 +565,7 @@ class ConversationRuntime:
             snapshot_version=current_snapshot,
             permission_context={"role": role},
             analysis_assets=list(analysis_assets),
+            accepted_assumptions=[dict(item) for item in accepted_assumptions],
             contract_versions={"runtime": contract_version},
             schema_fingerprint=f"{contract_version}:{current_snapshot}",
             can_support_claims=has_claim_support and claim_safe and not artifact_context_blocked,

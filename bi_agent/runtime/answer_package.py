@@ -119,6 +119,7 @@ def build_answer_package(
     trusted_claim_provenance_record: Optional[Mapping[str, Any]] = None,
     available_evidence_brief: Optional[Mapping[str, Any]] = None,
     accepted_degradation_choice: Optional[Mapping[str, Any]] = None,
+    context_assumptions: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
     semantic_audit = {} if semantic_audit is None else semantic_audit
@@ -352,6 +353,10 @@ def build_answer_package(
         ),
         "available_evidence_brief": evidence_brief,
         "accepted_degradation_choice": accepted_degradation_choice,
+        "accepted_graph_metadata": canonical_value(
+            compiler_runtime_plan.get("graph_metadata") or {}
+        ),
+        "context_assumptions": canonical_value(context_assumptions),
         "final_answer": final_business_summary or answer_text,
         "follow_up_questions": list(follow_up_questions),
         "quality_gate": quality_gate,

@@ -311,6 +311,8 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )
 
         self.assertEqual(first["status"], "waiting_for_clarification")
+        self.assertEqual(resumed["status"], "completed")
+        self.assertIsNone(resumed.get("clarification"))
         self.assertEqual(resumed["topic_id"], first["topic_id"])
         self.assertEqual(
             captured[1]["clarification_resume_context"]["resume_run_id"],
@@ -345,6 +347,14 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(
             captured[1]["clarification_resume_context"]["accepted_degradation_choice"],
             accepted,
+        )
+        self.assertEqual(
+            captured[1]["context_manifest"]["accepted_assumptions"],
+            [accepted],
+        )
+        self.assertEqual(
+            captured[1]["context_manifest"]["permission_context"],
+            {"role": "analyst"},
         )
 
     def test_recommended_wait_action_stays_waiting_without_running_workflow_again(self):

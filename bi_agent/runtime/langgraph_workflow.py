@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -1259,6 +1259,10 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         if accepted_choice:
             output["accepted_degradation_choice"] = accepted_choice
             state["intent"]["accepted_degradation_choice"] = accepted_choice
+            state["clarification_outcome"] = {
+                **dict(state.get("clarification_outcome") or {}),
+                "accepted_degradation_choice": accepted_choice,
+            }
         state["analysis_route"] = {**output, "requested_nodes": requested}
         state["intent"]["requested_nodes"] = requested
         return state
@@ -1673,7 +1677,8 @@ def _apply_query_gap_action_to_route(
 def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "accept_analysis_route")
     intent = state["intent"]
-    analysis_runtime = state.get("request", {}).get("analysis_runtime")
+    request = state.get("request", {})
+    analysis_runtime = request.get("analysis_runtime")
     analysis_outcome = None
     if analysis_runtime is not None:
         runtime_request = _analysis_runtime_request(state)
@@ -1696,6 +1701,22 @@ def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
             prior_analysis_assets=tuple(state["request"].get("prior_analysis_assets") or ()),
         )
     state["compiled_graph"] = compiled
+    accepted_choice = dict(request.get("accepted_degradation_choice") or {})
+    if accepted_choice:
+        state["clarification_outcome"] = {
+            **dict(state.get("clarification_outcome") or {}),
+            "accepted_degradation_choice": accepted_choice,
+        }
+        compiled = replace(
+            compiled,
+            runtime_plan={
+                **dict(compiled.runtime_plan),
+                "graph_metadata": {
+                    "accepted_assumptions": [accepted_choice],
+                },
+            },
+        )
+        state["compiled_graph"] = compiled
     state["request"]["compiler_runtime_plan"] = compiled.runtime_plan
     _refresh_contract_gap_diagnostics(state)
     return state
@@ -1800,6 +1821,9 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
     proposal.setdefault("claim_intents", tuple(intent.get("claim_intents") or ()))
     proposal.setdefault("scope", intent.get("scope") or {"type": "full_sample"})
     proposal.setdefault("target_semantic", intent.get("target_semantic") or "yesterday")
+    accepted_choice = request.get("accepted_degradation_choice") or {}
+    if isinstance(accepted_choice, Mapping) and accepted_choice:
+        proposal["accepted_degradation_choice"] = dict(accepted_choice)
     choice = request.get("clarification_choice") or {}
     if isinstance(choice, Mapping):
         for key in (
@@ -4086,6 +4110,19 @@ def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
         schema_fingerprint = manifest.get("schema_fingerprint")
         if schema_fingerprint not in ("", None):
             context["schema_fingerprint"] = str(schema_fingerprint)
+    accepted_choice = request.get("accepted_degradation_choice") or {}
+    if isinstance(accepted_choice, Mapping) and accepted_choice:
+        versions = dict(context.get("contract_versions") or {})
+        versions["accepted_degradation_choice"] = sha256(
+            json.dumps(
+                to_jsonable(accepted_choice),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        context["contract_versions"] = versions
+        context["accepted_degradation_choice"] = dict(accepted_choice)
         permission_context = manifest.get("permission_context")
         if (
             "permission_scope" not in context
@@ -5063,16 +5100,10 @@ def _final_business_summary(state: WorkflowState) -> WorkflowState:
         try:
             output = _invoke_llm(state, "final_business_summary", summary_payload)
         except WorkflowFailure as exc:
-            if not _is_timeout_failure(exc) or not state.get("answer_text"):
-                raise
-            state["final_business_summary"] = state["answer_text"]
-            state["final_summary_display_warnings"] = sorted(
-                {
-                    *state.get("final_summary_display_warnings", []),
-                    "final_summary_timeout",
-                }
-            )
-            return state
+            raise WorkflowFailure(
+                f"final_business_summary_provider_failed:{exc}",
+                failure_type="llm",
+            ) from exc
         _apply_final_business_summary_output(state, output)
         if str(state.get("final_business_summary") or "").strip():
             return state
@@ -5615,11 +5646,6 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         or {}
     )
     context_request = {**request, "run_id": state["run_id"]}
-    if accepted_degradation_choice:
-        context_request["permission_context"] = {
-            **dict(request.get("permission_context") or {}),
-            "accepted_degradation_choice": accepted_degradation_choice,
-        }
     build_context = AnswerPackageBuildContext.create(
         request=context_request,
         artifact_path=artifact_path,
@@ -5680,6 +5706,11 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         or (),
         available_evidence_brief=state.get("available_evidence_brief") or {},
         accepted_degradation_choice=accepted_degradation_choice,
+        context_assumptions=tuple(
+            dict(item)
+            for item in (context_manifest.get("accepted_assumptions") or ())
+            if isinstance(item, Mapping)
+        ),
     )
 
 
@@ -6194,15 +6225,32 @@ def build_available_evidence_brief(
                 if item.get("dataset_id") or item.get("gap_id")
             )
         ),
-        "business_next_actions": list(
-            dict.fromkeys(
-                str(action)
+        "business_next_actions": sorted(
+            {
+                action
                 for item in gaps
-                for action in item.get("repair_options", ())
-                if str(action)
-            )
+                for action in _contract_gap_next_actions(item)
+                if action
+            }
         ),
     }
+
+
+def _contract_gap_next_actions(gap: Mapping[str, Any]) -> tuple[str, ...]:
+    repair_path = str(gap.get("repair_path") or "").strip()
+    legacy = gap.get("repair_options") or ()
+    if isinstance(legacy, (str, bytes)):
+        legacy = (legacy,)
+    return tuple(
+        dict.fromkeys(
+            item
+            for item in (
+                repair_path,
+                *(str(value).strip() for value in legacy),
+            )
+            if item
+        )
+    )
 
 
 def _final_summary_retry_instruction(
@@ -7242,39 +7290,6 @@ def _preferred_final_claim(claims: Sequence[dict[str, Any]]) -> dict[str, Any]:
         if _is_joint_claim(claim):
             return claim
     return claims[0]
-
-
-def _final_business_summary_fallback(state: WorkflowState) -> str:
-    claims = state.get("draft_claims") or []
-    if claims:
-        claim = _preferred_final_claim(claims)
-        return "\n".join(
-            (
-                _question_understanding_sentence(state),
-                _analysis_path_sentence(state).replace("分析思路：", "分析脉络：", 1),
-                _key_findings_sentence(state),
-                _conclusion_sentence(state, claim).replace("结论：", "最终结论：", 1),
-                _attention_sentence(state),
-            )
-        )
-
-    final = state.get("final_explanation", {})
-    explanation = _businessize_internal_tokens(str(final.get("explanation") or "当前证据不足。"))
-    repair_path = _businessize_internal_tokens(str(final.get("repair_path") or "补充证据后重跑。"))
-    key_findings = (
-        _key_findings_sentence(state)
-        if _pattern_evidence(state)
-        else f"关键发现：{explanation}"
-    )
-    return "\n".join(
-        (
-            _question_understanding_sentence(state),
-            "分析脉络：我先确认问题边界、数据口径和可执行分析路径，再检查当前证据是否足以支持这个结论。",
-            key_findings,
-            "最终结论：当前证据不足以发布这个主结论。",
-            f"需要注意：{repair_path}",
-        )
-        )
 
 
 def _question_understanding_sentence(state: WorkflowState) -> str:

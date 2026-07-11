@@ -53,6 +53,7 @@ class ContextManifest:
     snapshot_version: str | None
     permission_context: dict[str, Any]
     analysis_assets: list[dict[str, Any]]
+    accepted_assumptions: list[dict[str, Any]]
     contract_versions: dict[str, str]
     schema_fingerprint: str
     created_at: str
@@ -72,6 +73,7 @@ class ContextManifest:
         snapshot_version: str | None = None,
         permission_context: Mapping[str, Any] | None = None,
         analysis_assets: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        accepted_assumptions: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         contract_versions: Mapping[str, Any] | None = None,
         schema_fingerprint: str | None = None,
         created_at: str | None = None,
@@ -111,6 +113,11 @@ class ContextManifest:
         object.__setattr__(self, "analysis_assets", [dict(item) for item in analysis_assets or ()])
         object.__setattr__(
             self,
+            "accepted_assumptions",
+            [dict(item) for item in accepted_assumptions or ()],
+        )
+        object.__setattr__(
+            self,
             "contract_versions",
             {
                 str(key): str(value)
@@ -134,6 +141,7 @@ class ContextManifest:
         data["items"] = [item.to_dict() for item in self.items]
         data["sources"] = list(self.sources)
         data["analysis_assets"] = [dict(item) for item in self.analysis_assets]
+        data["accepted_assumptions"] = [dict(item) for item in self.accepted_assumptions]
         return data
 
 
