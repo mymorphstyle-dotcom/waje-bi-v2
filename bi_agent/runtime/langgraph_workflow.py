@@ -617,19 +617,44 @@ def _question_family_values(raw: Any) -> list[str]:
 
 
 def _normalize_question_families(intent: dict[str, Any]) -> dict[str, Any]:
-    primary = str(
+    diagnostic_family_aliases = {
+        "driver_focus": "paid_amount_change_explanation",
+        "change_explanation": "paid_amount_change_explanation",
+        "pattern_attribution": "pattern_explanation",
+        "event_impact": "business_object_impact_review",
+        "revenue_health": "revenue_health_review",
+        "factor_topk": "segment_or_factor_attribution",
+        "anomaly": "anomaly_or_black_swan_review",
+        "multi_baseline": "custom_baseline_comparison",
+        "evidence_quality": "data_quality_or_evidence_review",
+    }
+
+    def canonical_family(value: Any) -> str:
+        family = str(value or "")
+        return diagnostic_family_aliases.get(family, family)
+
+    primary = canonical_family(
         intent.get("primary_question_family")
         or intent.get("question_family")
         or "pattern_explanation"
     )
-    families = _question_family_values(intent.get("question_families", ()))
+    families = list(
+        dict.fromkeys(
+            canonical_family(item)
+            for item in _question_family_values(intent.get("question_families", ()))
+        )
+    )
     if primary not in families:
         families.insert(0, primary)
-    secondary = [
-        item
-        for item in _question_family_values(intent.get("secondary_question_families", ()))
-        if item != primary
-    ]
+    secondary = list(
+        dict.fromkeys(
+            canonical_family(item)
+            for item in _question_family_values(
+                intent.get("secondary_question_families", ())
+            )
+            if canonical_family(item) != primary
+        )
+    )
     for family in families:
         if family != primary and family not in secondary:
             secondary.append(family)
