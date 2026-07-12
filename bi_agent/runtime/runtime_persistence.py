@@ -647,6 +647,7 @@ def _validated_unbound_claim_intents(
         ) from exc
     if not unsupported.issubset(
         queryless_capability_claim_intents
+        | (metric_claim_intents if has_terminal_boundary_gap else set())
         | (metric_claim_intents | capability_claim_intents).intersection(
             boundary_claim_intents
         )

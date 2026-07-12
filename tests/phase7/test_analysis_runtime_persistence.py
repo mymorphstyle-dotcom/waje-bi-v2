@@ -1092,6 +1092,73 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 run_id="run-task9", **bundle
             )
 
+    def test_metric_backed_intent_persists_with_structured_terminal_boundary(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _authority_bundle()
+        claim_intents = list(
+            bundle["analysis_contract"]["metric_bindings"][0]["claim_types"]
+        )
+        analysis = {
+            **bundle["analysis_contract"],
+            "claim_intents": claim_intents,
+            "capability_requirements": ["answer_verify"],
+            "contract_gaps": [{
+                "gap_type": "contract_partial",
+                "gap_id": "metric:business_metric:source_ambiguous",
+                "dataset_id": "",
+                "affected_capabilities": ["analysis_contract"],
+                "affected_claim_types": [],
+                "owner": "contract_owner",
+                "repair_options": [
+                    "select_dataset_requirement",
+                    "clarify_source_scope",
+                ],
+                "requires_clarification": True,
+                "diagnostic_context": {},
+            }],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle.update(
+            {
+                "analysis_contract": analysis,
+                "query_contracts": (),
+                "query_execution_records": (),
+                "rows_records": (),
+                "snapshot_records": (),
+                "completeness_records": (),
+                "capability_binding_records": (),
+                "evidence_manifests": (),
+                "context_manifests": (),
+                "trusted_provenance_records": (),
+                "verified_claims": (),
+                "claim_links": (),
+                "repair_attempts": (),
+            }
+        )
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            ),
+            "published",
+        )
+        unbounded_analysis = {
+            **analysis,
+            "contract_gaps": [],
+        }
+        unbounded_analysis["contract_signature"] = analysis_contract_signature(
+            unbounded_analysis
+        )
+        bundle["analysis_contract"] = unbounded_analysis
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_analysis_claim_intent_unsupported",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9-unbounded", **bundle
+            )
+
     def test_zero_claim_postgres_run_publishes_and_replays_without_claim_rows(self):
         bundle = _authority_bundle()
         bundle["context_manifests"] = ()
