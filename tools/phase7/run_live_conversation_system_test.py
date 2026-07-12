@@ -323,7 +323,9 @@ def review_case_obligations(
             question_families=families,
             coverage_authority=coverage_authority,
         )
-    observed_states, observed_gaps = _derive_runtime_dataset_states(authority)
+    observed_states, observed_gaps = _derive_runtime_dataset_states(
+        authority, registry=registry
+    )
     capability_outcomes = _derive_capability_outcomes(
         required,
         accepted_capabilities=actual,
@@ -1460,6 +1462,8 @@ _DATASET_STATE_PRECEDENCE = {
 
 def _derive_runtime_dataset_states(
     authority: Mapping[str, Any],
+    *,
+    registry: RuntimeContractRegistry | None = None,
 ) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
     states: dict[str, str] = {}
     gaps: dict[str, list[str]] = {}
@@ -1495,15 +1499,53 @@ def _derive_runtime_dataset_states(
         {"contract_gaps", "typed_gaps", "gaps", "errors"},
     ):
         gap_type = str(item.get("gap_type") or item.get("error_code") or "")
-        normalized = _normalized_gap_state(gap_type)
+        normalized = _persisted_dataset_gap_state(item, registry=registry)
         if not normalized:
             continue
-        for dataset_id in _dataset_ids(item):
+        for dataset_id in _validated_gap_dataset_ids(item):
             gaps.setdefault(dataset_id, []).append(gap_type)
             _set_dataset_state(states, dataset_id, normalized)
     return states, {
         dataset_id: tuple(dict.fromkeys(items)) for dataset_id, items in gaps.items()
     }
+
+
+def _persisted_dataset_gap_state(
+    gap: Mapping[str, Any],
+    *,
+    registry: RuntimeContractRegistry | None,
+) -> str:
+    gap_type = str(gap.get("gap_type") or gap.get("error_code") or "")
+    if gap_type != "contract_partial" or registry is None:
+        return _normalized_gap_state(gap_type)
+    dataset_id = str(gap.get("dataset_id") or "")
+    parts = str(gap.get("gap_id") or "").split(":")
+    if (
+        len(parts) != 6
+        or parts[:1] != ["dataset"]
+        or parts[1] != dataset_id
+        or parts[2:5] != ["evidence_state", "context_only", "capability"]
+        or not parts[5]
+        or tuple(gap.get("affected_capabilities") or ()) != (parts[5],)
+        or str(gap.get("owner") or "") != "data_owner"
+        or tuple(gap.get("repair_options") or ())
+        != (
+            "use_context_only_query",
+            "publish_claim_ready_release",
+            "resolve_reconciliation",
+        )
+    ):
+        return "contract_partial"
+    try:
+        policy = registry.capability_inputs(parts[5]).get("degradation_policy") or {}
+    except KeyError:
+        return "contract_partial"
+    return (
+        "degraded"
+        if isinstance(policy, Mapping)
+        and policy.get("incomplete_input") == "context_only"
+        else "contract_partial"
+    )
 
 
 def _mapping_items_for_keys(
@@ -1554,6 +1596,23 @@ def _dataset_ids(item: Mapping[str, Any]) -> tuple[str, ...]:
 
     visit(item)
     return tuple(dict.fromkeys(output))
+
+
+def _validated_gap_dataset_ids(gap: Mapping[str, Any]) -> tuple[str, ...]:
+    dataset_id = str(gap.get("dataset_id") or "")
+    gap_id = str(gap.get("gap_id") or "")
+    if gap_id.startswith("dataset:"):
+        parts = gap_id.split(":", 2)
+        if len(parts) != 3 or not dataset_id or parts[1] != dataset_id:
+            return ()
+        return (dataset_id,)
+    if dataset_id:
+        return (dataset_id,)
+    return tuple(
+        dataset
+        for dataset in _dataset_ids(gap)
+        if dataset
+    )
 
 
 def _set_dataset_state(states: dict[str, str], dataset_id: str, state: str) -> None:

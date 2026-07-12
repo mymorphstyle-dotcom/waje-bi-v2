@@ -552,7 +552,7 @@ def _build_dependency_index(
     for metric_id in metric_ids:
         try:
             sources = registry.metric_sources(metric_id)
-            selected, gap = _select_source_datasets(
+            selected, selection_gaps = _select_sources_per_owner(
                 item_kind="metric",
                 item_id=metric_id,
                 sources=tuple(sources),
@@ -563,15 +563,16 @@ def _build_dependency_index(
                 affected_claim_types=requested_claim_intents,
             )
         except (KeyError, TypeError, ValueError):
-            selected, gap = (), _contract_gap(
-                gap_type="contract_absent",
-                gap_id=f"metric:{metric_id}:contract_absent",
-                affected_capabilities=tuple(metric_owners[metric_id]),
-                repair_options=("register_metric_contract",),
+            selected, selection_gaps = (), (
+                _contract_gap(
+                    gap_type="contract_absent",
+                    gap_id=f"metric:{metric_id}:contract_absent",
+                    affected_capabilities=tuple(metric_owners[metric_id]),
+                    repair_options=("register_metric_contract",),
+                ),
             )
         metric_dataset_ids[metric_id] = selected
-        if gap is not None:
-            source_selection_gaps.append(gap)
+        source_selection_gaps.extend(selection_gaps)
         for dataset_id in selected:
             for owner in metric_owners[metric_id]:
                 if (
@@ -585,7 +586,7 @@ def _build_dependency_index(
     for dimension_id in dimension_ids:
         try:
             sources = registry.dimension_sources(dimension_id)
-            selected, gap = _select_source_datasets(
+            selected, selection_gaps = _select_sources_per_owner(
                 item_kind="dimension",
                 item_id=dimension_id,
                 sources=tuple(sources),
@@ -596,15 +597,16 @@ def _build_dependency_index(
                 affected_claim_types=(),
             )
         except (KeyError, TypeError, ValueError):
-            selected, gap = (), _contract_gap(
-                gap_type="contract_absent",
-                gap_id=f"dimension:{dimension_id}:contract_absent",
-                affected_capabilities=tuple(dimension_owners[dimension_id]),
-                repair_options=("register_dimension_contract",),
+            selected, selection_gaps = (), (
+                _contract_gap(
+                    gap_type="contract_absent",
+                    gap_id=f"dimension:{dimension_id}:contract_absent",
+                    affected_capabilities=tuple(dimension_owners[dimension_id]),
+                    repair_options=("register_dimension_contract",),
+                ),
             )
         dimension_dataset_ids[dimension_id] = selected
-        if gap is not None:
-            source_selection_gaps.append(gap)
+        source_selection_gaps.extend(selection_gaps)
         for dataset_id in selected:
             for owner in dimension_owners[dimension_id]:
                 if (
@@ -862,7 +864,7 @@ def _snapshot_evidence_gaps(
                     ),
                 )
             )
-            if unsupported:
+            if unsupported or snapshot.evidence_state == "context_only":
                 gaps.append(
                     _contract_gap(
                         gap_type="contract_partial",
@@ -2075,6 +2077,47 @@ def _source_overrides(proposal: Mapping[str, Any], key: str) -> dict[str, str]:
             raise ValueError(f"{key}_entries_must_be_non_empty_strings")
         result[item_id.strip()] = dataset_id.strip()
     return result
+
+
+def _select_sources_per_owner(
+    *,
+    item_kind: str,
+    item_id: str,
+    sources: tuple[str, ...],
+    override: str,
+    requested_datasets: tuple[str, ...],
+    owners: Iterable[str],
+    registry: RuntimeContractRegistry,
+    affected_claim_types: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[ContractGap, ...]]:
+    selected: list[str] = []
+    gaps: list[ContractGap] = []
+    for owner in _dedupe(owners):
+        owner_selected, gap = _select_source_datasets(
+            item_kind=item_kind,
+            item_id=item_id,
+            sources=sources,
+            override=override,
+            requested_datasets=requested_datasets,
+            owners=[owner],
+            registry=registry,
+            affected_claim_types=affected_claim_types,
+        )
+        selected.extend(owner_selected)
+        if gap is None:
+            continue
+        gaps.append(gap)
+        if (
+            owner != "analysis_contract"
+            and gap.gap_type == "contract_partial"
+            and gap.gap_id.startswith(f"{item_kind}:{item_id}:source_ambiguous:")
+        ):
+            selected.extend(
+                dataset_id
+                for dataset_id in sources
+                if _capability_reviews_dataset(owner, dataset_id, registry)
+            )
+    return _dedupe(selected), tuple(gaps)
 
 
 def _select_source_datasets(

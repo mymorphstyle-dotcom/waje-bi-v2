@@ -1087,6 +1087,150 @@ def test_coverage_audit_reports_current_and_excluded_cells():
     assert audit["cells"]["market_health_compare:market_dashboard"]["current_releases"][0]["load_revision"]
 
 
+def test_context_capability_dataset_roles_persist_terminal_contract_authority():
+    from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
+    from bi_agent.runtime.dataset_catalog import DatasetCatalog
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    snapshots, releases = authority_inputs(registry)
+    snapshots, releases = releases_for(
+        registry,
+        tuple(
+            replace(snapshot, evidence_state="context_only")
+            if snapshot.dataset_id == "market_dashboard_channel"
+            else replace(snapshot, loaded_at="2026-06-09T00:00:00+00:00")
+            if snapshot.dataset_id == "external_event"
+            else snapshot
+            for snapshot in snapshots
+        ),
+    )
+    catalog = DatasetCatalog(snapshots)
+    as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
+
+    channel = compile_analysis_contract(
+        run_id="run-context-channel-authority",
+        proposal={"target_metrics": ["paid_amount"]},
+        accepted_capabilities=("market_channel_context",),
+        catalog=catalog,
+        registry=registry,
+        as_of=as_of,
+        permission_scope="analyst",
+        release_resolver=releases,
+    )
+    assert "market_dashboard_channel" in channel.analysis_contract.dataset_requirements
+    assert any(
+        gap.gap_id
+        == (
+            "dataset:market_dashboard_channel:evidence_state:context_only:"
+            "capability:market_channel_context"
+        )
+        and gap.dataset_id == "market_dashboard_channel"
+        and gap.affected_capabilities == ("market_channel_context",)
+        for gap in channel.analysis_contract.contract_gaps
+    )
+
+    event = compile_analysis_contract(
+        run_id="run-context-event-authority",
+        proposal={
+            "target_metrics": ["paid_amount"],
+            "requested_context_sources": ["external_event"],
+        },
+        accepted_capabilities=("event_evidence",),
+        catalog=catalog,
+        registry=registry,
+        as_of=as_of,
+        permission_scope="analyst",
+        release_resolver=releases,
+    )
+    assert "external_event" in event.analysis_contract.dataset_requirements
+    assert any(
+        gap.gap_type == "dataset_snapshot_unavailable_as_of"
+        and gap.dataset_id == "external_event"
+        and "event_evidence" in gap.affected_capabilities
+        for gap in event.analysis_contract.contract_gaps
+    )
+
+
+def test_metric_sources_are_resolved_per_capability_before_global_reconciliation():
+    from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
+    from bi_agent.runtime.dataset_catalog import DatasetCatalog
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
+    outcome = compile_analysis_contract(
+        run_id="run-per-capability-source-selection",
+        proposal={"target_metrics": ["paid_amount"]},
+        accepted_capabilities=(
+            "data_quality_profile",
+            "market_channel_context",
+            "gameplay_activity_context",
+        ),
+        catalog=DatasetCatalog(()),
+        registry=registry,
+        as_of=as_of,
+        permission_scope="analyst",
+    )
+
+    assert {
+        "paid_order_success",
+        "market_dashboard_channel",
+        "gameplay",
+        "gameplay_channel",
+    } <= set(outcome.analysis_contract.dataset_requirements)
+    gameplay_ambiguity = next(
+        gap
+        for gap in outcome.analysis_contract.contract_gaps
+        if gap.gap_id.startswith("metric:player_bet_amount:source_ambiguous:")
+    )
+    assert gameplay_ambiguity.affected_capabilities == (
+        "gameplay_activity_context",
+    )
+    assert gameplay_ambiguity.requires_clarification is True
+
+
+def test_runtime_dataset_state_normalizes_only_signed_context_only_gap_grammar():
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_runtime_dataset_states,
+    )
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    valid_gap = {
+        "gap_type": "contract_partial",
+        "gap_id": (
+            "dataset:market_dashboard_channel:evidence_state:context_only:"
+            "capability:market_channel_context"
+        ),
+        "dataset_id": "market_dashboard_channel",
+        "affected_capabilities": ["market_channel_context"],
+        "affected_claim_types": ["contract_coverage_and_trust_boundary"],
+        "owner": "data_owner",
+        "repair_options": [
+            "use_context_only_query",
+            "publish_claim_ready_release",
+            "resolve_reconciliation",
+        ],
+        "requires_clarification": False,
+        "diagnostic_context": {},
+    }
+    malformed = {
+        **valid_gap,
+        "gap_id": (
+            "dataset:different_dataset:evidence_state:context_only:"
+            "capability:market_channel_context"
+        ),
+    }
+
+    valid_states, _ = _derive_runtime_dataset_states(
+        {"contract_gaps": [valid_gap]}, registry=registry
+    )
+    malformed_states, _ = _derive_runtime_dataset_states(
+        {"contract_gaps": [malformed]}, registry=registry
+    )
+
+    assert valid_states == {"market_dashboard_channel": "degraded"}
+    assert malformed_states == {}
+
+
 def test_coverage_audit_distinguishes_permission_future_and_partial_contract():
     from bi_agent.runtime.coverage_audit import audit_existing_data_coverage
 
