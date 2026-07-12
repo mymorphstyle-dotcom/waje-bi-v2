@@ -503,6 +503,30 @@ def test_business_context_source_allowlist_excludes_metric_only_datasets():
     assert "paid_order_success" not in registry.context_source_ids
 
 
+def test_context_family_compatibility_uses_exact_capability_dataset_allowlist():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    registry = _registry()
+    assert workflow._question_family_supports_context_dataset(
+        "business_object_impact_review", "external_event", registry
+    )
+    assert not workflow._question_family_supports_context_dataset(
+        "pattern_explanation", "gameplay", registry
+    )
+    assert not workflow._question_family_supports_context_dataset(
+        "anomaly_or_black_swan_review", "gameplay", registry
+    )
+    assert registry.capability_inputs("event_evidence")[
+        "allowed_context_datasets"
+    ] == ["external_event", "internal_operation_event"]
+    assert "gameplay" not in registry.capability_inputs("event_evidence")[
+        "allowed_context_datasets"
+    ]
+    assert "external_event" not in registry.capability_inputs(
+        "gameplay_activity_context"
+    )["allowed_datasets"]
+
+
 def test_business_intent_context_family_axis_fails_closed_after_retry(monkeypatch):
     from bi_agent.runtime import langgraph_workflow as workflow
 

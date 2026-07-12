@@ -536,7 +536,8 @@ def _build_dependency_index(
         ):
             continue
         for dataset_id in requested_sources:
-            _append_owner(source_owners, dataset_id, capability_id)
+            if dataset_id in set(_mapping_values(contract, "allowed_context_datasets")):
+                _append_owner(source_owners, dataset_id, capability_id)
     for dataset_id in requested_sources:
         if not source_owners[dataset_id]:
             _append_owner(source_owners, dataset_id, "analysis_contract")
@@ -2292,6 +2293,8 @@ def _capability_reviews_dataset(
         return False
     if _mapping_values(contract, "query_families") == ("data_quality_probe",):
         return True
+    if str(contract.get("source_mode") or "") == "requested_context_sources":
+        return dataset_id in _mapping_values(contract, "allowed_context_datasets")
     allowed = _mapping_values(contract, "allowed_datasets")
     return not allowed or dataset_id in allowed
 
@@ -2314,7 +2317,11 @@ def _requested_sources_resolve_by_capability(
         observed_owner = True
         query_families = _mapping_values(contract, "query_families")
         quality_only = query_families == ("data_quality_probe",)
-        allowed = _mapping_values(contract, "allowed_datasets")
+        allowed = (
+            _mapping_values(contract, "allowed_context_datasets")
+            if str(contract.get("source_mode") or "") == "requested_context_sources"
+            else _mapping_values(contract, "allowed_datasets")
+        )
         owned = (
             requested
             if quality_only or not allowed

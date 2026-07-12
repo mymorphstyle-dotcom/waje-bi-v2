@@ -652,6 +652,7 @@ capability_inputs:
     query_families: [event_context_probe]
     required_metrics: []
     source_mode: requested_context_sources
+    allowed_context_datasets: [external_event, internal_operation_event]
     supported_claim_types: [candidate_mechanism]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_candidate_impact, incomplete_input: context_only}
@@ -771,6 +772,7 @@ capability_inputs:
     query_families: [event_context_probe]
     required_metrics: []
     source_mode: requested_context_sources
+    allowed_context_datasets: [external_event, internal_operation_event]
     supported_claim_types: [business_object_candidate_impact, candidate_mechanism]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_candidate_impact, incomplete_input: context_only}

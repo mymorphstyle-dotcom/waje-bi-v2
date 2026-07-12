@@ -104,6 +104,25 @@ class RuntimeContractRegistry:
         _validate_obligations(payload)
         maximum_ranks = payload["claim_strength_taxonomy"]["maximum_strength_ranks"]
         for capability_id, contract in payload["capability_inputs"].items():
+            source_mode = str(contract.get("source_mode") or "")
+            context_datasets = contract.get("allowed_context_datasets")
+            if source_mode == "requested_context_sources":
+                if (
+                    not isinstance(context_datasets, (list, tuple))
+                    or not context_datasets
+                    or len(context_datasets) != len(set(context_datasets))
+                    or any(item not in payload["datasets"] for item in context_datasets)
+                    or contract.get("allowed_datasets") is not None
+                ):
+                    raise ValueError(
+                        "runtime_capability_context_datasets_invalid:"
+                        f"{capability_id}"
+                    )
+            elif context_datasets is not None:
+                raise ValueError(
+                    "runtime_capability_context_datasets_unexpected:"
+                    f"{capability_id}"
+                )
             maximum = str(contract.get("maximum_claim_strength") or "")
             if maximum not in maximum_ranks:
                 raise ValueError(

@@ -38,6 +38,7 @@ from bi_agent.runtime.answer_package import (
     reverify_answer_package_for_delivery,
 )
 from bi_agent.runtime.analysis_assets import material_assumption_digest
+from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
 from bi_agent.runtime.analysis_runtime import (
     AnswerPackageBuildContext,
     AnalysisRuntimeRequest,
@@ -613,7 +614,12 @@ def _bind_clarification_resume_intent(
         },
         registry,
     )
-    _validated_resume_material_slots(resume.get("material_slots"), registry)
+    persisted_material = _validated_resume_material_slots(
+        resume.get("material_slots"), registry
+    )
+    _validate_resume_material_consistency(
+        original, persisted_material, resume, registry
+    )
     bound.update(validated_material)
     return _normalize_question_families(bound)
 
@@ -660,6 +666,65 @@ def _validated_resume_material_slots(
             )
         output[key] = list(value)
     return output
+
+
+def _validate_resume_material_consistency(
+    original: Mapping[str, Any],
+    persisted: Mapping[str, Any],
+    resume: Mapping[str, Any],
+    registry: RuntimeContractRegistry,
+) -> None:
+    expected = {
+        "target_metrics": [str(original.get("target_metric") or "")],
+        "context_sources": list(original.get("context_sources") or ()),
+        "requested_dimensions": list(original.get("requested_dimensions") or ()),
+        "requested_components": list(original.get("requested_components") or ()),
+    }
+    for key, value in expected.items():
+        if persisted.get(key, []) != value:
+            raise WorkflowFailure(
+                f"clarification_resume_material_slots_conflict:{key}",
+                failure_type="contract",
+            )
+    for key, original_key in (("baselines", "baseline_candidates"), ("scope", "scope")):
+        if key in persisted or original_key in original:
+            if persisted.get(key) != original.get(original_key):
+                raise WorkflowFailure(
+                    f"clarification_resume_material_slots_conflict:{key}",
+                    failure_type="contract",
+                )
+    original_claims = list(original.get("claim_intents") or ())
+    persisted_claims = list(persisted.get("claim_intents") or ())
+    if any(claim not in persisted_claims for claim in original_claims):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_conflict:claim_intents",
+            failure_type="contract",
+        )
+    extras = set(persisted_claims) - set(original_claims)
+    if not extras:
+        return
+    source_contract = resume.get("analysis_contract")
+    if not isinstance(source_contract, Mapping):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_conflict:claim_intents",
+            failure_type="contract",
+        )
+    try:
+        accepted_source_contract = analysis_contract_from_dict(source_contract)
+    except (KeyError, TypeError, ValueError):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_conflict:claim_intents",
+            failure_type="contract",
+        )
+    expected_ref = f"analysis:{resume.get('resume_run_id')}:1"
+    if (
+        accepted_source_contract.analysis_contract_id != expected_ref
+        or not extras.issubset(set(accepted_source_contract.claim_intents))
+    ):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_conflict:claim_intents",
+            failure_type="contract",
+        )
 
 
 def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
@@ -842,7 +907,7 @@ def _question_family_supports_context_dataset(
             continue
         if dataset_id in set(contract.get("allowed_datasets") or ()):
             return True
-        if contract.get("source_mode") == "requested_context_sources":
+        if dataset_id in set(contract.get("allowed_context_datasets") or ()):
             return True
     return False
 

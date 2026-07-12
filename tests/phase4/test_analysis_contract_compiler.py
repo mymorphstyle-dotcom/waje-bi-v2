@@ -2166,19 +2166,19 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         )
         self.assertEqual(gap.affected_capabilities, ("event_evidence",))
 
-    def test_context_query_is_not_bound_to_schema_incompatible_source(self):
+    def test_event_context_query_is_not_owned_outside_reviewed_allowlist(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
         )
         outcome = compile_analysis_contract(
             run_id="run-incompatible-context-source",
             proposal={
-                "requested_context_sources": ["paid_order_success"],
+                "requested_context_sources": ["gameplay"],
                 "claim_intents": ["candidate_mechanism"],
             },
             accepted_capabilities=("event_evidence",),
             catalog=DatasetCatalog(
-                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+                (snapshot("gameplay", "gameplay", "2026-07-04"),)
             ),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
@@ -2186,12 +2186,36 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         )
 
         self.assertFalse(outcome.query_contracts)
-        self.assertTrue(
+        self.assertFalse(
             any(
-                gap.gap_type == "contract_partial"
-                and gap.dataset_id == "paid_order_success"
-                and gap.affected_capabilities == ("event_evidence",)
+                gap.dataset_id == "gameplay"
+                and "event_evidence" in gap.affected_capabilities
                 for gap in outcome.analysis_contract.contract_gaps
+            )
+        )
+
+    def test_context_capability_dataset_review_is_cross_source_closed(self):
+        from bi_agent.runtime.analysis_contract_compiler import (
+            _capability_reviews_dataset,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        self.assertTrue(
+            _capability_reviews_dataset("event_evidence", "external_event", registry)
+        )
+        self.assertFalse(
+            _capability_reviews_dataset("event_evidence", "gameplay", registry)
+        )
+        self.assertTrue(
+            _capability_reviews_dataset(
+                "gameplay_activity_context", "gameplay", registry
+            )
+        )
+        self.assertFalse(
+            _capability_reviews_dataset(
+                "gameplay_activity_context", "external_event", registry
             )
         )
 

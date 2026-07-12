@@ -68,13 +68,18 @@ def test_early_clarification_resume_preserves_source_topic_family(monkeypatch):
             "topic_id": "topic-early-source",
             "question": "original topic question",
             "clarification_choice": {"answer_text": "selected baseline"},
-            "clarification_resume_context": {
+                "clarification_resume_context": {
                 "resume_run_id": "run-early-source",
                 "source_thread_id": "thread-early-source",
                 "source_topic_id": "topic-early-source",
                 "question": "original topic question",
-                "original_intent": original_intent,
-            },
+                    "original_intent": original_intent,
+                        "material_slots": {
+                            "target_metrics": ["paid_amount"],
+                            "baselines": [],
+                            "scope": "full_sample",
+                        },
+                },
         }
     }
 
@@ -219,7 +224,17 @@ def test_query_gap_resume_context_roundtrips_source_run_topic_and_material():
 
 
 @pytest.mark.parametrize(
-    "corruption", ["thread", "topic", "material", "persisted_material"]
+    "corruption",
+    [
+        "thread",
+        "topic",
+        "material",
+        "persisted_material",
+        "context_conflict",
+        "target_conflict",
+        "component_conflict",
+        "claim_extra_unauthorized",
+    ],
 )
 def test_resume_intent_authority_rejects_owner_or_material_corruption(corruption):
     from bi_agent.runtime import langgraph_workflow as workflow
@@ -261,11 +276,76 @@ def test_resume_intent_authority_rejects_owner_or_material_corruption(corruption
         resume["source_topic_id"] = "topic-other"
     elif corruption == "persisted_material":
         resume["material_slots"] = {"context_sources": ["paid_order_success"]}
+    elif corruption == "context_conflict":
+        resume["material_slots"] = {
+            "target_metrics": ["paid_amount"],
+            "context_sources": ["external_event"],
+        }
+    elif corruption == "target_conflict":
+        resume["material_slots"] = {"target_metrics": ["paid_users"]}
+    elif corruption == "component_conflict":
+        resume["material_slots"] = {
+            "target_metrics": ["paid_amount"],
+            "requested_components": ["paid_users"],
+        }
+    elif corruption == "claim_extra_unauthorized":
+        resume["material_slots"] = {
+            "target_metrics": ["paid_amount"],
+            "claim_intents": ["contract_coverage_and_trust_boundary"],
+        }
 
     with pytest.raises(workflow.WorkflowFailure):
         workflow._bind_clarification_resume_intent(
             {"question_family": "pattern_explanation"}, request, registry
         )
+
+
+def test_resume_allows_source_contract_authorized_trust_boundary_claim():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    original = {
+        "target_metric": "paid_amount",
+        "context_sources": [],
+        "claim_intents": ["comparative_change"],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source question",
+    }
+    source_contract = _source_contract()
+    source_contract.pop("contract_signature", None)
+    source_contract["claim_intents"] = [
+        "comparative_change",
+        "contract_coverage_and_trust_boundary",
+    ]
+    resume = {
+        "resume_run_id": "run-source",
+        "source_thread_id": "thread-source",
+        "source_topic_id": "topic-source",
+        "question": "source question",
+        "original_intent": original,
+        "material_slots": {
+            "target_metrics": ["paid_amount"],
+            "claim_intents": [
+                "comparative_change",
+                "contract_coverage_and_trust_boundary",
+            ],
+        },
+        "analysis_contract": source_contract,
+    }
+    bound = workflow._bind_clarification_resume_intent(
+        {},
+        {
+            "thread_id": "thread-source",
+            "topic_id": "topic-source",
+            "question": "source question",
+            "clarification_resume_context": resume,
+        },
+        registry,
+    )
+    assert bound["claim_intents"] == ["comparative_change"]
 
 
 def _source_contract(run_id="run-source"):
