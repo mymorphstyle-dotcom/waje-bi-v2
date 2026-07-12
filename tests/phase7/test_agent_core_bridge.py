@@ -30,6 +30,23 @@ from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
 
 
 class AgentCoreBridgeTest(unittest.TestCase):
+    def _persisted_runtime_result(self, package, **result_fields):
+        from tempfile import TemporaryDirectory
+
+        artifact_parent = Path("artifacts/phase7/test-runtime-audit")
+        artifact_parent.mkdir(parents=True, exist_ok=True)
+        artifact_dir = Path(
+            self.enterContext(TemporaryDirectory(dir=artifact_parent))
+        )
+        artifact = artifact_dir / "answer_package.json"
+        artifact.write_text(json.dumps(package), encoding="utf-8")
+        return {
+            "run_id": package["run_id"],
+            "artifact_path": str(artifact),
+            "answer_package": package,
+            **result_fields,
+        }
+
     def test_context_manifest_versioned_and_legacy_digest_validation(self):
         current = build_context_manifest_record(
             run_id="run-manifest-version",
@@ -3162,14 +3179,14 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 )
 
         review = _real_clickhouse_review(
-            {
-                "answer_package": package,
-                "context_manifest": {
+            self._persisted_runtime_result(
+                package,
+                context_manifest={
                     "manifest_id": "context-manifest:partial",
                     "can_support_claims": True,
                     "sources": [],
                 },
-            },
+            ),
             real_clickhouse=True,
             evidence_resolver=PartialResolver(),
             required_datasets=("paid_order_success",),
@@ -3249,7 +3266,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 return replace(record, report_payload=payload)
 
         review = _real_clickhouse_review(
-            {"answer_package": package, "context_manifest": {}},
+            self._persisted_runtime_result(package, context_manifest={}),
             real_clickhouse=True,
             evidence_resolver=ContractPartialResolver(),
             required_datasets=("paid_order_success",),
@@ -3301,7 +3318,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 return replace(record, contract=contract)
 
         review = _real_clickhouse_review(
-            {"answer_package": package, "context_manifest": {}},
+            self._persisted_runtime_result(package, context_manifest={}),
             real_clickhouse=True,
             evidence_resolver=ShiftedResolver(),
             required_datasets=("paid_order_success",),
@@ -3348,7 +3365,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 return provenance if record_ref == provenance["record_ref"] else None
 
         review = _real_clickhouse_review(
-            {"answer_package": package, "context_manifest": manifest},
+            self._persisted_runtime_result(package, context_manifest=manifest),
             real_clickhouse=True,
             evidence_resolver=ClaimResolver(),
             required_datasets=("paid_order_success",),
@@ -3380,7 +3397,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         package["verified_claims"] = [forged]
 
         review = _real_clickhouse_review(
-            {"answer_package": package, "context_manifest": manifest},
+            self._persisted_runtime_result(package, context_manifest=manifest),
             real_clickhouse=True,
             evidence_resolver=context["evidence_resolver"],
             required_datasets=("paid_order_success",),
@@ -3404,7 +3421,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         package["verified_claims"] = [None]
 
         review = _real_clickhouse_review(
-            {"answer_package": package, "context_manifest": {}},
+            self._persisted_runtime_result(package, context_manifest={}),
             real_clickhouse=True,
             evidence_resolver=context["evidence_resolver"],
             required_datasets=("paid_order_success",),
@@ -3476,7 +3493,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 return replace(record, result_ref=legacy_ref)
 
         review = _real_clickhouse_review(
-            {"answer_package": package, "context_manifest": {}},
+            self._persisted_runtime_result(package, context_manifest={}),
             real_clickhouse=True,
             evidence_resolver=LegacyResolver(),
         )
@@ -3596,41 +3613,27 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertFalse(result["turns"][0]["real_clickhouse_review"]["real_clickhouse_verified"])
 
     def test_live_harness_uses_internal_artifact_only_for_runtime_audit(self):
-        from tempfile import TemporaryDirectory
-
         from tools.phase7.run_live_conversation_system_test import (
             _runtime_audit_package,
         )
 
-        with TemporaryDirectory() as tmpdir:
-            artifact = Path(tmpdir) / "answer_package.json"
-            artifact.write_text(
-                json.dumps({
-                    "run_id": "run-internal-audit",
-                    "final_answer": "内部完整答案",
-                    "sections": [{
-                        "section_id": "evidence",
-                        "payload": {"evidence": [{"evidence_ref": "evidence:1"}]},
-                    }],
-                }),
-                encoding="utf-8",
-            )
-            result = {
-                "run_id": "run-internal-audit",
-                "artifact_path": str(artifact),
-                "answer_package": {
-                    "run_id": "run-internal-audit",
-                    "final_answer": "客户端安全答案",
-                    "sections": [],
-                },
-            }
+        package, _, _ = _verified_delivery_package(
+            run_id="run-internal-audit",
+        )
+        package["final_answer"] = "内部完整答案"
+        result = self._persisted_runtime_result(package)
+        result["answer_package"] = {
+            "run_id": "run-internal-audit",
+            "final_answer": "客户端安全答案",
+            "sections": [],
+        }
 
-            audited = _runtime_audit_package(result)
+        audited = _runtime_audit_package(result)
 
         self.assertEqual(audited["final_answer"], "内部完整答案")
         self.assertEqual(
-            audited["sections"][0]["payload"]["evidence"][0]["evidence_ref"],
-            "evidence:1",
+            audited["sections"][1]["payload"]["evidence"][0]["evidence_ref"],
+            "segment:authoritative",
         )
         self.assertEqual(
             result["answer_package"]["final_answer"],
@@ -4138,6 +4141,7 @@ def _verified_delivery_package(
     claim_selector_mode="",
     accepted_assumptions=(),
 ):
+    from bi_agent.runtime.analysis_contracts import AnalysisContract
     from bi_agent.runtime.claim_provenance import (
         build_trusted_claim_provenance_record,
     )
@@ -4180,6 +4184,7 @@ def _verified_delivery_package(
         rows=tuple(rows),
         required_fields=("window_id", "amount", "channel"),
         resolved_windows=resolved_windows,
+        analysis_contract_ref=f"analysis:{run_id}:1",
     )
     resolver = context["evidence_resolver"]
     registry = RuntimeContractRegistry.from_path(
@@ -4187,6 +4192,26 @@ def _verified_delivery_package(
     )
     context["runtime_registry"] = registry
     binding = resolver.resolve_capability_binding(context["binding_manifest_ref"])
+    query_record = resolver.resolve_query_execution(binding.result_refs[0])
+    query_contract = query_record.contract
+    analysis_contract = AnalysisContract(
+        analysis_contract_id=f"analysis:{run_id}:1",
+        contract_version="1",
+        question_families=("segment_or_factor_attribution",),
+        target_metric_refs=tuple(
+            binding.contract_ref for binding in query_contract.metric_bindings
+        ),
+        claim_intents=("segment_contribution_or_mix_shift",),
+        scope={"type": "full_sample", "requested_metric_ids": ["paid_amount"]},
+        business_timezone="Africa/Lagos",
+        as_of="2026-06-03T11:00:00+00:00",
+        resolved_windows=query_contract.resolved_windows,
+        metric_bindings=query_contract.metric_bindings,
+        dimension_bindings=query_contract.dimension_bindings,
+        dataset_requirements=("paid_order_success",),
+        capability_requirements=("segment_contribution", "answer_verify"),
+        permission_scope="analyst",
+    )
     claim_text = claim_text or (
         f"渠道 A 导致目标期付费金额为 {paid_amount:g}。"
         if causal_wording
@@ -4353,6 +4378,7 @@ def _verified_delivery_package(
         sql_text="SELECT 1",
         sql_hash="sha256:test",
         artifact_audit={"artifact_ref": "artifact:test"},
+        analysis_contract=analysis_contract.to_dict(),
         answer_text=claim_text,
         final_business_summary=claim_text,
         trusted_claim_provenance_record=build_trusted_claim_provenance_record(
