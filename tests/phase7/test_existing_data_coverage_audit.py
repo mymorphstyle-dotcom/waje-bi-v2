@@ -314,6 +314,61 @@ def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
     assert failed["reuse_coverage"] == {"required": 1, "passed": 0}
 
 
+def test_coverage_summary_reads_run_matched_internal_audit_for_zero_claim_terminal(tmp_path):
+    from tools.phase7.run_live_conversation_system_test import _coverage_summary
+
+    internal_path = tmp_path / "answer_package.json"
+    internal_path.write_text(
+        json.dumps(
+            {
+                "run_id": "run-boundary-only",
+                "final_answer": "当前数据边界不足，已给出负责方与下一步。",
+                "quality_gate": {
+                    "display_status": "ready",
+                    "has_verified_claims": False,
+                    "blocks_display": False,
+                },
+                "llm_calls": [
+                    {
+                        "task": "final_answer_audit",
+                        "structured_output": {
+                            "display_status": "ready",
+                            "hard_blockers": [],
+                            "repairable_warnings": [],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    turns = [
+        {
+            "resumed_status": "completed",
+            "resumed_run_id": "run-boundary-only",
+            "resumed_artifact_path": str(internal_path),
+            "resumed_answer_package": {
+                "run_id": "run-boundary-only",
+                "final_answer": "当前数据边界不足，已给出负责方与下一步。",
+                "quality_gate": {
+                    "display_status": "",
+                    "has_verified_claims": False,
+                },
+                "llm_calls": [],
+            },
+        }
+    ]
+
+    summary = _coverage_summary(turns)
+
+    assert summary["final_answer_audit_coverage"] == {"reviewed": 1, "total": 1}
+
+    turns[0]["resumed_quality_review"] = {"display_status": "ready"}
+    turns[0]["resumed_run_id"] = "run-different"
+    mismatched = _coverage_summary(turns)
+    assert mismatched["final_answer_audit_coverage"] == {"reviewed": 0, "total": 1}
+
+
 def test_coverage_summary_separates_expected_from_observed_dataset_states():
     from tools.phase7.run_live_conversation_system_test import _coverage_summary
 

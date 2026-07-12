@@ -1702,13 +1702,7 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "final_answer_audit_coverage": {
             "reviewed": sum(
-                bool(
-                    str(
-                        ((_effective_result(turn).get("quality_review") or {}).get(
-                            "display_status"
-                        ) or "")
-                    ).strip()
-                )
+                _has_completed_final_answer_audit(turn)
                 for turn in turns
             ),
             "total": len(turns),
@@ -1743,6 +1737,33 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _has_completed_final_answer_audit(turn: Mapping[str, Any]) -> bool:
+    effective = _effective_result(dict(turn))
+    status = str(effective.get("status") or "")
+    if status and status != "completed":
+        return False
+    raw_path = effective.get("artifact_path")
+    expected_run_id = str(effective.get("run_id") or "")
+    if isinstance(raw_path, str) and raw_path.strip() and expected_run_id:
+        try:
+            internal_package = json.loads(Path(raw_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            internal_package = {}
+        if str(internal_package.get("run_id") or "") != expected_run_id:
+            return False
+        return any(
+            isinstance(item, Mapping)
+            and item.get("task") == "final_answer_audit"
+            and isinstance(item.get("structured_output"), Mapping)
+            for item in internal_package.get("llm_calls") or ()
+        )
+    return bool(
+        str(
+            ((effective.get("quality_review") or {}).get("display_status") or "")
+        ).strip()
+    )
 
 
 def _write_case_artifact(
