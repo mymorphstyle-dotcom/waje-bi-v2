@@ -18,9 +18,11 @@ from bi_agent.runtime.analysis_contracts import (
     ResolvedWindow,
     ResultShape,
     analysis_contract_from_dict,
+    analysis_contract_signature,
     query_contract_signature,
     stable_contract_signature,
 )
+from bi_agent.runtime.evidence_authority import canonical_value
 from bi_agent.runtime.dataset_catalog import (
     DatasetCatalog,
     DatasetReleaseResolver,
@@ -125,7 +127,7 @@ def compile_analysis_contract(
     )
     affected_capabilities = capabilities or ("analysis_contract",)
     accepted_terminal_gaps, clarification_outcome_ref = (
-        _accepted_terminal_gap_authority(proposal)
+        _accepted_terminal_gap_authority(proposal, capabilities)
     )
     resolution = _resolve_advisory_windows(
         target_semantic=str(proposal.get("target_semantic") or "yesterday"),
@@ -248,9 +250,9 @@ def compile_analysis_contract(
 
 def _accepted_terminal_gap_authority(
     proposal: Mapping[str, Any],
+    accepted_capabilities: tuple[str, ...],
 ) -> tuple[tuple[ContractGap, ...], str]:
     choice = proposal.get("accepted_degradation_choice")
-    source = proposal.get("accepted_terminal_gap_source_contract")
     if not isinstance(choice, Mapping):
         return (), ""
     if str(choice.get("action_kind") or "") not in {
@@ -260,31 +262,108 @@ def _accepted_terminal_gap_authority(
         return (), ""
     choice_id = str(choice.get("choice_id") or "")
     source_run_id = str(choice.get("source_run_id") or "")
-    affected = {
-        str(capability)
-        for capability in choice.get("affected_capabilities") or ()
-        if str(capability)
-    }
+    raw_affected = choice.get("affected_capabilities")
+    if (
+        not isinstance(raw_affected, (list, tuple))
+        or not raw_affected
+        or any(not isinstance(item, str) or not item.strip() for item in raw_affected)
+        or len(set(raw_affected)) != len(raw_affected)
+    ):
+        raise ValueError("accepted_terminal_gap_affected_capabilities_invalid")
+    affected = set(raw_affected)
     if not affected:
         return (), ""
     if not choice_id or not source_run_id:
         raise ValueError("accepted_terminal_gap_choice_authority_invalid")
+    authority = proposal.get("accepted_terminal_gap_authority")
+    if not isinstance(authority, Mapping):
+        raise ValueError("accepted_terminal_gap_authority_missing")
+    if set(authority) != {
+        "source_run_id",
+        "thread_id",
+        "topic_id",
+        "analysis_contract",
+        "analysis_contract_signature",
+        "clarification_outcome",
+    }:
+        raise ValueError("accepted_terminal_gap_authority_shape_invalid")
+    if str(authority.get("source_run_id") or "") != source_run_id:
+        raise ValueError("accepted_terminal_gap_source_mismatch")
+    expected_thread = str(proposal.get("resume_thread_id") or "")
+    expected_topic = str(proposal.get("resume_topic_id") or "")
+    if (
+        not expected_thread
+        or not expected_topic
+        or authority.get("thread_id") != expected_thread
+        or authority.get("topic_id") != expected_topic
+    ):
+        raise ValueError("accepted_terminal_gap_owner_mismatch")
+    source = authority.get("analysis_contract")
     if not isinstance(source, Mapping):
-        raise ValueError("accepted_terminal_gap_source_missing")
+        raise ValueError("accepted_terminal_gap_source_invalid")
     try:
         prior = analysis_contract_from_dict(source)
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("accepted_terminal_gap_source_invalid") from exc
     if prior.analysis_contract_id != f"analysis:{source_run_id}:1":
         raise ValueError("accepted_terminal_gap_source_mismatch")
+    if str(authority.get("analysis_contract_signature") or "") != (
+        analysis_contract_signature(prior)
+    ):
+        raise ValueError("accepted_terminal_gap_contract_signature_invalid")
+    outcome = authority.get("clarification_outcome")
+    if not isinstance(outcome, Mapping) or set(outcome) != {
+        "outcome_ref",
+        "source_run_id",
+        "thread_id",
+        "topic_id",
+        "choice",
+        "outcome_signature",
+    }:
+        raise ValueError("accepted_terminal_gap_outcome_invalid")
+    outcome_body = {
+        key: value for key, value in outcome.items() if key != "outcome_signature"
+    }
+    if str(outcome.get("outcome_signature") or "") != stable_contract_signature(
+        outcome_body
+    ):
+        raise ValueError("accepted_terminal_gap_outcome_signature_invalid")
+    if (
+        outcome.get("source_run_id") != source_run_id
+        or outcome.get("thread_id") != authority.get("thread_id")
+        or outcome.get("topic_id") != authority.get("topic_id")
+    ):
+        raise ValueError("accepted_terminal_gap_outcome_owner_mismatch")
+    if canonical_value(outcome.get("choice")) != canonical_value(dict(choice)):
+        raise ValueError("accepted_terminal_gap_outcome_choice_mismatch")
+    outcome_ref = str(outcome.get("outcome_ref") or "")
+    expected_outcome_ref = "clarification-outcome:" + stable_contract_signature(
+        {
+            "source_run_id": source_run_id,
+            "thread_id": authority.get("thread_id"),
+            "topic_id": authority.get("topic_id"),
+            "choice": canonical_value(dict(choice)),
+        }
+    )
+    if outcome_ref != expected_outcome_ref:
+        raise ValueError("accepted_terminal_gap_outcome_ref_invalid")
+    allowed_scope = set(accepted_capabilities) | {"analysis_contract"}
     carried = tuple(
-        gap
+        replace(
+            gap,
+            affected_capabilities=_dedupe(
+                capability
+                for capability in (*gap.affected_capabilities, "analysis_contract")
+                if capability in allowed_scope
+                and (capability == "analysis_contract" or capability in affected)
+            ),
+        )
         for gap in prior.contract_gaps
         if affected.intersection(gap.affected_capabilities)
     )
     if not carried:
         raise ValueError("accepted_terminal_gap_scope_mismatch")
-    return carried, source_run_id
+    return carried, outcome_ref
 
 
 def _required_metric_ids(

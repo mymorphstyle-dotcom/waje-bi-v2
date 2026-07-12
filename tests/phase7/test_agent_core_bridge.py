@@ -509,6 +509,26 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         store = InMemoryConversationStore()
         store.save_analysis_runtime_records = lambda **_: "inserted"
+        recorded_outcomes = []
+
+        def record_outcome(**kwargs):
+            recorded_outcomes.append(kwargs)
+            return "clarification-outcome:resolved-choice"
+
+        resolved_authority = {
+            "source_run_id": "run-query-gap-original",
+            "thread_id": "thread-query-gap-resume",
+            "topic_id": "topic-authority",
+            "analysis_contract": {"authority": "postgres"},
+            "analysis_contract_signature": "signature-authority",
+            "clarification_outcome": {
+                "outcome_ref": "clarification-outcome:resolved-choice"
+            },
+        }
+        store.record_clarification_outcome = record_outcome
+        store.resolve_clarification_resume_authority = (
+            lambda **_: resolved_authority
+        )
         core = ConversationAgentCore(store, workflow_runner=workflow)
         first = core.run_message(
             thread_id="thread-query-gap-resume",
@@ -569,6 +589,15 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(
             captured[1]["context_manifest"]["permission_context"],
             {"role": "analyst"},
+        )
+        self.assertEqual(recorded_outcomes[0]["choice"], accepted)
+        self.assertEqual(
+            captured[1]["accepted_terminal_gap_authority"],
+            resolved_authority,
+        )
+        self.assertEqual(
+            captured[1]["clarification_outcome_ref"],
+            "clarification-outcome:resolved-choice",
         )
 
     def test_recommended_choice_advances_with_available_work_instead_of_wait_loop(self):
@@ -640,6 +669,17 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         store = InMemoryConversationStore()
         store.save_analysis_runtime_records = lambda **_: "inserted"
+        store.record_clarification_outcome = (
+            lambda **_: "clarification-outcome:wait-action"
+        )
+        store.resolve_clarification_resume_authority = lambda **kwargs: {
+            "source_run_id": kwargs["source_run_id"],
+            "thread_id": kwargs["thread_id"],
+            "topic_id": kwargs["topic_id"],
+            "analysis_contract": {"authority": "postgres"},
+            "analysis_contract_signature": "signature-authority",
+            "clarification_outcome": {"outcome_ref": kwargs["outcome_ref"]},
+        }
         core = ConversationAgentCore(
             store,
             workflow_runner=workflow,
@@ -743,6 +783,17 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         store = InMemoryConversationStore()
         store.save_analysis_runtime_records = lambda **_: "inserted"
+        store.record_clarification_outcome = (
+            lambda **_: "clarification-outcome:no-ready"
+        )
+        store.resolve_clarification_resume_authority = lambda **kwargs: {
+            "source_run_id": kwargs["source_run_id"],
+            "thread_id": kwargs["thread_id"],
+            "topic_id": kwargs["topic_id"],
+            "analysis_contract": {"authority": "postgres"},
+            "analysis_contract_signature": "signature-authority",
+            "clarification_outcome": {"outcome_ref": kwargs["outcome_ref"]},
+        }
         core = ConversationAgentCore(store, workflow_runner=workflow)
         first = core.run_message(
             thread_id="thread-no-ready-boundary",

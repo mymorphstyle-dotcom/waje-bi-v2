@@ -285,6 +285,16 @@ class LLMWorkflowTest(unittest.TestCase):
             "affected_capabilities": ["event_evidence"],
             "source_run_id": "run-clarify-1",
         }
+        terminal_gap_authority = {
+            "source_run_id": "run-clarify-1",
+            "thread_id": "thread-choice-1",
+            "topic_id": "topic-choice-1",
+            "analysis_contract": {"authority": "postgres"},
+            "analysis_contract_signature": "signature-authority",
+            "clarification_outcome": {
+                "outcome_ref": "clarification-outcome:choice-1"
+            },
+        }
         state = {
             "run_id": "run-resumed-choice",
             "request": {
@@ -292,6 +302,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 "question": "分析昨天付费金额变化。",
                 "role": "analyst",
                 "accepted_degradation_choice": choice,
+                "accepted_terminal_gap_authority": terminal_gap_authority,
                 "context_manifest": {
                     "manifest_id": "context-choice-1",
                     "thread_id": "thread-choice-1",
@@ -300,17 +311,7 @@ class LLMWorkflowTest(unittest.TestCase):
                     "permission_context": {"role": "analyst"},
                 },
                 "analysis_context": {"as_of": "2026-06-03T12:00:00+01:00"},
-                "clarification_resume_context": {
-                    "analysis_contract": {
-                        "analysis_contract_id": "analysis:run-clarify-1:1",
-                        "contract_gaps": [
-                            {
-                                "gap_id": "dataset:external_event:source_unbound",
-                                "affected_capabilities": ["event_evidence"],
-                            }
-                        ],
-                    }
-                },
+                "clarification_resume_context": {},
             },
             "intent": {
                 "question_family": "custom_baseline_comparison",
@@ -355,8 +356,8 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertEqual(runtime_request.proposal["accepted_degradation_choice"], choice)
         self.assertEqual(
-            runtime_request.proposal["accepted_terminal_gap_source_contract"],
-            state["request"]["clarification_resume_context"]["analysis_contract"],
+            runtime_request.proposal["accepted_terminal_gap_authority"],
+            terminal_gap_authority,
         )
         self.assertEqual(
             state["compiled_graph"].runtime_plan["graph_metadata"]

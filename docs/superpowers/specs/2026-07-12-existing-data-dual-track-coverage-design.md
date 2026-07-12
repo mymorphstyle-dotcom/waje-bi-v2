@@ -152,6 +152,17 @@ Known source gaps should not trigger repeated clarification. Once the user
 accepts the reviewed degraded route, the run resumes the original topic and
 executes every remaining valid capability.
 
+Clarification resume is authority-bound. The selected degradation choice is
+persisted as an immutable clarification-outcome record owned by the source run,
+thread, and topic. Resume resolves that record together with the source
+AnalysisContract from PostgreSQL authority and verifies the exact stored
+payload, contract signature, run owner, and selected choice before compilation.
+Mutable analysis-run request JSON is context only and cannot authorize carried
+gaps. A carried gap is narrowed to the exact intersection of the accepted
+choice, the resumed accepted capability set, and `analysis_contract`; malformed
+capability mappings, stale records, owner drift, signature drift, and choices
+without a resolvable outcome ref fail closed.
+
 ## Coverage Audit
 
 Add a local coverage-audit tool that combines the reviewed runtime registry

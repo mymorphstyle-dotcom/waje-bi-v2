@@ -5,7 +5,11 @@ import unittest
 from bi_agent.runtime.analysis_contract_compiler import (
     compile_analysis_contract as _compile_analysis_contract,
 )
-from bi_agent.runtime.analysis_contracts import query_contract_signature
+from bi_agent.runtime.analysis_contracts import (
+    analysis_contract_signature,
+    query_contract_signature,
+    stable_contract_signature,
+)
 from bi_agent.runtime.capability_registry import public_capability_ids
 from bi_agent.runtime.compiler import SUPPORTED_CAPABILITIES, compile_graph
 from bi_agent.runtime.contracts import load_contract
@@ -2160,14 +2164,57 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             ],
         }
 
+        source_contract = replace(
+            prior.analysis_contract,
+            contract_gaps=tuple(
+                replace(
+                    gap,
+                    affected_capabilities=(
+                        *gap.affected_capabilities,
+                        "answer_verify",
+                    ),
+                )
+                if set(gap.affected_capabilities).intersection(
+                    choice["affected_capabilities"]
+                )
+                else gap
+                for gap in prior.analysis_contract.contract_gaps
+            ),
+        )
+
+        outcome_body = {
+            "source_run_id": "run-terminal-gap-source",
+            "thread_id": "thread-terminal-gap",
+            "topic_id": "topic-terminal-gap",
+            "choice": choice,
+        }
+        outcome_payload = {
+            "outcome_ref": "clarification-outcome:"
+            + stable_contract_signature(outcome_body),
+            **outcome_body,
+        }
+        outcome_payload["outcome_signature"] = stable_contract_signature(
+            outcome_payload
+        )
+        authority = {
+            "source_run_id": "run-terminal-gap-source",
+            "thread_id": "thread-terminal-gap",
+            "topic_id": "topic-terminal-gap",
+            "analysis_contract": source_contract.to_dict(),
+            "analysis_contract_signature": analysis_contract_signature(
+                source_contract
+            ),
+            "clarification_outcome": outcome_payload,
+        }
+
         resumed = compile_analysis_contract(
             run_id="run-terminal-gap-resumed",
             proposal={
                 "target_metrics": ["paid_amount"],
                 "accepted_degradation_choice": choice,
-                "accepted_terminal_gap_source_contract": (
-                    prior.analysis_contract.to_dict()
-                ),
+                "accepted_terminal_gap_authority": authority,
+                "resume_thread_id": "thread-terminal-gap",
+                "resume_topic_id": "topic-terminal-gap",
             },
             accepted_capabilities=("answer_verify",),
             catalog=DatasetCatalog(()),
@@ -2177,11 +2224,9 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         )
 
         carried = tuple(
-            gap
-            for gap in prior.analysis_contract.contract_gaps
-            if set(gap.affected_capabilities).intersection(
-                choice["affected_capabilities"]
-            )
+            gap for gap in resumed.analysis_contract.contract_gaps
+            if gap.gap_id.startswith("capability:formula_decompose:")
+            or gap.gap_id.startswith("capability:data_quality_profile:")
         )
         self.assertTrue(carried)
         self.assertTrue(
@@ -2196,85 +2241,144 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 for gap in carried
             )
         )
-        resumed_by_id = {
-            gap.gap_id: gap for gap in resumed.analysis_contract.contract_gaps
-        }
         for gap in carried:
             with self.subTest(gap_id=gap.gap_id):
-                self.assertEqual(resumed_by_id.get(gap.gap_id), gap)
+                self.assertEqual(gap.affected_capabilities, ("analysis_contract",))
+                self.assertTrue(
+                    set(gap.affected_capabilities).issubset(
+                        {"answer_verify", "analysis_contract"}
+                    )
+                )
         self.assertEqual(
             resumed.analysis_contract.clarification_outcome_ref,
-            "run-terminal-gap-source",
+            outcome_payload["outcome_ref"],
         )
 
         carried_ids = {gap.gap_id for gap in carried}
-        with self.assertRaisesRegex(
-            ValueError,
-            "accepted_terminal_gap_source_mismatch",
-        ):
-            compile_analysis_contract(
-                run_id="run-terminal-gap-rejected",
-                proposal={
-                    "target_metrics": ["paid_amount"],
-                    "accepted_degradation_choice": {
-                        **choice,
-                        "source_run_id": "run-unrelated",
-                    },
-                    "accepted_terminal_gap_source_contract": (
-                        prior.analysis_contract.to_dict()
-                    ),
-                },
-                accepted_capabilities=("answer_verify",),
-                catalog=DatasetCatalog(()),
-                registry=registry,
-                as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                permission_scope="analyst",
-            )
 
-        for invalid_source, reason in (
-            (None, "accepted_terminal_gap_source_missing"),
+        invalid_authorities = (
+            ({**authority, "source_run_id": "run-stale"}, "source_mismatch"),
+            ({**authority, "thread_id": "thread-other"}, "owner_mismatch"),
             (
-                {"analysis_contract_id": "analysis:run-terminal-gap-source:1"},
-                "accepted_terminal_gap_source_invalid",
+                {**authority, "analysis_contract_signature": "sha256:tampered"},
+                "contract_signature_invalid",
             ),
-        ):
-            with self.subTest(reason=reason), self.assertRaisesRegex(
-                ValueError,
-                reason,
-            ):
-                proposal = {
-                    "target_metrics": ["paid_amount"],
-                    "accepted_degradation_choice": choice,
-                }
-                if invalid_source is not None:
-                    proposal["accepted_terminal_gap_source_contract"] = (
-                        invalid_source
-                    )
+            (
+                {
+                    **authority,
+                    "clarification_outcome": {
+                        **outcome_payload,
+                        "outcome_signature": "sha256:tampered",
+                    },
+                },
+                "outcome_signature_invalid",
+            ),
+            (
+                {
+                    **authority,
+                    "clarification_outcome": {
+                        **outcome_payload,
+                        "choice": {**choice, "choice_id": "different"},
+                    },
+                },
+                "outcome_signature_invalid",
+            ),
+            (
+                {
+                    **authority,
+                    "clarification_outcome": (
+                        lambda forged: {
+                            **forged,
+                            "outcome_signature": stable_contract_signature(
+                                forged
+                            ),
+                        }
+                    )({
+                        **{
+                            key: value
+                            for key, value in outcome_payload.items()
+                            if key != "outcome_signature"
+                        },
+                        "outcome_ref": "clarification-outcome:forged",
+                    }),
+                },
+                "outcome_ref_invalid",
+            ),
+        )
+        for invalid_authority, reason in invalid_authorities:
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
                 compile_analysis_contract(
-                    run_id="run-terminal-gap-invalid-source",
-                    proposal=proposal,
+                    run_id="run-terminal-gap-invalid-authority",
+                    proposal={
+                        "target_metrics": ["paid_amount"],
+                        "accepted_degradation_choice": choice,
+                        "accepted_terminal_gap_authority": invalid_authority,
+                        "resume_thread_id": "thread-terminal-gap",
+                        "resume_topic_id": "topic-terminal-gap",
+                    },
                     accepted_capabilities=("answer_verify",),
                     catalog=DatasetCatalog(()),
                     registry=registry,
-                    as_of=datetime.fromisoformat(
-                        "2026-06-03T12:00:00+01:00"
-                    ),
+                    as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
                     permission_scope="analyst",
                 )
 
-        for ignored_choice in (
-            {**choice, "action_kind": "wait_for_source"},
-            {**choice, "affected_capabilities": []},
+        for missing_owner_field in ("resume_thread_id", "resume_topic_id"):
+            with self.subTest(missing_owner_field=missing_owner_field), self.assertRaisesRegex(
+                ValueError, "owner_mismatch"
+            ):
+                owner_proposal = {
+                    "target_metrics": ["paid_amount"],
+                    "accepted_degradation_choice": choice,
+                    "accepted_terminal_gap_authority": authority,
+                    "resume_thread_id": "thread-terminal-gap",
+                    "resume_topic_id": "topic-terminal-gap",
+                }
+                owner_proposal.pop(missing_owner_field)
+                compile_analysis_contract(
+                    run_id="run-terminal-gap-owner-missing",
+                    proposal=owner_proposal,
+                    accepted_capabilities=("answer_verify",),
+                    catalog=DatasetCatalog(()),
+                    registry=registry,
+                    as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+                    permission_scope="analyst",
+                )
+
+        for malformed in (
+            "formula_decompose",
+            [],
+            ["formula_decompose", 7],
+            {"x": 1},
         ):
+            with self.subTest(malformed=malformed), self.assertRaisesRegex(
+                ValueError, "affected_capabilities_invalid"
+            ):
+                compile_analysis_contract(
+                    run_id="run-terminal-gap-malformed-mapping",
+                    proposal={
+                        "target_metrics": ["paid_amount"],
+                        "accepted_degradation_choice": {
+                            **choice,
+                            "affected_capabilities": malformed,
+                        },
+                        "accepted_terminal_gap_authority": authority,
+                    },
+                    accepted_capabilities=("answer_verify",),
+                    catalog=DatasetCatalog(()),
+                    registry=registry,
+                    as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+                    permission_scope="analyst",
+                )
+
+        for ignored_choice in ({**choice, "action_kind": "wait_for_source"},):
             with self.subTest(ignored_choice=ignored_choice):
                 rejected = compile_analysis_contract(
                     run_id="run-terminal-gap-rejected",
                     proposal={
                         "target_metrics": ["paid_amount"],
                         "accepted_degradation_choice": ignored_choice,
-                        "accepted_terminal_gap_source_contract": (
-                            prior.analysis_contract.to_dict()
-                        ),
+                        "accepted_terminal_gap_authority": authority,
                     },
                     accepted_capabilities=("answer_verify",),
                     catalog=DatasetCatalog(()),

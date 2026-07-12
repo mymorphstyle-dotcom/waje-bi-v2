@@ -24,6 +24,12 @@
 - Fixed evaluation context remains `as_of=2026-06-03T12:00:00+01:00`, target `2026-06-02`, previous day `2026-06-01`, rolling baseline `2026-05-26..2026-06-01`, same weekday `2026-05-26`, pattern history from `2026-01-01`, and anomaly history from `2026-05-03`.
 - `artifacts/` remains ignored and local. Missing environment variables or inputs are recorded with owner and impact; they are never reported as passing.
 - Each task starts with a general failure-class test, confirms red, implements the contract-level fix, runs targeted and regression tests, receives independent review, and ends with one commit.
+- Clarification resume resolves the prior AnalysisContract and actual accepted
+  choice through immutable PostgreSQL authority. Run-request JSON cannot
+  authorize carried gaps. The resolver verifies exact payload/signature/run
+  ownership and returns a persisted clarification-outcome ref; carried
+  `affected_capabilities` are exact-scoped to resumed accepted capabilities plus
+  `analysis_contract`, with malformed mappings failing closed.
 
 ---
 

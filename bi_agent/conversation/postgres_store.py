@@ -319,6 +319,121 @@ class PostgresConversationStore:
             value = json.loads(value)
         return dict(value) if isinstance(value, Mapping) else {}
 
+    def record_clarification_outcome(
+        self,
+        *,
+        source_run_id: str,
+        thread_id: str,
+        topic_id: str,
+        choice: Mapping[str, Any],
+    ) -> str:
+        from bi_agent.conversation.clarification_authority import (
+            build_clarification_outcome,
+        )
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        owner = self._fetchone(
+            """
+            SELECT thread_id, topic_id, status
+            FROM waje_runtime.analysis_runs
+            WHERE run_id = %(source_run_id)s
+            FOR UPDATE
+            """,
+            {"source_run_id": source_run_id},
+        )
+        if owner is None:
+            self.connection.rollback()
+            raise EvidenceIntegrityError("clarification_outcome_source_run_missing")
+        if str(_field(owner, "status", 2) or "") != "waiting_for_clarification":
+            self.connection.rollback()
+            raise EvidenceIntegrityError("clarification_outcome_source_run_stale")
+        if (
+            str(_field(owner, "thread_id", 0) or "") != thread_id
+            or str(_field(owner, "topic_id", 1) or "") != topic_id
+        ):
+            self.connection.rollback()
+            raise EvidenceIntegrityError("clarification_outcome_owner_mismatch")
+
+        payload = build_clarification_outcome(
+            source_run_id=source_run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+            choice=choice,
+        )
+        self._audit(
+            "clarification_outcome_recorded",
+            thread_id=thread_id,
+            topic_id=topic_id,
+            run_id=source_run_id,
+            ref=payload["outcome_ref"],
+            payload=payload,
+        )
+        return str(payload["outcome_ref"])
+
+    def resolve_clarification_resume_authority(
+        self,
+        *,
+        source_run_id: str,
+        thread_id: str,
+        topic_id: str,
+        choice: Mapping[str, Any],
+        outcome_ref: str,
+    ) -> dict[str, Any]:
+        from bi_agent.conversation.clarification_authority import (
+            validate_clarification_resume_authority,
+        )
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        row = self._fetchone(
+            """
+            SELECT ac.analysis_contract_id,
+                   ac.run_id AS analysis_run_id,
+                   ac.contract_signature AS stored_contract_signature,
+                   ac.payload AS contract_payload,
+                   r.status AS run_status,
+                   r.thread_id AS run_thread_id,
+                   r.topic_id AS run_topic_id,
+                   e.payload AS outcome_payload,
+                   e.ref AS outcome_ref,
+                   e.run_id AS outcome_run_id,
+                   e.thread_id AS outcome_thread_id,
+                   e.topic_id AS outcome_topic_id
+            FROM waje_runtime.analysis_runs r
+            JOIN waje_runtime.analysis_contracts ac
+              ON ac.run_id = r.run_id
+             AND ac.analysis_contract_id = %(analysis_contract_id)s
+            JOIN waje_runtime.audit_events e
+              ON e.event_type = 'clarification_outcome_recorded'
+             AND e.ref = %(outcome_ref)s
+             AND e.run_id = r.run_id
+            WHERE r.run_id = %(source_run_id)s
+            """,
+            {
+                "source_run_id": source_run_id,
+                "analysis_contract_id": f"analysis:{source_run_id}:1",
+                "outcome_ref": outcome_ref,
+            },
+        )
+        if row is None:
+            raise EvidenceIntegrityError("clarification_resume_authority_missing")
+        return validate_clarification_resume_authority(
+            source_run_id=source_run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+            choice=choice,
+            outcome_ref=outcome_ref,
+            analysis_contract=_json_value(_field(row, "contract_payload", 3)) or {},
+            stored_contract_signature=str(_field(row, "stored_contract_signature", 2) or ""),
+            analysis_run_id=str(_field(row, "analysis_run_id", 1) or ""),
+            run_status=str(_field(row, "run_status", 4) or ""),
+            run_thread_id=str(_field(row, "run_thread_id", 5) or ""),
+            run_topic_id=str(_field(row, "run_topic_id", 6) or ""),
+            clarification_outcome=_json_value(_field(row, "outcome_payload", 7)) or {},
+            outcome_run_id=str(_field(row, "outcome_run_id", 9) or ""),
+            outcome_thread_id=str(_field(row, "outcome_thread_id", 10) or ""),
+            outcome_topic_id=str(_field(row, "outcome_topic_id", 11) or ""),
+        )
+
     def record_context_manifest(self, manifest: dict[str, Any]) -> None:
         self.save_context_manifest(manifest)
 

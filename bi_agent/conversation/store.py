@@ -147,6 +147,98 @@ class InMemoryConversationStore:
     def get_run_request(self, run_id: str) -> dict[str, Any]:
         return deepcopy((self.runs.get(run_id) or {}).get("request") or {})
 
+    def record_clarification_outcome(
+        self,
+        *,
+        source_run_id: str,
+        thread_id: str,
+        topic_id: str,
+        choice: Mapping[str, Any],
+    ) -> str:
+        from bi_agent.conversation.clarification_authority import (
+            build_clarification_outcome,
+        )
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        source_run = self.runs.get(source_run_id)
+        if not source_run:
+            raise EvidenceIntegrityError("clarification_outcome_source_run_missing")
+        if str(source_run.get("status") or "") != "waiting_for_clarification":
+            raise EvidenceIntegrityError("clarification_outcome_source_run_stale")
+        if (
+            str(source_run.get("thread_id") or "") != thread_id
+            or str(source_run.get("topic_id") or "") != topic_id
+        ):
+            raise EvidenceIntegrityError("clarification_outcome_owner_mismatch")
+
+        payload = build_clarification_outcome(
+            source_run_id=source_run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+            choice=choice,
+        )
+        self.add_audit_event(
+            "clarification_outcome_recorded",
+            thread_id=thread_id,
+            topic_id=topic_id,
+            run_id=source_run_id,
+            ref=payload["outcome_ref"],
+            payload=payload,
+        )
+        return str(payload["outcome_ref"])
+
+    def resolve_clarification_resume_authority(
+        self,
+        *,
+        source_run_id: str,
+        thread_id: str,
+        topic_id: str,
+        choice: Mapping[str, Any],
+        outcome_ref: str,
+    ) -> dict[str, Any]:
+        from bi_agent.conversation.clarification_authority import (
+            validate_clarification_resume_authority,
+        )
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        run = self.runs.get(source_run_id)
+        if not run:
+            raise EvidenceIntegrityError("clarification_resume_source_run_missing")
+        contracts = tuple(
+            payload
+            for payload in self.analysis_runtime_authority["analysis_contract"].values()
+            if str(payload.get("analysis_contract_id") or "")
+            == f"analysis:{source_run_id}:1"
+        )
+        if len(contracts) != 1:
+            raise EvidenceIntegrityError("clarification_resume_contract_missing")
+        outcome_events = tuple(
+            event
+            for event in self._audit_events
+            if event.get("event_type") == "clarification_outcome_recorded"
+            and event.get("ref") == outcome_ref
+        )
+        if len(outcome_events) != 1:
+            raise EvidenceIntegrityError("clarification_resume_outcome_missing")
+        event = outcome_events[0]
+        return validate_clarification_resume_authority(
+            source_run_id=source_run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+            choice=choice,
+            outcome_ref=outcome_ref,
+            analysis_contract=contracts[0],
+            stored_contract_signature=str(contracts[0].get("contract_signature") or ""),
+            analysis_run_id=source_run_id,
+            run_status=str(run.get("status") or ""),
+            run_thread_id=str(run.get("thread_id") or ""),
+            run_topic_id=str(run.get("topic_id") or ""),
+            clarification_outcome=event.get("payload") or {},
+            outcome_run_id=str(event.get("run_id") or ""),
+            outcome_thread_id=str(event.get("thread_id") or ""),
+            outcome_topic_id=str(event.get("topic_id") or ""),
+        )
+
     def record_context_manifest(self, manifest: dict) -> None:
         self.save_context_manifest(manifest)
 

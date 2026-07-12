@@ -193,6 +193,75 @@ class ConversationAgentCore:
             )
         if accepted_degradation_choice:
             request["accepted_degradation_choice"] = accepted_degradation_choice
+            if str(accepted_degradation_choice.get("action_kind") or "") in {
+                "omit_unavailable_context",
+                "continue_with_boundary_only",
+            }:
+                source_run_id = str(resume_context.get("resume_run_id") or "")
+                record_outcome = getattr(
+                    self.store, "record_clarification_outcome", None
+                )
+                resolve_authority = getattr(
+                    self.store, "resolve_clarification_resume_authority", None
+                )
+                try:
+                    if (
+                        not source_run_id
+                        or not callable(record_outcome)
+                        or not callable(resolve_authority)
+                    ):
+                        raise ValueError(
+                            "clarification_resume_authority_unavailable"
+                        )
+                    outcome_ref = record_outcome(
+                        source_run_id=source_run_id,
+                        thread_id=thread_id,
+                        topic_id=turn.topic_id or "",
+                        choice=accepted_degradation_choice,
+                    )
+                    authority = resolve_authority(
+                        source_run_id=source_run_id,
+                        thread_id=thread_id,
+                        topic_id=turn.topic_id or "",
+                        choice=accepted_degradation_choice,
+                        outcome_ref=outcome_ref,
+                    )
+                except Exception as exc:
+                    self.store.upsert_run(
+                        run_id,
+                        thread_id=thread_id,
+                        turn_id=turn.turn_id,
+                        topic_id=turn.topic_id or "",
+                        status="failed",
+                        request={
+                            **_persistable_request(request),
+                            "failure_reason": (
+                                "clarification_resume_authority_failed"
+                            ),
+                        },
+                    )
+                    self.store.add_audit_event(
+                        "clarification_resume_authority_failed",
+                        thread_id=thread_id,
+                        topic_id=turn.topic_id or "",
+                        run_id=run_id,
+                        ref=source_run_id,
+                        payload={
+                            "reason": str(exc),
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                    return {
+                        "status": "failed",
+                        "run_id": run_id,
+                        "turn_id": turn.turn_id,
+                        "topic_id": turn.topic_id,
+                        "failure_reason": (
+                            "clarification_resume_authority_failed"
+                        ),
+                    }
+                request["accepted_terminal_gap_authority"] = authority
+                request["clarification_outcome_ref"] = outcome_ref
         if self.row_provider is not None:
             request["row_provider"] = self.row_provider
         if self.evidence_resolver is not None:
