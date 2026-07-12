@@ -614,9 +614,9 @@ def _derive_capability_outcomes(
         for gap in contract.contract_gaps:
             if (
                 gap.gap_type not in terminal_gap_types
-                or ":" not in gap.gap_id
                 or not gap.owner
                 or not gap.repair_options
+                or not _gap_identity_matches_contract(gap, contract)
             ):
                 continue
             blocked_capabilities.update(
@@ -648,6 +648,52 @@ def _derive_capability_outcomes(
             else "unobserved"
         )
     return outcomes
+
+
+def _gap_identity_matches_contract(gap: Any, contract: Any) -> bool:
+    parts = gap.gap_id.split(":")
+    if len(parts) < 2 or any(not part for part in parts[:2]):
+        return False
+    namespace, object_id = parts[:2]
+    datasets = set(contract.dataset_requirements)
+    capabilities = set(contract.capability_requirements)
+    metrics = {
+        *contract.target_metric_refs,
+        *(binding.metric_id for binding in contract.metric_bindings),
+    }
+    dimensions = {binding.dimension_id for binding in contract.dimension_bindings}
+    bound_object = {
+        "dataset": object_id in datasets and gap.dataset_id == object_id,
+        "capability": object_id in capabilities,
+        "metric": object_id in metrics,
+        "dimension": object_id in dimensions,
+        "claim_intent": object_id in set(contract.claim_intents),
+        "claim_intents": object_id == "unbound",
+        "window": True,
+    }.get(namespace, False)
+    if gap.gap_type == "window_data_unavailable":
+        return bool(
+            gap.dataset_id in datasets
+            and (
+                gap.gap_id.startswith(f"{gap.dataset_id}:")
+                or namespace == "window"
+            )
+        )
+    if not bound_object:
+        return False
+    required_suffix = {
+        "contract_absent": "contract_absent",
+        "dataset_snapshot_unavailable_as_of": "dataset_snapshot_unavailable_as_of",
+        "permission_blocked": "permission_blocked",
+        "source_unbound": "source_unbound",
+    }.get(gap.gap_type)
+    if required_suffix:
+        return parts[-1] == required_suffix
+    if gap.gap_type == "unsupported_grain":
+        return namespace == "dimension" and "grain" in parts[2:]
+    if gap.gap_type == "capability_metric_unsupported":
+        return namespace == "metric" and parts[-1] == "capability_metric_family_unsupported"
+    return True
 
 
 _DATASET_STATE_PRECEDENCE = {
@@ -1539,7 +1585,8 @@ def _runtime_audit_package(result: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         return {}
     expected_run_id = str(result.get("run_id") or client_package.get("run_id") or "")
-    if expected_run_id and str(payload.get("run_id") or "") != expected_run_id:
+    payload_run_id = str(payload.get("run_id") or "")
+    if not expected_run_id or not payload_run_id or payload_run_id != expected_run_id:
         return {}
     return dict(payload)
 

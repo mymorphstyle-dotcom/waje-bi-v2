@@ -41,7 +41,16 @@ def _canonical_gap() -> ContractGap:
     )
 
 
-@pytest.mark.parametrize("artifact_state", ["missing", "corrupt", "run_mismatch"])
+@pytest.mark.parametrize(
+    "artifact_state",
+    [
+        "missing",
+        "corrupt",
+        "run_mismatch",
+        "missing_expected_run_id",
+        "missing_payload_run_id",
+    ],
+)
 def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
     tmp_path, artifact_state
 ):
@@ -52,16 +61,21 @@ def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
         path.write_text("{not-json", encoding="utf-8")
     elif artifact_state == "run_mismatch":
         path.write_text(json.dumps({"run_id": "run-other"}), encoding="utf-8")
+    elif artifact_state == "missing_expected_run_id":
+        path.write_text(json.dumps({"run_id": "run-artifact"}), encoding="utf-8")
+    elif artifact_state == "missing_payload_run_id":
+        path.write_text(json.dumps({"status": "completed"}), encoding="utf-8")
     result = {
-        "run_id": "run-expected",
         "artifact_path": str(path),
         "answer_package": {
-            "run_id": "run-expected",
             "admin_audit": {
                 "analysis_contract": _analysis_contract(_canonical_gap())
             },
         },
     }
+    if artifact_state != "missing_expected_run_id":
+        result["run_id"] = "run-expected"
+        result["answer_package"]["run_id"] = "run-expected"
 
     assert _runtime_audit_package(result) == {}
 
@@ -84,7 +98,17 @@ def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
                 **_analysis_contract(_canonical_gap()),
                 "contract_gaps": [{
                     **_canonical_gap().to_dict(),
-                    "gap_id": "unstructured-gap-id",
+                    "gap_id": "fake:gap",
+                }],
+            }
+        },
+        {
+            "analysis_contract": {
+                **_analysis_contract(_canonical_gap()),
+                "contract_gaps": [{
+                    **_canonical_gap().to_dict(),
+                    "gap_type": "source_unbound",
+                    "gap_id": "capability:answer_verify:contract_partial",
                 }],
             }
         },
