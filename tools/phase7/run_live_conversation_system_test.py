@@ -1190,6 +1190,10 @@ def _real_clickhouse_review(
     analysis_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     package = _runtime_audit_package(result)
+    if not package:
+        inline_package = result.get("answer_package") or {}
+        if isinstance(inline_package, Mapping):
+            package = dict(inline_package)
     if not real_clickhouse:
         return {
             "required": False,
