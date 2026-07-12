@@ -107,6 +107,15 @@ def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
                 **_analysis_contract(_canonical_gap()),
                 "contract_gaps": [{
                     **_canonical_gap().to_dict(),
+                    "gap_id": "capability:answer_verify:fake",
+                }],
+            }
+        },
+        {
+            "analysis_contract": {
+                **_analysis_contract(_canonical_gap()),
+                "contract_gaps": [{
+                    **_canonical_gap().to_dict(),
                     "gap_type": "source_unbound",
                     "gap_id": "capability:answer_verify:contract_partial",
                 }],
@@ -147,4 +156,27 @@ def test_capability_block_accepts_canonical_exact_analysis_contract_gap():
         ("answer_verify",),
         accepted_capabilities=set(),
         authority={"analysis_contract": _analysis_contract(_canonical_gap())},
+    ) == {"answer_verify": "blocked"}
+
+
+def test_capability_block_accepts_compiler_dimension_gap_without_binding():
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_capability_outcomes,
+    )
+
+    gap = ContractGap(
+        gap_type="contract_absent",
+        gap_id="dimension:unbound_dimension:contract_absent",
+        dataset_id="",
+        affected_capabilities=("answer_verify",),
+        affected_claim_types=(),
+        owner="contract_owner",
+        repair_options=("register_dimension_contract",),
+        requires_clarification=False,
+        diagnostic_context={},
+    )
+    assert _derive_capability_outcomes(
+        ("answer_verify",),
+        accepted_capabilities=set(),
+        authority={"analysis_contract": _analysis_contract(gap)},
     ) == {"answer_verify": "blocked"}

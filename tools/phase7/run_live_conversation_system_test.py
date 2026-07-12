@@ -657,17 +657,12 @@ def _gap_identity_matches_contract(gap: Any, contract: Any) -> bool:
     namespace, object_id = parts[:2]
     datasets = set(contract.dataset_requirements)
     capabilities = set(contract.capability_requirements)
-    metrics = {
-        *contract.target_metric_refs,
-        *(binding.metric_id for binding in contract.metric_bindings),
-    }
-    dimensions = {binding.dimension_id for binding in contract.dimension_bindings}
     bound_object = {
         "dataset": object_id in datasets and gap.dataset_id == object_id,
         "capability": object_id in capabilities,
-        "metric": object_id in metrics,
-        "dimension": object_id in dimensions,
-        "claim_intent": object_id in set(contract.claim_intents),
+        "metric": True,
+        "dimension": True,
+        "claim_intent": object_id in set(gap.affected_claim_types),
         "claim_intents": object_id == "unbound",
         "window": True,
     }.get(namespace, False)
@@ -693,6 +688,36 @@ def _gap_identity_matches_contract(gap: Any, contract: Any) -> bool:
         return namespace == "dimension" and "grain" in parts[2:]
     if gap.gap_type == "capability_metric_unsupported":
         return namespace == "metric" and parts[-1] == "capability_metric_family_unsupported"
+    if gap.gap_type == "contract_partial":
+        markers = {
+            "dataset": {"contract_partial", "schema_missing", "evidence_state"},
+            "metric": {
+                "missing",
+                "schema_missing",
+                "invalid",
+                "capability_metric_family_unsupported",
+                "source_ambiguous",
+            },
+            "dimension": {"missing", "schema_missing", "source_ambiguous"},
+            "claim_intent": {"unsupported"},
+            "capability": {
+                "missing",
+                "query_shape",
+                "required_window",
+                "required_context_source",
+                "required_dimension",
+                "required_query",
+            },
+        }
+        if namespace == "claim_intents":
+            return parts == ["claim_intents", "unbound"]
+        if namespace == "window":
+            return object_id.split(":", 1)[0] in {
+                "duplicate_baseline",
+                "unsupported_baseline",
+                "unsupported_target_semantic",
+            }
+        return len(parts) >= 3 and parts[2] in markers.get(namespace, set())
     return True
 
 

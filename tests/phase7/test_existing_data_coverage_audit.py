@@ -875,7 +875,7 @@ def test_obligation_review_accepts_only_authority_backed_terminal_capability_out
         runtime_authority = {
             "analysis_contract": _analysis_contract_gap_authority([{
                 "gap_type": "contract_partial",
-                "gap_id": "capability:answer_verify:contract_partial",
+                "gap_id": "capability:answer_verify:required_query:slot:unbound",
                 "dataset_id": "paid_order_success",
                 "owner": "contract_owner",
             }], ["answer_verify"])
