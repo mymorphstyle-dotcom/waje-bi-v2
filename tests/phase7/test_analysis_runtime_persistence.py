@@ -1000,6 +1000,58 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             "published",
         )
 
+    def test_queryless_contract_capability_persists_zero_claim_boundary(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _authority_bundle()
+        analysis = {
+            **bundle["analysis_contract"],
+            "claim_intents": ["recurring_pattern_existence"],
+            "capability_requirements": ["answer_verify", "evidence_reduce"],
+            "dataset_requirements": [],
+            "metric_bindings": [],
+            "dimension_bindings": [],
+            "contract_gaps": [{
+                "gap_type": "contract_partial",
+                "gap_id": "metric:paid_amount:source_ambiguous",
+                "dataset_id": "",
+                "affected_capabilities": ["analysis_contract"],
+                "affected_claim_types": [],
+                "owner": "contract_owner",
+                "repair_options": [
+                    "select_dataset_requirement",
+                    "clarify_source_scope",
+                ],
+                "requires_clarification": True,
+                "diagnostic_context": {},
+            }],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle.update(
+            {
+                "analysis_contract": analysis,
+                "query_contracts": (),
+                "query_execution_records": (),
+                "rows_records": (),
+                "snapshot_records": (),
+                "completeness_records": (),
+                "capability_binding_records": (),
+                "evidence_manifests": (),
+                "context_manifests": (),
+                "trusted_provenance_records": (),
+                "verified_claims": (),
+                "claim_links": (),
+                "repair_attempts": (),
+            }
+        )
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            ),
+            "published",
+        )
+
     def test_zero_claim_postgres_run_publishes_and_replays_without_claim_rows(self):
         bundle = _authority_bundle()
         bundle["context_manifests"] = ()

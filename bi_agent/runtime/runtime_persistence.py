@@ -617,12 +617,22 @@ def _validated_unbound_claim_intents(
                 "supported_claim_types", ()
             )
         }
+        queryless_capability_claim_intents = {
+            claim_type
+            for capability_id in analysis.capability_requirements
+            for inputs in (registry.capability_inputs(capability_id),)
+            if not inputs.get("query_families")
+            and not inputs.get("required_metrics")
+            and inputs.get("minimum_readiness", {}).get("required_slots") == "none"
+            for claim_type in inputs.get("supported_claim_types", ())
+        }
     except (KeyError, OSError, TypeError, ValueError) as exc:
         raise EvidenceIntegrityError(
             "runtime_persistence_analysis_claim_contract_invalid"
         ) from exc
     if not unsupported.issubset(
-        (metric_claim_intents | capability_claim_intents).intersection(
+        queryless_capability_claim_intents
+        | (metric_claim_intents | capability_claim_intents).intersection(
             boundary_claim_intents
         )
     ):
