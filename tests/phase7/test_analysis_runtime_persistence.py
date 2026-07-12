@@ -1094,6 +1094,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
 
     def test_metric_backed_intent_persists_with_structured_terminal_boundary(self):
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
         bundle = _authority_bundle()
         claim_intents = list(
@@ -1144,6 +1145,46 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             ),
             "published",
         )
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        unbound_metric_id = "active_users"
+        unbound_sources = registry.metric_sources(unbound_metric_id)
+        linked_claim_intents = ["comparative_change"]
+        compiler_linked_analysis = {
+            **analysis,
+            "claim_intents": linked_claim_intents,
+            "target_metric_refs": [
+                *analysis["target_metric_refs"],
+                *(
+                    source["contract_ref"]
+                    for source in unbound_sources.values()
+                ),
+            ],
+            "contract_gaps": [{
+                **analysis["contract_gaps"][0],
+                "gap_id": (
+                    f"metric:{unbound_metric_id}:source_ambiguous:"
+                    f"{','.join(unbound_sources)}"
+                ),
+                "affected_claim_types": linked_claim_intents,
+                "diagnostic_context": {
+                    "item_kind": "metric",
+                    "item_id": unbound_metric_id,
+                    "claim_intents": linked_claim_intents,
+                },
+            }],
+        }
+        compiler_linked_analysis["contract_signature"] = analysis_contract_signature(
+            compiler_linked_analysis
+        )
+        bundle["analysis_contract"] = compiler_linked_analysis
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9-compiler-linked", **bundle
+            ),
+            "published",
+        )
         unbounded_analysis = {
             **analysis,
             "contract_gaps": [],
@@ -1164,6 +1205,11 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 **analysis["contract_gaps"][0],
                 "gap_id": "metric:unrelated_metric:source_ambiguous",
                 "affected_claim_types": claim_intents,
+                "diagnostic_context": {
+                    "item_kind": "metric",
+                    "item_id": "unrelated_metric",
+                    "claim_intents": claim_intents,
+                },
             },
             {
                 **analysis["contract_gaps"][0],

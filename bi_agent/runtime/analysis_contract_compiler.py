@@ -195,14 +195,31 @@ def compile_analysis_contract(
         )
     )
     target_metrics = _values(proposal, "target_metrics")
+    bound_target_metric_ids = {
+        binding.metric_id
+        for binding in metric_bindings
+        if binding.metric_id in target_metrics
+    }
+    unresolved_target_metric_refs = _unresolved_target_metric_refs(
+        target_metrics,
+        bound_target_metric_ids,
+        registry,
+    )
     analysis = AnalysisContract(
         analysis_contract_id=analysis_contract_id,
         contract_version=registry.contract_version,
         question_families=_values(proposal, "question_families"),
         target_metric_refs=tuple(
-            binding.contract_ref
-            for binding in metric_bindings
-            if binding.metric_id in target_metrics
+            dict.fromkeys(
+                (
+                    *(
+                        binding.contract_ref
+                        for binding in metric_bindings
+                        if binding.metric_id in target_metrics
+                    ),
+                    *unresolved_target_metric_refs,
+                )
+            )
         ),
         claim_intents=accepted_claim_intents,
         scope=_scope(proposal),
@@ -1958,6 +1975,27 @@ def _source_ambiguity_gap(
             "claim_intents": list(affected_claim_types),
         },
     )
+
+
+def _unresolved_target_metric_refs(
+    target_metrics: tuple[str, ...],
+    bound_target_metric_ids: set[str],
+    registry: RuntimeContractRegistry,
+) -> tuple[str, ...]:
+    refs: list[str] = []
+    for metric_id in target_metrics:
+        if metric_id in bound_target_metric_ids:
+            continue
+        try:
+            sources = registry.metric_sources(metric_id).values()
+        except (KeyError, TypeError, ValueError):
+            continue
+        refs.extend(
+            str(source.get("contract_ref") or "")
+            for source in sources
+            if str(source.get("contract_ref") or "")
+        )
+    return tuple(dict.fromkeys(refs))
 
 
 def _sequence_values(value: Any) -> tuple[str, ...]:

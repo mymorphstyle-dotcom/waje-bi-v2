@@ -1843,6 +1843,12 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             if gap.gap_id.startswith("metric:paid_amount:source_ambiguous:")
         )
         self.assertEqual(gap.affected_claim_types, ("comparative_change",))
+        self.assertTrue(
+            any(
+                "paid-amount.metric.yaml" in ref
+                for ref in outcome.analysis_contract.target_metric_refs
+            )
+        )
         self.assertEqual(
             gap.diagnostic_context,
             {

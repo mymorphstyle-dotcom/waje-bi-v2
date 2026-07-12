@@ -601,6 +601,7 @@ def _validated_unbound_claim_intents(
     )
     bound_metric_ids = {metric.metric_id for metric in analysis.metric_bindings}
     required_dataset_ids = set(analysis.dataset_requirements)
+    target_metric_refs = set(analysis.target_metric_refs)
     claim_authorizing_boundary_gaps = tuple(
         gap
         for gap in boundary_gaps
@@ -608,6 +609,7 @@ def _validated_unbound_claim_intents(
             gap,
             bound_metric_ids=bound_metric_ids,
             required_dataset_ids=required_dataset_ids,
+            target_metric_refs=target_metric_refs,
         )
     )
     boundary_claim_intents = {
@@ -716,6 +718,7 @@ def _boundary_gap_authorizes_claim_intents(
     *,
     bound_metric_ids: set[str],
     required_dataset_ids: set[str],
+    target_metric_refs: set[str],
 ) -> bool:
     if not gap.affected_claim_types:
         return False
@@ -723,8 +726,32 @@ def _boundary_gap_authorizes_claim_intents(
     if parts[0] == "metric" and len(parts) >= 3:
         metric_id = parts[1]
         diagnostic = canonical_value(gap.diagnostic_context)
-        return metric_id in bound_metric_ids or (
-            diagnostic.get("item_kind") == "metric"
+        if metric_id in bound_metric_ids:
+            return True
+        try:
+            registry = RuntimeContractRegistry.from_path(
+                CANONICAL_RUNTIME_BINDINGS_PATH
+            )
+            metric_sources = registry.metric_sources(metric_id)
+            source_ids = tuple(metric_sources)
+            metric_contract_refs = {
+                str(source.get("contract_ref") or "")
+                for source in metric_sources.values()
+                if str(source.get("contract_ref") or "")
+            }
+        except (KeyError, OSError, TypeError, ValueError):
+            return False
+        return (
+            gap.gap_id
+            == f"metric:{metric_id}:source_ambiguous:{','.join(source_ids)}"
+            and bool(metric_contract_refs.intersection(target_metric_refs))
+            and gap.gap_type == "contract_partial"
+            and gap.dataset_id == ""
+            and gap.owner == "contract_owner"
+            and gap.repair_options
+            == ("select_dataset_requirement", "clarify_source_scope")
+            and gap.requires_clarification is True
+            and diagnostic.get("item_kind") == "metric"
             and diagnostic.get("item_id") == metric_id
             and set(diagnostic.get("claim_intents") or ())
             == set(gap.affected_claim_types)
