@@ -222,7 +222,11 @@ def compile_analysis_contract(
             )
         ),
         claim_intents=accepted_claim_intents,
-        scope=_scope(proposal),
+        scope=_scope(
+            proposal,
+            requested_metric_ids=dependencies.metric_ids,
+            requested_dimension_ids=dependencies.dimension_ids,
+        ),
         business_timezone=registry.business_timezone,
         as_of=as_of.isoformat(),
         resolved_windows=resolution.windows,
@@ -1805,7 +1809,12 @@ def _contract_gap(
     )
 
 
-def _scope(proposal: Mapping[str, Any]) -> dict[str, Any]:
+def _scope(
+    proposal: Mapping[str, Any],
+    *,
+    requested_metric_ids: tuple[str, ...] | None = None,
+    requested_dimension_ids: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     value = proposal.get("scope")
     if isinstance(value, Mapping):
         scope = dict(value)
@@ -1813,8 +1822,16 @@ def _scope(proposal: Mapping[str, Any]) -> dict[str, Any]:
         scope = {"type": str(value)}
     else:
         scope = {"type": "full_sample"}
-    scope["requested_metric_ids"] = _values(proposal, "target_metrics")
-    scope["requested_dimension_ids"] = _values(proposal, "requested_dimensions")
+    scope["requested_metric_ids"] = (
+        requested_metric_ids
+        if requested_metric_ids is not None
+        else _values(proposal, "target_metrics")
+    )
+    scope["requested_dimension_ids"] = (
+        requested_dimension_ids
+        if requested_dimension_ids is not None
+        else _values(proposal, "requested_dimensions")
+    )
     return scope
 
 

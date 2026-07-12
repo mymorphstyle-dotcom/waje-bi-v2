@@ -93,6 +93,32 @@ def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
                 }],
             }
         },
+        *(
+            {
+                "analysis_contract": {
+                    **_analysis_contract(_canonical_gap()),
+                    "scope": {
+                        "requested_metric_ids": ["paid_amount"],
+                        "requested_dimension_ids": ["channel"],
+                    },
+                    "contract_gaps": [{
+                        **_canonical_gap().to_dict(),
+                        "gap_type": gap_type,
+                        "gap_id": gap_id,
+                    }],
+                }
+            }
+            for gap_type, gap_id in (
+                ("contract_absent", "metric:paid_amount:extra:contract_absent"),
+                ("source_unbound", "dataset:paid_order_success:extra:source_unbound"),
+                ("unsupported_grain", "dimension:channel:grain"),
+                ("unsupported_grain", "dimension:channel:fake:grain"),
+                (
+                    "capability_metric_unsupported",
+                    "metric:paid_amount:extra:capability_metric_family_unsupported",
+                ),
+            )
+        ),
         {
             "analysis_contract": {
                 **_analysis_contract(_canonical_gap()),
@@ -216,8 +242,37 @@ def test_compiler_scope_persists_requested_metric_and_dimension_identities():
         "scope": "full_sample",
         "target_metrics": ["paid_amount"],
         "requested_dimensions": ["unbound_dimension"],
-    }) == {
+    }, requested_metric_ids=("paid_amount", "paid_users"),
+       requested_dimension_ids=("unbound_dimension",)) == {
         "type": "full_sample",
-        "requested_metric_ids": ("paid_amount",),
+        "requested_metric_ids": ("paid_amount", "paid_users"),
         "requested_dimension_ids": ("unbound_dimension",),
     }
+
+
+def test_capability_block_accepts_canonical_source_override_gap():
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_capability_outcomes,
+    )
+
+    gap = ContractGap(
+        gap_type="contract_absent",
+        gap_id="metric:paid_amount:source_unavailable:unknown_source",
+        dataset_id="",
+        affected_capabilities=("answer_verify",),
+        affected_claim_types=(),
+        owner="contract_owner",
+        repair_options=("select_registered_source",),
+        requires_clarification=False,
+        diagnostic_context={},
+    )
+    contract = _analysis_contract(gap)
+    contract["scope"] = {
+        "requested_metric_ids": ["paid_amount"],
+        "requested_dimension_ids": [],
+    }
+    assert _derive_capability_outcomes(
+        ("answer_verify",),
+        accepted_capabilities=set(),
+        authority={"analysis_contract": contract},
+    ) == {"answer_verify": "blocked"}

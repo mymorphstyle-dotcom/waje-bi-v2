@@ -677,27 +677,54 @@ def _gap_identity_matches_contract(gap: Any, contract: Any) -> bool:
         "window": True,
     }.get(namespace, False)
     if gap.gap_type == "window_data_unavailable":
-        return bool(
+        return (
             gap.dataset_id in datasets
-            and (
-                gap.gap_id.startswith(f"{gap.dataset_id}:")
-                or namespace == "window"
-            )
+            and len(parts) == 5
+            and parts[0] == gap.dataset_id
+            and parts[1] == "target_day"
+            and bool(parts[2])
+            and parts[3] == "watermark"
+            and bool(parts[4])
         )
     if not bound_object:
         return False
-    required_suffix = {
-        "contract_absent": "contract_absent",
-        "dataset_snapshot_unavailable_as_of": "dataset_snapshot_unavailable_as_of",
-        "permission_blocked": "permission_blocked",
-        "source_unbound": "source_unbound",
-    }.get(gap.gap_type)
-    if required_suffix:
-        return parts[-1] == required_suffix
+    if gap.gap_type == "contract_absent":
+        if (
+            namespace in {"metric", "dimension"}
+            and len(parts) == 4
+            and parts[2] == "source_unavailable"
+        ):
+            return bool(parts[3])
+        if namespace == "capability" and len(parts) == 5:
+            return parts[2] == "query_shape" and parts[4] == "contract_absent"
+        return (
+            namespace in {"metric", "dimension", "dataset", "capability"}
+            and len(parts) == 3
+            and parts[2] == "contract_absent"
+        )
+    if gap.gap_type in {
+        "dataset_snapshot_unavailable_as_of",
+        "permission_blocked",
+        "source_unbound",
+    }:
+        return (
+            namespace == "dataset"
+            and len(parts) == 3
+            and parts[2] == gap.gap_type
+        )
     if gap.gap_type == "unsupported_grain":
-        return namespace == "dimension" and "grain" in parts[2:]
+        return (
+            namespace == "dimension"
+            and len(parts) == 4
+            and parts[2] == "grain"
+            and bool(parts[3])
+        )
     if gap.gap_type == "capability_metric_unsupported":
-        return namespace == "metric" and parts[-1] == "capability_metric_family_unsupported"
+        return (
+            namespace == "metric"
+            and len(parts) == 3
+            and parts[2] == "capability_metric_family_unsupported"
+        )
     if gap.gap_type == "contract_partial":
         return _contract_partial_gap_id_valid(parts, capabilities)
     return True
