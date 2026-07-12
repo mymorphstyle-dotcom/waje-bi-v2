@@ -171,7 +171,16 @@ def _persisted_plan_authority() -> tuple[dict[str, object], RuntimeContractRegis
                 "details": {},
             }],
             "failure_reasons": [],
-            "coverage_summary": {},
+            "coverage_summary": {
+                "row_count": 1,
+                "required_windows": ["target_day"],
+                "observed_windows": ["target_day"],
+                "expected_grain": ["window_id"],
+                "observed_grain": ["window_id"],
+                "snapshot_ref": "snapshot:market",
+                "snapshot_refs": ["snapshot:market"],
+                "rows_ref": "rows:plan-authority",
+            },
         }],
     }, registry
 
@@ -451,6 +460,20 @@ def test_capability_outcome_executes_from_persisted_plan_query_result_chain():
         "wrong_assertion_identity",
         "stale_analysis_contract",
         "duplicate_result_ref",
+        "capability_not_accepted",
+        "wrong_result_schema_type",
+        "wrong_result_windows_type",
+        "wrong_result_grain_type",
+        "wrong_result_snapshot_type",
+        "missing_required_schema_field",
+        "stale_result_windows",
+        "stale_result_grain",
+        "stale_result_snapshot",
+        "unknown_assertion",
+        "duplicate_assertion",
+        "malformed_assertion",
+        "malformed_nested_assertion_details",
+        "stale_report_coverage",
     ],
 )
 def test_capability_outcome_rejects_incomplete_or_mismatched_plan_query_chain(
@@ -527,6 +550,72 @@ def test_capability_outcome_rejects_incomplete_or_mismatched_plan_query_chain(
             "query_contract_ref": "query:other",
             "completeness_report_ref": "completeness:other",
         })
+    elif mutation == "capability_not_accepted":
+        authority["analysis_contract"]["capability_requirements"] = []
+    elif mutation == "wrong_result_schema_type":
+        authority["query_results"][0]["observed_schema"] = ["window_id"]
+    elif mutation == "wrong_result_windows_type":
+        authority["query_results"][0]["observed_windows"] = "target_day"
+    elif mutation == "wrong_result_grain_type":
+        authority["query_results"][0]["observed_grain"] = [1]
+    elif mutation == "wrong_result_snapshot_type":
+        authority["query_results"][0]["source_snapshot_refs"] = [1]
+    elif mutation == "missing_required_schema_field":
+        authority["query_results"][0]["observed_schema"].pop("paid_amount")
+    elif mutation == "stale_result_windows":
+        authority["query_results"][0]["observed_windows"] = ["previous_day"]
+    elif mutation == "stale_result_grain":
+        authority["query_results"][0]["observed_grain"] = ["country"]
+    elif mutation == "stale_result_snapshot":
+        authority["query_results"][0]["source_snapshot_refs"] = ["snapshot:stale"]
+    elif mutation == "unknown_assertion":
+        authority["completeness_reports"][0]["assertion_results"].append({
+            "assertion": "client_says_ok",
+            "passed": True,
+            "failure_reasons": [],
+            "details": {},
+        })
+    elif mutation == "duplicate_assertion":
+        authority["completeness_reports"][0]["assertion_results"].append({
+            **authority["completeness_reports"][0]["assertion_results"][0]
+        })
+    elif mutation == "malformed_assertion":
+        authority["completeness_reports"][0]["assertion_results"][0]["passed"] = 1
+    elif mutation == "malformed_nested_assertion_details":
+        authority["completeness_reports"][0]["assertion_results"][0]["details"] = {
+            "nested": {1: "client-key"}
+        }
+    elif mutation == "stale_report_coverage":
+        authority["completeness_reports"][0]["coverage_summary"]["rows_ref"] = (
+            "rows:stale"
+        )
+
+    assert _derive_capability_outcomes(
+        ("market_health_compare",),
+        accepted_capabilities={"market_health_compare"},
+        authority=authority,
+        registry=registry,
+    ) == {"market_health_compare": "unobserved"}
+
+
+def test_capability_outcome_rejects_generic_execution_binding_fallback():
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_capability_outcomes,
+    )
+
+    authority, registry = _persisted_plan_authority()
+    authority["capability_execution_plans"] = []
+    authority["capability_bindings"] = [{
+        "capability_id": "market_health_compare",
+        "status": "ready",
+        "result_refs": ["result:plan-authority"],
+    }]
+    authority["query_executions"] = [{
+        "result_ref": "result:plan-authority",
+        "execution_status": "succeeded",
+        "completeness_status": "complete",
+        "analysis_readiness": "ready",
+    }]
 
     assert _derive_capability_outcomes(
         ("market_health_compare",),

@@ -214,7 +214,7 @@ def test_obligation_review_fails_missing_current_data_obligation():
 @pytest.mark.parametrize(
     ("boundary", "gaps", "claim_strength", "status", "passed"),
     [
-        ("verified_answer", [], "observed", "completed", True),
+        ("verified_answer", [], "observed", "completed", False),
         ("verified_answer", [], "strong", "completed", False),
         ("permission_blocked", [{"dataset_id": "market_dashboard_channel", "gap_type": "permission_blocked"}], "insufficient", "completed", True),
         ("permission_blocked", [], "insufficient", "completed", False),
@@ -285,7 +285,9 @@ def test_obligation_review_enforces_claim_ceiling_and_terminal_boundary(
     }
     review = review_case_obligations(turn, registry)
     assert review["claim_ceiling_passed"] is (claim_strength != "strong")
-    assert review["terminal_boundary_passed"] is passed if claim_strength != "strong" else review["terminal_boundary_passed"]
+    if claim_strength != "strong":
+        expected_boundary = True if boundary == "verified_answer" else passed
+        assert review["terminal_boundary_passed"] is expected_boundary
     assert review["hard_acceptance_passed"] is passed
 
 
@@ -757,7 +759,7 @@ def test_obligation_coverage_outcomes_are_mutually_exclusive_and_authoritative()
     }
 
 
-def test_obligation_review_requires_binding_result_and_completeness_chain():
+def test_obligation_review_rejects_binding_result_without_persisted_plan_chain():
     from tools.phase7.run_live_conversation_system_test import review_case_obligations
 
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
@@ -813,8 +815,8 @@ def test_obligation_review_requires_binding_result_and_completeness_chain():
     review = review_case_obligations(turn, registry)
 
     assert review["capability_outcomes"] == {
-        "metric_coverage_profile": "executed",
-        "data_quality_profile": "degraded",
+        "metric_coverage_profile": "unobserved",
+        "data_quality_profile": "unobserved",
         "answer_verify": "unobserved",
     }
 
@@ -914,9 +916,12 @@ def test_obligation_review_accepts_only_authority_backed_terminal_capability_out
         registry,
     )
 
-    assert review["capability_outcomes"] == {"answer_verify": terminal_outcome}
-    assert review["nonterminal_required_capabilities"] == []
-    assert review["hard_acceptance_passed"] is True
+    expected = "blocked" if terminal_outcome == "blocked" else "unobserved"
+    assert review["capability_outcomes"] == {"answer_verify": expected}
+    assert review["nonterminal_required_capabilities"] == (
+        [] if terminal_outcome == "blocked" else ["answer_verify"]
+    )
+    assert review["hard_acceptance_passed"] is (terminal_outcome == "blocked")
 
 
 def test_cli_case_selection_rejects_conflicts_cross_suite_and_unknown():

@@ -7,6 +7,7 @@ import os
 import sys
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
+from math import isfinite
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -49,6 +50,7 @@ from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
 )
+from bi_agent.runtime.query_completeness import CURRENT_DATA_ASSERTIONS
 
 
 def load_cases(path: str) -> list[dict[str, Any]]:
@@ -568,49 +570,6 @@ def _derive_capability_outcomes(
     authority: Mapping[str, Any],
     registry: RuntimeContractRegistry | None = None,
 ) -> dict[str, str]:
-    executions = _mapping_items_for_keys(
-        authority,
-        {"query_executions", "query_results"},
-    )
-    result_readiness: dict[str, str] = {}
-    for execution in executions:
-        refs = tuple(
-            dict.fromkeys(
-                str(ref)
-                for ref in (
-                    execution.get("result_ref"),
-                    *(execution.get("result_refs") or ()),
-                )
-                if ref
-            )
-        )
-        execution_status = str(
-            execution.get("execution_status") or execution.get("status") or ""
-        )
-        completeness = str(execution.get("completeness_status") or "")
-        readiness = str(execution.get("analysis_readiness") or "")
-        outcome = ""
-        if (
-            execution_status in {"succeeded", "completed", "executed", "ready"}
-            and completeness in {"complete", "ready"}
-            and readiness in {"", "ready"}
-        ):
-            outcome = "executed"
-        elif (
-            execution_status in {"succeeded", "completed", "executed", "degraded"}
-            and completeness == "partial"
-            and readiness == "degraded"
-        ):
-            outcome = "degraded"
-        for ref in refs:
-            if outcome == "executed" or ref not in result_readiness:
-                result_readiness[ref] = outcome
-
-    bindings_by_capability: dict[str, list[Mapping[str, Any]]] = {}
-    for binding in _mapping_items_for_keys(authority, {"capability_bindings"}):
-        capability_id = str(binding.get("capability_id") or "")
-        if capability_id:
-            bindings_by_capability.setdefault(capability_id, []).append(binding)
     plan_outcomes = (
         _derive_plan_capability_outcomes(authority, registry)
         if registry is not None
@@ -651,14 +610,6 @@ def _derive_capability_outcomes(
     outcomes: dict[str, str] = {}
     for capability_id in required:
         observed: set[str] = set(plan_outcomes.get(capability_id, ()))
-        for binding in bindings_by_capability.get(capability_id, ()):
-            binding_status = str(binding.get("status") or "")
-            for ref in binding.get("result_refs") or ():
-                readiness = result_readiness.get(str(ref), "")
-                if binding_status == "ready" and readiness == "executed":
-                    observed.add("executed")
-                elif binding_status in {"ready", "degraded"} and readiness == "degraded":
-                    observed.add("degraded")
         outcomes[capability_id] = (
             "executed"
             if "executed" in observed
@@ -783,7 +734,10 @@ def _derive_plan_capability_outcomes(
             continue
         capability_id = str(plan.get("capability_id") or "")
         analysis_ref = str(plan.get("analysis_contract_ref") or "")
-        if analysis_ref != accepted_analysis_ref:
+        if (
+            analysis_ref != accepted_analysis_ref
+            or capability_id not in accepted_contract.capability_requirements
+        ):
             continue
         required_slots = tuple(
             slot
@@ -942,6 +896,8 @@ def _persisted_query_outcome(
     if len(results) != 1:
         return ""
     result = results[0]
+    if not _valid_persisted_result(result, query):
+        return ""
     result_ref = str(result.get("result_ref") or "")
     report_ref = str(result.get("completeness_report_ref") or "")
     report = reports_by_ref.get(report_ref)
@@ -953,14 +909,10 @@ def _persisted_query_outcome(
         or str(report.get("query_contract_ref") or "") != query_ref
         or str(report.get("result_ref") or "") != result_ref
         or str(report.get("report_ref") or "") != report_ref
-        or report.get("failure_reasons")
     ):
         return ""
     assertions = report.get("assertion_results") or ()
-    if not assertions or any(
-        not isinstance(item, Mapping) or item.get("passed") is not True
-        for item in assertions
-    ):
+    if not _valid_persisted_report(report, result, query):
         return ""
     required_assertions = tuple(query.get("completeness_assertions") or ())
     observed_assertions = tuple(str(item.get("assertion") or "") for item in assertions)
@@ -982,6 +934,175 @@ def _persisted_query_outcome(
     if completeness == "partial" and readiness == "degraded" and "partial" in accepted_completeness:
         return "degraded"
     return ""
+
+
+def _strict_string_tuple(value: Any) -> tuple[str, ...] | None:
+    if not isinstance(value, (list, tuple)) or isinstance(value, (str, bytes)):
+        return None
+    if any(type(item) is not str or not item for item in value):
+        return None
+    result = tuple(value)
+    return result if len(result) == len(set(result)) else None
+
+
+def _valid_nested_value(value: Any) -> bool:
+    if value is None or type(value) in {str, bool, int}:
+        return True
+    if type(value) is float:
+        return isfinite(value)
+    if isinstance(value, Mapping):
+        return all(
+            type(key) is str and _valid_nested_value(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return all(_valid_nested_value(child) for child in value)
+    return False
+
+
+def _valid_persisted_result(
+    result: Mapping[str, Any], query: Mapping[str, Any]
+) -> bool:
+    string_fields = (
+        "query_contract_ref",
+        "query_id",
+        "query_hash",
+        "result_ref",
+        "rows_ref",
+        "completeness_report_ref",
+        "execution_status",
+        "execution_attempt_ref",
+    )
+    if any(type(result.get(field)) is not str or not result[field] for field in string_fields):
+        return False
+    if type(result.get("failure_reason")) is not str:
+        return False
+    if type(result.get("row_count")) is not int or result["row_count"] < 0:
+        return False
+    schema = result.get("observed_schema")
+    provider_stats = result.get("provider_stats")
+    if (
+        not isinstance(schema, Mapping)
+        or any(type(key) is not str or not key or type(value) is not str or not value for key, value in schema.items())
+        or not isinstance(provider_stats, Mapping)
+        or not _valid_nested_value(provider_stats)
+    ):
+        return False
+    observed_windows = _strict_string_tuple(result.get("observed_windows"))
+    observed_grain = _strict_string_tuple(result.get("observed_grain"))
+    snapshot_refs = _strict_string_tuple(result.get("source_snapshot_refs"))
+    if observed_windows is None or observed_grain is None or snapshot_refs is None:
+        return False
+    shape = query.get("result_shape")
+    if not isinstance(shape, Mapping):
+        return False
+    required_fields = _strict_string_tuple(shape.get("required_fields"))
+    expected_windows = _strict_string_tuple(shape.get("required_window_ids"))
+    expected_grain = _strict_string_tuple(shape.get("grain"))
+    contract_snapshots = _strict_string_tuple(query.get("dataset_snapshot_refs"))
+    return bool(
+        required_fields is not None
+        and set(required_fields).issubset(schema)
+        and expected_windows is not None
+        and len(observed_windows) == len(expected_windows)
+        and set(observed_windows) == set(expected_windows)
+        and expected_grain is not None
+        and observed_grain == expected_grain
+        and contract_snapshots is not None
+        and len(snapshot_refs) == len(contract_snapshots)
+        and set(snapshot_refs) == set(contract_snapshots)
+    )
+
+
+def _valid_persisted_report(
+    report: Mapping[str, Any],
+    result: Mapping[str, Any],
+    query: Mapping[str, Any],
+) -> bool:
+    for field in (
+        "report_ref",
+        "query_contract_ref",
+        "result_ref",
+        "completeness_status",
+        "analysis_readiness",
+    ):
+        if type(report.get(field)) is not str or not report[field]:
+            return False
+    failures = _strict_string_tuple(report.get("failure_reasons"))
+    assertions = report.get("assertion_results")
+    coverage = report.get("coverage_summary")
+    if failures is None or not isinstance(assertions, (list, tuple)) or not assertions:
+        return False
+    if not isinstance(coverage, Mapping) or not _valid_nested_value(coverage):
+        return False
+    known_assertions = {
+        *CURRENT_DATA_ASSERTIONS,
+        "dimension_total_reconciliation",
+        "join_cardinality",
+        "paired_target_baseline",
+    }
+    identities: list[str] = []
+    assertion_failure_reasons: list[str] = []
+    for assertion in assertions:
+        if not isinstance(assertion, Mapping) or set(assertion) != {
+            "assertion", "passed", "failure_reasons", "details"
+        }:
+            return False
+        identity = assertion.get("assertion")
+        assertion_failures = _strict_string_tuple(assertion.get("failure_reasons"))
+        if (
+            type(identity) is not str
+            or identity not in known_assertions
+            or type(assertion.get("passed")) is not bool
+            or assertion_failures is None
+            or not isinstance(assertion.get("details"), Mapping)
+            or not _valid_nested_value(assertion["details"])
+            or assertion["passed"] != (not assertion_failures)
+        ):
+            return False
+        identities.append(identity)
+        assertion_failure_reasons.extend(assertion_failures)
+    if len(identities) != len(set(identities)):
+        return False
+    deduped_assertion_failures = tuple(dict.fromkeys(assertion_failure_reasons))
+    if failures != deduped_assertion_failures:
+        return False
+    completeness = report["completeness_status"]
+    readiness = report["analysis_readiness"]
+    if completeness == "complete" and readiness == "ready":
+        if failures or any(assertion["passed"] is not True for assertion in assertions):
+            return False
+    elif completeness == "partial" and readiness in {"degraded", "blocked"}:
+        if not failures or all(assertion["passed"] is True for assertion in assertions):
+            return False
+    else:
+        return False
+    expected_coverage = {
+        "row_count": result.get("row_count"),
+        "required_windows": list(query.get("window_refs") or ()),
+        "observed_windows": list(result.get("observed_windows") or ()),
+        "expected_grain": list((query.get("result_shape") or {}).get("grain") or ()),
+        "observed_grain": list(result.get("observed_grain") or ()),
+        "snapshot_refs": list(result.get("source_snapshot_refs") or ()),
+        "rows_ref": result.get("rows_ref"),
+    }
+    for field, expected in expected_coverage.items():
+        actual = coverage.get(field)
+        if isinstance(expected, list):
+            typed_actual = _strict_string_tuple(actual)
+            if typed_actual is None or (
+                (field in {"required_windows", "observed_windows", "snapshot_refs"})
+                and (len(typed_actual) != len(expected) or set(typed_actual) != set(expected))
+            ) or (
+                field not in {"required_windows", "observed_windows", "snapshot_refs"}
+                and typed_actual != tuple(expected)
+            ):
+                return False
+        elif type(actual) is not type(expected) or actual != expected:
+            return False
+    snapshots = tuple(result.get("source_snapshot_refs") or ())
+    expected_snapshot_ref = snapshots[0] if len(snapshots) == 1 else ""
+    return coverage.get("snapshot_ref") == expected_snapshot_ref
 
 
 def _gap_identity_matches_contract(gap: Any, contract: Any) -> bool:

@@ -36,7 +36,7 @@ def _executed_market_authority() -> dict:
     }
 
 
-def test_obligation_review_unions_independently_executable_capabilities():
+def test_obligation_review_does_not_execute_from_legacy_market_bindings():
     from tools.phase7.run_live_conversation_system_test import review_case_obligations
 
     review = review_case_obligations(
@@ -62,8 +62,8 @@ def test_obligation_review_unions_independently_executable_capabilities():
 
     assert "market_health_compare" in review["independent_capabilities"]
     assert "market_health_compare" in review["required_capabilities"]
-    assert review["capability_outcomes"]["market_health_compare"] == "executed"
-    assert review["missing_required_capabilities"] == []
+    assert review["capability_outcomes"]["market_health_compare"] == "unobserved"
+    assert "market_health_compare" in review["nonterminal_required_capabilities"]
 
 
 def test_independent_capability_selects_its_dataset_authority_cell_only():
@@ -108,7 +108,7 @@ def test_independent_capability_selects_its_dataset_authority_cell_only():
 
     assert review["expected_dataset_states"] == {"market_dashboard": "executable"}
     assert review["ambiguous_authority_dataset_roles"] == []
-    assert review["hard_acceptance_passed"] is True
+    assert review["hard_acceptance_passed"] is False
 
 
 def test_platform_matrix_exercises_executable_independent_result_authority():
@@ -195,7 +195,9 @@ def test_capability_authority_is_conservative_across_ambiguous_applicable_cells(
         "market_health_compare": "contract_partial"
     }
     assert review["ambiguous_authority_capabilities"] == ["market_health_compare"]
-    assert review["capability_state_mismatches"] == []
+    assert review["capability_state_mismatches"] == [
+        "market_health_compare:contract_partial->unobserved"
+    ]
 
 
 def test_capability_authority_does_not_bind_an_unrelated_dataset_role():
