@@ -186,6 +186,23 @@ def _persisted_plan_authority() -> tuple[dict[str, object], RuntimeContractRegis
     }, registry
 
 
+def _bind_run_matched_accepted_contract(
+    authority: dict[str, object], contract: AnalysisContract
+) -> None:
+    run_id = "run-plan-authority"
+    persisted = contract.to_dict()
+    persisted["analysis_contract_id"] = f"analysis:{run_id}:1"
+    authority["analysis_contract"] = persisted
+    authority["run_id"] = run_id
+    authority["admin_audit"] = {
+        **authority,
+        "analysis_contract": persisted,
+        "compiler_runtime_plan": {
+            "analysis_contract": json.loads(json.dumps(persisted)),
+        },
+    }
+
+
 def test_obligation_review_uses_persisted_family_and_reports_authored_mismatch():
     from tools.phase7.run_live_conversation_system_test import review_case_obligations
 
@@ -931,7 +948,7 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
             ),
         }
     )
-    authority["analysis_contract"] = contract.to_dict()
+    _bind_run_matched_accepted_contract(authority, contract)
     turn = {
         "status": "completed",
         "answer_package": {"summary": "terminal"},
