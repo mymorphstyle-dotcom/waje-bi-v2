@@ -2263,6 +2263,15 @@ def _route_after_query_repair(state: WorkflowState) -> str:
     result = state.get("analysis_runtime_result")
     if result is None:
         return "block" if _route_after_runtime_rows(state) == "block" else "ready"
+    accepted_choice = state.get("request", {}).get("accepted_degradation_choice") or {}
+    accepted_action = str(
+        accepted_choice.get("action_kind")
+        if isinstance(accepted_choice, Mapping)
+        else ""
+    )
+    if result.status == "clarify" and accepted_action == "omit_unavailable_context":
+        state["accepted_degraded_query_outcome"] = True
+        return "degraded"
     if result.status == "clarify":
         return "clarify"
     if result.status == "recompile":
@@ -2721,6 +2730,12 @@ def _business_query_repair_gap(
             "business_impact": "当前不能改变目标日，也不能发布不完整的比较结论",
             "owner": "数据负责人",
             "allowed_actions": [
+                {
+                    "choice_id": "continue_with_available_fixed_window_evidence",
+                    "action_kind": "omit_unavailable_context",
+                    "business_semantics": "保留固定目标窗口，使用当前可验证证据完成受限结论",
+                    "affected_capabilities": [],
+                },
                 {
                     "choice_id": "wait_for_fixed_window_data",
                     "action_kind": "wait_for_source",

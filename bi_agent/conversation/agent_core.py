@@ -343,6 +343,33 @@ class ConversationAgentCore:
             recommended = (
                 recommended_text if recommended_text in option_labels else ""
             )
+            progressing_action = next(
+                (
+                    dict(action)
+                    for action in clarification_payload.get("choice_actions") or ()
+                    if isinstance(action, Mapping)
+                    and str(action.get("action_kind") or "")
+                    not in {"wait_for_source", "user_redirect"}
+                ),
+                {},
+            )
+            recommended_action = next(
+                (
+                    action
+                    for action in clarification_payload.get("choice_actions") or ()
+                    if isinstance(action, Mapping)
+                    and str(action.get("business_label") or "").strip() == recommended
+                ),
+                {},
+            )
+            if (
+                progressing_action
+                and str(recommended_action.get("action_kind") or "")
+                == "wait_for_source"
+            ):
+                recommended = str(
+                    progressing_action.get("business_label") or ""
+                ).strip()
             clarification_payload["recommended_assumption"] = (
                 {"option": recommended}
                 if recommended
