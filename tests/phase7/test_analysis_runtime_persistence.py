@@ -1099,16 +1099,17 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
         claim_intents = list(
             bundle["analysis_contract"]["metric_bindings"][0]["claim_types"]
         )
+        metric_id = bundle["analysis_contract"]["metric_bindings"][0]["metric_id"]
         analysis = {
             **bundle["analysis_contract"],
             "claim_intents": claim_intents,
             "capability_requirements": ["answer_verify"],
             "contract_gaps": [{
                 "gap_type": "contract_partial",
-                "gap_id": "metric:business_metric:source_ambiguous",
+                "gap_id": f"metric:{metric_id}:source_ambiguous",
                 "dataset_id": "",
                 "affected_capabilities": ["analysis_contract"],
-                "affected_claim_types": [],
+                "affected_claim_types": claim_intents,
                 "owner": "contract_owner",
                 "repair_options": [
                     "select_dataset_requirement",
@@ -1158,6 +1159,35 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             InMemoryConversationStore().save_analysis_runtime_records(
                 run_id="run-task9-unbounded", **bundle
             )
+        for gap in (
+            {
+                **analysis["contract_gaps"][0],
+                "gap_id": "metric:unrelated_metric:source_ambiguous",
+                "affected_claim_types": claim_intents,
+            },
+            {
+                **analysis["contract_gaps"][0],
+                "gap_id": "dataset:unrelated_dataset:source_unbound",
+                "gap_type": "source_unbound",
+                "dataset_id": "unrelated_dataset",
+                "affected_claim_types": claim_intents,
+            },
+        ):
+            unrelated_analysis = {
+                **analysis,
+                "contract_gaps": [gap],
+            }
+            unrelated_analysis["contract_signature"] = analysis_contract_signature(
+                unrelated_analysis
+            )
+            bundle["analysis_contract"] = unrelated_analysis
+            with self.assertRaisesRegex(
+                EvidenceIntegrityError,
+                "runtime_persistence_analysis_claim_intent_unsupported",
+            ):
+                InMemoryConversationStore().save_analysis_runtime_records(
+                    run_id=f"run-task9-{gap['gap_id']}", **bundle
+                )
 
     def test_zero_claim_postgres_run_publishes_and_replays_without_claim_rows(self):
         bundle = _authority_bundle()

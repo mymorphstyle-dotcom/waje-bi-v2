@@ -599,9 +599,20 @@ def _validated_unbound_claim_intents(
             "contract_partial",
         }
     )
+    bound_metric_ids = {metric.metric_id for metric in analysis.metric_bindings}
+    required_dataset_ids = set(analysis.dataset_requirements)
+    claim_authorizing_boundary_gaps = tuple(
+        gap
+        for gap in boundary_gaps
+        if _boundary_gap_authorizes_claim_intents(
+            gap,
+            bound_metric_ids=bound_metric_ids,
+            required_dataset_ids=required_dataset_ids,
+        )
+    )
     boundary_claim_intents = {
         claim_type
-        for gap in boundary_gaps
+        for gap in claim_authorizing_boundary_gaps
         for claim_type in gap.affected_claim_types
     }
     has_terminal_boundary_gap = any(
@@ -647,7 +658,6 @@ def _validated_unbound_claim_intents(
         ) from exc
     if not unsupported.issubset(
         queryless_capability_claim_intents
-        | (metric_claim_intents if has_terminal_boundary_gap else set())
         | (metric_claim_intents | capability_claim_intents).intersection(
             boundary_claim_intents
         )
@@ -699,6 +709,29 @@ def _validated_unbound_claim_intents(
             "runtime_persistence_unbound_claim_intent_gap_invalid"
         )
     return {sentinel, *unsupported}
+
+
+def _boundary_gap_authorizes_claim_intents(
+    gap: Any,
+    *,
+    bound_metric_ids: set[str],
+    required_dataset_ids: set[str],
+) -> bool:
+    if not gap.affected_claim_types:
+        return False
+    parts = gap.gap_id.split(":")
+    if parts[0] == "metric" and len(parts) >= 3:
+        metric_id = parts[1]
+        diagnostic = canonical_value(gap.diagnostic_context)
+        return metric_id in bound_metric_ids or (
+            diagnostic.get("item_kind") == "metric"
+            and diagnostic.get("item_id") == metric_id
+            and set(diagnostic.get("claim_intents") or ())
+            == set(gap.affected_claim_types)
+        )
+    if parts[0] == "dataset":
+        return bool(gap.dataset_id) and gap.dataset_id in required_dataset_ids
+    return True
 
 
 def _validate_verified_claim_contract_boundary(

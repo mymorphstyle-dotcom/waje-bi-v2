@@ -1820,6 +1820,38 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         self.assertEqual(gap.affected_capabilities, ("analysis_contract",))
         self.assertTrue(gap.requires_clarification)
 
+    def test_metric_source_ambiguity_links_requested_claim_intents(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-target-claim-link",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["comparative_change"],
+            },
+            accepted_capabilities=("answer_verify",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        gap = next(
+            gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_id.startswith("metric:paid_amount:source_ambiguous:")
+        )
+        self.assertEqual(gap.affected_claim_types, ("comparative_change",))
+        self.assertEqual(
+            gap.diagnostic_context,
+            {
+                "item_kind": "metric",
+                "item_id": "paid_amount",
+                "claim_intents": ["comparative_change"],
+            },
+        )
+
     def test_future_snapshot_is_typed_unavailable_as_of_not_source_unbound(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         future = DatasetSnapshot(

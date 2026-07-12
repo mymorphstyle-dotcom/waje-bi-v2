@@ -379,6 +379,7 @@ def _build_dependency_index(
     metric_overrides = _source_overrides(proposal, "metric_dataset_overrides")
     dimension_overrides = _source_overrides(proposal, "dimension_dataset_overrides")
     requested_datasets = _values(proposal, "dataset_requirements")
+    requested_claim_intents = _values(proposal, "claim_intents")
     source_selection_gaps: list[ContractGap] = list(capability_metric_gaps)
     metric_dataset_ids: dict[str, tuple[str, ...]] = {}
     dimension_dataset_ids: dict[str, tuple[str, ...]] = {}
@@ -393,6 +394,7 @@ def _build_dependency_index(
                 requested_datasets=requested_datasets,
                 owners=metric_owners[metric_id],
                 registry=registry,
+                affected_claim_types=requested_claim_intents,
             )
         except (KeyError, TypeError, ValueError):
             selected, gap = (), _contract_gap(
@@ -418,6 +420,7 @@ def _build_dependency_index(
                 requested_datasets=requested_datasets,
                 owners=dimension_owners[dimension_id],
                 registry=registry,
+                affected_claim_types=(),
             )
         except (KeyError, TypeError, ValueError):
             selected, gap = (), _contract_gap(
@@ -1766,6 +1769,7 @@ def _contract_gap(
     gap_id: str,
     dataset_id: str = "",
     affected_capabilities: tuple[str, ...] = (),
+    affected_claim_types: tuple[str, ...] = (),
     owner: str = "contract_owner",
     repair_options: tuple[str, ...] = (),
     requires_clarification: bool = False,
@@ -1776,6 +1780,7 @@ def _contract_gap(
         gap_id=gap_id,
         dataset_id=dataset_id,
         affected_capabilities=affected_capabilities,
+        affected_claim_types=affected_claim_types,
         owner=owner,
         repair_options=repair_options,
         requires_clarification=requires_clarification,
@@ -1848,6 +1853,7 @@ def _select_source_datasets(
     requested_datasets: tuple[str, ...],
     owners: list[str],
     registry: RuntimeContractRegistry,
+    affected_claim_types: tuple[str, ...],
 ) -> tuple[tuple[str, ...], ContractGap | None]:
     candidates = tuple(dict.fromkeys(sources))
     affected = tuple(owners) or ("analysis_contract",)
@@ -1895,7 +1901,9 @@ def _select_source_datasets(
     if selected:
         if all_required or len(selected) == 1:
             return selected, None
-        return (), _source_ambiguity_gap(item_kind, item_id, selected, affected)
+        return (), _source_ambiguity_gap(
+            item_kind, item_id, selected, affected, affected_claim_types
+        )
 
     allowed = {
         dataset_id
@@ -1912,12 +1920,14 @@ def _select_source_datasets(
             return constrained, None
         if len(constrained) > 1:
             return (), _source_ambiguity_gap(
-                item_kind, item_id, constrained, affected
+                item_kind, item_id, constrained, affected, affected_claim_types
             )
     if len(candidates) == 1:
         return candidates, None
     if candidates:
-        return (), _source_ambiguity_gap(item_kind, item_id, candidates, affected)
+        return (), _source_ambiguity_gap(
+            item_kind, item_id, candidates, affected, affected_claim_types
+        )
     return (), _contract_gap(
         gap_type="contract_absent",
         gap_id=f"{item_kind}:{item_id}:contract_absent",
@@ -1931,6 +1941,7 @@ def _source_ambiguity_gap(
     item_id: str,
     datasets: tuple[str, ...],
     affected: tuple[str, ...],
+    affected_claim_types: tuple[str, ...],
 ) -> ContractGap:
     return _contract_gap(
         gap_type="contract_partial",
@@ -1938,8 +1949,14 @@ def _source_ambiguity_gap(
             f"{item_kind}:{item_id}:source_ambiguous:{','.join(datasets)}"
         ),
         affected_capabilities=affected,
+        affected_claim_types=affected_claim_types,
         repair_options=("select_dataset_requirement", "clarify_source_scope"),
         requires_clarification=True,
+        diagnostic_context={
+            "item_kind": item_kind,
+            "item_id": item_id,
+            "claim_intents": list(affected_claim_types),
+        },
     )
 
 
