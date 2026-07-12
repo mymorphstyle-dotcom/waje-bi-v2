@@ -138,6 +138,10 @@ class RuntimeContractRegistry:
         return tuple(self._payload["question_family_obligations"])
 
     @property
+    def diagnostic_obligation_ids(self) -> tuple[str, ...]:
+        return tuple(self._payload["diagnostic_obligations"])
+
+    @property
     def capability_ids(self) -> tuple[str, ...]:
         return tuple(self._payload["capability_inputs"])
 

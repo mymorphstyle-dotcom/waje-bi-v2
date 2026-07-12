@@ -152,16 +152,12 @@ def _llm_input_payload(answer_package, task):
 
 
 class LLMWorkflowTest(unittest.TestCase):
-    def test_question_family_normalization_maps_stable_diagnostic_vocabulary(self):
+    def test_question_family_normalization_uses_bound_primary_for_supported_diagnostic(self):
         normalized = workflow_module._normalize_question_families(
             {
-                "question_family": "change_explanation",
-                "question_families": [
-                    "change_explanation",
-                    "evidence_quality",
-                    "multi_baseline",
-                ],
-                "secondary_question_families": ["evidence_quality"],
+                "question_family": "revenue_health",
+                "primary_question_family": "paid_amount_change_explanation",
+                "question_families": ["revenue_health"],
             }
         )
 
@@ -171,18 +167,56 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(
             normalized["question_families"],
-            [
-                "paid_amount_change_explanation",
-                "data_quality_or_evidence_review",
-                "custom_baseline_comparison",
-            ],
+            ["paid_amount_change_explanation"],
         )
-        self.assertEqual(
-            normalized["secondary_question_families"],
-            [
-                "data_quality_or_evidence_review",
+        self.assertEqual(normalized["secondary_question_families"], [])
+
+    def test_question_family_normalization_rejects_ambiguous_diagnostic_without_binding(self):
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "diagnostic_question_family_ambiguous:multi_baseline",
+        ):
+            workflow_module._normalize_question_families(
+                {"question_family": "multi_baseline"}
+            )
+
+    def test_question_family_normalization_rejects_diagnostic_mismatched_to_bound_primary(self):
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "diagnostic_question_family_incompatible:multi_baseline:revenue_health_review",
+        ):
+            workflow_module._normalize_question_families(
+                {
+                    "question_family": "multi_baseline",
+                    "primary_question_family": "revenue_health_review",
+                }
+            )
+
+    def test_question_family_normalization_rejects_unknown_provider_token(self):
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "unknown_question_family_or_diagnostic:model_invented_family",
+        ):
+            workflow_module._normalize_question_families(
+                {"question_family": "model_invented_family"}
+            )
+
+    def test_question_family_normalization_is_idempotent_for_canonical_families(self):
+        intent = {
+            "question_family": "custom_baseline_comparison",
+            "primary_question_family": "custom_baseline_comparison",
+            "question_families": [
                 "custom_baseline_comparison",
+                "data_quality_or_evidence_review",
             ],
+            "secondary_question_families": ["data_quality_or_evidence_review"],
+        }
+
+        normalized = workflow_module._normalize_question_families(intent)
+
+        self.assertEqual(
+            workflow_module._normalize_question_families(normalized),
+            normalized,
         )
 
     def test_business_intent_rejects_non_mapping_optional_contract_as_typed_llm_failure(self):

@@ -617,27 +617,52 @@ def _question_family_values(raw: Any) -> list[str]:
 
 
 def _normalize_question_families(intent: dict[str, Any]) -> dict[str, Any]:
-    diagnostic_family_aliases = {
-        "driver_focus": "paid_amount_change_explanation",
-        "change_explanation": "paid_amount_change_explanation",
-        "pattern_attribution": "pattern_explanation",
-        "event_impact": "business_object_impact_review",
-        "revenue_health": "revenue_health_review",
-        "factor_topk": "segment_or_factor_attribution",
-        "anomaly": "anomaly_or_black_swan_review",
-        "multi_baseline": "custom_baseline_comparison",
-        "evidence_quality": "data_quality_or_evidence_review",
-    }
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    canonical_ids = set(registry.question_family_ids)
+    diagnostic_ids = set(registry.diagnostic_obligation_ids)
+    explicit_primary = str(intent.get("primary_question_family") or "")
+    question_family = str(intent.get("question_family") or "")
+    bound_primary = next(
+        (
+            family
+            for family in (explicit_primary, question_family)
+            if family in canonical_ids
+        ),
+        "",
+    )
 
     def canonical_family(value: Any) -> str:
         family = str(value or "")
-        return diagnostic_family_aliases.get(family, family)
+        if family in canonical_ids:
+            return family
+        if family not in diagnostic_ids:
+            raise WorkflowFailure(
+                f"unknown_question_family_or_diagnostic:{family or 'missing'}",
+                failure_type="llm_contract",
+            )
+        supported = tuple(
+            registry.diagnostic_obligation(family)["supported_question_families"]
+        )
+        if bound_primary:
+            if bound_primary in supported:
+                return bound_primary
+            raise WorkflowFailure(
+                "diagnostic_question_family_incompatible:"
+                f"{family}:{bound_primary}",
+                failure_type="llm_contract",
+            )
+        if len(supported) == 1:
+            return supported[0]
+        raise WorkflowFailure(
+            f"diagnostic_question_family_ambiguous:{family}",
+            failure_type="llm_contract",
+        )
 
     primary = canonical_family(
-        intent.get("primary_question_family")
-        or intent.get("question_family")
-        or "pattern_explanation"
+        explicit_primary or question_family or "pattern_explanation"
     )
+    if question_family and question_family != explicit_primary:
+        canonical_family(question_family)
     families = list(
         dict.fromkeys(
             canonical_family(item)
