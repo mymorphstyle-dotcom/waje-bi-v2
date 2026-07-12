@@ -17,6 +17,7 @@ from bi_agent.runtime.analysis_contracts import (
     ReconciliationBinding,
     ResolvedWindow,
     ResultShape,
+    analysis_contract_from_dict,
     query_contract_signature,
     stable_contract_signature,
 )
@@ -123,6 +124,9 @@ def compile_analysis_contract(
         registry,
     )
     affected_capabilities = capabilities or ("analysis_contract",)
+    accepted_terminal_gaps, clarification_outcome_ref = (
+        _accepted_terminal_gap_authority(proposal)
+    )
     resolution = _resolve_advisory_windows(
         target_semantic=str(proposal.get("target_semantic") or "yesterday"),
         baselines=_ordered_values(proposal, "baselines"),
@@ -180,6 +184,7 @@ def compile_analysis_contract(
             *metric_gaps,
             *dimension_gaps,
             *capability_input_gaps,
+            *accepted_terminal_gaps,
         ),
         affected_capabilities=affected_capabilities,
         affected_claim_types=accepted_claim_intents,
@@ -236,8 +241,50 @@ def compile_analysis_contract(
         capability_requirements=capabilities,
         permission_scope=permission_scope,
         contract_gaps=tuple(gaps),
+        clarification_outcome_ref=clarification_outcome_ref,
     )
     return AnalysisCompileOutcome(analysis, query_contracts, capability_plans)
+
+
+def _accepted_terminal_gap_authority(
+    proposal: Mapping[str, Any],
+) -> tuple[tuple[ContractGap, ...], str]:
+    choice = proposal.get("accepted_degradation_choice")
+    source = proposal.get("accepted_terminal_gap_source_contract")
+    if not isinstance(choice, Mapping):
+        return (), ""
+    if str(choice.get("action_kind") or "") not in {
+        "omit_unavailable_context",
+        "continue_with_boundary_only",
+    }:
+        return (), ""
+    choice_id = str(choice.get("choice_id") or "")
+    source_run_id = str(choice.get("source_run_id") or "")
+    affected = {
+        str(capability)
+        for capability in choice.get("affected_capabilities") or ()
+        if str(capability)
+    }
+    if not affected:
+        return (), ""
+    if not choice_id or not source_run_id:
+        raise ValueError("accepted_terminal_gap_choice_authority_invalid")
+    if not isinstance(source, Mapping):
+        raise ValueError("accepted_terminal_gap_source_missing")
+    try:
+        prior = analysis_contract_from_dict(source)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("accepted_terminal_gap_source_invalid") from exc
+    if prior.analysis_contract_id != f"analysis:{source_run_id}:1":
+        raise ValueError("accepted_terminal_gap_source_mismatch")
+    carried = tuple(
+        gap
+        for gap in prior.contract_gaps
+        if affected.intersection(gap.affected_capabilities)
+    )
+    if not carried:
+        raise ValueError("accepted_terminal_gap_scope_mismatch")
+    return carried, source_run_id
 
 
 def _required_metric_ids(

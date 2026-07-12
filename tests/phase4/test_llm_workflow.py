@@ -300,6 +300,17 @@ class LLMWorkflowTest(unittest.TestCase):
                     "permission_context": {"role": "analyst"},
                 },
                 "analysis_context": {"as_of": "2026-06-03T12:00:00+01:00"},
+                "clarification_resume_context": {
+                    "analysis_contract": {
+                        "analysis_contract_id": "analysis:run-clarify-1:1",
+                        "contract_gaps": [
+                            {
+                                "gap_id": "dataset:external_event:source_unbound",
+                                "affected_capabilities": ["event_evidence"],
+                            }
+                        ],
+                    }
+                },
             },
             "intent": {
                 "question_family": "custom_baseline_comparison",
@@ -343,6 +354,10 @@ class LLMWorkflowTest(unittest.TestCase):
         package = _build_answer_package_from_state(state)
 
         self.assertEqual(runtime_request.proposal["accepted_degradation_choice"], choice)
+        self.assertEqual(
+            runtime_request.proposal["accepted_terminal_gap_source_contract"],
+            state["request"]["clarification_resume_context"]["analysis_contract"],
+        )
         self.assertEqual(
             state["compiled_graph"].runtime_plan["graph_metadata"]
             ["accepted_assumptions"],

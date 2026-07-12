@@ -2126,6 +2126,175 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     list(outcome.analysis_contract.claim_intents),
                 )
 
+    def test_resumed_degradation_carries_exact_terminal_gaps_for_omitted_capabilities(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        prior = compile_analysis_contract(
+            run_id="run-terminal-gap-source",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "requested_components": ["paid_users", "payer_arppu"],
+                "claim_intents": [
+                    "formula_component_contribution",
+                    "contract_coverage_and_trust_boundary",
+                ],
+            },
+            accepted_capabilities=(
+                "formula_decompose",
+                "data_quality_profile",
+                "answer_verify",
+            ),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+        choice = {
+            "choice_id": "omit-unavailable-diagnostics",
+            "action_kind": "omit_unavailable_context",
+            "source_run_id": "run-terminal-gap-source",
+            "affected_capabilities": [
+                "formula_decompose",
+                "data_quality_profile",
+            ],
+        }
+
+        resumed = compile_analysis_contract(
+            run_id="run-terminal-gap-resumed",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "accepted_degradation_choice": choice,
+                "accepted_terminal_gap_source_contract": (
+                    prior.analysis_contract.to_dict()
+                ),
+            },
+            accepted_capabilities=("answer_verify",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        carried = tuple(
+            gap
+            for gap in prior.analysis_contract.contract_gaps
+            if set(gap.affected_capabilities).intersection(
+                choice["affected_capabilities"]
+            )
+        )
+        self.assertTrue(carried)
+        self.assertTrue(
+            any(
+                gap.gap_id.startswith("capability:formula_decompose:")
+                for gap in carried
+            )
+        )
+        self.assertTrue(
+            any(
+                gap.gap_id.startswith("capability:data_quality_profile:")
+                for gap in carried
+            )
+        )
+        resumed_by_id = {
+            gap.gap_id: gap for gap in resumed.analysis_contract.contract_gaps
+        }
+        for gap in carried:
+            with self.subTest(gap_id=gap.gap_id):
+                self.assertEqual(resumed_by_id.get(gap.gap_id), gap)
+        self.assertEqual(
+            resumed.analysis_contract.clarification_outcome_ref,
+            "run-terminal-gap-source",
+        )
+
+        carried_ids = {gap.gap_id for gap in carried}
+        with self.assertRaisesRegex(
+            ValueError,
+            "accepted_terminal_gap_source_mismatch",
+        ):
+            compile_analysis_contract(
+                run_id="run-terminal-gap-rejected",
+                proposal={
+                    "target_metrics": ["paid_amount"],
+                    "accepted_degradation_choice": {
+                        **choice,
+                        "source_run_id": "run-unrelated",
+                    },
+                    "accepted_terminal_gap_source_contract": (
+                        prior.analysis_contract.to_dict()
+                    ),
+                },
+                accepted_capabilities=("answer_verify",),
+                catalog=DatasetCatalog(()),
+                registry=registry,
+                as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+                permission_scope="analyst",
+            )
+
+        for invalid_source, reason in (
+            (None, "accepted_terminal_gap_source_missing"),
+            (
+                {"analysis_contract_id": "analysis:run-terminal-gap-source:1"},
+                "accepted_terminal_gap_source_invalid",
+            ),
+        ):
+            with self.subTest(reason=reason), self.assertRaisesRegex(
+                ValueError,
+                reason,
+            ):
+                proposal = {
+                    "target_metrics": ["paid_amount"],
+                    "accepted_degradation_choice": choice,
+                }
+                if invalid_source is not None:
+                    proposal["accepted_terminal_gap_source_contract"] = (
+                        invalid_source
+                    )
+                compile_analysis_contract(
+                    run_id="run-terminal-gap-invalid-source",
+                    proposal=proposal,
+                    accepted_capabilities=("answer_verify",),
+                    catalog=DatasetCatalog(()),
+                    registry=registry,
+                    as_of=datetime.fromisoformat(
+                        "2026-06-03T12:00:00+01:00"
+                    ),
+                    permission_scope="analyst",
+                )
+
+        for ignored_choice in (
+            {**choice, "action_kind": "wait_for_source"},
+            {**choice, "affected_capabilities": []},
+        ):
+            with self.subTest(ignored_choice=ignored_choice):
+                rejected = compile_analysis_contract(
+                    run_id="run-terminal-gap-rejected",
+                    proposal={
+                        "target_metrics": ["paid_amount"],
+                        "accepted_degradation_choice": ignored_choice,
+                        "accepted_terminal_gap_source_contract": (
+                            prior.analysis_contract.to_dict()
+                        ),
+                    },
+                    accepted_capabilities=("answer_verify",),
+                    catalog=DatasetCatalog(()),
+                    registry=registry,
+                    as_of=datetime.fromisoformat(
+                        "2026-06-03T12:00:00+01:00"
+                    ),
+                    permission_scope="analyst",
+                )
+                self.assertEqual(
+                    rejected.analysis_contract.clarification_outcome_ref,
+                    "",
+                )
+                self.assertTrue(
+                    carried_ids.isdisjoint(
+                        gap.gap_id
+                        for gap in rejected.analysis_contract.contract_gaps
+                    )
+                )
+
     def test_future_snapshot_is_typed_unavailable_as_of_not_source_unbound(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         future = DatasetSnapshot(

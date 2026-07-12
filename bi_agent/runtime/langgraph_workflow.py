@@ -1849,6 +1849,16 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
     accepted_choice = request.get("accepted_degradation_choice") or {}
     if isinstance(accepted_choice, Mapping) and accepted_choice:
         proposal["accepted_degradation_choice"] = dict(accepted_choice)
+        resume_context = request.get("clarification_resume_context") or {}
+        source_contract = (
+            resume_context.get("analysis_contract")
+            if isinstance(resume_context, Mapping)
+            else None
+        )
+        if isinstance(source_contract, Mapping) and source_contract:
+            proposal["accepted_terminal_gap_source_contract"] = dict(
+                source_contract
+            )
     choice = request.get("clarification_choice") or {}
     if isinstance(choice, Mapping):
         for key in (
