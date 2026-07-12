@@ -736,6 +736,10 @@ def test_coverage_summary_reports_authored_and_persisted_question_families():
             "obligation_review": {
                 "authored_question_family": "business_object_impact_review",
                 "question_family": "segment_or_factor_attribution",
+                "question_families": [
+                    "segment_or_factor_attribution",
+                    "data_quality_or_evidence_review",
+                ],
                 "question_family_authority_status": "mismatch",
                 "required_capabilities": [],
                 "hard_acceptance_passed": False,
@@ -746,7 +750,13 @@ def test_coverage_summary_reports_authored_and_persisted_question_families():
 
     assert summary["question_family_coverage"] == {
         "authored": {"business_object_impact_review": 1},
-        "persisted": {"segment_or_factor_attribution": 1},
+        "persisted": {
+            "segment_or_factor_attribution": 1,
+            "data_quality_or_evidence_review": 1,
+        },
+        "persisted_sets": {
+            "segment_or_factor_attribution|data_quality_or_evidence_review": 1
+        },
         "authority_status": {"mismatch": 1},
         "mismatches": 1,
     }

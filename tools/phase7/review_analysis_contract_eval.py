@@ -134,6 +134,7 @@ def _review_payload(
         ) or {
             "authored": {},
             "persisted": {},
+            "persisted_sets": {},
             "authority_status": {},
             "mismatches": 0,
         },

@@ -192,6 +192,17 @@ with PostgreSQL authority. It emits, per question family and capability:
 The artifact remains local under `artifacts/`. No PostgreSQL product page or UI
 is added.
 
+Persisted `AnalysisContract.question_families` is an ordered canonical set.
+The first entry preserves the primary business route and later entries may add
+orthogonal trust, evidence, or data-quality axes. Hard obligation review unions
+the reviewed obligation resolution across every persisted family, preserves
+registry ordering and stable de-duplication, and records the contributing
+families for every capability. Authored scenario families remain expectation
+inputs for mismatch reporting and cannot replace or narrow this persisted set.
+Multiplicity alone is valid. Evaluation fails closed for an unknown or invalid
+family, and treats a combination as incompatible only when the runtime registry
+explicitly declares those families mutually exclusive.
+
 ## Acceptance Track A: Fixed Eight Questions
 
 Run the existing fixed-clock case twice through `ConversationAgentCore` with

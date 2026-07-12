@@ -244,10 +244,6 @@ def test_obligation_review_uses_persisted_family_and_reports_authored_mismatch()
     ("families", "expected_status"),
     [
         ([], "missing"),
-        (
-            ["business_object_impact_review", "segment_or_factor_attribution"],
-            "ambiguous",
-        ),
         (["unknown_family"], "invalid"),
     ],
 )
@@ -278,6 +274,69 @@ def test_obligation_review_fails_closed_without_one_valid_persisted_family(
     assert review["question_family"] == ""
     assert review["question_family_authority_status"] == expected_status
     assert review["hard_acceptance_passed"] is False
+
+
+@pytest.mark.parametrize(
+    ("families", "expected_required", "shared_capability"),
+    [
+        (
+            ["custom_baseline_comparison", "data_quality_or_evidence_review"],
+            [
+                "metric_coverage_profile",
+                "data_quality_profile",
+                "compare_periods",
+                "answer_verify",
+                "market_health_compare",
+                "user_mix_contribution",
+            ],
+            "answer_verify",
+        ),
+        (
+            [
+                "paid_amount_change_explanation",
+                "data_quality_or_evidence_review",
+            ],
+            [
+                "metric_coverage_profile",
+                "data_quality_profile",
+                "driver_decomposition",
+                "answer_verify",
+                "metric_timeseries",
+            ],
+            "data_quality_profile",
+        ),
+    ],
+)
+def test_obligation_review_unions_ordered_persisted_family_set_with_provenance(
+    families, expected_required, shared_capability
+):
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    authority, registry = _persisted_plan_authority()
+    contract = dict(authority["analysis_contract"])
+    contract["question_families"] = families
+    authority["analysis_contract"] = contract
+
+    review = review_case_obligations(
+        {
+            "status": "completed",
+            "accepted_graph": expected_required,
+            "scenario": {
+                "question_family": families[0],
+                "target_metrics": ["paid_amount"],
+                "allowed_claim_ceiling": "trust_boundary",
+                "terminal_boundary": "verified_answer",
+            },
+            "runtime_authority": authority,
+        },
+        registry,
+    )
+
+    assert review["question_family"] == families[0]
+    assert review["question_families"] == families
+    assert review["question_family_authority_status"] == "matched"
+    assert review["required_capabilities"] == expected_required
+    assert review["capability_family_provenance"][shared_capability] == families
 
 
 @pytest.mark.parametrize(

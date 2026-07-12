@@ -1056,9 +1056,19 @@ clarification-resume case. The scenario file cannot embed expected LLM prose.
 - [x] **Step 4: Make fixed-eight expectation review obligation-aware**
 
 The fixed eight questions remain unchanged. Required capabilities come from the
-obligation resolver plus typed scenario requirements. Missing excluded inputs
+obligation resolver over the persisted ordered canonical family set. Typed
+scenario requirements remain authored expectations and are reported against
+the derived set without entering hard authority. Missing excluded inputs
 produce expected typed gaps; missing current-data obligations fail strict
 acceptance.
+
+The persisted set may contain a primary business family plus orthogonal trust,
+evidence, or data-quality families. Resolve all entries, union capability
+obligations with registry ordering and stable de-duplication, and retain
+per-family capability provenance. Report authored and persisted family sets
+separately. Unknown or malformed entries fail closed. More than one family is
+not ambiguous by itself; reject a combination only when a versioned registry
+contract explicitly declares mutual exclusion.
 
 Hard acceptance is derived from persisted authority for every required
 capability. Only `executed`, `degraded`, or `blocked` are terminal outcomes;

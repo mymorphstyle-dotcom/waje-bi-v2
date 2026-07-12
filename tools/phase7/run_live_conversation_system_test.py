@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
+    ObligationResolution,
     resolve_analysis_obligations,
 )
 from bi_agent.runtime.analysis_contracts import (
@@ -248,13 +249,14 @@ def review_case_obligations(
     authority = turn_record.get("runtime_authority") or {}
     if not isinstance(authority, Mapping):
         raise ValueError("runtime_authority_invalid")
-    family, family_authority_status = _persisted_question_family_authority(
+    families, family_authority_status = _persisted_question_family_authority(
         authority,
         registry,
         authored_family=authored_family,
     )
+    family = families[0] if families else ""
     request = ObligationRequest(
-        question_families=(family,) if family else (),
+        question_families=families,
         diagnostic_tags=tuple(scenario.get("diagnostic_tags") or ()),
         target_metrics=tuple(scenario.get("target_metrics") or ()),
         requested_dimensions=tuple(scenario.get("requested_dimensions") or ()),
@@ -262,7 +264,9 @@ def review_case_obligations(
         context_sources=tuple(scenario.get("context_sources") or ()),
         claim_intents=tuple(scenario.get("claim_intents") or ()),
     )
-    resolution = resolve_analysis_obligations(request, registry)
+    resolution, capability_family_provenance = _resolve_family_set_obligations(
+        request, registry
+    )
     required = tuple(
         dict.fromkeys(
             (*resolution.required_capabilities,
@@ -300,7 +304,7 @@ def review_case_obligations(
             _authority_resolved_dataset_states(
                 authored_expected_states,
                 required=required,
-                question_family=family,
+                question_families=families,
                 coverage_authority=coverage_authority,
             )
         )
@@ -316,7 +320,7 @@ def review_case_obligations(
         ) = _authority_resolved_capability_states(
             authored_capability_states,
             dataset_roles=tuple(str(item) for item in authored_expected_states),
-            question_family=family,
+            question_families=families,
             coverage_authority=coverage_authority,
         )
     observed_states, observed_gaps = _derive_runtime_dataset_states(authority)
@@ -424,8 +428,13 @@ def review_case_obligations(
     return {
         "authored_question_family": authored_family,
         "question_family": family,
+        "question_families": list(families),
         "question_family_authority_status": family_authority_status,
         "question_family_mismatch": family_authority_status == "mismatch",
+        "capability_family_provenance": {
+            capability_id: list(source_families)
+            for capability_id, source_families in capability_family_provenance.items()
+        },
         "authored_required_capabilities": list(authored_required),
         "authored_required_capability_mismatches": [
             capability_id
@@ -499,30 +508,92 @@ def _persisted_question_family_authority(
     registry: RuntimeContractRegistry,
     *,
     authored_family: str,
-) -> tuple[str, str]:
-    """Resolve one canonical family from the persisted effective contract."""
+) -> tuple[tuple[str, ...], str]:
+    """Resolve the ordered canonical family set from persisted authority."""
     authority_error = str(authority.get("_authority_error") or "")
     if authority_error:
-        return "", authority_error
+        return (), authority_error
     admin = authority.get("admin_audit") or authority
     if not isinstance(admin, Mapping):
-        return "", "missing"
+        return (), "missing"
     raw_contract = admin.get("analysis_contract")
     if not isinstance(raw_contract, Mapping):
-        return "", "missing"
+        return (), "missing"
     try:
         contract = analysis_contract_from_dict(raw_contract)
     except (KeyError, TypeError, ValueError):
-        return "", "invalid_contract"
+        return (), "invalid_contract"
     families = tuple(dict.fromkeys(contract.question_families))
     if not families:
-        return "", "missing"
-    if len(families) != 1:
-        return "", "ambiguous"
-    family = families[0]
-    if family not in registry.question_family_ids:
-        return "", "invalid"
-    return family, "matched" if family == authored_family else "mismatch"
+        return (), "missing"
+    if any(family not in registry.question_family_ids for family in families):
+        return (), "invalid"
+    return families, "matched" if authored_family in families else "mismatch"
+
+
+def _resolve_family_set_obligations(
+    request: ObligationRequest,
+    registry: RuntimeContractRegistry,
+) -> tuple[ObligationResolution, dict[str, tuple[str, ...]]]:
+    required: list[str] = []
+    conditional: list[str] = []
+    independent: list[str] = []
+    evidence: list[str] = []
+    provenance: dict[str, list[str]] = {}
+    for family in request.question_families:
+        supported_tags = tuple(
+            tag
+            for tag in request.diagnostic_tags
+            if family
+            in set(registry.diagnostic_obligation(tag)["supported_question_families"])
+        )
+        family_resolution = resolve_analysis_obligations(
+            ObligationRequest(
+                question_families=(family,),
+                diagnostic_tags=supported_tags,
+                target_metrics=request.target_metrics,
+                requested_dimensions=request.requested_dimensions,
+                baselines=request.baselines,
+                context_sources=request.context_sources,
+                claim_intents=request.claim_intents,
+            ),
+            registry,
+        )
+        required.extend(family_resolution.required_capabilities)
+        conditional.extend(family_resolution.conditional_capabilities)
+        independent.extend(family_resolution.independent_capabilities)
+        evidence.extend(family_resolution.minimum_publishable_evidence)
+        for capability_id in (
+            *family_resolution.required_capabilities,
+            *family_resolution.conditional_capabilities,
+            *family_resolution.independent_capabilities,
+        ):
+            provenance.setdefault(capability_id, []).append(family)
+    ordered_required = registry.order_capabilities(required)
+    required_set = set(ordered_required)
+    ordered_conditional = registry.order_capabilities(
+        item for item in conditional if item not in required_set
+    )
+    conditional_set = set(ordered_conditional)
+    ordered_independent = registry.order_capabilities(
+        item
+        for item in independent
+        if item not in required_set and item not in conditional_set
+    )
+    resolution = ObligationResolution(
+        required_capabilities=ordered_required,
+        conditional_capabilities=ordered_conditional,
+        independent_capabilities=ordered_independent,
+        minimum_publishable_evidence=tuple(dict.fromkeys(evidence)),
+        mutations=tuple(
+            {"action": "obligation_required", "capability": capability_id}
+            for capability_id in (*ordered_required, *ordered_conditional)
+        ),
+    )
+    return resolution, {
+        capability_id: tuple(dict.fromkeys(source_families))
+        for capability_id, source_families in provenance.items()
+    }
 
 
 def _capability_dataset_observations(
@@ -563,7 +634,7 @@ def _authority_resolved_capability_states(
     authored_states: Mapping[str, Any],
     *,
     dataset_roles: tuple[str, ...],
-    question_family: str,
+    question_families: tuple[str, ...],
     coverage_authority: Mapping[str, Any],
 ) -> tuple[dict[str, str], list[str], list[str]]:
     cells = coverage_authority.get("cells") or {}
@@ -587,7 +658,7 @@ def _authority_resolved_capability_states(
             datasets = {str(item) for item in cell.get("datasets") or ()}
             families = {str(item) for item in cell.get("question_families") or ()}
             if (not role_set or role_set & datasets) and (
-                not families or question_family in families
+                not families or bool(set(question_families) & families)
             ):
                 applicable.append(state)
         if not applicable:
@@ -605,7 +676,7 @@ def _authority_resolved_dataset_states(
     authored_states: Mapping[str, Any],
     *,
     required: tuple[str, ...],
-    question_family: str,
+    question_families: tuple[str, ...],
     coverage_authority: Mapping[str, Any],
 ) -> tuple[dict[str, str], list[str], list[str]]:
     cells = coverage_authority.get("cells") or {}
@@ -631,7 +702,7 @@ def _authority_resolved_dataset_states(
             dataset_states.append(str(cell.get("state") or ""))
             if capability in required_set:
                 required_states.append(str(cell.get("state") or ""))
-            if question_family in families:
+            if set(question_families) & families:
                 family_states.append(str(cell.get("state") or ""))
         states = required_states or family_states or dataset_states
         valid = [state for state in states if state in _DATASET_STATE_PRECEDENCE]
@@ -2650,14 +2721,27 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
     required = sum(len(item.get("required_capabilities") or ()) for item in obligations)
     authored_families: dict[str, int] = {}
     persisted_families: dict[str, int] = {}
+    persisted_family_sets: dict[str, int] = {}
     family_authority_statuses: dict[str, int] = {}
     for item in obligations:
         authored_family = str(item.get("authored_question_family") or "")
         if authored_family:
             authored_families[authored_family] = authored_families.get(authored_family, 0) + 1
-        persisted_family = str(item.get("question_family") or "")
-        if persisted_family:
-            persisted_families[persisted_family] = persisted_families.get(persisted_family, 0) + 1
+        persisted_set = tuple(
+            str(family)
+            for family in (
+                item.get("question_families")
+                or ((item.get("question_family"),) if item.get("question_family") else ())
+            )
+            if str(family)
+        )
+        for persisted_family in persisted_set:
+            persisted_families[persisted_family] = (
+                persisted_families.get(persisted_family, 0) + 1
+            )
+        if persisted_set:
+            set_key = "|".join(persisted_set)
+            persisted_family_sets[set_key] = persisted_family_sets.get(set_key, 0) + 1
         authority_status = str(item.get("question_family_authority_status") or "")
         if authority_status:
             family_authority_statuses[authority_status] = (
@@ -2714,6 +2798,7 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
         "question_family_coverage": {
             "authored": authored_families,
             "persisted": persisted_families,
+            "persisted_sets": persisted_family_sets,
             "authority_status": family_authority_statuses,
             "mismatches": family_authority_statuses.get("mismatch", 0),
         },
