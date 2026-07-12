@@ -1132,6 +1132,42 @@ class LLMWorkflowTest(unittest.TestCase):
             ["market_dashboard"],
         )
 
+    def test_route_dataset_carry_normalizes_scalar_extra_and_is_idempotent(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        intent = {
+            "question_family": "revenue_health_review",
+            "question_families": ["revenue_health_review"],
+            "target_metric": "paid_amount",
+        }
+        first = workflow_module.reconcile_analysis_route(
+            ("market_health_compare",),
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["paid_amount"],
+                    "dataset_requirements": "paid_order_success",
+                    "baselines": ["previous_day"],
+                }
+            },
+            intent,
+            registry,
+        )
+        second = workflow_module.reconcile_analysis_route(
+            first[0], first[1], intent, registry
+        )
+
+        self.assertEqual(
+            first[1]["analysis_requirements"]["dataset_requirements"],
+            ["paid_order_success", "market_dashboard"],
+        )
+        self.assertEqual(
+            second[1]["analysis_requirements"]["dataset_requirements"],
+            first[1]["analysis_requirements"]["dataset_requirements"],
+        )
+
     def test_route_reconciliation_is_idempotent_and_question_text_independent(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 

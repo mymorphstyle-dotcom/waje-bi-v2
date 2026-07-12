@@ -1626,6 +1626,108 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             (released_by_dataset["market_dashboard"].snapshot_ref,),
         )
 
+    def test_all_required_capability_carries_and_binds_each_reviewed_dataset(self):
+        from bi_agent.runtime.analysis_obligations import (
+            capability_dataset_requirements,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        carried = capability_dataset_requirements(
+            ("source_reconciliation",),
+            ("paid_amount",),
+            registry,
+        )
+        self.assertEqual(
+            carried["source_reconciliation"],
+            ("market_dashboard", "market_dashboard_channel"),
+        )
+        proposal = {
+            "target_metrics": ["paid_amount"],
+            "dataset_requirements": [
+                "paid_order_success",
+                *carried["source_reconciliation"],
+            ],
+            "baselines": ["previous_day"],
+            "claim_intents": ["source_reconciliation"],
+            "target_semantic": "2026-06-02",
+        }
+        dashboard, channel = _market_dashboard_snapshots()
+        catalog, resolver, released = canonical_release_catalog(dashboard, channel)
+        expected_snapshots = {item.snapshot_ref for item in released}
+        outcome = compile_analysis_contract(
+            run_id="run-all-required-route-source",
+            proposal=proposal,
+            accepted_capabilities=("source_reconciliation",),
+            catalog=catalog,
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+            release_resolver=resolver,
+        )
+
+        plan = outcome.capability_plans[0]
+        refs = tuple(
+            ref
+            for slot in plan.required_input_slots
+            for ref in slot.query_contract_refs
+        )
+        queries_by_ref = {
+            query.query_contract_id: query for query in outcome.query_contracts
+        }
+        self.assertEqual(len(refs), 2)
+        self.assertEqual(
+            {
+                queries_by_ref[ref].dataset_snapshot_refs[0]
+                for ref in refs
+            },
+            expected_snapshots,
+        )
+        gaps = outcome.analysis_contract.contract_gaps
+        self.assertTrue(
+            any(
+                gap.gap_id
+                == "metric:paid_amount:requested_source_unreviewed:paid_order_success"
+                and gap.affected_capabilities == ("source_reconciliation",)
+                for gap in gaps
+            )
+        )
+        blocked_channel = replace(channel, permission_scopes=("admin",))
+        blocked_catalog, blocked_resolver, blocked_release = (
+            canonical_release_catalog(dashboard, blocked_channel)
+        )
+        blocked = compile_analysis_contract(
+            run_id="run-all-required-route-permission",
+            proposal=proposal,
+            accepted_capabilities=("source_reconciliation",),
+            catalog=blocked_catalog,
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+            release_resolver=blocked_resolver,
+        )
+        permission_gap = next(
+            gap
+            for gap in blocked.analysis_contract.contract_gaps
+            if gap.dataset_id == "market_dashboard_channel"
+            and gap.gap_type == "permission_blocked"
+        )
+        self.assertIn(
+            "source_reconciliation",
+            permission_gap.affected_capabilities,
+        )
+        blocked_queries = {
+            query.dataset_snapshot_refs[0]
+            for query in blocked.query_contracts
+            if query.query_intent == "source_reconciliation_probe"
+        }
+        blocked_by_dataset = {item.dataset_id: item for item in blocked_release}
+        self.assertEqual(
+            blocked_queries,
+            {blocked_by_dataset["market_dashboard"].snapshot_ref},
+        )
+
     def test_explicit_claim_outside_capability_ceiling_is_rejected(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         outcome = compile_analysis_contract(

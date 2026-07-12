@@ -1584,7 +1584,15 @@ def reconcile_analysis_route(
         request.target_metrics,
         registry,
     )
-    carried_datasets = list(requirements.get("dataset_requirements") or ())
+    raw_carried_datasets = requirements.get("dataset_requirements") or ()
+    if isinstance(raw_carried_datasets, str):
+        carried_datasets = [raw_carried_datasets]
+    elif isinstance(raw_carried_datasets, Sequence) and not isinstance(
+        raw_carried_datasets, (str, bytes)
+    ):
+        carried_datasets = list(raw_carried_datasets)
+    else:
+        raise ValueError("analysis_requirements_dataset_requirements_invalid")
     carried_datasets.extend(
         dataset_id
         for capability_id in reconciled
