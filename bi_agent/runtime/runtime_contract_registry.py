@@ -134,6 +134,10 @@ class RuntimeContractRegistry:
         return tuple(sorted(str(item) for item in self._payload["datasets"]))
 
     @property
+    def dimension_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(str(item) for item in self._payload["dimensions"]))
+
+    @property
     def question_family_ids(self) -> tuple[str, ...]:
         return tuple(self._payload["question_family_obligations"])
 

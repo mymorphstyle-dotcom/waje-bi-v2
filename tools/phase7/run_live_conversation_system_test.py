@@ -1528,12 +1528,13 @@ def _persisted_dataset_gap_state(
         or not parts[5]
         or tuple(gap.get("affected_capabilities") or ()) != (parts[5],)
         or str(gap.get("owner") or "") != "data_owner"
-        or tuple(gap.get("repair_options") or ())
-        != (
+        or len(tuple(gap.get("repair_options") or ())) != 3
+        or set(gap.get("repair_options") or ())
+        != {
             "use_context_only_query",
             "publish_claim_ready_release",
             "resolve_reconciliation",
-        )
+        }
     ):
         return "contract_partial"
     try:

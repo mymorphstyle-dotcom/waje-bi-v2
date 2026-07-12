@@ -501,6 +501,10 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         pattern_family,
         pattern_params,
     )
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    material_requirements = _validated_business_intent_requirements(
+        output.get("analysis_requirements"), registry
+    )
     intent = _normalize_question_families({
         "question_family": output.get("question_family") or "pattern_explanation",
         "target_metric": _normalize_target_metric(
@@ -530,6 +534,7 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         "question_families": output.get("question_families") or (),
         "primary_question_family": output.get("primary_question_family"),
         "secondary_question_families": output.get("secondary_question_families") or (),
+        **material_requirements,
     })
     state["intent"] = _bind_clarification_resume_intent(intent, request)
     return state
@@ -569,6 +574,10 @@ def _bind_clarification_resume_intent(
         "sub_intents",
         "ambiguous_slots",
         "answer_contract",
+        "context_sources",
+        "claim_intents",
+        "requested_dimensions",
+        "requested_components",
         "baseline",
         "target",
         "question",
@@ -582,9 +591,23 @@ def _bind_clarification_resume_intent(
 
 def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    allowed_claim_types = tuple(
+        dict.fromkeys(
+            str(claim_type)
+            for capability_id in registry.capability_ids
+            for claim_type in registry.capability_inputs(capability_id).get(
+                "supported_claim_types", ()
+            )
+            if str(claim_type)
+        )
+    )
     payload: dict[str, Any] = {
         "question": request.get("question", "Explain the paid amount question."),
         "allowed_target_metric_ids": registry.metric_ids,
+        "allowed_context_source_ids": registry.dataset_ids,
+        "allowed_claim_types": allowed_claim_types,
+        "allowed_dimension_ids": registry.dimension_ids,
+        "allowed_component_metric_ids": registry.metric_ids,
     }
     context = {
         key: request[key]
@@ -602,6 +625,51 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
     if context:
         payload["bound_business_context"] = context
     return payload
+
+
+def _validated_business_intent_requirements(
+    raw: Any, registry: RuntimeContractRegistry
+) -> dict[str, list[str]]:
+    keys = (
+        "context_sources",
+        "claim_intents",
+        "requested_dimensions",
+        "requested_components",
+    )
+    if not isinstance(raw, Mapping) or set(raw) != set(keys):
+        raise WorkflowFailure(
+            "business_intent_contract_invalid:analysis_requirements",
+            failure_type="llm_contract",
+        )
+    allowed_claim_types = {
+        str(claim_type)
+        for capability_id in registry.capability_ids
+        for claim_type in registry.capability_inputs(capability_id).get(
+            "supported_claim_types", ()
+        )
+        if str(claim_type)
+    }
+    allowed = {
+        "context_sources": set(registry.dataset_ids),
+        "claim_intents": allowed_claim_types,
+        "requested_dimensions": set(registry.dimension_ids),
+        "requested_components": set(registry.metric_ids),
+    }
+    normalized: dict[str, list[str]] = {}
+    for key in keys:
+        value = raw.get(key)
+        if (
+            not isinstance(value, (list, tuple))
+            or any(not isinstance(item, str) or not item for item in value)
+            or len(value) != len(set(value))
+            or any(item not in allowed[key] for item in value)
+        ):
+            raise WorkflowFailure(
+                f"business_intent_contract_invalid:analysis_requirements:{key}",
+                failure_type="llm_contract",
+            )
+        normalized[key] = list(value)
+    return normalized
 
 
 def _question_family_values(raw: Any) -> list[str]:
@@ -1303,6 +1371,18 @@ def _intent_material_slots(intent: Mapping[str, Any]) -> dict[str, Any]:
     ]
     if context_sources:
         slots["context_sources"] = list(dict.fromkeys(context_sources))
+    for key in (
+        "claim_intents",
+        "requested_dimensions",
+        "requested_components",
+    ):
+        values = [
+            str(item)
+            for item in intent.get(key) or ()
+            if isinstance(item, str) and item
+        ]
+        if values:
+            slots[key] = list(dict.fromkeys(values))
     scope = intent.get("scope")
     if scope not in (None, "", {}, []):
         slots["scope"] = scope
@@ -1435,6 +1515,9 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         "allowed_dataset_ids": RuntimeContractRegistry.from_path(
             CANONICAL_RUNTIME_BINDINGS_PATH
         ).dataset_ids,
+        "allowed_diagnostic_ids": RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        ).diagnostic_obligation_ids,
         "budget_state": budget.to_llm_summary(),
     }
     output = _invoke_llm(state, "analysis_route", route_payload)
@@ -1714,6 +1797,37 @@ def reconcile_analysis_route(
             }
         )
     requirements = dict(output.get("analysis_requirements") or {})
+    raw_diagnostic_value = requirements.get("diagnostic_tags") or ()
+    if (
+        not isinstance(raw_diagnostic_value, (list, tuple))
+        or any(
+            not isinstance(tag, str) or not tag
+            for tag in raw_diagnostic_value
+        )
+        or len(raw_diagnostic_value) != len(set(raw_diagnostic_value))
+    ):
+        raise WorkflowFailure(
+            "analysis_route_contract_invalid:diagnostic_tags",
+            failure_type="llm_contract",
+        )
+    raw_diagnostics = tuple(raw_diagnostic_value)
+    allowed_diagnostics = set(registry.diagnostic_obligation_ids)
+    unknown_diagnostics = tuple(
+        tag for tag in raw_diagnostics if tag not in allowed_diagnostics
+    )
+    if unknown_diagnostics:
+        requirements["diagnostic_tags"] = [
+            tag for tag in raw_diagnostics if tag in allowed_diagnostics
+        ]
+        input_mutations.extend(
+            {
+                "action": "rejected",
+                "capability": tag,
+                "reason": "unknown_diagnostic_rejected",
+            }
+            for tag in unknown_diagnostics
+        )
+        output["analysis_requirements"] = requirements
     bound_context = dict(intent)
     bound_context["analysis_requirements"] = requirements
     request = ObligationRequest.from_intent(
@@ -3234,6 +3348,10 @@ def _persist_query_gap_clarification(state: WorkflowState) -> WorkflowState:
         "clarification": to_jsonable(state.get("query_gap_clarification") or {}),
         "accepted_graph": list(state.get("compiled_graph").mutations.accepted_graph),
         "analysis_route": to_jsonable(state.get("analysis_route") or {}),
+        "original_intent": to_jsonable(state.get("intent") or {}),
+        "material_slots": to_jsonable(
+            _clarification_material_slots(state)
+        ),
         "analysis_contract": (
             result.analysis_contract.to_dict() if result is not None else {}
         ),
@@ -3252,6 +3370,29 @@ def _persist_query_gap_clarification(state: WorkflowState) -> WorkflowState:
         artifact_root=state["request"].get("artifact_root", "artifacts/phase-4"),
     )
     return state
+
+
+def _clarification_material_slots(state: Mapping[str, Any]) -> dict[str, Any]:
+    slots = _intent_material_slots(state.get("intent") or {})
+    requirements = (state.get("analysis_route") or {}).get(
+        "analysis_requirements"
+    ) or {}
+    if not isinstance(requirements, Mapping):
+        return slots
+    for key in (
+        "target_metrics",
+        "requested_components",
+        "requested_dimensions",
+        "baselines",
+        "context_sources",
+        "diagnostic_tags",
+        "claim_intents",
+        "scope",
+    ):
+        value = requirements.get(key)
+        if value not in (None, "", (), [], {}):
+            slots[key] = to_jsonable(value)
+    return slots
 
 
 def _interpret_data_coverage(state: WorkflowState) -> WorkflowState:

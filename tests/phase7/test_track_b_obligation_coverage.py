@@ -2,6 +2,8 @@ import json
 from dataclasses import asdict
 from datetime import datetime
 
+import pytest
+
 from bi_agent.runtime.analysis_contracts import AnalysisContract
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
@@ -284,6 +286,140 @@ def test_route_reconciliation_closes_all_obligations_idempotently():
                 case["id"],
                 second_output["obligation_resolution"]["mutations"],
             )
+
+
+def test_unknown_diagnostic_is_rejected_without_erasing_family_obligations():
+    from bi_agent.runtime.langgraph_workflow import reconcile_analysis_route
+
+    route = {
+        "analysis_requirements": {
+            "target_metrics": ["paid_amount"],
+            "diagnostic_tags": ["unknown_llm_diagnostic"],
+        }
+    }
+    intent = {
+        "question_family": "data_quality_or_evidence_review",
+        "question_families": ["data_quality_or_evidence_review"],
+        "target_metric": "paid_amount",
+    }
+
+    requested, output = reconcile_analysis_route(
+        ("data_quality_profile",), route, intent, _registry()
+    )
+
+    assert {"metric_coverage_profile", "answer_verify"} <= set(requested)
+    assert output["analysis_requirements"]["diagnostic_tags"] == []
+    assert {
+        (item["capability"], item["reason"])
+        for item in output["obligation_resolution"]["mutations"]
+    } >= {("unknown_llm_diagnostic", "unknown_diagnostic_rejected")}
+
+
+@pytest.mark.parametrize(
+    "diagnostic_tags",
+    ["data_quality", [42], ["data_quality", "data_quality"], [""]],
+)
+def test_malformed_diagnostics_fail_route_contract(diagnostic_tags):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="analysis_route_contract_invalid:diagnostic_tags",
+    ) as exc:
+        workflow.reconcile_analysis_route(
+            ("data_quality_profile",),
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["paid_amount"],
+                    "diagnostic_tags": diagnostic_tags,
+                }
+            },
+            {
+                "question_family": "data_quality_or_evidence_review",
+                "question_families": ["data_quality_or_evidence_review"],
+                "target_metric": "paid_amount",
+            },
+            _registry(),
+        )
+
+    assert exc.value.failure_type == "llm_contract"
+
+
+def test_business_intent_carries_registry_validated_material_requirements(
+    monkeypatch,
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    captured = {}
+
+    def invoke(state, node, payload):
+        captured.update(payload)
+        return {
+            "question_family": "business_object_impact_review",
+            "question_families": [
+                "business_object_impact_review",
+                "data_quality_or_evidence_review",
+            ],
+            "primary_question_family": "business_object_impact_review",
+            "secondary_question_families": ["data_quality_or_evidence_review"],
+            "target_metric": "paid_amount",
+            "pattern_family": "custom_baseline",
+            "scope": "full_sample",
+            "time_window": "yesterday",
+            "target_claim": "bounded impact review",
+            "baseline_candidates": ["previous_day"],
+            "status_message": "已绑定业务问题。",
+            "answer_contract": {"direct_answer": True},
+            "analysis_requirements": {
+                "context_sources": ["external_event"],
+                "claim_intents": ["candidate_mechanism"],
+                "requested_dimensions": ["channel"],
+                "requested_components": ["paid_users"],
+            },
+        }
+
+    monkeypatch.setattr(workflow, "_invoke_llm", invoke)
+    state = {"request": {"question": "arbitrary business question"}}
+
+    workflow._understand_business_intent(state)
+
+    assert state["intent"]["context_sources"] == ["external_event"]
+    assert state["intent"]["claim_intents"] == ["candidate_mechanism"]
+    assert state["intent"]["requested_dimensions"] == ["channel"]
+    assert state["intent"]["requested_components"] == ["paid_users"]
+    assert "external_event" in captured["allowed_context_source_ids"]
+    assert "candidate_mechanism" in captured["allowed_claim_types"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("context_sources", ["unknown_dataset"]),
+        ("claim_intents", ["candidate_mechanism", "candidate_mechanism"]),
+        ("requested_dimensions", [42]),
+        ("requested_components", "paid_users"),
+    ],
+)
+def test_business_intent_material_requirements_fail_closed(field, value):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    requirements = {
+        "context_sources": [],
+        "claim_intents": [],
+        "requested_dimensions": [],
+        "requested_components": [],
+    }
+    requirements[field] = value
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match=f"business_intent_contract_invalid:analysis_requirements:{field}",
+    ) as exc:
+        workflow._validated_business_intent_requirements(
+            requirements, _registry()
+        )
+
+    assert exc.value.failure_type == "llm_contract"
 
 
 def test_route_design_resolves_obligations_after_capability_family_inference(

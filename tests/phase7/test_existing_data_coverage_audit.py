@@ -1088,8 +1088,14 @@ def test_coverage_audit_reports_current_and_excluded_cells():
 
 
 def test_context_capability_dataset_roles_persist_terminal_contract_authority():
-    from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
+    from bi_agent.runtime.analysis_contract_compiler import (
+        _merge_contract_gaps,
+        compile_analysis_contract,
+    )
     from bi_agent.runtime.dataset_catalog import DatasetCatalog
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_runtime_dataset_states,
+    )
 
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
     snapshots, releases = authority_inputs(registry)
@@ -1128,6 +1134,26 @@ def test_context_capability_dataset_roles_persist_terminal_contract_authority():
         and gap.affected_capabilities == ("market_channel_context",)
         for gap in channel.analysis_contract.contract_gaps
     )
+    context_gap = next(
+        gap
+        for gap in channel.analysis_contract.contract_gaps
+        if "evidence_state:context_only" in gap.gap_id
+    )
+    merged_gap = _merge_contract_gaps(
+        tuple(
+            replace(context_gap, repair_options=(repair_option,))
+            for repair_option in reversed(context_gap.repair_options)
+        )
+    )[0]
+    serialized_contract = replace(
+        channel.analysis_contract,
+        contract_gaps=(merged_gap,),
+    ).to_dict()
+    states, _ = _derive_runtime_dataset_states(
+        {"admin_audit": {"analysis_contract": serialized_contract}},
+        registry=registry,
+    )
+    assert states["market_dashboard_channel"] == "degraded"
 
     event = compile_analysis_contract(
         run_id="run-context-event-authority",

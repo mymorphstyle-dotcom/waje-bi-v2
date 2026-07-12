@@ -53,6 +53,12 @@ def test_early_clarification_resume_preserves_source_topic_family(monkeypatch):
             "target_metric": "paid_amount",
             "pattern_family": "month_start",
             "answer_contract": {"direct_answer": True},
+            "analysis_requirements": {
+                "context_sources": [],
+                "claim_intents": [],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
         },
     )
     state = {
@@ -75,6 +81,59 @@ def test_early_clarification_resume_preserves_source_topic_family(monkeypatch):
         "segment_or_factor_attribution",
     ]
     assert state["intent"]["question"] == "original topic question"
+
+
+def test_query_gap_clarification_persists_original_topic_material(tmp_path):
+    from types import SimpleNamespace
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    source_contract = _source_contract("run-query-gap-source")
+    intent = {
+        "question_family": "business_object_impact_review",
+        "question_families": ["business_object_impact_review"],
+        "primary_question_family": "business_object_impact_review",
+        "secondary_question_families": [],
+        "target_metric": "paid_amount",
+        "context_sources": ["external_event"],
+        "claim_intents": ["candidate_mechanism"],
+        "requested_dimensions": ["channel"],
+        "requested_components": [],
+        "question": "arbitrary source topic",
+    }
+    state = {
+        "run_id": "run-query-gap-source",
+        "request": {"artifact_root": str(tmp_path)},
+        "intent": intent,
+        "analysis_route": {
+            "requested_nodes": ["event_evidence"],
+            "analysis_requirements": {
+                "target_metrics": ["paid_amount"],
+                "context_sources": ["external_event"],
+                "claim_intents": ["candidate_mechanism"],
+                "requested_dimensions": ["channel"],
+            },
+        },
+        "compiled_graph": SimpleNamespace(
+            mutations=SimpleNamespace(accepted_graph=("event_evidence",))
+        ),
+        "analysis_runtime_result": SimpleNamespace(
+            analysis_contract=SimpleNamespace(to_dict=lambda: source_contract),
+            query_contracts=(),
+        ),
+        "query_gap_clarification": {"questions": []},
+        "query_repair_decisions": [],
+        "staged_query_gap_actions": [],
+    }
+
+    workflow._persist_query_gap_clarification(state)
+
+    assert state["answer_package"]["original_intent"] == intent
+    assert state["answer_package"]["material_slots"] == {
+        "target_metrics": ["paid_amount"],
+        "context_sources": ["external_event"],
+        "claim_intents": ["candidate_mechanism"],
+        "requested_dimensions": ["channel"],
+    }
 
 
 def _source_contract(run_id="run-source"):

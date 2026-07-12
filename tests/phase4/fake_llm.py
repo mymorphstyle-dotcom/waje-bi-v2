@@ -70,6 +70,12 @@ DEFAULT_OUTPUTS = {
         "time_window": "2024-01..2026-05",
         "target_claim": "recurring_pattern_existence",
         "baseline_candidates": ["same_period_phase_baseline"],
+        "analysis_requirements": {
+            "context_sources": [],
+            "claim_intents": [],
+            "requested_dimensions": [],
+            "requested_components": [],
+        },
         "status_message": "正在识别问题意图",
     },
     "boundary_decision": {

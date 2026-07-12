@@ -5,7 +5,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-11.v35"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-13.v36"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 
 
@@ -32,6 +32,7 @@ TASK_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
         "time_window",
         "target_claim",
         "baseline_candidates",
+        "analysis_requirements",
         "status_message",
     ),
     "boundary_decision": (
@@ -239,6 +240,21 @@ def _task_rules(task: str) -> str:
             "Repeated pattern examples include weekday-vs-weekday inside many weeks, "
             "month start/boundary/mid/end inside many months, rolling-window trends, "
             "event-relative windows, lag, and recovery. After choosing question_family, "
+            "Choose paid_amount_change_explanation for a change-driver chain; "
+            "business_object_impact_review for an activity, event, campaign, or other "
+            "business object's bounded relationship to a metric; revenue_health_review "
+            "for overall metric health against standard baselines; "
+            "segment_or_factor_attribution for dimension, mix, or factor contribution; "
+            "anomaly_or_black_swan_review for unusual periods or external shocks; and "
+            "data_quality_or_evidence_review for coverage, contract, provenance, or trust. "
+            "When a business-object question also asks whether the evidence is usable, "
+            "keep business_object_impact_review primary and add "
+            "data_quality_or_evidence_review as a secondary family. Return "
+            "analysis_requirements with exactly context_sources, claim_intents, "
+            "requested_dimensions, and requested_components arrays. Copy only ids from "
+            "the corresponding allowed_* lists in the input; use empty arrays when a "
+            "material axis was not requested. "
+            "After choosing question_family, "
             "set pattern_family from the business shape: weekly for weekday repeats, "
             "intra_period for phases inside a period, rolling for rolling windows, "
             "custom_baseline for one-off baseline/target comparisons, event_relative "
@@ -350,7 +366,8 @@ def _task_rules(task: str) -> str:
             "claim_intents, and scope. These values are proposals only and cannot claim "
             "that data exists, a contract is valid, a query is safe, or execution will succeed. "
             "Use diagnostic_tags only for typed business diagnostics represented by the "
-            "runtime contract; local reconciliation decides their capability obligations. "
+            "runtime contract and copy only exact ids supplied in allowed_diagnostic_ids; "
+            "local reconciliation decides their capability obligations. "
             "Do not reproduce or guess the obligation capability set. Use only exact machine "
             "ids already present in intent or capability cards. "
             "claim_intents must come from allowed_claim_types of the selected capability "
