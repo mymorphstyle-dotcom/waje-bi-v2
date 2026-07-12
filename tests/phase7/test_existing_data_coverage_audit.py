@@ -54,6 +54,21 @@ def _analysis_contract_gap_authority(
     ).to_dict()
 
 
+def _run_matched_contract_authority(
+    contract: dict[str, object], *, run_id="run-obligation-review"
+) -> dict[str, object]:
+    persisted = json.loads(json.dumps(contract))
+    persisted["analysis_contract_id"] = f"analysis:{run_id}:1"
+    planned = json.loads(json.dumps(persisted))
+    return {
+        "run_id": run_id,
+        "admin_audit": {
+            "analysis_contract": persisted,
+            "compiler_runtime_plan": {"analysis_contract": planned},
+        },
+    }
+
+
 def test_platform_suite_covers_public_families_current_roles_and_boundaries():
     from tools.phase7.run_live_conversation_system_test import load_cases
 
@@ -150,6 +165,7 @@ def test_obligation_review_resolves_contract_and_reports_typed_gaps():
             "compare_periods",
             "answer_verify",
             "metric_timeseries",
+            "metric_coverage_profile",
         ],
         "scenario": {
             "question_family": "paid_amount_change_explanation",
@@ -168,8 +184,25 @@ def test_obligation_review_resolves_contract_and_reports_typed_gaps():
         },
         "status": "completed",
         "runtime_authority": {
+            **_run_matched_contract_authority(
+                _analysis_contract_gap_authority(
+                    [{
+                        "dataset_id": "payment_attempt",
+                        "gap_type": "source_unbound",
+                        "gap_id": "dataset:payment_attempt:source_unbound",
+                        "owner": "data_owner",
+                    }],
+                    [
+                        "data_quality_profile",
+                        "driver_decomposition",
+                        "compare_periods",
+                        "answer_verify",
+                        "metric_timeseries",
+                        "metric_coverage_profile",
+                    ],
+                )
+            ),
             "query_executions": [{"dataset_id": "paid_order_success", "execution_status": "succeeded", "completeness_status": "complete"}],
-            "contract_gaps": [{"dataset_id": "payment_attempt", "gap_type": "missing_contract"}],
         },
     }
 
@@ -261,10 +294,13 @@ def test_obligation_review_enforces_claim_ceiling_and_terminal_boundary(
             "excluded_inputs": ({dataset: gaps[0]["gap_type"]} if gaps else {}),
         },
         "runtime_authority": {
-            "query_executions": ([{"dataset_id": dataset, "result_ref": "result:test", "execution_status": "succeeded", "completeness_status": "complete", "analysis_readiness": "ready"}] if boundary == "verified_answer" else []),
-            "analysis_contract": _analysis_contract_gap_authority(
-                authority_gaps, required_capabilities
+            **_run_matched_contract_authority(
+                _analysis_contract_gap_authority(
+                    authority_gaps, required_capabilities
+                ),
+                run_id="run-terminal-boundary",
             ),
+            "query_executions": ([{"dataset_id": dataset, "result_ref": "result:test", "execution_status": "succeeded", "completeness_status": "complete", "analysis_readiness": "ready"}] if boundary == "verified_answer" else []),
             "capability_bindings": [
                 {
                     "binding_manifest_ref": (
@@ -392,16 +428,19 @@ def test_obligation_review_resolves_current_state_from_release_authority():
             "terminal_boundary": "contract_allowed_partial",
         },
         "runtime_authority": {
-            "analysis_contract": _analysis_contract_gap_authority([{
-                "dataset_id": "paid_order_success",
-                "gap_type": "dataset_snapshot_unavailable_as_of",
-                "gap_id": "dataset:paid_order_success:dataset_snapshot_unavailable_as_of",
-                "owner": "data_owner",
-            }], [
-                "metric_coverage_profile",
-                "data_quality_profile",
-                "answer_verify",
-            ]),
+            **_run_matched_contract_authority(
+                _analysis_contract_gap_authority([{
+                    "dataset_id": "paid_order_success",
+                    "gap_type": "dataset_snapshot_unavailable_as_of",
+                    "gap_id": "dataset:paid_order_success:dataset_snapshot_unavailable_as_of",
+                    "owner": "data_owner",
+                }], [
+                    "metric_coverage_profile",
+                    "data_quality_profile",
+                    "answer_verify",
+                ]),
+                run_id="run-release-authority",
+            ),
         },
     }
     coverage_authority = {
@@ -524,12 +563,15 @@ def test_ambiguous_dataset_role_resolution_uses_conservative_authority_state():
                 "allowed_claim_ceiling": "directional",
                 "terminal_boundary": "contract_allowed_partial",
             },
-            "runtime_authority": {
-                "contract_gaps": [{
+            "runtime_authority": _run_matched_contract_authority(
+                _analysis_contract_gap_authority([{
                     "dataset_id": "market_dashboard",
                     "gap_type": "contract_partial",
-                }]
-            },
+                    "gap_id": "dataset:market_dashboard:contract_partial:required_fields",
+                    "owner": "contract_owner",
+                }], ["compare_periods", "driver_decomposition"]),
+                run_id="run-ambiguous-authority",
+            ),
         },
         registry,
         coverage_authority={
@@ -1150,7 +1192,10 @@ def test_context_capability_dataset_roles_persist_terminal_contract_authority():
         contract_gaps=(merged_gap,),
     ).to_dict()
     states, _ = _derive_runtime_dataset_states(
-        {"admin_audit": {"analysis_contract": serialized_contract}},
+        _run_matched_contract_authority(
+            serialized_contract,
+            run_id="run-context-channel-authority",
+        ),
         registry=registry,
     )
     assert states["market_dashboard_channel"] == "degraded"
@@ -1214,47 +1259,192 @@ def test_metric_sources_are_resolved_per_capability_before_global_reconciliation
     assert gameplay_ambiguity.requires_clarification is True
 
 
-def test_runtime_dataset_state_normalizes_only_signed_context_only_gap_grammar():
+def _accepted_context_gap_authority(
+    *, run_id="run-context-authority", plan_mutation=None
+):
+    gap = ContractGap(
+        gap_type="contract_partial",
+        gap_id=(
+            "dataset:market_dashboard_channel:evidence_state:context_only:"
+            "capability:market_channel_context"
+        ),
+        dataset_id="market_dashboard_channel",
+        affected_capabilities=("market_channel_context",),
+        affected_claim_types=("contract_coverage_and_trust_boundary",),
+        owner="data_owner",
+        repair_options=(
+            "use_context_only_query",
+            "publish_claim_ready_release",
+            "resolve_reconciliation",
+        ),
+        requires_clarification=False,
+        diagnostic_context={},
+    )
+    contract = AnalysisContract(
+        analysis_contract_id=f"analysis:{run_id}:1",
+        contract_version="1",
+        question_families=("business_object_impact_review",),
+        target_metric_refs=(),
+        claim_intents=("contract_coverage_and_trust_boundary",),
+        scope={},
+        business_timezone="Europe/London",
+        as_of="2026-06-03T12:00:00+01:00",
+        resolved_windows=(),
+        metric_bindings=(),
+        dimension_bindings=(),
+        dataset_requirements=("market_dashboard_channel",),
+        capability_requirements=("market_channel_context",),
+        permission_scope="analyst",
+        contract_gaps=(gap,),
+    ).to_dict()
+    plan_contract = json.loads(json.dumps(contract))
+    if plan_mutation is not None:
+        plan_mutation(plan_contract)
+    return {
+        "run_id": run_id,
+        "admin_audit": {
+            "analysis_contract": contract,
+            "compiler_runtime_plan": {"analysis_contract": plan_contract},
+        },
+    }
+
+
+def test_runtime_dataset_state_ignores_forged_sibling_gap():
     from tools.phase7.run_live_conversation_system_test import (
         _derive_runtime_dataset_states,
     )
 
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
-    valid_gap = {
-        "gap_type": "contract_partial",
-        "gap_id": (
-            "dataset:market_dashboard_channel:evidence_state:context_only:"
-            "capability:market_channel_context"
-        ),
-        "dataset_id": "market_dashboard_channel",
-        "affected_capabilities": ["market_channel_context"],
-        "affected_claim_types": ["contract_coverage_and_trust_boundary"],
-        "owner": "data_owner",
-        "repair_options": [
-            "use_context_only_query",
-            "publish_claim_ready_release",
-            "resolve_reconciliation",
-        ],
-        "requires_clarification": False,
-        "diagnostic_context": {},
-    }
-    malformed = {
-        **valid_gap,
-        "gap_id": (
-            "dataset:different_dataset:evidence_state:context_only:"
-            "capability:market_channel_context"
-        ),
-    }
+    authority = _accepted_context_gap_authority()
+    forged = authority["admin_audit"]["analysis_contract"]["contract_gaps"][0]
+    authority["admin_audit"]["analysis_contract"]["contract_gaps"] = []
+    authority["admin_audit"]["compiler_runtime_plan"]["analysis_contract"][
+        "contract_gaps"
+    ] = []
+    authority["typed_gaps"] = [forged]
 
-    valid_states, _ = _derive_runtime_dataset_states(
-        {"contract_gaps": [valid_gap]}, registry=registry
-    )
-    malformed_states, _ = _derive_runtime_dataset_states(
-        {"contract_gaps": [malformed]}, registry=registry
+    states, gaps = _derive_runtime_dataset_states(authority, registry=registry)
+
+    assert states == {}
+    assert gaps == {}
+
+
+def test_runtime_dataset_state_requires_run_matched_contract_and_fails_review():
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_runtime_dataset_states,
+        review_case_obligations,
     )
 
-    assert valid_states == {"market_dashboard_channel": "degraded"}
-    assert malformed_states == {}
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    authority = _accepted_context_gap_authority(run_id="different-run")
+    authority["run_id"] = "expected-run"
+
+    states, _ = _derive_runtime_dataset_states(authority, registry=registry)
+    review = review_case_obligations(
+        {
+            "status": "completed",
+            "answer_package": {"summary": "bounded result"},
+            "accepted_graph": ["market_channel_context"],
+            "scenario": {
+                "required_capabilities": ["market_channel_context"],
+                "expected_dataset_states": {
+                    "market_dashboard_channel": "degraded"
+                },
+                "allowed_claim_ceiling": "candidate_mechanism",
+                "terminal_boundary": "contract_allowed_partial",
+            },
+            "runtime_authority": authority,
+        },
+        registry,
+    )
+
+    assert states == {}
+    assert review["missing_current_data_obligations"] == [
+        "market_dashboard_channel:degraded"
+    ]
+    assert review["hard_acceptance_passed"] is False
+
+
+def test_runtime_dataset_state_accepts_matching_context_only_contract():
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_runtime_dataset_states,
+    )
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    states, gaps = _derive_runtime_dataset_states(
+        _accepted_context_gap_authority(), registry=registry
+    )
+
+    assert states == {"market_dashboard_channel": "degraded"}
+    assert gaps == {"market_dashboard_channel": ("contract_partial",)}
+
+
+@pytest.mark.parametrize(
+    "plan_mutation",
+    [
+        lambda contract: contract.update(permission_scope="admin"),
+        lambda contract: contract["contract_gaps"][0].update(
+            gap_id="dataset:forged:contract_partial"
+        ),
+    ],
+)
+def test_runtime_dataset_state_rejects_mismatched_compiler_plan(plan_mutation):
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_runtime_dataset_states,
+    )
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    states, gaps = _derive_runtime_dataset_states(
+        _accepted_context_gap_authority(plan_mutation=plan_mutation),
+        registry=registry,
+    )
+
+    assert states == {}
+    assert gaps == {}
+
+
+def test_queryless_checkpoint_uses_final_run_bound_matching_event():
+    from tools.phase7.run_live_conversation_system_test import (
+        _queryless_completion_authority_passed,
+    )
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    authority = _accepted_context_gap_authority(run_id="run-checkpoint")
+    for contract in (
+        authority["admin_audit"]["analysis_contract"],
+        authority["admin_audit"]["compiler_runtime_plan"]["analysis_contract"],
+    ):
+        contract["capability_requirements"] = (
+            *contract["capability_requirements"],
+            "evidence_reduce",
+        )
+    authority["checkpoint_events"] = [
+        {"node": "reduce_evidence", "status": "failed", "attempt": 1},
+        {"node": "reduce_evidence", "status": "completed", "attempt": 2},
+    ]
+
+    assert _queryless_completion_authority_passed(
+        "evidence_reduce",
+        authority=authority,
+        admin=authority["admin_audit"],
+        registry=registry,
+    ) is True
+    authority["checkpoint_events"].append(
+        {"node": "reduce_evidence", "status": "failed", "attempt": 3}
+    )
+    assert _queryless_completion_authority_passed(
+        "evidence_reduce",
+        authority=authority,
+        admin=authority["admin_audit"],
+        registry=registry,
+    ) is False
+    authority["run_id"] = "different-run"
+    assert _queryless_completion_authority_passed(
+        "evidence_reduce",
+        authority=authority,
+        admin=authority["admin_audit"],
+        registry=registry,
+    ) is False
 
 
 def test_coverage_audit_distinguishes_permission_future_and_partial_contract():

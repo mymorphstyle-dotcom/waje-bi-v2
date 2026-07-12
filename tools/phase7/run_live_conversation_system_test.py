@@ -34,6 +34,7 @@ from bi_agent.runtime.analysis_contracts import (
     ReconciliationBinding,
     ResolvedWindow,
     ResultShape,
+    analysis_contract_signature,
     analysis_contract_from_dict,
     query_contract_signature,
 )
@@ -1001,6 +1002,12 @@ def _queryless_completion_authority_passed(
     admin: Mapping[str, Any],
     registry: RuntimeContractRegistry,
 ) -> bool:
+    accepted_contract = _run_matched_accepted_analysis_contract(authority)
+    if (
+        accepted_contract is None
+        or capability_id not in accepted_contract.capability_requirements
+    ):
+        return False
     try:
         completion = str(
             registry.capability_inputs(capability_id).get(
@@ -1030,11 +1037,7 @@ def _queryless_completion_authority_passed(
         for event in events
         if isinstance(event, Mapping) and event.get("node") == node
     )
-    return bool(
-        matching
-        and any(event.get("status") == "completed" for event in matching)
-        and not any(event.get("status") == "failed" for event in matching)
-    )
+    return bool(matching and matching[-1].get("status") == "completed")
 
 
 def _query_contract_from_mapping(value: Mapping[str, Any]) -> QueryContract:
@@ -1543,10 +1546,10 @@ def _derive_runtime_dataset_states(
         )
         for dataset_id in dataset_ids:
             _set_dataset_state(states, dataset_id, state)
-    for item in _mapping_items_for_keys(
-        authority,
-        {"contract_gaps", "typed_gaps", "gaps", "errors"},
-    ):
+    accepted_contract = _run_matched_accepted_analysis_contract(authority)
+    contract_gaps = accepted_contract.contract_gaps if accepted_contract else ()
+    for contract_gap in contract_gaps:
+        item = contract_gap.to_dict()
         gap_type = str(item.get("gap_type") or item.get("error_code") or "")
         normalized = _persisted_dataset_gap_state(item, registry=registry)
         if not normalized:
@@ -1557,6 +1560,37 @@ def _derive_runtime_dataset_states(
     return states, {
         dataset_id: tuple(dict.fromkeys(items)) for dataset_id, items in gaps.items()
     }
+
+
+def _run_matched_accepted_analysis_contract(
+    authority: Mapping[str, Any],
+):
+    run_id = authority.get("run_id")
+    admin = authority.get("admin_audit")
+    if not isinstance(run_id, str) or not run_id or not isinstance(admin, Mapping):
+        return None
+    persisted = admin.get("analysis_contract")
+    runtime_plan = admin.get("compiler_runtime_plan")
+    if not isinstance(persisted, Mapping) or not isinstance(runtime_plan, Mapping):
+        return None
+    planned = runtime_plan.get("analysis_contract")
+    if not isinstance(planned, Mapping):
+        return None
+    try:
+        persisted_contract = analysis_contract_from_dict(persisted)
+        planned_contract = analysis_contract_from_dict(planned)
+        persisted_signature = analysis_contract_signature(persisted_contract)
+        planned_signature = analysis_contract_signature(planned_contract)
+    except (KeyError, TypeError, ValueError):
+        return None
+    expected_ref = f"analysis:{run_id}:1"
+    if (
+        persisted_contract.analysis_contract_id != expected_ref
+        or planned_contract.analysis_contract_id != expected_ref
+        or persisted_signature != planned_signature
+    ):
+        return None
+    return persisted_contract
 
 
 def _persisted_dataset_gap_state(
