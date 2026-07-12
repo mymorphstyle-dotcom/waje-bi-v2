@@ -536,22 +536,37 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         "secondary_question_families": output.get("secondary_question_families") or (),
         **material_requirements,
     })
-    state["intent"] = _bind_clarification_resume_intent(intent, request)
+    intent = _bind_clarification_resume_intent(intent, request, registry)
+    _validate_context_family_axis(intent, registry)
+    state["intent"] = intent
     return state
 
 
 def _bind_clarification_resume_intent(
-    current: Mapping[str, Any], request: Mapping[str, Any]
+    current: Mapping[str, Any],
+    request: Mapping[str, Any],
+    registry: RuntimeContractRegistry,
 ) -> dict[str, Any]:
     resume = request.get("clarification_resume_context") or {}
     if not isinstance(resume, Mapping) or not resume:
         return dict(current)
     original = resume.get("original_intent") or {}
     if not original:
+        if resume.get("material_slots"):
+            raise WorkflowFailure(
+                "clarification_resume_material_slots_invalid",
+                failure_type="contract",
+            )
         return dict(current)
     if (
         not isinstance(original, Mapping)
         or not str(resume.get("resume_run_id") or "")
+        or not str(resume.get("source_thread_id") or "")
+        or not str(resume.get("source_topic_id") or "")
+        or str(resume.get("source_thread_id"))
+        != str(request.get("thread_id") or "")
+        or str(resume.get("source_topic_id"))
+        != str(request.get("topic_id") or "")
         or str(original.get("question") or "")
         != str(resume.get("question") or request.get("question") or "")
     ):
@@ -586,7 +601,65 @@ def _bind_clarification_resume_intent(
     for field in preserved_fields:
         if field in original:
             bound[field] = to_jsonable(original[field])
+    validated_material = _validated_business_intent_requirements(
+        {
+            key: original.get(key) or []
+            for key in (
+                "context_sources",
+                "claim_intents",
+                "requested_dimensions",
+                "requested_components",
+            )
+        },
+        registry,
+    )
+    _validated_resume_material_slots(resume.get("material_slots"), registry)
+    bound.update(validated_material)
     return _normalize_question_families(bound)
+
+
+def _validated_resume_material_slots(
+    raw: Any,
+    registry: RuntimeContractRegistry,
+) -> dict[str, Any]:
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, Mapping):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_invalid",
+            failure_type="contract",
+        )
+    allowed_values = {
+        "target_metrics": set(registry.metric_ids),
+        "context_sources": set(registry.context_source_ids),
+        "claim_intents": {
+            str(claim_type)
+            for capability_id in registry.capability_ids
+            for claim_type in registry.capability_inputs(capability_id).get(
+                "supported_claim_types", ()
+            )
+        },
+        "requested_dimensions": set(registry.dimension_ids),
+        "requested_components": set(registry.metric_ids),
+        "diagnostic_tags": set(registry.diagnostic_obligation_ids),
+    }
+    output = dict(raw)
+    for key, allowed in allowed_values.items():
+        if key not in raw:
+            continue
+        value = raw[key]
+        if (
+            not isinstance(value, (list, tuple))
+            or any(not isinstance(item, str) or not item for item in value)
+            or len(value) != len(set(value))
+            or any(item not in allowed for item in value)
+        ):
+            raise WorkflowFailure(
+                f"clarification_resume_material_slots_invalid:{key}",
+                failure_type="contract",
+            )
+        output[key] = list(value)
+    return output
 
 
 def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
@@ -604,7 +677,7 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "question": request.get("question", "Explain the paid amount question."),
         "allowed_target_metric_ids": registry.metric_ids,
-        "allowed_context_source_ids": registry.dataset_ids,
+        "allowed_context_source_ids": registry.context_source_ids,
         "allowed_claim_types": allowed_claim_types,
         "allowed_dimension_ids": registry.dimension_ids,
         "allowed_component_metric_ids": registry.metric_ids,
@@ -624,6 +697,35 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
     }
     if context:
         payload["bound_business_context"] = context
+    feedback = request.get("node_retry_feedback") or {}
+    if (
+        isinstance(feedback, Mapping)
+        and feedback.get("node") == "understand_business_intent"
+    ):
+        reason = str(feedback.get("reason") or "")
+        correction = ""
+        if reason.startswith("context_family_axis_missing:"):
+            correction = (
+                "Add a contract-compatible non-trust companion question family for "
+                "the listed context sources, choose primary and secondary families by "
+                "the supplied taxonomy, and preserve the typed analysis requirements."
+            )
+        elif reason.startswith(
+            "business_intent_contract_invalid:analysis_requirements:"
+        ):
+            correction = (
+                "Return the exact typed analysis_requirements schema, copy ids only "
+                "from the supplied allowed lists, and use only "
+                "allowed_context_source_ids for context_sources."
+            )
+        if correction:
+            payload["node_retry_feedback"] = {
+                "failure_type": str(
+                    feedback.get("failure_type") or "llm_contract"
+                ),
+                "reason": reason,
+                "correction": correction,
+            }
     return payload
 
 
@@ -650,7 +752,7 @@ def _validated_business_intent_requirements(
         if str(claim_type)
     }
     allowed = {
-        "context_sources": set(registry.dataset_ids),
+        "context_sources": set(registry.context_source_ids),
         "claim_intents": allowed_claim_types,
         "requested_dimensions": set(registry.dimension_ids),
         "requested_components": set(registry.metric_ids),
@@ -670,6 +772,79 @@ def _validated_business_intent_requirements(
             )
         normalized[key] = list(value)
     return normalized
+
+
+def _validate_context_family_axis(
+    intent: Mapping[str, Any], registry: RuntimeContractRegistry
+) -> None:
+    target_metric = str(intent.get("target_metric") or "")
+    try:
+        target_sources = set(registry.metric_sources(target_metric))
+    except (KeyError, TypeError, ValueError):
+        target_sources = set()
+    context_sources = tuple(
+        str(dataset_id)
+        for dataset_id in intent.get("context_sources") or ()
+        if str(dataset_id)
+    )
+    unrelated = tuple(
+        dataset_id
+        for dataset_id in context_sources
+        if dataset_id not in target_sources
+    )
+    if not unrelated:
+        return
+    selected_families = _intent_question_family_set(intent)
+    analytical_families = {
+        "business_object_impact_review",
+        "anomaly_or_black_swan_review",
+        "segment_or_factor_attribution",
+        "pattern_explanation",
+    }
+    for dataset_id in unrelated:
+        compatible = {
+            family
+            for family in analytical_families
+            if _question_family_supports_context_dataset(
+                family, dataset_id, registry
+            )
+        }
+        if compatible and not selected_families.intersection(compatible):
+            raise WorkflowFailure(
+                f"context_family_axis_missing:{dataset_id}",
+                failure_type="llm_contract",
+            )
+
+
+def _question_family_supports_context_dataset(
+    question_family: str,
+    dataset_id: str,
+    registry: RuntimeContractRegistry,
+) -> bool:
+    try:
+        obligation = registry.question_family_obligation(question_family)
+    except KeyError:
+        return False
+    capabilities = [
+        *(obligation.get("required_capabilities") or ()),
+        *(obligation.get("independent_capabilities") or ()),
+        *(
+            capability
+            for rule in obligation.get("conditional_rules") or ()
+            if isinstance(rule, Mapping)
+            for capability in rule.get("add") or ()
+        ),
+    ]
+    for capability_id in capabilities:
+        try:
+            contract = registry.capability_inputs(str(capability_id))
+        except KeyError:
+            continue
+        if dataset_id in set(contract.get("allowed_datasets") or ()):
+            return True
+        if contract.get("source_mode") == "requested_context_sources":
+            return True
+    return False
 
 
 def _question_family_values(raw: Any) -> list[str]:

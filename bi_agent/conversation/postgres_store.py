@@ -311,13 +311,16 @@ class PostgresConversationStore:
 
     def get_run_request(self, run_id: str) -> dict[str, Any]:
         row = self._fetchone(
-            "SELECT request FROM waje_runtime.analysis_runs WHERE run_id = %(run_id)s",
+            "SELECT request, thread_id, topic_id FROM waje_runtime.analysis_runs WHERE run_id = %(run_id)s",
             {"run_id": run_id},
         )
         value = _field(row, "request", 0) if row else {}
         if isinstance(value, str):
             value = json.loads(value)
-        return dict(value) if isinstance(value, Mapping) else {}
+        request = dict(value) if isinstance(value, Mapping) else {}
+        request["thread_id"] = str(_field(row, "thread_id", 1) or "") if row else ""
+        request["topic_id"] = str(_field(row, "topic_id", 2) or "") if row else ""
+        return request
 
     def record_clarification_outcome(
         self,

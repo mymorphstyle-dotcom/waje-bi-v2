@@ -239,7 +239,7 @@ def _task_rules(task: str) -> str:
             "periods, even if the wording uses compare, higher, uplift, or versus. "
             "Repeated pattern examples include weekday-vs-weekday inside many weeks, "
             "month start/boundary/mid/end inside many months, rolling-window trends, "
-            "event-relative windows, lag, and recovery. After choosing question_family, "
+            "event-relative windows, lag, and recovery. "
             "Choose paid_amount_change_explanation for a change-driver chain; "
             "business_object_impact_review for an activity, event, campaign, or other "
             "business object's bounded relationship to a metric; revenue_health_review "

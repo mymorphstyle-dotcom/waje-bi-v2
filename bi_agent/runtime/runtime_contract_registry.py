@@ -100,6 +100,7 @@ class RuntimeContractRegistry:
             tuple(str(item) for item in payload["metrics"]),
         )
         _validate_query_shapes(payload.get("query_shapes") or {})
+        _validate_dataset_intent_roles(payload["datasets"])
         _validate_obligations(payload)
         maximum_ranks = payload["claim_strength_taxonomy"]["maximum_strength_ranks"]
         for capability_id, contract in payload["capability_inputs"].items():
@@ -155,6 +156,16 @@ class RuntimeContractRegistry:
     @property
     def dataset_ids(self) -> tuple[str, ...]:
         return tuple(sorted(str(item) for item in self._payload["datasets"]))
+
+    @property
+    def context_source_ids(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                str(dataset_id)
+                for dataset_id, contract in self._payload["datasets"].items()
+                if "business_context" in contract.get("intent_roles", ())
+            )
+        )
 
     @property
     def dimension_ids(self) -> tuple[str, ...]:
@@ -493,6 +504,21 @@ def _validate_query_shapes(value: Any) -> None:
             raise ValueError(
                 "runtime_query_shape_source_field_policy:"
                 f"{query_family}:{source_field_policy}"
+            )
+
+
+def _validate_dataset_intent_roles(datasets: Mapping[str, Any]) -> None:
+    allowed = {"metric_source", "business_context"}
+    for dataset_id, contract in datasets.items():
+        roles = contract.get("intent_roles") if isinstance(contract, Mapping) else None
+        if (
+            not isinstance(roles, list)
+            or not roles
+            or any(type(role) is not str or role not in allowed for role in roles)
+            or len(roles) != len(set(roles))
+        ):
+            raise ValueError(
+                f"runtime_dataset_intent_roles_invalid:{dataset_id}"
             )
 
 

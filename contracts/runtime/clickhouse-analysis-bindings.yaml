@@ -50,6 +50,7 @@ metric_business_labels:
 
 datasets:
   paid_order_success:
+    intent_roles: [metric_source]
     date_field: business_date_lagos
     schema_contract_ref: contracts/sources/paid-order-detail.source.yaml@0.3#storage_boundary.clean_schema
     requires_release: true
@@ -57,9 +58,11 @@ datasets:
     required_fields: [business_date_lagos]
     schema_fields: [order_id, user_id, business_date_lagos, payment_completed_ms, payment_started_ms, paid_amount_ngn, currency, is_new_user, is_first_payment, channel, payment_method, country, region, city, device_brand, device_model, os, network_type, registered_at, first_paid_at, payment_latency_seconds, raw_date]
   payment_attempt:
+    intent_roles: [metric_source]
     date_expression: "toDate(toTimeZone(fromUnixTimestamp64Milli(toInt64OrZero(`支付发起时间`)), 'Africa/Lagos'))"
     required_fields: [支付发起时间]
   market_dashboard:
+    intent_roles: [metric_source]
     date_field: business_date
     physical_table_prefix: market_dashboard_daily__
     legacy_physical_tables: [market_dashboard_daily]
@@ -72,6 +75,7 @@ datasets:
     grain: [snapshot_id, load_revision, business_date, game]
     unique_key: [snapshot_id, load_revision, business_date, game]
   market_dashboard_channel:
+    intent_roles: [metric_source]
     date_field: business_date
     physical_table_prefix: market_dashboard_channel_daily__
     legacy_physical_tables: [market_dashboard_channel_daily]
@@ -84,6 +88,7 @@ datasets:
     grain: [snapshot_id, load_revision, business_date, game, channel]
     unique_key: [snapshot_id, load_revision, business_date, game, channel]
   gameplay:
+    intent_roles: [metric_source, business_context]
     date_field: business_date
     physical_table_prefix: gameplay_daily__
     legacy_physical_tables: [gameplay_daily]
@@ -96,6 +101,7 @@ datasets:
     grain: [snapshot_id, load_revision, business_date, service_scope, gameplay]
     unique_key: [snapshot_id, load_revision, business_date, service_scope, gameplay]
   gameplay_channel:
+    intent_roles: [metric_source, business_context]
     date_field: business_date
     physical_table_prefix: gameplay_channel_daily__
     legacy_physical_tables: [gameplay_channel_daily]
@@ -108,6 +114,7 @@ datasets:
     grain: [snapshot_id, load_revision, business_date, channel, service_scope, gameplay]
     unique_key: [snapshot_id, load_revision, business_date, channel, service_scope, gameplay]
   external_event:
+    intent_roles: [business_context]
     date_field: event_start_date
     physical_table_prefix: business_events__
     legacy_physical_tables: [business_events]
@@ -120,6 +127,7 @@ datasets:
     grain: [snapshot_id, load_revision, source_family, event_id]
     unique_key: [snapshot_id, load_revision, source_family, event_id]
   internal_operation_event:
+    intent_roles: [business_context]
     date_field: event_start_date
     physical_table_prefix: business_events__
     legacy_physical_tables: [business_events]

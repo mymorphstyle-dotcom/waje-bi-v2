@@ -223,6 +223,12 @@ class ConversationRuntime:
                     )
                     clarification_resume_context = {
                         "resume_run_id": open_clarification.run_id,
+                        "source_thread_id": str(
+                            prior_request.get("thread_id") or ""
+                        ),
+                        "source_topic_id": str(
+                            prior_request.get("topic_id") or ""
+                        ),
                         "question": str(prior_request.get("question") or ""),
                         "accepted_graph": tuple(prior_request.get("accepted_graph") or ()),
                         "analysis_contract": dict(prior_request.get("analysis_contract") or {}),

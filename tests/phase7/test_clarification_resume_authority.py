@@ -8,6 +8,7 @@ import pytest
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.conversation.agent_core import ConversationAgentCore
+from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.models import ClarificationOption, ClarificationState
 from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
 from bi_agent.runtime.analysis_contracts import analysis_contract_signature
@@ -63,10 +64,14 @@ def test_early_clarification_resume_preserves_source_topic_family(monkeypatch):
     )
     state = {
         "request": {
+            "thread_id": "thread-early-source",
+            "topic_id": "topic-early-source",
             "question": "original topic question",
             "clarification_choice": {"answer_text": "selected baseline"},
             "clarification_resume_context": {
                 "resume_run_id": "run-early-source",
+                "source_thread_id": "thread-early-source",
+                "source_topic_id": "topic-early-source",
                 "question": "original topic question",
                 "original_intent": original_intent,
             },
@@ -134,6 +139,133 @@ def test_query_gap_clarification_persists_original_topic_material(tmp_path):
         "claim_intents": ["candidate_mechanism"],
         "requested_dimensions": ["channel"],
     }
+
+
+def test_query_gap_resume_context_roundtrips_source_run_topic_and_material():
+    store = InMemoryConversationStore()
+    store.create_thread("thread-query-gap-roundtrip", owner_id="analyst")
+    topic = store.create_topic(
+        "thread-query-gap-roundtrip",
+        title="source topic",
+        summary="source topic",
+    )
+    store.set_current_topic("thread-query-gap-roundtrip", topic.topic_id)
+    original_intent = {
+        "question_family": "business_object_impact_review",
+        "question_families": ["business_object_impact_review"],
+        "primary_question_family": "business_object_impact_review",
+        "secondary_question_families": [],
+        "target_metric": "paid_amount",
+        "context_sources": ["gameplay"],
+        "claim_intents": ["candidate_mechanism"],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source business question",
+    }
+    material_slots = {
+        "target_metrics": ["paid_amount"],
+        "context_sources": ["gameplay"],
+        "claim_intents": ["candidate_mechanism"],
+    }
+    source_run_id = "run-query-gap-roundtrip"
+    store.upsert_run(
+        source_run_id,
+        thread_id="thread-query-gap-roundtrip",
+        topic_id=topic.topic_id,
+        status="waiting_for_clarification",
+        request={
+            "thread_id": "thread-query-gap-roundtrip",
+            "topic_id": topic.topic_id,
+            "question": "source business question",
+            "original_intent": original_intent,
+            "material_slots": material_slots,
+            "clarification": {
+                "questions": [{
+                    "question": "choose",
+                    "options": ["continue source topic"],
+                }],
+            },
+        },
+    )
+    store.set_pending_clarification(
+        "thread-query-gap-roundtrip", topic.topic_id, source_run_id
+    )
+    store.save_clarification_state(
+        ClarificationState(
+            run_id=source_run_id,
+            topic_id=topic.topic_id,
+            question="choose",
+            options=[
+                ClarificationOption(
+                    option_id="continue",
+                    label="continue source topic",
+                    description="continue source topic",
+                )
+            ],
+        )
+    )
+
+    result = ConversationRuntime(store).handle_message(
+        "thread-query-gap-roundtrip", "continue source topic"
+    )
+
+    resume = result.run_request.clarification_resume_context
+    assert resume["resume_run_id"] == source_run_id
+    assert resume["source_thread_id"] == "thread-query-gap-roundtrip"
+    assert resume["source_topic_id"] == topic.topic_id
+    assert resume["question"] == "source business question"
+    assert resume["original_intent"] == original_intent
+    assert resume["material_slots"] == material_slots
+
+
+@pytest.mark.parametrize(
+    "corruption", ["thread", "topic", "material", "persisted_material"]
+)
+def test_resume_intent_authority_rejects_owner_or_material_corruption(corruption):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    original = {
+        "question_family": "business_object_impact_review",
+        "question_families": ["business_object_impact_review"],
+        "primary_question_family": "business_object_impact_review",
+        "secondary_question_families": [],
+        "target_metric": "paid_amount",
+        "context_sources": ["gameplay"],
+        "claim_intents": ["candidate_mechanism"],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source question",
+    }
+    if corruption == "material":
+        original["context_sources"] = ["paid_order_success"]
+    resume = {
+        "resume_run_id": "run-source",
+        "source_thread_id": "thread-source",
+        "source_topic_id": "topic-source",
+        "question": "source question",
+        "original_intent": original,
+        "material_slots": {"target_metrics": ["paid_amount"]},
+    }
+    request = {
+        "thread_id": "thread-source",
+        "topic_id": "topic-source",
+        "question": "source question",
+        "clarification_resume_context": resume,
+    }
+    if corruption == "thread":
+        resume["source_thread_id"] = "thread-other"
+    elif corruption == "topic":
+        resume["source_topic_id"] = "topic-other"
+    elif corruption == "persisted_material":
+        resume["material_slots"] = {"context_sources": ["paid_order_success"]}
+
+    with pytest.raises(workflow.WorkflowFailure):
+        workflow._bind_clarification_resume_intent(
+            {"question_family": "pattern_explanation"}, request, registry
+        )
 
 
 def _source_contract(run_id="run-source"):

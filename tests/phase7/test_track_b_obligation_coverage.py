@@ -395,6 +395,7 @@ def test_business_intent_carries_registry_validated_material_requirements(
     "field,value",
     [
         ("context_sources", ["unknown_dataset"]),
+        ("context_sources", ["paid_order_success"]),
         ("claim_intents", ["candidate_mechanism", "candidate_mechanism"]),
         ("requested_dimensions", [42]),
         ("requested_components", "paid_users"),
@@ -420,6 +421,130 @@ def test_business_intent_material_requirements_fail_closed(field, value):
         )
 
     assert exc.value.failure_type == "llm_contract"
+
+
+def test_business_intent_retries_missing_context_family_axis(monkeypatch):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    outputs = [
+        {
+            "question_family": "data_quality_or_evidence_review",
+            "question_families": ["data_quality_or_evidence_review"],
+            "primary_question_family": "data_quality_or_evidence_review",
+            "secondary_question_families": [],
+        },
+        {
+            "question_family": "business_object_impact_review",
+            "question_families": [
+                "business_object_impact_review",
+                "data_quality_or_evidence_review",
+            ],
+            "primary_question_family": "business_object_impact_review",
+            "secondary_question_families": ["data_quality_or_evidence_review"],
+        },
+    ]
+    payloads = []
+
+    def invoke(state, node, payload):
+        payloads.append(payload)
+        family = outputs.pop(0)
+        return {
+            **family,
+            "target_metric": "paid_amount",
+            "pattern_family": "custom_baseline",
+            "scope": "full_sample",
+            "time_window": "yesterday",
+            "target_claim": "bounded context review",
+            "baseline_candidates": [],
+            "status_message": "已绑定业务问题。",
+            "answer_contract": {"direct_answer": True},
+            "analysis_requirements": {
+                "context_sources": ["gameplay"],
+                "claim_intents": ["contract_coverage_and_trust_boundary"],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+        }
+
+    monkeypatch.setattr(workflow, "_invoke_llm", invoke)
+    state = {
+        "run_id": "run-context-family-repair",
+        "request": {"question": "arbitrary context question"},
+        "checkpoint_events": [],
+    }
+
+    workflow._retrying_node(
+        "understand_business_intent", workflow._understand_business_intent
+    )(state)
+
+    assert len(payloads) == 2
+    assert payloads[1]["node_retry_feedback"] == {
+        "failure_type": "llm_contract",
+        "reason": "context_family_axis_missing:gameplay",
+        "correction": (
+            "Add a contract-compatible non-trust companion question family for "
+            "the listed context sources, choose primary and secondary families by "
+            "the supplied taxonomy, and preserve the typed analysis requirements."
+        ),
+    }
+    assert state["intent"]["question_family"] == "business_object_impact_review"
+    assert state["intent"]["context_sources"] == ["gameplay"]
+
+
+def test_business_context_source_allowlist_excludes_metric_only_datasets():
+    registry = _registry()
+
+    assert set(registry.context_source_ids) == {
+        "gameplay",
+        "gameplay_channel",
+        "external_event",
+        "internal_operation_event",
+    }
+    assert "paid_order_success" not in registry.context_source_ids
+
+
+def test_business_intent_context_family_axis_fails_closed_after_retry(monkeypatch):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    def invoke(state, node, payload):
+        return {
+            "question_family": "data_quality_or_evidence_review",
+            "question_families": ["data_quality_or_evidence_review"],
+            "target_metric": "paid_amount",
+            "pattern_family": "custom_baseline",
+            "scope": "full_sample",
+            "time_window": "yesterday",
+            "target_claim": "bounded context review",
+            "baseline_candidates": [],
+            "status_message": "已绑定业务问题。",
+            "answer_contract": {"direct_answer": True},
+            "analysis_requirements": {
+                "context_sources": ["gameplay"],
+                "claim_intents": [],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+        }
+
+    monkeypatch.setattr(workflow, "_invoke_llm", invoke)
+    state = {
+        "run_id": "run-context-family-failed",
+        "request": {"question": "arbitrary context question"},
+        "checkpoint_events": [],
+    }
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="context_family_axis_missing:gameplay",
+    ):
+        workflow._retrying_node(
+            "understand_business_intent", workflow._understand_business_intent
+        )(state)
+
+    assert [event["status"] for event in state["checkpoint_events"]] == [
+        "retrying",
+        "failed",
+    ]
 
 
 def test_route_design_resolves_obligations_after_capability_family_inference(
@@ -501,11 +626,16 @@ def test_queryless_signed_plans_are_terminal_without_query_execution():
         permission_scope="analyst",
     )
     authority = {
+        "run_id": "run-queryless-terminal",
         "checkpoint_events": [
+            {"node": "reduce_evidence", "status": "failed"},
             {"node": "reduce_evidence", "status": "completed"},
         ],
         "admin_audit": {
             "analysis_contract": outcome.analysis_contract.to_dict(),
+            "compiler_runtime_plan": {
+                "analysis_contract": outcome.analysis_contract.to_dict()
+            },
             "verifier": {"status": "passed", "errors": []},
             "capability_execution_plans": [
                 asdict(plan) for plan in outcome.capability_plans

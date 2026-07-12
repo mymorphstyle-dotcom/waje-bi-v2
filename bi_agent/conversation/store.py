@@ -145,7 +145,11 @@ class InMemoryConversationStore:
         self.add_audit_event("run_status_changed", thread_id=thread_id, topic_id=topic_id, run_id=run_id)
 
     def get_run_request(self, run_id: str) -> dict[str, Any]:
-        return deepcopy((self.runs.get(run_id) or {}).get("request") or {})
+        run = self.runs.get(run_id) or {}
+        request = deepcopy(run.get("request") or {})
+        request["thread_id"] = str(run.get("thread_id") or "")
+        request["topic_id"] = str(run.get("topic_id") or "")
+        return request
 
     def record_clarification_outcome(
         self,

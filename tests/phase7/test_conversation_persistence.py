@@ -14,6 +14,26 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ConversationPersistenceTest(unittest.TestCase):
+    def test_run_request_owner_comes_from_authoritative_run_columns(self):
+        spoofed = {"thread_id": "thread-spoofed", "topic_id": "topic-spoofed"}
+        memory = InMemoryConversationStore()
+        memory.upsert_run(
+            "run-owner",
+            thread_id="thread-owner",
+            topic_id="topic-owner",
+            status="needs_question",
+            request=spoofed,
+        )
+        self.assertEqual(memory.get_run_request("run-owner")["thread_id"], "thread-owner")
+        self.assertEqual(memory.get_run_request("run-owner")["topic_id"], "topic-owner")
+
+        postgres = PostgresConversationStore(
+            FakeConnection(rows=[(spoofed, "thread-owner", "topic-owner")])
+        )
+        request = postgres.get_run_request("run-owner")
+        self.assertEqual(request["thread_id"], "thread-owner")
+        self.assertEqual(request["topic_id"], "topic-owner")
+
     def test_in_memory_single_save_checks_release_membership_before_dataset_policy(self):
         store = InMemoryConversationStore()
         payloads = (
