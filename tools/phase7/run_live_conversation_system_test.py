@@ -244,7 +244,15 @@ def review_case_obligations(
     scenario = turn_record.get("scenario") or {}
     if not isinstance(scenario, Mapping):
         raise ValueError("scenario_expectation_invalid")
-    family = str(scenario.get("question_family") or "")
+    authored_family = str(scenario.get("question_family") or "")
+    authority = turn_record.get("runtime_authority") or {}
+    if not isinstance(authority, Mapping):
+        raise ValueError("runtime_authority_invalid")
+    family, family_authority_status = _persisted_question_family_authority(
+        authority,
+        registry,
+        authored_family=authored_family,
+    )
     request = ObligationRequest(
         question_families=(family,) if family else (),
         diagnostic_tags=tuple(scenario.get("diagnostic_tags") or ()),
@@ -262,6 +270,9 @@ def review_case_obligations(
              *resolution.independent_capabilities,
              *(str(item) for item in scenario.get("required_capabilities") or ()))
         )
+    )
+    authored_required = tuple(
+        dict.fromkeys(str(item) for item in scenario.get("required_capabilities") or ())
     )
     actual = {
         str(item)
@@ -309,9 +320,6 @@ def review_case_obligations(
             question_family=family,
             coverage_authority=coverage_authority,
         )
-    authority = turn_record.get("runtime_authority") or {}
-    if not isinstance(authority, Mapping):
-        raise ValueError("runtime_authority_invalid")
     observed_states, observed_gaps = _derive_runtime_dataset_states(authority)
     capability_outcomes = _derive_capability_outcomes(
         required,
@@ -401,7 +409,8 @@ def review_case_obligations(
         and _has_exact_reuse_decision(authority)
     )
     hard_passed = (
-        not nonterminal_capabilities
+        family_authority_status in {"matched", "mismatch"}
+        and not nonterminal_capabilities
         and not capability_state_mismatches
         and not unresolved_authority_capabilities
         and (capability_authority_gate or not unresolved_authority_roles)
@@ -414,7 +423,16 @@ def review_case_obligations(
         and reuse_passed
     )
     return {
+        "authored_question_family": authored_family,
         "question_family": family,
+        "question_family_authority_status": family_authority_status,
+        "question_family_mismatch": family_authority_status == "mismatch",
+        "authored_required_capabilities": list(authored_required),
+        "authored_required_capability_mismatches": [
+            capability_id
+            for capability_id in authored_required
+            if capability_id not in required
+        ],
         "required_capabilities": list(required),
         "conditional_capabilities": list(resolution.conditional_capabilities),
         "independent_capabilities": list(resolution.independent_capabilities),
@@ -463,6 +481,34 @@ def review_case_obligations(
         "reuse_passed": reuse_passed,
         "hard_acceptance_passed": hard_passed,
     }
+
+
+def _persisted_question_family_authority(
+    authority: Mapping[str, Any],
+    registry: RuntimeContractRegistry,
+    *,
+    authored_family: str,
+) -> tuple[str, str]:
+    """Resolve one canonical family from the persisted effective contract."""
+    admin = authority.get("admin_audit") or authority
+    if not isinstance(admin, Mapping):
+        return "", "missing"
+    raw_contract = admin.get("analysis_contract")
+    if not isinstance(raw_contract, Mapping):
+        return "", "missing"
+    try:
+        contract = analysis_contract_from_dict(raw_contract)
+    except (KeyError, TypeError, ValueError):
+        return "", "invalid_contract"
+    families = tuple(dict.fromkeys(contract.question_families))
+    if not families:
+        return "", "missing"
+    if len(families) != 1:
+        return "", "ambiguous"
+    family = families[0]
+    if family not in registry.question_family_ids:
+        return "", "invalid"
+    return family, "matched" if family == authored_family else "mismatch"
 
 
 def _capability_dataset_observations(
@@ -2537,6 +2583,21 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
         if turn.get("obligation_review")
     ]
     required = sum(len(item.get("required_capabilities") or ()) for item in obligations)
+    authored_families: dict[str, int] = {}
+    persisted_families: dict[str, int] = {}
+    family_authority_statuses: dict[str, int] = {}
+    for item in obligations:
+        authored_family = str(item.get("authored_question_family") or "")
+        if authored_family:
+            authored_families[authored_family] = authored_families.get(authored_family, 0) + 1
+        persisted_family = str(item.get("question_family") or "")
+        if persisted_family:
+            persisted_families[persisted_family] = persisted_families.get(persisted_family, 0) + 1
+        authority_status = str(item.get("question_family_authority_status") or "")
+        if authority_status:
+            family_authority_statuses[authority_status] = (
+                family_authority_statuses.get(authority_status, 0) + 1
+            )
     expected_datasets: dict[str, dict[str, int]] = {}
     observed_datasets: dict[str, dict[str, int]] = {}
     for item in obligations:
@@ -2585,6 +2646,12 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
         item.get("hard_acceptance_passed") is True for item in obligations
     )
     return {
+        "question_family_coverage": {
+            "authored": authored_families,
+            "persisted": persisted_families,
+            "authority_status": family_authority_statuses,
+            "mismatches": family_authority_statuses.get("mismatch", 0),
+        },
         "obligation_coverage": {
             "required": required,
             "routed": (

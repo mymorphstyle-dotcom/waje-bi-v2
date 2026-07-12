@@ -129,6 +129,14 @@ def _review_payload(
     }
     return {
         "case_id": str(payload.get("case_id") or ""),
+        "question_family_coverage": supplied_coverage.get(
+            "question_family_coverage"
+        ) or {
+            "authored": {},
+            "persisted": {},
+            "authority_status": {},
+            "mismatches": 0,
+        },
         "obligation_coverage": obligation,
         "expected_dataset_coverage": supplied_coverage.get(
             "expected_dataset_coverage"

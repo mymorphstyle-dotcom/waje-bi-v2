@@ -20,7 +20,7 @@ def _analysis_contract(*gaps: ContractGap) -> dict[str, object]:
     return AnalysisContract(
         analysis_contract_id="analysis-contract:test",
         contract_version="1",
-        question_families=(),
+        question_families=("data_quality_or_evidence_review",),
         target_metric_refs=(),
         claim_intents=(),
         scope={},
@@ -184,6 +184,85 @@ def _persisted_plan_authority() -> tuple[dict[str, object], RuntimeContractRegis
             },
         }],
     }, registry
+
+
+def test_obligation_review_uses_persisted_family_and_reports_authored_mismatch():
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    authority, registry = _persisted_plan_authority()
+    contract = dict(authority["analysis_contract"])
+    contract["question_families"] = ["segment_or_factor_attribution"]
+    authority["analysis_contract"] = contract
+    turn = {
+        "status": "completed",
+        "accepted_graph": [
+            "data_quality_profile",
+            "answer_verify",
+            "gameplay_activity_context",
+            "segment_breakdown",
+            "segment_shift_compare",
+        ],
+        "scenario": {
+            "question_family": "business_object_impact_review",
+            "allowed_claim_ceiling": "trust_boundary",
+            "terminal_boundary": "verified_answer",
+        },
+        "runtime_authority": authority,
+    }
+
+    review = review_case_obligations(turn, registry)
+
+    assert review["authored_question_family"] == "business_object_impact_review"
+    assert review["question_family"] == "segment_or_factor_attribution"
+    assert review["question_family_authority_status"] == "mismatch"
+    assert review["question_family_mismatch"] is True
+    assert review["required_capabilities"] == [
+        "data_quality_profile",
+        "answer_verify",
+        "gameplay_activity_context",
+        "segment_breakdown",
+        "segment_shift_compare",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("families", "expected_status"),
+    [
+        ([], "missing"),
+        (
+            ["business_object_impact_review", "segment_or_factor_attribution"],
+            "ambiguous",
+        ),
+        (["unknown_family"], "invalid"),
+    ],
+)
+def test_obligation_review_fails_closed_without_one_valid_persisted_family(
+    families, expected_status
+):
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    authority, registry = _persisted_plan_authority()
+    contract = dict(authority["analysis_contract"])
+    contract["question_families"] = families
+    authority["analysis_contract"] = contract
+
+    review = review_case_obligations(
+        {
+            "status": "completed",
+            "accepted_graph": ["data_quality_profile"],
+            "scenario": {
+                "question_family": "business_object_impact_review",
+                "allowed_claim_ceiling": "trust_boundary",
+                "terminal_boundary": "verified_answer",
+            },
+            "runtime_authority": authority,
+        },
+        registry,
+    )
+
+    assert review["question_family"] == ""
+    assert review["question_family_authority_status"] == expected_status
+    assert review["hard_acceptance_passed"] is False
 
 
 @pytest.mark.parametrize(
@@ -660,11 +739,37 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
     contract = AnalysisContract(
         **{
             **analysis_contract_from_dict(authority["analysis_contract"]).__dict__,
+            "question_families": ("business_object_impact_review",),
             "capability_requirements": (
                 "market_health_compare",
                 "source_reconciliation",
+                "data_quality_profile",
+                "gameplay_activity_context",
+                "event_window_compare",
             ),
-            "contract_gaps": (gap,),
+            "contract_gaps": (
+                gap,
+                *(
+                    ContractGap(
+                        gap_type="contract_partial",
+                        gap_id=(
+                            f"capability:{capability_id}:required_query:probe:unbound"
+                        ),
+                        dataset_id="market_dashboard",
+                        affected_capabilities=(capability_id,),
+                        affected_claim_types=(),
+                        owner="contract_owner",
+                        repair_options=("bind_required_query_contract",),
+                        requires_clarification=False,
+                        diagnostic_context={},
+                    )
+                    for capability_id in (
+                        "data_quality_profile",
+                        "gameplay_activity_context",
+                        "event_window_compare",
+                    )
+                ),
+            ),
         }
     )
     authority["analysis_contract"] = contract.to_dict()
@@ -673,6 +778,7 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
         "answer_package": {"summary": "terminal"},
         "accepted_graph": ["market_health_compare"],
         "scenario": {
+            "question_family": "business_object_impact_review",
             "required_capabilities": [
                 "market_health_compare",
                 "source_reconciliation",
@@ -708,6 +814,9 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
     )
 
     assert review["capability_outcomes"] == {
+        "data_quality_profile": "blocked",
+        "gameplay_activity_context": "blocked",
+        "event_window_compare": "blocked",
         "market_health_compare": "executed",
         "source_reconciliation": "blocked",
     }

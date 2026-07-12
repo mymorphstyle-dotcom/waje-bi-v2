@@ -34,7 +34,7 @@ def _analysis_contract_gap_authority(
     return AnalysisContract(
         analysis_contract_id="analysis-contract:obligation-review-test",
         contract_version="1",
-        question_families=(),
+        question_families=("data_quality_or_evidence_review",),
         target_metric_refs=(),
         claim_intents=(),
         scope={},
@@ -728,6 +728,52 @@ def test_coverage_summary_separates_expected_from_observed_dataset_states():
     }
 
 
+def test_coverage_summary_reports_authored_and_persisted_question_families():
+    from tools.phase7.run_live_conversation_system_test import _coverage_summary
+
+    summary = _coverage_summary([
+        {
+            "obligation_review": {
+                "authored_question_family": "business_object_impact_review",
+                "question_family": "segment_or_factor_attribution",
+                "question_family_authority_status": "mismatch",
+                "required_capabilities": [],
+                "hard_acceptance_passed": False,
+            },
+            "real_clickhouse_review": {"runtime_correctness": {}},
+        }
+    ])
+
+    assert summary["question_family_coverage"] == {
+        "authored": {"business_object_impact_review": 1},
+        "persisted": {"segment_or_factor_attribution": 1},
+        "authority_status": {"mismatch": 1},
+        "mismatches": 1,
+    }
+
+
+def test_eval_review_summary_preserves_both_question_family_views(tmp_path):
+    from tools.phase7.review_analysis_contract_eval import review_artifact
+
+    family_coverage = {
+        "authored": {"business_object_impact_review": 1},
+        "persisted": {"segment_or_factor_attribution": 1},
+        "authority_status": {"mismatch": 1},
+        "mismatches": 1,
+    }
+    path = tmp_path / "case.json"
+    path.write_text(
+        json.dumps({
+            "case_id": "family-authority-review",
+            "coverage_summary": {"question_family_coverage": family_coverage},
+            "turns": [],
+        }),
+        encoding="utf-8",
+    )
+
+    assert review_artifact(path)["question_family_coverage"] == family_coverage
+
+
 def test_obligation_coverage_outcomes_are_mutually_exclusive_and_authoritative():
     from tools.phase7.run_live_conversation_system_test import _coverage_summary
 
@@ -809,6 +855,14 @@ def test_obligation_review_rejects_binding_result_without_persisted_plan_chain()
                     "result_refs": ["result:missing"],
                 },
             ],
+            "analysis_contract": _analysis_contract_gap_authority(
+                [],
+                [
+                    "metric_coverage_profile",
+                    "data_quality_profile",
+                    "answer_verify",
+                ],
+            ),
         },
     }
 
@@ -877,13 +931,26 @@ def test_obligation_review_accepts_only_authority_backed_terminal_capability_out
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
     accepted_graph = [] if terminal_outcome == "blocked" else ["answer_verify"]
     if terminal_outcome == "blocked":
+        blocked_capabilities = [
+            "data_quality_profile",
+            "metric_coverage_profile",
+            "answer_verify",
+        ]
         runtime_authority = {
-            "analysis_contract": _analysis_contract_gap_authority([{
-                "gap_type": "contract_partial",
-                "gap_id": "capability:answer_verify:required_query:slot:unbound",
-                "dataset_id": "paid_order_success",
-                "owner": "contract_owner",
-            }], ["answer_verify"])
+            "analysis_contract": _analysis_contract_gap_authority(
+                [
+                    {
+                        "gap_type": "contract_partial",
+                        "gap_id": (
+                            f"capability:{capability_id}:required_query:slot:unbound"
+                        ),
+                        "dataset_id": "paid_order_success",
+                        "owner": "contract_owner",
+                    }
+                    for capability_id in blocked_capabilities
+                ],
+                blocked_capabilities,
+            )
         }
     else:
         partial = terminal_outcome == "degraded"
@@ -917,10 +984,16 @@ def test_obligation_review_accepts_only_authority_backed_terminal_capability_out
     )
 
     expected = "blocked" if terminal_outcome == "blocked" else "unobserved"
-    assert review["capability_outcomes"] == {"answer_verify": expected}
-    assert review["nonterminal_required_capabilities"] == (
-        [] if terminal_outcome == "blocked" else ["answer_verify"]
-    )
+    assert review["capability_outcomes"]["answer_verify"] == expected
+    if terminal_outcome == "blocked":
+        assert review["capability_outcomes"] == {
+            "data_quality_profile": "blocked",
+            "metric_coverage_profile": "blocked",
+            "answer_verify": "blocked",
+        }
+        assert review["nonterminal_required_capabilities"] == []
+    else:
+        assert review["nonterminal_required_capabilities"] == ["answer_verify"]
     assert review["hard_acceptance_passed"] is (terminal_outcome == "blocked")
 
 
