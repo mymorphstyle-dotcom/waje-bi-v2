@@ -302,7 +302,7 @@ def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
         {"topic_id": "topic-2", "resumed_topic_id": "topic-2", "resumed_status": "completed", "scenario": {}},
     ]
     summary = _coverage_summary(turns)
-    assert summary["final_answer_audit_coverage"] == {"reviewed": 1, "total": 3}
+    assert summary["final_answer_audit_coverage"] == {"reviewed": 0, "total": 3}
     assert summary["clarification_resume"] == {"required": 1, "passed": 1}
     assert summary["reuse_coverage"] == {"required": 1, "passed": 1}
     turns[0]["resumed_status"] = "failed"
@@ -314,10 +314,15 @@ def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
     assert failed["reuse_coverage"] == {"required": 1, "passed": 0}
 
 
-def test_coverage_summary_reads_run_matched_internal_audit_for_zero_claim_terminal(tmp_path):
+def test_coverage_summary_reads_run_matched_internal_audit_for_zero_claim_terminal(
+    tmp_path, monkeypatch
+):
     from tools.phase7.run_live_conversation_system_test import _coverage_summary
 
-    internal_path = tmp_path / "answer_package.json"
+    artifact_root = tmp_path / "artifacts"
+    internal_path = artifact_root / "phase-7" / "run-boundary-only" / "answer_package.json"
+    internal_path.parent.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
     internal_path.write_text(
         json.dumps(
             {
@@ -367,6 +372,42 @@ def test_coverage_summary_reads_run_matched_internal_audit_for_zero_claim_termin
     turns[0]["resumed_run_id"] = "run-different"
     mismatched = _coverage_summary(turns)
     assert mismatched["final_answer_audit_coverage"] == {"reviewed": 0, "total": 1}
+
+
+def test_coverage_summary_rejects_internal_audit_path_outside_artifact_root(
+    tmp_path, monkeypatch
+):
+    from tools.phase7.run_live_conversation_system_test import _coverage_summary
+
+    (tmp_path / "artifacts").mkdir()
+    outside_path = tmp_path / "outside-answer-package.json"
+    outside_path.write_text(
+        json.dumps(
+            {
+                "run_id": "run-outside",
+                "llm_calls": [
+                    {
+                        "task": "final_answer_audit",
+                        "structured_output": {"display_status": "ready"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    turns = [
+        {
+            "status": "completed",
+            "run_id": "run-outside",
+            "artifact_path": "artifacts/../outside-answer-package.json",
+            "quality_review": {"display_status": "ready"},
+        }
+    ]
+
+    summary = _coverage_summary(turns)
+
+    assert summary["final_answer_audit_coverage"] == {"reviewed": 0, "total": 1}
 
 
 def test_coverage_summary_separates_expected_from_observed_dataset_states():
