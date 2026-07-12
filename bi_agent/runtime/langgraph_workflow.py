@@ -75,6 +75,7 @@ from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
 )
+from bi_agent.runtime.window_resolver import CURRENT_DATA_BASELINES
 
 
 NON_RETRYABLE_FAILURE_TYPES = frozenset(
@@ -441,7 +442,9 @@ def build_pattern_graph():
 
 def _retrying_node(node_name, func):
     def run(state: WorkflowState) -> WorkflowState:
-        max_attempts = 3 if node_name == "generate_clarification" else 2
+        max_attempts = 3 if node_name in {
+            "generate_clarification", "understand_business_intent"
+        } else 2
         for attempt in range(1, max_attempts + 1):
             started = perf_counter()
             event = _checkpoint(state, node_name, attempt)
@@ -488,7 +491,14 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
     if request.get("force_langgraph_failure"):
         raise RuntimeError("forced_langgraph_failure")
     _maybe_force_node_failure(state, "understand_business_intent")
-    intent_payload = _business_intent_payload(request)
+    intent_payload = _business_intent_payload(
+        {
+            **request,
+            "_retry_selected_families": state.get(
+                "last_business_intent_families", ()
+            ),
+        }
+    )
     output = _invoke_llm(state, "business_intent", intent_payload)
     answer_contract = output.get("answer_contract") or {}
     if not isinstance(answer_contract, Mapping):
@@ -537,6 +547,9 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         "secondary_question_families": output.get("secondary_question_families") or (),
         **material_requirements,
     })
+    state["last_business_intent_families"] = list(
+        _intent_question_family_set(intent)
+    )
     intent = _bind_clarification_resume_intent(intent, request, registry)
     _validate_context_family_axis(intent, registry)
     state["intent"] = intent
@@ -675,7 +688,6 @@ def _validate_resume_material_consistency(
     registry: RuntimeContractRegistry,
 ) -> None:
     expected = {
-        "target_metrics": [str(original.get("target_metric") or "")],
         "context_sources": list(original.get("context_sources") or ()),
         "requested_dimensions": list(original.get("requested_dimensions") or ()),
         "requested_components": list(original.get("requested_components") or ()),
@@ -686,9 +698,21 @@ def _validate_resume_material_consistency(
                 f"clarification_resume_material_slots_conflict:{key}",
                 failure_type="contract",
             )
+    original_targets = [str(original.get("target_metric") or "")]
+    persisted_targets = list(persisted.get("target_metrics") or ())
+    if any(item not in persisted_targets for item in original_targets):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_conflict:target_metrics",
+            failure_type="contract",
+        )
     for key, original_key in (("baselines", "baseline_candidates"), ("scope", "scope")):
         if key in persisted or original_key in original:
-            if persisted.get(key) != original.get(original_key):
+            expected_value = (
+                _canonical_baseline_ids(original.get(original_key))
+                if key == "baselines"
+                else original.get(original_key)
+            )
+            if persisted.get(key) != expected_value:
                 raise WorkflowFailure(
                     f"clarification_resume_material_slots_conflict:{key}",
                     failure_type="contract",
@@ -700,29 +724,46 @@ def _validate_resume_material_consistency(
             "clarification_resume_material_slots_conflict:claim_intents",
             failure_type="contract",
         )
-    extras = set(persisted_claims) - set(original_claims)
-    if not extras:
+    claim_extras = set(persisted_claims) - set(original_claims)
+    target_extras = set(persisted_targets) - set(original_targets)
+    if not claim_extras and not target_extras:
         return
     source_contract = resume.get("analysis_contract")
+    authorization_axis = (
+        "target_metrics" if target_extras and not claim_extras else "claim_intents"
+    )
     if not isinstance(source_contract, Mapping):
         raise WorkflowFailure(
-            "clarification_resume_material_slots_conflict:claim_intents",
+            f"clarification_resume_material_slots_conflict:{authorization_axis}",
             failure_type="contract",
         )
     try:
         accepted_source_contract = analysis_contract_from_dict(source_contract)
     except (KeyError, TypeError, ValueError):
         raise WorkflowFailure(
-            "clarification_resume_material_slots_conflict:claim_intents",
+            f"clarification_resume_material_slots_conflict:{authorization_axis}",
             failure_type="contract",
         )
     expected_ref = f"analysis:{resume.get('resume_run_id')}:1"
-    if (
-        accepted_source_contract.analysis_contract_id != expected_ref
-        or not extras.issubset(set(accepted_source_contract.claim_intents))
-    ):
+    if accepted_source_contract.analysis_contract_id != expected_ref:
+        raise WorkflowFailure(
+            f"clarification_resume_material_slots_conflict:{authorization_axis}",
+            failure_type="contract",
+        )
+    if not claim_extras.issubset(set(accepted_source_contract.claim_intents)):
         raise WorkflowFailure(
             "clarification_resume_material_slots_conflict:claim_intents",
+            failure_type="contract",
+        )
+    if not target_extras.issubset(
+            {
+                *accepted_source_contract.target_metric_refs,
+                *(binding.metric_id for binding in accepted_source_contract.metric_bindings),
+                *(accepted_source_contract.scope.get("requested_metric_ids") or ()),
+            }
+        ):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_conflict:target_metrics",
             failure_type="contract",
         )
 
@@ -770,10 +811,20 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
         reason = str(feedback.get("reason") or "")
         correction = ""
         if reason.startswith("context_family_axis_missing:"):
+            source_id = reason.split(":", 1)[1]
+            candidates = [
+                family
+                for family in registry.question_family_ids
+                if _question_family_supports_context_dataset(
+                    family, source_id, registry
+                )
+            ]
             correction = (
-                "Add a contract-compatible non-trust companion question family for "
-                "the listed context sources, choose primary and secondary families by "
-                "the supplied taxonomy, and preserve the typed analysis requirements."
+                f"For context source {source_id}, choose primary_question_family or "
+                f"secondary_question_families from these exact compatible candidates: "
+                f"{candidates}. Current selected families are "
+                f"{request.get('_retry_selected_families') or []}. Preserve the "
+                "typed analysis requirements and do not invent family ids."
             )
         elif reason.startswith(
             "business_intent_contract_invalid:analysis_requirements:"
@@ -1597,11 +1648,7 @@ def _intent_material_slots(intent: Mapping[str, Any]) -> dict[str, Any]:
     target_metric = str(intent.get("target_metric") or "").strip()
     if target_metric:
         slots["target_metrics"] = [target_metric]
-    baselines = [
-        str(item)
-        for item in intent.get("baseline_candidates") or ()
-        if isinstance(item, str) and item
-    ]
+    baselines = _canonical_baseline_ids(intent.get("baseline_candidates"))
     if baselines:
         slots["baselines"] = list(dict.fromkeys(baselines))
     context_sources = [
@@ -1627,6 +1674,23 @@ def _intent_material_slots(intent: Mapping[str, Any]) -> dict[str, Any]:
     if scope not in (None, "", {}, []):
         slots["scope"] = scope
     return slots
+
+
+def _canonical_baseline_ids(raw: Any) -> list[str]:
+    values = raw if isinstance(raw, (list, tuple)) else ()
+    output: list[str] = []
+    for item in values:
+        candidate = item if isinstance(item, str) else next(
+            (
+                item.get(key)
+                for key in ("baseline_id", "id", "value")
+                if isinstance(item, Mapping) and isinstance(item.get(key), str)
+            ),
+            "",
+        )
+        if candidate in CURRENT_DATA_BASELINES and candidate not in output:
+            output.append(candidate)
+    return output
 
 
 def _local_clarification_question_output(state: WorkflowState) -> dict[str, Any]:

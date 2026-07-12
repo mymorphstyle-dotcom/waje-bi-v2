@@ -282,7 +282,11 @@ def test_resume_intent_authority_rejects_owner_or_material_corruption(corruption
             "context_sources": ["external_event"],
         }
     elif corruption == "target_conflict":
-        resume["material_slots"] = {"target_metrics": ["paid_users"]}
+        resume["material_slots"] = {
+            "target_metrics": ["paid_amount", "paid_users"],
+            "context_sources": ["gameplay"],
+            "claim_intents": ["candidate_mechanism"],
+        }
     elif corruption == "component_conflict":
         resume["material_slots"] = {
             "target_metrics": ["paid_amount"],
@@ -294,10 +298,15 @@ def test_resume_intent_authority_rejects_owner_or_material_corruption(corruption
             "claim_intents": ["contract_coverage_and_trust_boundary"],
         }
 
-    with pytest.raises(workflow.WorkflowFailure):
+    expected_axis = (
+        "target_metrics" if corruption == "target_conflict" else None
+    )
+    with pytest.raises(workflow.WorkflowFailure) as raised:
         workflow._bind_clarification_resume_intent(
             {"question_family": "pattern_explanation"}, request, registry
         )
+    if expected_axis:
+        assert expected_axis in str(raised.value)
 
 
 def test_resume_allows_source_contract_authorized_trust_boundary_claim():
@@ -346,6 +355,57 @@ def test_resume_allows_source_contract_authorized_trust_boundary_claim():
         registry,
     )
     assert bound["claim_intents"] == ["comparative_change"]
+
+
+def test_resume_canonicalizes_object_baseline_and_allows_authorized_target_extra():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": [
+            {"id": "previous_day", "label": "Previous day"},
+            {"value": "previous_day"},
+        ],
+        "context_sources": [],
+        "claim_intents": [],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source question",
+    }
+    source_contract = _source_contract()
+    source_contract.pop("contract_signature", None)
+    source_contract["scope"] = {
+        **source_contract["scope"],
+        "requested_metric_ids": ["paid_users"],
+    }
+    resume = {
+        "resume_run_id": "run-source",
+        "source_thread_id": "thread-source",
+        "source_topic_id": "topic-source",
+        "question": "source question",
+        "original_intent": original,
+        "material_slots": {
+            "target_metrics": ["paid_amount", "paid_users"],
+            "baselines": ["previous_day"],
+        },
+        "analysis_contract": source_contract,
+    }
+    workflow._bind_clarification_resume_intent(
+        {},
+        {
+            "thread_id": "thread-source",
+            "topic_id": "topic-source",
+            "question": "source question",
+            "clarification_resume_context": resume,
+        },
+        registry,
+    )
+    assert workflow._intent_material_slots(original)["baselines"] == [
+        "previous_day"
+    ]
 
 
 def _source_contract(run_id="run-source"):

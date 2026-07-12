@@ -434,6 +434,12 @@ def test_business_intent_retries_missing_context_family_axis(monkeypatch):
             "secondary_question_families": [],
         },
         {
+            "question_family": "data_quality_or_evidence_review",
+            "question_families": ["data_quality_or_evidence_review"],
+            "primary_question_family": "data_quality_or_evidence_review",
+            "secondary_question_families": [],
+        },
+        {
             "question_family": "business_object_impact_review",
             "question_families": [
                 "business_object_impact_review",
@@ -477,17 +483,17 @@ def test_business_intent_retries_missing_context_family_axis(monkeypatch):
         "understand_business_intent", workflow._understand_business_intent
     )(state)
 
-    assert len(payloads) == 2
-    assert payloads[1]["node_retry_feedback"] == {
-        "failure_type": "llm_contract",
-        "reason": "context_family_axis_missing:gameplay",
-        "correction": (
-            "Add a contract-compatible non-trust companion question family for "
-            "the listed context sources, choose primary and secondary families by "
-            "the supplied taxonomy, and preserve the typed analysis requirements."
-        ),
-    }
+    assert len(payloads) == 3
+    for payload in payloads[1:]:
+        feedback = payload["node_retry_feedback"]
+        assert feedback["reason"] == "context_family_axis_missing:gameplay"
+        assert "business_object_impact_review" in feedback["correction"]
+        assert "data_quality_or_evidence_review" in feedback["correction"]
     assert state["intent"]["question_family"] == "business_object_impact_review"
+    assert state["intent"]["question_families"] == [
+        "business_object_impact_review",
+        "data_quality_or_evidence_review",
+    ]
     assert state["intent"]["context_sources"] == ["gameplay"]
 
 
@@ -566,6 +572,7 @@ def test_business_intent_context_family_axis_fails_closed_after_retry(monkeypatc
         )(state)
 
     assert [event["status"] for event in state["checkpoint_events"]] == [
+        "retrying",
         "retrying",
         "failed",
     ]

@@ -112,6 +112,11 @@ class RuntimeContractRegistry:
                     or not context_datasets
                     or len(context_datasets) != len(set(context_datasets))
                     or any(item not in payload["datasets"] for item in context_datasets)
+                    or any(
+                        "business_context"
+                        not in payload["datasets"][item].get("intent_roles", ())
+                        for item in context_datasets
+                    )
                     or contract.get("allowed_datasets") is not None
                 ):
                     raise ValueError(
