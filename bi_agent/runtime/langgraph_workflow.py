@@ -5657,8 +5657,24 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         or (request.get("clarification_resume_context") or {}).get(
             "accepted_degradation_choice"
         )
+        or next(
+            (
+                item
+                for item in context_manifest.get("accepted_assumptions") or ()
+                if isinstance(item, Mapping)
+            ),
+            {},
+        )
         or {}
     )
+    accepted_assumptions = (
+        (accepted_degradation_choice,) if accepted_degradation_choice else ()
+    )
+    compiler_runtime_plan = dict(request.get("compiler_runtime_plan") or {})
+    compiler_runtime_plan["graph_metadata"] = {
+        **dict(compiler_runtime_plan.get("graph_metadata") or {}),
+        "accepted_assumptions": list(accepted_assumptions),
+    }
     context_request = {**request, "run_id": state["run_id"]}
     build_context = AnswerPackageBuildContext.create(
         request=context_request,
@@ -5705,7 +5721,7 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         reuse_decisions=request.get("reuse_decisions", ()),
         quality_gate=state.get("quality_gate", {}),
         follow_up_questions=state.get("follow_up_questions", ()),
-        compiler_runtime_plan=request.get("compiler_runtime_plan", {}),
+        compiler_runtime_plan=compiler_runtime_plan,
         contract_gap_diagnostics=contract_gap_diagnostics,
         row_query_plan=state.get("row_query_plan", {}),
         snapshot_id=str(context_manifest.get("snapshot_version") or request.get("snapshot_id") or ""),
@@ -5720,11 +5736,7 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         or (),
         available_evidence_brief=state.get("available_evidence_brief") or {},
         accepted_degradation_choice=accepted_degradation_choice,
-        context_assumptions=tuple(
-            dict(item)
-            for item in (context_manifest.get("accepted_assumptions") or ())
-            if isinstance(item, Mapping)
-        ),
+        context_assumptions=accepted_assumptions,
     )
 
 

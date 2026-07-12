@@ -1695,6 +1695,31 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("不调整目标日期", pause_action["business_semantics"])
         self.assertNotIn("query:internal", json.dumps(gap, ensure_ascii=False))
 
+    def test_answer_package_canonicalizes_accepted_degradation_from_manifest(self):
+        from bi_agent.runtime.langgraph_workflow import _build_answer_package_from_state
+
+        choice = {
+            "action_kind": "omit_unavailable_context",
+            "affected_capabilities": ["event_evidence"],
+            "source_run_id": "run-source",
+        }
+        package = _build_answer_package_from_state({
+            "run_id": "run-resumed",
+            "request": {
+                "context_manifest": {"accepted_assumptions": [choice]},
+                "compiler_runtime_plan": {"graph_metadata": {}},
+            },
+            "checkpoint_events": [],
+            "validator_results": [],
+        })
+
+        self.assertEqual(package["accepted_degradation_choice"], choice)
+        self.assertEqual(package["context_assumptions"], [choice])
+        self.assertEqual(
+            package["accepted_graph_metadata"]["accepted_assumptions"],
+            [choice],
+        )
+
     def test_workflow_and_persistence_share_answer_package_build_context(self):
         request = {
             "run_id": "run-shared-build-context",
