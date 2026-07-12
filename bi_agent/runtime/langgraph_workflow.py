@@ -1340,6 +1340,7 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
         )
         output = _align_route_output_to_requested(dict(prior_route), requested)
+        output = _normalize_route_claim_intents(output)
         prior_contract = resume.get("analysis_contract") or {}
         prior_families = tuple(
             str(family)
@@ -1453,17 +1454,65 @@ def _merge_confirmed_material_requirements(
         and proposed.get("scope") != confirmed_scope
     ):
         conflicts.append("scope")
-    for key in ("target_metrics", "baselines", "context_sources", "claim_intents"):
+    for key in ("target_metrics", "baselines", "context_sources"):
         values = [
             *list(confirmed.get(key) or ()),
             *list(proposed.get(key) or ()),
         ]
         if values:
             proposed[key] = list(dict.fromkeys(str(item) for item in values if item))
+    claim_intents = _claim_intent_values(
+        confirmed.get("claim_intents"),
+        proposed.get("claim_intents"),
+    )
+    if claim_intents or "claim_intents" in confirmed or "claim_intents" in proposed:
+        proposed["claim_intents"] = list(claim_intents)
     if confirmed_scope not in (None, "", {}, []):
         proposed["scope"] = confirmed_scope
     output["analysis_requirements"] = proposed
     return output, tuple(dict.fromkeys(conflicts))
+
+
+def _normalize_route_claim_intents(route: Mapping[str, Any]) -> dict[str, Any]:
+    output = dict(route)
+    raw_requirements = output.get("analysis_requirements")
+    if not isinstance(raw_requirements, Mapping):
+        return output
+    requirements = dict(raw_requirements)
+    if "claim_intents" in requirements:
+        requirements["claim_intents"] = list(
+            _claim_intent_values(requirements.get("claim_intents"))
+        )
+    output["analysis_requirements"] = requirements
+    return output
+
+
+def _claim_intent_values(*values: Any) -> tuple[str, ...]:
+    normalized: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, str):
+            item = value.strip()
+            if re.fullmatch(r"[a-z][a-z0-9_]*", item):
+                normalized.append(item)
+            return
+        if isinstance(value, Mapping):
+            for key in (
+                "claim_types",
+                "claim_intents",
+                "claim_type",
+                "claim_intent",
+            ):
+                if key in value:
+                    visit(value[key])
+            return
+        if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+            for item in value:
+                visit(item)
+
+    for value in values:
+        visit(value)
+    return tuple(dict.fromkeys(normalized))
 
 
 def _reconcile_route_input_capabilities(
@@ -1951,6 +2000,10 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
     intent = state.get("intent") or {}
     requirements = route.get("analysis_requirements")
     proposal = dict(requirements) if isinstance(requirements, Mapping) else {}
+    if "claim_intents" in proposal:
+        proposal["claim_intents"] = _claim_intent_values(
+            proposal.get("claim_intents")
+        )
     if proposal.get("context_sources") and not proposal.get("requested_context_sources"):
         proposal["requested_context_sources"] = proposal["context_sources"]
     proposal.setdefault(

@@ -3859,6 +3859,65 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(set(conflicts), {"target_metrics", "scope"})
 
+    def test_route_requirements_normalize_typed_claim_intent_proposals(self):
+        merged, conflicts = _merge_confirmed_material_requirements(
+            {
+                "analysis_requirements": {
+                    "claim_intents": [
+                        ["contract_coverage_and_trust_boundary"],
+                        {
+                            "capability_id": "weekday_calendar_compare",
+                            "claim_types": ["recurring_pattern_existence"],
+                        },
+                        "comparative_change",
+                        "['serialized_claim_is_not_an_id']",
+                        "业务结论描述",
+                    ]
+                }
+            },
+            {"intent": {}, "request": {}},
+        )
+
+        self.assertEqual(conflicts, ())
+        self.assertEqual(
+            merged["analysis_requirements"]["claim_intents"],
+            [
+                "contract_coverage_and_trust_boundary",
+                "recurring_pattern_existence",
+                "comparative_change",
+            ],
+        )
+
+    def test_analysis_runtime_request_normalizes_carried_typed_claim_intents(self):
+        runtime_request = _analysis_runtime_request(
+            {
+                "run_id": "run-typed-claims",
+                "analysis_route": {
+                    "requested_nodes": ["weekday_calendar_compare"],
+                    "analysis_requirements": {
+                        "target_metrics": ["paid_amount"],
+                        "claim_intents": [
+                            {
+                                "capability_id": "weekday_calendar_compare",
+                                "claim_types": ["recurring_pattern_existence"],
+                            }
+                        ],
+                    },
+                },
+                "intent": {},
+                "request": {
+                    "analysis_context": {
+                        "as_of": "2026-06-03T12:00:00+01:00",
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(
+            runtime_request.proposal["claim_intents"],
+            ("recurring_pattern_existence",),
+        )
+
     def test_invalid_general_clarification_retries_with_contract_reason(self):
         from bi_agent.runtime.langgraph_workflow import _generate_clarification
 
