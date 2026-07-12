@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from bi_agent.runtime.analysis_contracts import AnalysisContract, ContractGap
+
+
+def _analysis_contract(*gaps: ContractGap) -> dict[str, object]:
+    return AnalysisContract(
+        analysis_contract_id="analysis-contract:test",
+        contract_version="1",
+        question_families=(),
+        target_metric_refs=(),
+        claim_intents=(),
+        scope={},
+        business_timezone="Europe/London",
+        as_of="2026-06-03T12:00:00+01:00",
+        resolved_windows=(),
+        metric_bindings=(),
+        dimension_bindings=(),
+        dataset_requirements=("paid_order_success",),
+        capability_requirements=("answer_verify",),
+        permission_scope="analyst",
+        contract_gaps=tuple(gaps),
+    ).to_dict()
+
+
+def _canonical_gap() -> ContractGap:
+    return ContractGap(
+        gap_type="contract_partial",
+        gap_id="capability:answer_verify:required_query:unbound",
+        dataset_id="paid_order_success",
+        affected_capabilities=("answer_verify",),
+        affected_claim_types=(),
+        owner="contract_owner",
+        repair_options=("bind_required_query_contract",),
+        requires_clarification=False,
+        diagnostic_context={},
+    )
+
+
+@pytest.mark.parametrize("artifact_state", ["missing", "corrupt", "run_mismatch"])
+def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
+    tmp_path, artifact_state
+):
+    from tools.phase7.run_live_conversation_system_test import _runtime_audit_package
+
+    path = tmp_path / "answer_package.json"
+    if artifact_state == "corrupt":
+        path.write_text("{not-json", encoding="utf-8")
+    elif artifact_state == "run_mismatch":
+        path.write_text(json.dumps({"run_id": "run-other"}), encoding="utf-8")
+    result = {
+        "run_id": "run-expected",
+        "artifact_path": str(path),
+        "answer_package": {
+            "run_id": "run-expected",
+            "admin_audit": {
+                "analysis_contract": _analysis_contract(_canonical_gap())
+            },
+        },
+    }
+
+    assert _runtime_audit_package(result) == {}
+
+
+@pytest.mark.parametrize(
+    "authority",
+    [
+        {"contract_gaps": [_canonical_gap().to_dict()]},
+        {
+            "analysis_contract": {
+                **_analysis_contract(_canonical_gap()),
+                "contract_gaps": [{
+                    **_canonical_gap().to_dict(),
+                    "gap_type": "invented_gap_type",
+                }],
+            }
+        },
+        {
+            "analysis_contract": {
+                **_analysis_contract(_canonical_gap()),
+                "contract_gaps": [{
+                    **_canonical_gap().to_dict(),
+                    "gap_id": "unstructured-gap-id",
+                }],
+            }
+        },
+        {
+            "analysis_contract": {
+                **_analysis_contract(_canonical_gap()),
+                "contract_gaps": [{
+                    key: value
+                    for key, value in _canonical_gap().to_dict().items()
+                    if key != "repair_options"
+                }],
+            }
+        },
+    ],
+)
+def test_capability_block_requires_canonical_persisted_analysis_contract_gap(
+    authority
+):
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_capability_outcomes,
+    )
+
+    assert _derive_capability_outcomes(
+        ("answer_verify",),
+        accepted_capabilities=set(),
+        authority=authority,
+    ) == {"answer_verify": "missing_route"}
+
+
+def test_capability_block_accepts_canonical_exact_analysis_contract_gap():
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_capability_outcomes,
+    )
+
+    assert _derive_capability_outcomes(
+        ("answer_verify",),
+        accepted_capabilities=set(),
+        authority={"analysis_contract": _analysis_contract(_canonical_gap())},
+    ) == {"answer_verify": "blocked"}

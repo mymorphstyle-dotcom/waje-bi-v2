@@ -22,6 +22,7 @@ from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
     resolve_analysis_obligations,
 )
+from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
 from bi_agent.runtime.claim_provenance import (
     validate_trusted_claim_provenance_record,
     validate_verified_claim_record,
@@ -512,19 +513,35 @@ def _derive_capability_outcomes(
             bindings_by_capability.setdefault(capability_id, []).append(binding)
 
     blocked_capabilities: set[str] = set()
-    for gap in _mapping_items_for_keys(authority, {"contract_gaps"}):
-        if not (
-            str(gap.get("gap_type") or "").strip()
-            and str(gap.get("gap_id") or "").strip()
-            and str(gap.get("owner") or "").strip()
-        ):
+    terminal_gap_types = {
+        "capability_metric_unsupported",
+        "contract_absent",
+        "contract_partial",
+        "dataset_snapshot_unavailable_as_of",
+        "permission_blocked",
+        "source_unbound",
+        "unsupported_grain",
+        "window_data_unavailable",
+    }
+    for payload in _mapping_items_for_keys(authority, {"analysis_contract"}):
+        try:
+            contract = analysis_contract_from_dict(payload)
+        except (KeyError, TypeError, ValueError):
             continue
-        affected = gap.get("affected_capabilities") or ()
-        if isinstance(affected, str) or not isinstance(affected, (list, tuple)):
-            continue
-        blocked_capabilities.update(
-            str(item).strip() for item in affected if str(item).strip()
-        )
+        required_by_contract = set(contract.capability_requirements)
+        for gap in contract.contract_gaps:
+            if (
+                gap.gap_type not in terminal_gap_types
+                or ":" not in gap.gap_id
+                or not gap.owner
+                or not gap.repair_options
+            ):
+                continue
+            blocked_capabilities.update(
+                capability_id
+                for capability_id in gap.affected_capabilities
+                if capability_id in required_by_contract
+            )
 
     outcomes: dict[str, str] = {}
     for capability_id in required:
@@ -1429,19 +1446,19 @@ def _runtime_audit_package(result: Mapping[str, Any]) -> dict[str, Any]:
         client_package = {}
     raw_path = result.get("artifact_path") or client_package.get("artifact_path")
     if not isinstance(raw_path, str) or not raw_path.strip():
-        return dict(client_package)
+        return {}
     path = Path(raw_path)
     if not path.is_absolute():
         path = ROOT / path
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return dict(client_package)
+        return {}
     if not isinstance(payload, Mapping):
-        return dict(client_package)
+        return {}
     expected_run_id = str(result.get("run_id") or client_package.get("run_id") or "")
     if expected_run_id and str(payload.get("run_id") or "") != expected_run_id:
-        return dict(client_package)
+        return {}
     return dict(payload)
 
 
@@ -1828,7 +1845,16 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "obligation_coverage": {
             "required": required,
-            "accepted": required - outcome_counts["missing_route"],
+            "routed": (
+                outcome_counts["executed"]
+                + outcome_counts["degraded"]
+                + outcome_counts["unobserved"]
+            ),
+            "terminal": (
+                outcome_counts["executed"]
+                + outcome_counts["degraded"]
+                + outcome_counts["blocked"]
+            ),
             **outcome_counts,
         },
         "expected_dataset_coverage": expected_datasets,

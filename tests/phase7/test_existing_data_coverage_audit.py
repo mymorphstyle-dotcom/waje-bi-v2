@@ -5,12 +5,53 @@ from types import SimpleNamespace
 
 import pytest
 
+from bi_agent.runtime.analysis_contracts import AnalysisContract, ContractGap
 from bi_agent.runtime.current_data_coverage import current_data_coverage_cases
 from bi_agent.runtime.dataset_catalog import build_dataset_release_authority_record, dataset_snapshot_release_ref
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
 )
+
+
+def _analysis_contract_gap_authority(
+    gaps: list[dict[str, object]], required_capabilities: list[str]
+) -> dict[str, object]:
+    typed_gaps = tuple(
+        ContractGap(
+            gap_type=str(gap["gap_type"]),
+            gap_id=str(gap["gap_id"]),
+            dataset_id=str(gap.get("dataset_id") or ""),
+            affected_capabilities=tuple(required_capabilities),
+            affected_claim_types=(),
+            owner=str(gap["owner"]),
+            repair_options=("repair_contract_boundary",),
+            requires_clarification=False,
+            diagnostic_context={},
+        )
+        for gap in gaps
+    )
+    return AnalysisContract(
+        analysis_contract_id="analysis-contract:obligation-review-test",
+        contract_version="1",
+        question_families=(),
+        target_metric_refs=(),
+        claim_intents=(),
+        scope={},
+        business_timezone="Europe/London",
+        as_of="2026-06-03T12:00:00+01:00",
+        resolved_windows=(),
+        metric_bindings=(),
+        dimension_bindings=(),
+        dataset_requirements=tuple(
+            dict.fromkeys(
+                str(gap.get("dataset_id") or "") for gap in gaps if gap.get("dataset_id")
+            )
+        ),
+        capability_requirements=tuple(required_capabilities),
+        permission_scope="analyst",
+        contract_gaps=typed_gaps,
+    ).to_dict()
 
 
 def test_platform_suite_covers_public_families_current_roles_and_boundaries():
@@ -217,7 +258,9 @@ def test_obligation_review_enforces_claim_ceiling_and_terminal_boundary(
         },
         "runtime_authority": {
             "query_executions": ([{"dataset_id": dataset, "result_ref": "result:test", "execution_status": "succeeded", "completeness_status": "complete", "analysis_readiness": "ready"}] if boundary == "verified_answer" else []),
-            "contract_gaps": authority_gaps,
+            "analysis_contract": _analysis_contract_gap_authority(
+                authority_gaps, required_capabilities
+            ),
             "capability_bindings": [
                 {
                     "binding_manifest_ref": (
@@ -343,17 +386,16 @@ def test_obligation_review_resolves_current_state_from_release_authority():
             "terminal_boundary": "contract_allowed_partial",
         },
         "runtime_authority": {
-            "contract_gaps": [{
+            "analysis_contract": _analysis_contract_gap_authority([{
                 "dataset_id": "paid_order_success",
                 "gap_type": "dataset_snapshot_unavailable_as_of",
                 "gap_id": "dataset:paid_order_success:dataset_snapshot_unavailable_as_of",
-                "affected_capabilities": [
-                    "metric_coverage_profile",
-                    "data_quality_profile",
-                    "answer_verify",
-                ],
                 "owner": "data_owner",
-            }],
+            }], [
+                "metric_coverage_profile",
+                "data_quality_profile",
+                "answer_verify",
+            ]),
         },
     }
     coverage_authority = {
@@ -701,7 +743,8 @@ def test_obligation_coverage_outcomes_are_mutually_exclusive_and_authoritative()
 
     assert summary["obligation_coverage"] == {
         "required": 4,
-        "accepted": 3,
+        "routed": 3,
+        "terminal": 2,
         "executed": 1,
         "degraded": 1,
         "blocked": 0,
@@ -829,13 +872,12 @@ def test_obligation_review_accepts_only_authority_backed_terminal_capability_out
     accepted_graph = [] if terminal_outcome == "blocked" else ["answer_verify"]
     if terminal_outcome == "blocked":
         runtime_authority = {
-            "contract_gaps": [{
+            "analysis_contract": _analysis_contract_gap_authority([{
                 "gap_type": "contract_partial",
                 "gap_id": "capability:answer_verify:contract_partial",
                 "dataset_id": "paid_order_success",
-                "affected_capabilities": ["answer_verify"],
                 "owner": "contract_owner",
-            }]
+            }], ["answer_verify"])
         }
     else:
         partial = terminal_outcome == "degraded"
