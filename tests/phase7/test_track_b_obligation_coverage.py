@@ -1,4 +1,6 @@
 import json
+from dataclasses import asdict
+from datetime import datetime
 
 from bi_agent.runtime.analysis_contracts import AnalysisContract
 from bi_agent.runtime.runtime_contract_registry import (
@@ -282,6 +284,99 @@ def test_route_reconciliation_closes_all_obligations_idempotently():
                 case["id"],
                 second_output["obligation_resolution"]["mutations"],
             )
+
+
+def test_route_design_resolves_obligations_after_capability_family_inference(
+    monkeypatch,
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    monkeypatch.setattr(
+        workflow,
+        "_invoke_llm",
+        lambda state, node, payload: {
+            "requested_nodes": ["segment_contribution"],
+            "analysis_requirements": {
+                "target_metrics": ["paid_amount"],
+            },
+        },
+    )
+    state = {
+        "intent": {
+            "question_family": "data_quality_or_evidence_review",
+            "question_families": ["data_quality_or_evidence_review"],
+            "primary_question_family": "data_quality_or_evidence_review",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+        },
+        "confirmed_understanding": {},
+        "request": {},
+    }
+
+    workflow._design_analysis_route(state)
+
+    requested = set(state["analysis_route"]["requested_nodes"])
+    assert {
+        "gameplay_activity_context",
+        "segment_breakdown",
+        "segment_shift_compare",
+    } <= requested
+    assert "segment_or_factor_attribution" in state["intent"][
+        "question_families"
+    ]
+    from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
+    from bi_agent.runtime.dataset_catalog import DatasetCatalog
+
+    outcome = compile_analysis_contract(
+        run_id="run-route-authority-closure",
+        proposal=state["analysis_route"]["analysis_requirements"],
+        accepted_capabilities=tuple(state["analysis_route"]["requested_nodes"]),
+        catalog=DatasetCatalog(()),
+        registry=_registry(),
+        as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+        permission_scope="analyst",
+    )
+    contract_capabilities = set(outcome.analysis_contract.capability_requirements)
+    planned = {plan.capability_id for plan in outcome.capability_plans}
+    terminal = {
+        capability
+        for gap in outcome.analysis_contract.contract_gaps
+        if gap.owner and gap.repair_options
+        for capability in gap.affected_capabilities
+    }
+    assert requested <= contract_capabilities
+    assert requested <= planned | terminal
+
+
+def test_queryless_signed_plans_are_terminal_without_query_execution():
+    from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
+    from bi_agent.runtime.dataset_catalog import DatasetCatalog
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_plan_capability_outcomes,
+    )
+
+    outcome = compile_analysis_contract(
+        run_id="run-queryless-terminal",
+        proposal={"target_metrics": ["paid_amount"]},
+        accepted_capabilities=("answer_verify", "evidence_reduce"),
+        catalog=DatasetCatalog(()),
+        registry=_registry(),
+        as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+        permission_scope="analyst",
+    )
+    authority = {
+        "admin_audit": {
+            "analysis_contract": outcome.analysis_contract.to_dict(),
+            "capability_execution_plans": [
+                asdict(plan) for plan in outcome.capability_plans
+            ],
+        }
+    }
+
+    assert _derive_plan_capability_outcomes(authority, _registry()) == {
+        "answer_verify": {"executed"},
+        "evidence_reduce": {"executed"},
+    }
 
 
 def test_capability_authority_is_conservative_across_ambiguous_applicable_cells(

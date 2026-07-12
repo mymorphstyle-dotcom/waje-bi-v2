@@ -935,6 +935,14 @@ def _derive_plan_capability_outcomes(
             if isinstance(slot, Mapping) and slot.get("required") is True
         )
         if not required_slots:
+            minimum_readiness = plan.get("minimum_readiness") or {}
+            if (
+                isinstance(minimum_readiness, Mapping)
+                and minimum_readiness.get("required_slots") == "none"
+                and not plan.get("required_input_slots")
+                and not plan.get("optional_input_slots")
+            ):
+                outcomes.setdefault(capability_id, set()).add("executed")
             continue
         slot_outcomes: list[str] = []
         valid = True

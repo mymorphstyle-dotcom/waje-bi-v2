@@ -501,7 +501,7 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         pattern_family,
         pattern_params,
     )
-    state["intent"] = _normalize_question_families({
+    intent = _normalize_question_families({
         "question_family": output.get("question_family") or "pattern_explanation",
         "target_metric": _normalize_target_metric(
             request.get("target_metric")
@@ -531,7 +531,53 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         "primary_question_family": output.get("primary_question_family"),
         "secondary_question_families": output.get("secondary_question_families") or (),
     })
+    state["intent"] = _bind_clarification_resume_intent(intent, request)
     return state
+
+
+def _bind_clarification_resume_intent(
+    current: Mapping[str, Any], request: Mapping[str, Any]
+) -> dict[str, Any]:
+    resume = request.get("clarification_resume_context") or {}
+    if not isinstance(resume, Mapping) or not resume:
+        return dict(current)
+    original = resume.get("original_intent") or {}
+    if not original:
+        return dict(current)
+    if (
+        not isinstance(original, Mapping)
+        or not str(resume.get("resume_run_id") or "")
+        or str(original.get("question") or "")
+        != str(resume.get("question") or request.get("question") or "")
+    ):
+        raise WorkflowFailure(
+            "clarification_resume_original_intent_invalid",
+            failure_type="contract",
+        )
+    preserved_fields = (
+        "question_family",
+        "question_families",
+        "primary_question_family",
+        "secondary_question_families",
+        "target_metric",
+        "pattern_family",
+        "pattern_params",
+        "scope",
+        "time_window",
+        "target_claim",
+        "baseline_candidates",
+        "sub_intents",
+        "ambiguous_slots",
+        "answer_contract",
+        "baseline",
+        "target",
+        "question",
+    )
+    bound = dict(current)
+    for field in preserved_fields:
+        if field in original:
+            bound[field] = to_jsonable(original[field])
+    return _normalize_question_families(bound)
 
 
 def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
@@ -1415,6 +1461,7 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         )
     if not requested:
         requested = ("pattern_scan",)
+    _infer_question_families_from_requested_nodes(state["intent"], requested)
     requested, output = reconcile_analysis_route(
         requested,
         output,
@@ -1423,7 +1470,6 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
     )
     _consume_obligation_route_conflict(state, output)
     output = _align_route_output_to_requested(output, requested)
-    _infer_question_families_from_requested_nodes(state["intent"], requested)
     state["analysis_route"] = {**output, "requested_nodes": requested}
     state["intent"]["requested_nodes"] = requested
     return state

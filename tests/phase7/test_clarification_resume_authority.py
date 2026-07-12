@@ -18,6 +18,65 @@ from tests.phase7.test_conversation_persistence import FakeConnection
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult
 
 
+def test_early_clarification_resume_preserves_source_topic_family(monkeypatch):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original_intent = {
+        "question_family": "business_object_impact_review",
+        "question_families": [
+            "business_object_impact_review",
+            "segment_or_factor_attribution",
+        ],
+        "primary_question_family": "business_object_impact_review",
+        "secondary_question_families": ["segment_or_factor_attribution"],
+        "target_metric": "paid_amount",
+        "pattern_family": "custom_baseline",
+        "pattern_params": {},
+        "scope": "full_sample",
+        "time_window": "yesterday",
+        "target_claim": "business_object_impact",
+        "baseline_candidates": [],
+        "sub_intents": [],
+        "ambiguous_slots": ["baseline"],
+        "answer_contract": {"direct_answer": True},
+        "baseline": {},
+        "target": {},
+        "question": "original topic question",
+        "requested_nodes": [],
+    }
+    monkeypatch.setattr(
+        workflow,
+        "_invoke_llm",
+        lambda state, node, payload: {
+            "question_family": "pattern_explanation",
+            "question_families": ["pattern_explanation"],
+            "target_metric": "paid_amount",
+            "pattern_family": "month_start",
+            "answer_contract": {"direct_answer": True},
+        },
+    )
+    state = {
+        "request": {
+            "question": "original topic question",
+            "clarification_choice": {"answer_text": "selected baseline"},
+            "clarification_resume_context": {
+                "resume_run_id": "run-early-source",
+                "question": "original topic question",
+                "original_intent": original_intent,
+            },
+        }
+    }
+
+    workflow._understand_business_intent(state)
+
+    assert state["intent"]["question_family"] == "business_object_impact_review"
+    assert state["intent"]["question_families"] == [
+        "business_object_impact_review",
+        "segment_or_factor_attribution",
+    ]
+    assert state["intent"]["question"] == "original topic question"
+
+
 def _source_contract(run_id="run-source"):
     outcome = compile_analysis_contract(
         run_id=run_id,
