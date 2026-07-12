@@ -465,9 +465,9 @@ def test_business_intent_retries_missing_context_family_axis(monkeypatch):
             "status_message": "已绑定业务问题。",
             "answer_contract": {"direct_answer": True},
             "analysis_requirements": {
-                "context_sources": ["gameplay"],
+                "context_sources": [],
                 "claim_intents": ["contract_coverage_and_trust_boundary"],
-                "requested_dimensions": [],
+                "requested_dimensions": ["gameplay"],
                 "requested_components": [],
             },
         }
@@ -486,7 +486,7 @@ def test_business_intent_retries_missing_context_family_axis(monkeypatch):
     assert len(payloads) == 3
     for payload in payloads[1:]:
         feedback = payload["node_retry_feedback"]
-        assert feedback["reason"] == "context_family_axis_missing:gameplay"
+        assert feedback["reason"] == "context_family_axis_missing:dimension:gameplay:gameplay"
         assert "business_object_impact_review" in feedback["correction"]
         assert "data_quality_or_evidence_review" in feedback["correction"]
     assert state["intent"]["question_family"] == "business_object_impact_review"
@@ -494,7 +494,22 @@ def test_business_intent_retries_missing_context_family_axis(monkeypatch):
         "business_object_impact_review",
         "data_quality_or_evidence_review",
     ]
-    assert state["intent"]["context_sources"] == ["gameplay"]
+    assert state["intent"]["context_sources"] == []
+    assert state["intent"]["requested_dimensions"] == ["gameplay"]
+
+
+def test_channel_dimension_does_not_create_unrelated_context_family_axis():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    workflow._validate_context_family_axis(
+        {
+            "target_metric": "paid_amount",
+            "question_families": ["data_quality_or_evidence_review"],
+            "context_sources": [],
+            "requested_dimensions": ["channel"],
+        },
+        _registry(),
+    )
 
 
 def test_business_context_source_allowlist_excludes_metric_only_datasets():
@@ -616,6 +631,64 @@ def test_route_design_resolves_obligations_after_capability_family_inference(
     assert "segment_or_factor_attribution" in state["intent"][
         "question_families"
     ]
+
+
+def test_route_design_retries_metric_only_context_and_persists_repaired_context(
+    monkeypatch,
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    outputs = ["market_dashboard", "gameplay"]
+    payloads = []
+
+    def invoke(state, node, payload):
+        payloads.append(payload)
+        return {
+            "requested_nodes": ["gameplay_activity_context"],
+            "analysis_requirements": {
+                "target_metrics": ["paid_amount"],
+                "context_sources": [outputs.pop(0)],
+            },
+        }
+
+    monkeypatch.setattr(workflow, "_invoke_llm", invoke)
+    state = {
+        "run_id": "run-route-context-repair",
+        "intent": {
+            "question_family": "business_object_impact_review",
+            "question_families": ["business_object_impact_review"],
+            "primary_question_family": "business_object_impact_review",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+            "context_sources": ["gameplay"],
+            "requested_dimensions": ["gameplay"],
+        },
+        "confirmed_understanding": {},
+        "request": {},
+        "checkpoint_events": [],
+    }
+    workflow._retrying_node(
+        "design_analysis_route", workflow._design_analysis_route
+    )(state)
+
+    assert payloads[0]["allowed_context_source_ids"]
+    assert "node_retry_feedback" in payloads[1]
+    assert state["analysis_route"]["analysis_requirements"]["context_sources"] == [
+        "gameplay"
+    ]
+    assert [event["status"] for event in state["checkpoint_events"]] == [
+        "retrying",
+        "completed",
+    ]
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="analysis_route_contract_invalid:analysis_requirements:baselines",
+    ):
+        workflow._validate_route_analysis_requirements(
+            {"analysis_requirements": {"baselines": "previous_day"}},
+            _registry(),
+        )
     from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
     from bi_agent.runtime.dataset_catalog import DatasetCatalog
 
@@ -629,6 +702,7 @@ def test_route_design_resolves_obligations_after_capability_family_inference(
         permission_scope="analyst",
     )
     contract_capabilities = set(outcome.analysis_contract.capability_requirements)
+    requested = set(state["analysis_route"]["requested_nodes"])
     planned = {plan.capability_id for plan in outcome.capability_plans}
     terminal = {
         capability
@@ -638,6 +712,36 @@ def test_route_design_resolves_obligations_after_capability_family_inference(
     }
     assert requested <= contract_capabilities
     assert requested <= planned | terminal
+
+
+def test_normalized_question_families_preserve_secondary_analysis_axis():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    normalized = workflow._normalize_question_families(
+        {
+            "question_family": "data_quality_or_evidence_review",
+            "primary_question_family": "data_quality_or_evidence_review",
+            "question_families": ["data_quality_or_evidence_review"],
+            "secondary_question_families": ["segment_or_factor_attribution"],
+        }
+    )
+    assert normalized["question_families"] == [
+        "data_quality_or_evidence_review",
+        "segment_or_factor_attribution",
+    ]
+    obligation = _registry().question_family_obligation(
+        normalized["question_families"][1]
+    )
+    capabilities = {
+        *obligation.get("required_capabilities", ()),
+        *obligation.get("independent_capabilities", ()),
+        *(
+            capability
+            for rule in obligation.get("conditional_rules", ())
+            for capability in rule.get("add", ())
+        ),
+    }
+    assert "gameplay_activity_context" in capabilities
 
 
 def test_queryless_signed_plans_are_terminal_without_query_execution():

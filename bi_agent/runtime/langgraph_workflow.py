@@ -811,7 +811,9 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
         reason = str(feedback.get("reason") or "")
         correction = ""
         if reason.startswith("context_family_axis_missing:"):
-            source_id = reason.split(":", 1)[1]
+            parts = reason.split(":")
+            dimension_id = parts[2] if len(parts) == 4 and parts[1] == "dimension" else ""
+            source_id = parts[-1]
             candidates = [
                 family
                 for family in registry.question_family_ids
@@ -824,7 +826,8 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
                 f"secondary_question_families from these exact compatible candidates: "
                 f"{candidates}. Current selected families are "
                 f"{request.get('_retry_selected_families') or []}. Preserve the "
-                "typed analysis requirements and do not invent family ids."
+                f"typed analysis requirements and do not invent family ids. Typed "
+                f"dimension requiring this family is {dimension_id or 'none'}."
             )
         elif reason.startswith(
             "business_intent_contract_invalid:analysis_requirements:"
@@ -908,8 +911,6 @@ def _validate_context_family_axis(
         for dataset_id in context_sources
         if dataset_id not in target_sources
     )
-    if not unrelated:
-        return
     selected_families = _intent_question_family_set(intent)
     analytical_families = {
         "business_object_impact_review",
@@ -930,6 +931,32 @@ def _validate_context_family_axis(
                 f"context_family_axis_missing:{dataset_id}",
                 failure_type="llm_contract",
             )
+    for dimension_id in intent.get("requested_dimensions") or ():
+        try:
+            dimension_sources = registry.dimension_sources(str(dimension_id))
+        except KeyError:
+            continue
+        if set(dimension_sources).intersection(target_sources):
+            continue
+        for dataset_id in dimension_sources:
+            if (
+                dataset_id in target_sources
+                or "business_context"
+                not in registry.dataset(dataset_id).get("intent_roles", ())
+            ):
+                continue
+            compatible = {
+                family
+                for family in analytical_families
+                if _question_family_supports_context_dataset(
+                    family, dataset_id, registry
+                )
+            }
+            if compatible and not selected_families.intersection(compatible):
+                raise WorkflowFailure(
+                    f"context_family_axis_missing:dimension:{dimension_id}:{dataset_id}",
+                    failure_type="llm_contract",
+                )
 
 
 def _question_family_supports_context_dataset(
@@ -1127,6 +1154,7 @@ def _normalize_question_families(intent: dict[str, Any]) -> dict[str, Any]:
     for family in families:
         if family != primary and family not in secondary:
             secondary.append(family)
+    families = [primary, *(family for family in secondary if family != primary)]
     return {
         **intent,
         "question_family": primary,
@@ -1765,6 +1793,10 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
     prior_route = resume.get("analysis_route") or {}
     prior_graph = tuple(resume.get("accepted_graph") or ())
     if isinstance(prior_route, Mapping) and prior_route and prior_graph:
+        _validate_route_analysis_requirements(
+            prior_route,
+            RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+        )
         requested = _requested_node_ids(
             prior_graph,
             excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
@@ -1812,19 +1844,28 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         state["analysis_route"] = {**output, "requested_nodes": requested}
         state["intent"]["requested_nodes"] = requested
         return state
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
     route_payload = {
         "intent": state["intent"],
         "confirmed_understanding": state["confirmed_understanding"],
         "known_capabilities": _route_capability_cards(),
-        "allowed_dataset_ids": RuntimeContractRegistry.from_path(
-            CANONICAL_RUNTIME_BINDINGS_PATH
-        ).dataset_ids,
-        "allowed_diagnostic_ids": RuntimeContractRegistry.from_path(
-            CANONICAL_RUNTIME_BINDINGS_PATH
-        ).diagnostic_obligation_ids,
+        "allowed_dataset_ids": registry.dataset_ids,
+        "allowed_context_source_ids": registry.context_source_ids,
+        "allowed_diagnostic_ids": registry.diagnostic_obligation_ids,
         "budget_state": budget.to_llm_summary(),
     }
+    feedback = state.get("request", {}).get("node_retry_feedback") or {}
+    if isinstance(feedback, Mapping) and feedback.get("node") == "design_analysis_route":
+        route_payload["node_retry_feedback"] = {
+            "reason": str(feedback.get("reason") or ""),
+            "correction": (
+                "Return registered unique typed ids. context_sources must use only "
+                "allowed_context_source_ids; metric-only datasets belong in dataset "
+                "requirements or source selection. Preserve confirmed material axes."
+            ),
+        }
     output = _invoke_llm(state, "analysis_route", route_payload)
+    _validate_route_analysis_requirements(output, registry)
     output, material_conflicts = _merge_confirmed_material_requirements(
         output,
         state,
@@ -1860,6 +1901,61 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
     state["analysis_route"] = {**output, "requested_nodes": requested}
     state["intent"]["requested_nodes"] = requested
     return state
+
+
+def _validate_route_analysis_requirements(
+    route: Mapping[str, Any], registry: RuntimeContractRegistry
+) -> None:
+    raw = route.get("analysis_requirements")
+    if not isinstance(raw, Mapping):
+        raise WorkflowFailure(
+            "analysis_route_contract_invalid:analysis_requirements",
+            failure_type="llm_contract",
+        )
+    claims = {
+        str(claim)
+        for capability_id in registry.capability_ids
+        for claim in registry.capability_inputs(capability_id).get(
+            "supported_claim_types", ()
+        )
+    }
+    contracts = {
+        "target_metrics": set(registry.metric_ids),
+        "requested_components": set(registry.metric_ids),
+        "requested_dimensions": set(registry.dimension_ids),
+        "claim_intents": claims,
+        "context_sources": set(registry.context_source_ids),
+        "diagnostic_tags": set(registry.diagnostic_obligation_ids),
+        "dataset_requirements": set(registry.dataset_ids),
+    }
+    if set(raw) - {*contracts, "baselines", "scope"}:
+        raise WorkflowFailure(
+            "analysis_route_contract_invalid:analysis_requirements:unknown_fields",
+            failure_type="llm_contract",
+        )
+    for key, allowed in contracts.items():
+        if key not in raw:
+            continue
+        values = raw[key]
+        if (
+            not isinstance(values, (list, tuple))
+            or len(values) != len(set(values))
+            or any(not isinstance(item, str) or item not in allowed for item in values)
+        ):
+            raise WorkflowFailure(
+                f"analysis_route_contract_invalid:analysis_requirements:{key}",
+                failure_type="llm_contract",
+            )
+    if "baselines" in raw:
+        baseline_values = raw["baselines"]
+        if (
+            not isinstance(baseline_values, (list, tuple))
+            or _canonical_baseline_ids(baseline_values) != list(baseline_values)
+        ):
+            raise WorkflowFailure(
+                "analysis_route_contract_invalid:analysis_requirements:baselines",
+                failure_type="llm_contract",
+            )
 
 
 def _merge_confirmed_material_requirements(

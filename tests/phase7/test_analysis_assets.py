@@ -1303,7 +1303,11 @@ class AnalysisAssetsTest(unittest.TestCase):
                     "llm_client": FakeLLMClient(
                         {
                             "analysis_route": {
-                                "requested_nodes": ["segment_contribution", "answer_verify"]
+                                "requested_nodes": ["segment_contribution", "answer_verify"],
+                                "analysis_requirements": {
+                                    "target_metrics": ["paid_amount"],
+                                    "requested_dimensions": ["channel"],
+                                },
                             }
                         }
                     ),
