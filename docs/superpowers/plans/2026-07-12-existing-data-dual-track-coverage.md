@@ -1101,7 +1101,7 @@ git commit -m "test: define dual-track current data evaluation"
 - Consumes all Task 1-8 contracts, runtime behavior, and eval suites.
 - Produces the final local coverage audit, two fixed-eight artifacts, one platform artifact, three quality reviews, a baseline comparison, and a durable delivery audit.
 
-- [ ] **Step 1: Run final automated verification**
+- [x] **Step 1: Run final automated verification**
 
 ```bash
 set -a; source /Users/luka/work/waje-bi-v2/.env; set +a
@@ -1115,7 +1115,7 @@ git diff --check
 
 Expected: contract, schema, compile, test, build, and diff checks pass. Record exact counts.
 
-- [ ] **Step 2: Generate the runtime coverage audit**
+- [x] **Step 2: Generate the runtime coverage audit**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 tools/phase7/audit_existing_data_coverage.py \
@@ -1124,7 +1124,7 @@ Expected: contract, schema, compile, test, build, and diff checks pass. Record e
   --out artifacts/phase7/existing-data-coverage/coverage.json
 ```
 
-- [ ] **Step 3: Run fixed-eight evaluation twice with real services**
+- [x] **Step 3: Run fixed-eight evaluation twice with real services**
 
 ```bash
 export WAJE_LLM_TIMEOUT_SECONDS=300
@@ -1141,7 +1141,7 @@ export WAJE_LLM_TIMEOUT_SECONDS=300
 Wait for every high-value LLM node. A nonzero strict exit is retained and
 explained; do not convert it to success.
 
-- [ ] **Step 4: Run the platform current-data suite**
+- [x] **Step 4: Run the platform current-data suite**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 tools/phase7/run_live_conversation_system_test.py \
@@ -1149,7 +1149,7 @@ explained; do not convert it to success.
   --artifact-dir artifacts/phase7/existing-data-platform-run-1
 ```
 
-- [ ] **Step 5: Review and compare all artifacts**
+- [x] **Step 5: Review and compare all artifacts**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 tools/phase7/review_analysis_contract_eval.py \
@@ -1165,7 +1165,7 @@ explained; do not convert it to success.
 Run the same tool for each platform case artifact. Confirm every score uses a
 run-id-matched internal final-LLM audit.
 
-- [ ] **Step 6: Audit acceptance and remaining gaps**
+- [x] **Step 6: Audit acceptance and remaining gaps**
 
 The final audit records:
 
@@ -1184,7 +1184,7 @@ The reviewer checks the complete Task 1-9 diff, real artifacts, authority chains
 contract coverage, absence of sentence-specific rules, and documentation
 accuracy. Resolve every P0-P2 issue and any P3 that can affect acceptance.
 
-- [ ] **Step 8: Commit Task 9**
+- [x] **Step 8: Commit Task 9**
 
 ```bash
 git add docs/phase-7-live-conversation-eval.md \

@@ -188,3 +188,86 @@ set -a; source /Users/luka/work/waje-bi-v2/.env; set +a
   --permission-scope analyst \
   --out artifacts/phase7/existing-data-coverage/coverage.json
 ```
+
+## 2026-07-12 existing-data dual-track delivery audit
+
+The final-code evaluation used real LLM, ClickHouse, and PostgreSQL services
+through `ConversationAgentCore`, with `WAJE_LLM_TIMEOUT_SECONDS=300` and no
+max-token override. Both fixed runs and the platform suite returned strict
+status 1. The status is retained because runtime and obligation acceptance did
+not pass.
+
+The fixed-clock coverage audit succeeded at
+`2026-06-03T12:00:00+01:00`: 1 cell was executable, 1 contract-partial, 4
+degraded, 25 source-unbound, and 25 snapshot-unavailable-as-of. The accepted
+paid-success release
+`dataset-release:sha256:398c7f54befc152d280ad43311a25751fb187b05e6faba45812d1b25935c8557`
+was loaded after the audit clock, so it cannot establish historical
+transaction-time availability for that clock. `data_operations_owner` must
+either publish historical authority at or before the clock or explicitly use a
+current-authority audit clock. The same owner must publish an authoritative
+`payment_attempt` release before payment-quality claims can execute.
+
+| Result | Fixed Run 1 | Fixed Run 2 | Delta |
+| --- | ---: | ---: | ---: |
+| obligation routes required | 50 | 50 | 0 |
+| obligation routes executed | 23 | 11 | -12 |
+| degraded routes | 3 | 3 | 0 |
+| missing obligation findings | 45 | 57 | +12 |
+| runtime-verified turns | 0/8 | 0/8 | 0 |
+| authoritative result refs | 0 | 0 | 0 |
+| claim-traceable turns | all | all | no regression |
+| completed run-matched final audits | 0/8 | 0/8 | 0 |
+| required reuse outcomes | 7 | 7 | 0 |
+| passed reuse outcomes | 0 | 0 | 0 |
+
+Both fixed runs observed the same dataset-state coverage: `paid_order_success`
+executable on 6 turns, `payment_attempt` source-unbound on 2,
+`market_dashboard_channel` and `gameplay_channel` executable on 3 each,
+`external_event` executable on 2, `internal_operation_event` contract-partial
+on 1, and `market_dashboard` executable on 1. Required queries were not all
+complete and required capabilities were not all bound. No verified ClickHouse
+result ref crossed the final runtime boundary.
+
+The eight platform cases covered 9 turns. In aggregate they required 32
+obligation routes, executed 20, degraded 2, and reported 25 missing findings.
+Dataset observations were: `paid_order_success` executable 6 times,
+`market_dashboard` executable 2, `market_dashboard_channel` executable once
+and permission-blocked once, `external_event` executable once, `gameplay`
+executable once, and `gameplay_channel` contract-partial once. The declared
+clarification resume and persisted reuse checks both passed 0/1. No platform
+turn was runtime-verified and no authoritative result ref was returned.
+
+Independent artifact review found no run-id-matched internal final-LLM audit:
+0/8 in each fixed run and 0/9 platform turns. The review tool correctly assigns
+`final_answer_audit_unavailable`; the resulting 1-point dimensions are sentinel
+values and are excluded from quality-delta claims. The historical baseline had
+directness 5.00, insight 5.00, actionability 4.62, and evidence discipline
+1.00, while the current run has no comparable audited quality score. Run 2
+versus Run 1 is likewise unavailable. Quality remains advisory; the missing
+internal audit is still a delivery-audit gap.
+
+The dominant runtime gap is a clarification terminal policy. After an initial
+supported degradation, the runtime often offers only `wait_for_source`; the
+fixed harness cannot turn unchanged external state into a terminal Answer
+Package, so repeated resumes remain waiting and reuse cannot be evaluated.
+`bi_agent_runtime_owner` and `analysis_contract_owner` should define a generic
+terminal degraded-answer contract for unavailable required data, while keeping
+permission, evidence, and verifier boundaries intact. `eval_owner` should then
+rerun both tracks and require a matched internal audit before comparing quality.
+
+Evaluation also exposed and fixed three general contract defects: paid release
+authority was missing from adjacent Phase 4 fixtures, eval claim ceilings mixed
+evidence and maximum-strength vocabularies, and unknown LLM diagnostic tags
+escaped as `KeyError` instead of typed route conflicts. Final-audit coverage now
+counts only completed audits. No repair keys on an eval sentence or promotes an
+individual model output into a runtime guardrail.
+
+Final local artifacts:
+
+- `artifacts/phase7/existing-data-coverage/coverage.json`
+- `artifacts/phase7/existing-data-fixed-eight-run-1/paid_amount_revenue_diagnostics_8_question_set.json`
+- `artifacts/phase7/existing-data-fixed-eight-run-2/paid_amount_revenue_diagnostics_8_question_set.json`
+- `artifacts/phase7/existing-data-platform-run-1/`
+
+All evaluation artifacts remain local and untracked.
