@@ -1,6 +1,6 @@
 # Existing-Data Dual-Track Coverage Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make every analysis path supported by current authoritative data discoverable, executable, completeness-checked, and useful in verified answers, then validate it through the fixed eight questions and a platform-wide coverage matrix.
 
@@ -42,7 +42,7 @@
 - Produces `ObligationRequest.from_intent(question_family, question_families, target_metric, bound_context) -> ObligationRequest`.
 - Produces registry accessors `question_family_obligation(question_family)`, `diagnostic_obligation(tag)`, and `order_capabilities(capabilities)`.
 
-- [ ] **Step 1: Write failing contract and resolver tests**
+- [x] **Step 1: Write failing contract and resolver tests**
 
 Add tests that require complete coverage, conditional activation, stable ordering,
 unknown-reference rejection, and no sentence/case-id fields:
@@ -85,7 +85,7 @@ def test_obligation_contract_rejects_eval_specific_keys(self):
         RuntimeContractRegistry(payload)
 ```
 
-- [ ] **Step 2: Run tests and confirm red**
+- [x] **Step 2: Run tests and confirm red**
 
 Run:
 
@@ -97,7 +97,7 @@ Run:
 
 Expected: FAIL because the obligation sections, registry accessors, and resolver do not exist.
 
-- [ ] **Step 3: Add reviewed obligation sections**
+- [x] **Step 3: Add reviewed obligation sections**
 
 Extend `clickhouse-analysis-bindings.yaml` with these schemas and populate all
 eight public question families and every diagnostic tag currently represented
@@ -125,7 +125,7 @@ diagnostic_obligations:
 
 Do not include evaluation text, case ids, expected answers, or fixed turn indexes.
 
-- [ ] **Step 4: Implement registry validation and obligation resolution**
+- [x] **Step 4: Implement registry validation and obligation resolution**
 
 Create the focused module:
 
@@ -211,7 +211,7 @@ Condition evaluation must use an explicit allowlist:
 `components_present`, `event_context_requested`, `anomaly_review_requested`,
 and `trust_review_requested`. Unknown conditions fail loading.
 
-- [ ] **Step 5: Run validation and regression tests**
+- [x] **Step 5: Run validation and regression tests**
 
 ```bash
 ruby tools/contracts/validate-contracts.rb
@@ -223,7 +223,7 @@ ruby tools/contracts/validate-contracts.rb
 
 Expected: all pass; every obligation reference is a public capability supported by the stated question family.
 
-- [ ] **Step 6: Independent review and commit**
+- [x] **Step 6: Independent review and commit**
 
 Review for contract completeness, deterministic ordering, unknown condition rejection, and absence of eval-specific fields.
 
@@ -255,7 +255,7 @@ git commit -m "feat: define analysis capability obligations"
 - Produces one `paid_order_success` DatasetSnapshot and one immutable atomic release; it does not create payment-attempt coverage.
 - The canonical release validator accepts exactly the single `paid_order_success` member and fails closed for a missing or extra member.
 
-- [ ] **Step 1: Write failing inspection and publication tests**
+- [x] **Step 1: Write failing inspection and publication tests**
 
 ```python
 def test_inspector_requires_reviewed_schema_count_range_and_success_semantics(self):
@@ -295,7 +295,7 @@ def test_paid_success_canonical_release_membership_is_single_member_and_exact(se
     )
 ```
 
-- [ ] **Step 2: Run tests and confirm red**
+- [x] **Step 2: Run tests and confirm red**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -304,7 +304,7 @@ def test_paid_success_canonical_release_membership_is_single_member_and_exact(se
 
 Expected: FAIL with missing registration module.
 
-- [ ] **Step 3: Complete the canonical paid-success release authority contract**
+- [x] **Step 3: Complete the canonical paid-success release authority contract**
 
 Declare `paid_order_success` with `requires_release: true` and
 `release_membership: {policy: exact_dataset_set, dataset_ids: [paid_order_success]}`
@@ -313,7 +313,7 @@ which invoked the release validator without defining membership for this
 dataset. Keep `payment_attempt` outside the release; this task does not create
 or imply attempt coverage.
 
-- [ ] **Step 4: Implement read-only ClickHouse inspection**
+- [x] **Step 4: Implement read-only ClickHouse inspection**
 
 The implementation issues aggregate-only queries for schema, row count, min/max
 business date, null critical fields, amount bounds, and duplicate dedup keys.
@@ -341,7 +341,7 @@ class ExistingPaidSuccessInspection:
 `rows_content_hash` must come from deterministic aggregate fingerprints over the
 existing fact table; the tool must not read 41 million rows into Python.
 
-- [ ] **Step 5: Build and publish the immutable snapshot**
+- [x] **Step 5: Build and publish the immutable snapshot**
 
 Build a complete payload compatible with existing release authority:
 
@@ -384,7 +384,7 @@ Use `dataset_snapshot_release_lock()`, validate the payloads before writing, and
 call `publish_dataset_snapshot_release()` once. Re-running an identical release
 is idempotent; any immutable-field drift fails.
 
-- [ ] **Step 6: Add CLI dry-run and publish modes**
+- [x] **Step 6: Add CLI dry-run and publish modes**
 
 CLI arguments:
 
@@ -399,7 +399,7 @@ CLI arguments:
 Dry-run prints only non-secret validation metadata. Publish requires
 `WAJE_RUNTIME_DATABASE_URL` and exits nonzero on any validation failure.
 
-- [ ] **Step 7: Run tests and available real dry-run**
+- [x] **Step 7: Run tests and available real dry-run**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -416,7 +416,7 @@ set -a; source /Users/luka/work/waje-bi-v2/.env; set +a
 
 Expected: tests pass; live dry-run either reports `ready_to_publish=true` or records exact mismatch, owner `payment_contract_owner`, and impact. Do not publish after a failed dry-run.
 
-- [ ] **Step 8: Publish after a passing dry-run, review, and commit**
+- [x] **Step 8: Publish after a passing dry-run, review, and commit**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 tools/data/register_existing_paid_success_snapshot.py \
@@ -453,7 +453,7 @@ audit.
 - Produces `reconcile_analysis_route(requested, route, intent, registry) -> (capabilities, route)`.
 - Preserves `MutationRecord` entries with reasons `obligation_required`, `obligation_conditional`, `unsupported_question_family`, and `obligation_conflict`.
 
-- [ ] **Step 1: Write failing omission, idempotence, and no-overfit tests**
+- [x] **Step 1: Write failing omission, idempotence, and no-overfit tests**
 
 ```python
 def test_compiler_adds_missing_contract_obligations_from_typed_intent(self):
@@ -485,7 +485,7 @@ Add parametrized tests over all public question families and all diagnostic
 obligation tags. Add a negative test proving two paraphrases with identical
 typed intent compile to the same graph.
 
-- [ ] **Step 2: Run tests and confirm red**
+- [x] **Step 2: Run tests and confirm red**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -495,7 +495,7 @@ typed intent compile to the same graph.
 
 Expected: FAIL because the compiler still relies on local family constants and diagnostic bundles.
 
-- [ ] **Step 3: Replace hard-coded enablement with obligation resolution**
+- [x] **Step 3: Replace hard-coded enablement with obligation resolution**
 
 Remove `PHASE6_ENABLED_FAMILY_REQUIREMENTS`, `REVENUE_DIAGNOSTIC_BUNDLES`, and
 `REVENUE_DIAGNOSTIC_FAMILIES` as policy sources. `compile_graph()` receives the
@@ -519,7 +519,7 @@ proposed_graph = _dedupe(
 Capability order remains deterministic. Every auto-add or rejection becomes a
 mutation record; no mutation is hidden in prompt normalization.
 
-- [ ] **Step 4: Reconcile the real LLM route before graph compilation**
+- [x] **Step 4: Reconcile the real LLM route before graph compilation**
 
 In `langgraph_workflow.py`, replace `_reconcile_route_metric_capabilities()`
 with the general reconciler. The LLM prompt asks for typed diagnostic tags and
@@ -530,7 +530,7 @@ Hard-bound question family, metric, scope, permission, and fixed clock remain
 local compiler inputs. Ambiguous materially different routes go through the
 existing clarification contract.
 
-- [ ] **Step 5: Run targeted and full compiler regressions**
+- [x] **Step 5: Run targeted and full compiler regressions**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -541,7 +541,7 @@ existing clarification contract.
 
 Expected: all pass; all public family obligations are present after compilation; two paraphrases with the same typed intent yield identical accepted graphs.
 
-- [ ] **Step 6: Independent review and commit**
+- [x] **Step 6: Independent review and commit**
 
 ```bash
 git add bi_agent/runtime/compiler.py bi_agent/runtime/langgraph_workflow.py \
@@ -569,7 +569,7 @@ git commit -m "feat: reconcile routes with analysis obligations"
 - Produces query contracts and capability plans for available market, gameplay, and event paths even when the paid or payment-attempt path is source-unbound.
 - Persists gaps only against affected capabilities and claim types.
 
-- [ ] **Step 1: Write failing source-isolation tests**
+- [x] **Step 1: Write failing source-isolation tests**
 
 ```python
 def test_missing_paid_source_does_not_erase_available_market_gameplay_and_event_queries(self):
@@ -600,7 +600,7 @@ Add variants for a missing gameplay release, missing external event release, and
 permission-limited channel release. Each variant must preserve unrelated query
 contracts.
 
-- [ ] **Step 2: Run tests and confirm red**
+- [x] **Step 2: Run tests and confirm red**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -610,7 +610,7 @@ contracts.
 
 Expected: FAIL where global dependency resolution or gap scoping removes available paths.
 
-- [ ] **Step 3: Scope dependencies and gaps per capability**
+- [x] **Step 3: Scope dependencies and gaps per capability**
 
 Introduce a focused internal projection:
 
@@ -629,14 +629,14 @@ emits gaps for that capability and does not remove snapshots or bindings from
 another set. Deduplicate semantic-equivalent query contracts only after each
 set has been evaluated.
 
-- [ ] **Step 4: Execute and persist ready/degraded bindings independently**
+- [x] **Step 4: Execute and persist ready/degraded bindings independently**
 
 `AnalysisRuntime.execute()` returns one binding outcome per capability. Ready
 and contract-allowed degraded bindings persist even when a sibling binding is
 blocked. The run-level status aggregates without discarding successful result,
 completeness, binding, and evidence refs.
 
-- [ ] **Step 5: Run persistence and workflow regressions**
+- [x] **Step 5: Run persistence and workflow regressions**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -648,7 +648,7 @@ completeness, binding, and evidence refs.
 
 Expected: all pass; source-unbound paid paths coexist with persisted ready market/gameplay/event bindings.
 
-- [ ] **Step 6: Independent review and commit**
+- [x] **Step 6: Independent review and commit**
 
 ```bash
 git add bi_agent/runtime/analysis_contract_compiler.py \
@@ -678,7 +678,7 @@ git commit -m "feat: isolate current data capability execution"
 - Every case describes dataset, metric, dimension set, query family, required windows, expected claim ceiling, and supported/degraded state.
 - Generates typed query contracts only from reviewed source adapters and schema fields.
 
-- [ ] **Step 1: Write a generated closure test**
+- [x] **Step 1: Write a generated closure test**
 
 ```python
 def test_every_supported_current_data_case_compiles_and_has_completeness_contract(self):
@@ -702,7 +702,7 @@ The generated set must cover each currently registered source adapter, each
 query family referenced by an obligation, overall/channel source pairs, and all
 fixed window roles.
 
-- [ ] **Step 2: Run tests and confirm red**
+- [x] **Step 2: Run tests and confirm red**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -713,7 +713,7 @@ fixed window roles.
 
 Expected: FAIL on missing coverage enumerator and any currently unclosed reviewed adapter/query pair.
 
-- [ ] **Step 3: Implement coverage enumeration**
+- [x] **Step 3: Implement coverage enumeration**
 
 Build cases from registry contracts rather than hard-coded evaluation questions:
 
@@ -734,7 +734,7 @@ class CurrentDataCoverageCase:
 
 Unsupported contract combinations stay in the case list as explicit gaps.
 
-- [ ] **Step 4: Close only schema-backed query adapters**
+- [x] **Step 4: Close only schema-backed query adapters**
 
 Add or correct source adapters for fields already present in active source
 contracts. Cover market overall/channel, gameplay overall/channel, external
@@ -744,14 +744,14 @@ aliases to paid facts and do not invent payment-attempt fields.
 Each new query family declares result shape, unique key, grain, source fields,
 window policy, reconciliation expectation, and provider bounds.
 
-- [ ] **Step 5: Validate completeness and reconciliation**
+- [x] **Step 5: Validate completeness and reconciliation**
 
 Every supported case must enforce execution success, snapshots, required
 fields/windows, complete days, unique keys, provider non-truncation, and any
 required overall/channel reconciliation. Contract-allowed partial context must
 remain `partial/degraded`; it cannot be marked `complete/ready`.
 
-- [ ] **Step 6: Run contract, query, and completeness regressions**
+- [x] **Step 6: Run contract, query, and completeness regressions**
 
 ```bash
 ruby tools/contracts/validate-contracts.rb
@@ -763,7 +763,7 @@ ruby tools/contracts/validate-contracts.rb
   tests/phase4/test_gameplay_event_ingestion.py -q
 ```
 
-- [ ] **Step 7: Independent review and commit**
+- [x] **Step 7: Independent review and commit**
 
 ```bash
 git add contracts/runtime/clickhouse-analysis-bindings.yaml \
@@ -795,7 +795,7 @@ git commit -m "feat: close current data query coverage"
 - Preserves verified claim provenance and exact ReuseDecision refs through final delivery.
 - Persists an accepted degraded-route decision so the same source gap does not reopen clarification in the resumed topic.
 
-- [ ] **Step 1: Write failing partial-value and resume tests**
+- [x] **Step 1: Write failing partial-value and resume tests**
 
 ```python
 def test_verified_market_claim_survives_unbound_paid_and_event_paths(self):
@@ -824,7 +824,7 @@ def test_accepted_degraded_route_resumes_once_and_does_not_reask_same_gap(self):
 Add tests that reject reuse when any contract signature, source release, window,
 permission scope, schema fingerprint, or completeness state differs.
 
-- [ ] **Step 2: Run tests and confirm red**
+- [x] **Step 2: Run tests and confirm red**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -835,7 +835,7 @@ permission scope, schema fingerprint, or completeness state differs.
 
 Expected: FAIL where generic blocked output replaces available verified evidence or the same gap reopens clarification.
 
-- [ ] **Step 3: Build a typed available-evidence brief**
+- [x] **Step 3: Build a typed available-evidence brief**
 
 Before final synthesis, project only authority-backed facts:
 
@@ -872,14 +872,14 @@ def build_available_evidence_brief(
 The real final-summary LLM consumes this brief. Local code validates that all
 verified claims and limitations survive; it does not write the business narrative.
 
-- [ ] **Step 4: Tighten ReuseDecision and clarification persistence**
+- [x] **Step 4: Tighten ReuseDecision and clarification persistence**
 
 Reuse exact assets and results only after all signature fields match. Persist
 the accepted obligation/degradation choice in the clarification outcome and
 include it in the resumed analysis proposal, accepted graph, Answer Package,
 ContextManifest, and verifier inputs.
 
-- [ ] **Step 5: Run workflow and delivery regressions**
+- [x] **Step 5: Run workflow and delivery regressions**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -889,7 +889,7 @@ ContextManifest, and verifier inputs.
   tests/phase7/test_agent_core_bridge.py -q
 ```
 
-- [ ] **Step 6: Independent review and commit**
+- [x] **Step 6: Independent review and commit**
 
 ```bash
 git add bi_agent/runtime/answer_package.py bi_agent/runtime/langgraph_workflow.py \
@@ -915,7 +915,7 @@ git commit -m "feat: preserve available verified analysis value"
 - Produces `audit_existing_data_coverage(registry, snapshot_records, release_resolver, as_of, permission_scope) -> dict`.
 - CLI writes a local JSON artifact with per-cell state, owner, impact, and next action.
 
-- [ ] **Step 1: Write failing matrix-state tests**
+- [x] **Step 1: Write failing matrix-state tests**
 
 ```python
 def test_coverage_audit_reports_supported_degraded_and_excluded_cells(self):
@@ -932,7 +932,7 @@ def test_coverage_audit_reports_supported_degraded_and_excluded_cells(self):
     self.assertEqual(audit["cells"]["event_evidence:internal_operation_event"]["owner"], "data_operations_owner")
 ```
 
-- [ ] **Step 2: Run tests and confirm red**
+- [x] **Step 2: Run tests and confirm red**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -941,7 +941,7 @@ def test_coverage_audit_reports_supported_degraded_and_excluded_cells(self):
 
 Expected: FAIL with missing coverage audit module.
 
-- [ ] **Step 3: Implement deterministic coverage audit**
+- [x] **Step 3: Implement deterministic coverage audit**
 
 States are exactly:
 
@@ -960,7 +960,7 @@ Each cell includes question families, capability, datasets, metrics, dimensions,
 windows, evidence types, claim ceiling, current release refs, state, owner,
 impact, and next action. Sort all output deterministically.
 
-- [ ] **Step 4: Add PostgreSQL-backed CLI**
+- [x] **Step 4: Add PostgreSQL-backed CLI**
 
 ```bash
 set -a; source /Users/luka/work/waje-bi-v2/.env; set +a
@@ -972,12 +972,12 @@ set -a; source /Users/luka/work/waje-bi-v2/.env; set +a
 
 The CLI is read-only and never prints credentials.
 
-- [ ] **Step 5: Run tests and local audit**
+- [x] **Step 5: Run tests and local audit**
 
 Expected: command exits zero when the audit is structurally valid even if some
 cells are source-unbound; hard resolver or contract integrity failures exit nonzero.
 
-- [ ] **Step 6: Independent review and commit**
+- [x] **Step 6: Independent review and commit**
 
 ```bash
 git add bi_agent/runtime/coverage_audit.py \
@@ -1006,7 +1006,7 @@ git commit -m "feat: audit current data analysis coverage"
 - Every scenario declares structured intent, required/conditional capabilities, expected dataset states, allowed claim ceiling, and terminal boundary; answer wording remains unconstrained except existing hard-boundary text.
 - Produces separate raw, runtime-review, quality-review, and coverage-summary artifacts.
 
-- [ ] **Step 1: Write failing suite and obligation-review tests**
+- [x] **Step 1: Write failing suite and obligation-review tests**
 
 ```python
 def test_platform_suite_covers_every_public_question_family_and_current_dataset_role(self):
@@ -1022,7 +1022,7 @@ def test_expectation_review_uses_obligation_contract_not_sentence_specific_lists
     self.assertNotIn("final_answer_contains", review)
 ```
 
-- [ ] **Step 2: Run tests and confirm red**
+- [x] **Step 2: Run tests and confirm red**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -1030,14 +1030,14 @@ def test_expectation_review_uses_obligation_contract_not_sentence_specific_lists
   tests/phase7/test_existing_data_coverage_audit.py -k "platform_suite or obligation" -q
 ```
 
-- [ ] **Step 3: Create the platform scenario matrix**
+- [x] **Step 3: Create the platform scenario matrix**
 
 Use real user wording plus structured expectation packages. Include at least one
 case for each question family, one for each current dataset role, one permission
 boundary, one contract-allowed partial context, one reuse case, and one
 clarification-resume case. The scenario file cannot embed expected LLM prose.
 
-- [ ] **Step 4: Make fixed-eight expectation review obligation-aware**
+- [x] **Step 4: Make fixed-eight expectation review obligation-aware**
 
 The fixed eight questions remain unchanged. Required capabilities come from the
 obligation resolver plus typed scenario requirements. Missing excluded inputs
@@ -1057,7 +1057,7 @@ a role has authority cells but no reviewed capability or question-family link,
 use the most conservative state across those cells and report the ambiguous
 role; never select an optimistic cell to satisfy the authored hypothesis.
 
-- [ ] **Step 5: Extend review output**
+- [x] **Step 5: Extend review output**
 
 Each suite review reports:
 
@@ -1076,7 +1076,7 @@ Each suite review reports:
 Quality fields remain nonblocking; runtime correctness and obligation coverage
 remain hard acceptance dimensions.
 
-- [ ] **Step 6: Run deterministic suite tests**
+- [x] **Step 6: Run deterministic suite tests**
 
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 -m pytest \
@@ -1085,7 +1085,7 @@ remain hard acceptance dimensions.
   tests/phase4/test_llm_workflow.py -q
 ```
 
-- [ ] **Step 7: Independent review and commit**
+- [x] **Step 7: Independent review and commit**
 
 ```bash
 git add evals/phase7/existing_data_coverage_scenarios.yaml \

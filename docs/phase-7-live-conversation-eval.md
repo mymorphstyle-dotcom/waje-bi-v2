@@ -211,57 +211,69 @@ current-authority audit clock. The same owner must publish an authoritative
 | Result | Fixed Run 1 | Fixed Run 2 | Delta |
 | --- | ---: | ---: | ---: |
 | obligation routes required | 50 | 50 | 0 |
-| obligation routes executed | 23 | 11 | -12 |
-| degraded routes | 3 | 3 | 0 |
-| missing obligation findings | 45 | 57 | +12 |
+| obligation routes accepted | 18 | 21 | +3 |
+| authority-backed executed routes | 0 | 0 | 0 |
+| authority-backed degraded routes | 0 | 0 | 0 |
+| unobserved accepted routes | 18 | 21 | +3 |
+| missing routes | 32 | 29 | -3 |
 | runtime-verified turns | 0/8 | 0/8 | 0 |
 | authoritative result refs | 0 | 0 | 0 |
 | claim-traceable turns | all | all | no regression |
-| completed run-matched final audits | 0/8 | 0/8 | 0 |
+| completed run-matched final audits | 8/8 | 8/8 | 0 |
 | required reuse outcomes | 7 | 7 | 0 |
 | passed reuse outcomes | 0 | 0 | 0 |
 
-Both fixed runs observed the same dataset-state coverage: `paid_order_success`
-executable on 6 turns, `payment_attempt` source-unbound on 2,
-`market_dashboard_channel` and `gameplay_channel` executable on 3 each,
-`external_event` executable on 2, `internal_operation_event` contract-partial
-on 1, and `market_dashboard` executable on 1. Required queries were not all
-complete and required capabilities were not all bound. No verified ClickHouse
-result ref crossed the final runtime boundary.
+The eval now keeps authored roles, authority-resolved roles, and observed
+runtime states separate. At the fixed clock the authority-resolved fixed-suite
+expectations are `paid_order_success=snapshot_unavailable_as_of`,
+`payment_attempt=source_unbound`, channel/gameplay context `degraded`,
+`external_event=snapshot_unavailable_as_of`,
+`internal_operation_event=source_unbound`, and the requested
+`source_reconciliation:market_dashboard` path `contract_partial`. Required
+queries were not all complete and required capabilities were not all bound. No
+verified ClickHouse result ref crossed the final runtime boundary.
 
 The eight platform cases covered 9 turns. In aggregate they required 32
-obligation routes, executed 20, degraded 2, and reported 25 missing findings.
-Dataset observations were: `paid_order_success` executable 6 times,
-`market_dashboard` executable 2, `market_dashboard_channel` executable once
-and permission-blocked once, `external_event` executable once, `gameplay`
-executable once, and `gameplay_channel` contract-partial once. The declared
-clarification resume and persisted reuse checks both passed 0/1. No platform
-turn was runtime-verified and no authoritative result ref was returned.
+obligation routes, accepted 28, left 28 unobserved, and reported 4 missing
+routes. All 9 run-matched final audits were available. One case,
+`platform_quality_clarification_resume`, passed runtime correctness,
+obligation acceptance, and clarification resume. The declared persisted reuse
+check passed 0/1. No authority-backed executed result ref was returned.
 
-Independent artifact review found no run-id-matched internal final-LLM audit:
-0/8 in each fixed run and 0/9 platform turns. The review tool correctly assigns
-`final_answer_audit_unavailable`; the resulting 1-point dimensions are sentinel
-values and are excluded from quality-delta claims. The historical baseline had
-directness 5.00, insight 5.00, actionability 4.62, and evidence discipline
-1.00, while the current run has no comparable audited quality score. Run 2
-versus Run 1 is likewise unavailable. Quality remains advisory; the missing
-internal audit is still a delivery-audit gap.
+Independent artifact review found run-id-matched internal final-LLM audits for
+8/8 turns in each fixed run and 9/9 platform turns. Fixed Run 1 scored
+directness 5.00, insight 5.00, actionability 5.00, and evidence discipline
+1.00; relative to the historical baseline, actionability improved by 0.38 and
+the other dimensions were unchanged. Fixed Run 2 scored 5.00, 4.62, 3.50, and
+1.25; relative to Run 1 the deltas were 0.00, -0.38, -1.50, and +0.25. These
+scores are risk-only LLM audit output. Runtime, contract, provenance, evidence,
+permission, and verifier checks remain hard boundaries.
 
-The dominant runtime gap is a clarification terminal policy. After an initial
-supported degradation, the runtime often offers only `wait_for_source`; the
-fixed harness cannot turn unchanged external state into a terminal Answer
-Package, so repeated resumes remain waiting and reuse cannot be evaluated.
-`bi_agent_runtime_owner` and `analysis_contract_owner` should define a generic
-terminal degraded-answer contract for unavailable required data, while keeping
-permission, evidence, and verifier boundaries intact. `eval_owner` should then
-rerun both tracks and require a matched internal audit before comparing quality.
+The terminal clarification and persistence defects discovered during real eval
+were fixed generically: accepted evidence gaps now terminate with a zero-claim
+boundary answer; queryless and metric-backed boundary outcomes require a
+structured, owner-assigned, repairable gap; unresolved metric ambiguity must
+match canonical registry sources and compiler-authenticated target refs; and an
+empty thread's first runnable turn is forced to a real topic. Final real runs
+contain no failed turn. Reuse remains 0/7 in both fixed runs and 0/1 in the
+platform suite because the runtime did not produce a reusable result under the
+fixed-clock evidence boundaries.
 
-Evaluation also exposed and fixed three general contract defects: paid release
-authority was missing from adjacent Phase 4 fixtures, eval claim ceilings mixed
-evidence and maximum-strength vocabularies, and unknown LLM diagnostic tags
-escaped as `KeyError` instead of typed route conflicts. Final-audit coverage now
-counts only completed audits. No repair keys on an eval sentence or promotes an
-individual model output into a runtime guardrail.
+Remaining gaps are explicit. `data_operations_owner` owns historical
+transaction-time authority for paid-success and an authoritative
+`payment_attempt` source; impact: paid and payment-quality analysis cannot
+execute at the fixed clock; next action: publish reviewed historical authority
+or choose a later audit clock. `analysis_contract_owner` owns the
+`source_reconciliation:market_dashboard` contract-partial path; impact: the
+only claim-ready market release cannot satisfy the requested reconciliation;
+next action: complete the reviewed query/evidence contract. `data_quality_owner`
+owns gameplay and channel context-only releases; impact: they can constrain
+claims but cannot support the configured claim ceiling; next action: review
+evidence readiness. `bi_agent_runtime_owner` owns missing-route and reuse
+coverage; impact: supported obligations are frequently accepted without a
+persisted executed/degraded outcome; next action: compile every required
+authority-resolved obligation and persist terminal outcomes. No repair keys on
+an eval sentence, case id, or individual model output.
 
 Final local artifacts:
 
