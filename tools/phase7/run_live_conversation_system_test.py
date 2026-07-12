@@ -23,6 +23,9 @@ from bi_agent.runtime.analysis_obligations import (
     resolve_analysis_obligations,
 )
 from bi_agent.runtime.analysis_contracts import (
+    CompletenessReport,
+    QueryContract,
+    QueryResultEnvelope,
     analysis_contract_from_dict,
     query_contract_signature,
 )
@@ -682,7 +685,11 @@ def _derive_plan_capability_outcomes(
     duplicate_query_refs: set[str] = set()
     for query in records("query_contracts"):
         query_ref = str(query.get("query_contract_id") or "")
-        if not query_ref or query_ref in query_contracts:
+        if (
+            set(query) != set(QueryContract.__dataclass_fields__)
+            or not query_ref
+            or query_ref in query_contracts
+        ):
             duplicate_query_refs.add(query_ref)
             continue
         try:
@@ -696,15 +703,27 @@ def _derive_plan_capability_outcomes(
         query_contracts.pop(query_ref, None)
 
     results_by_query: dict[str, list[Mapping[str, Any]]] = {}
+    result_fields = set(QueryResultEnvelope.__dataclass_fields__) - {"rows"}
     for result in records("query_results"):
+        if set(result) != result_fields:
+            continue
         query_ref = str(result.get("query_contract_ref") or "")
         if query_ref:
             results_by_query.setdefault(query_ref, []).append(result)
-    reports_by_ref = {
-        str(report.get("report_ref") or ""): report
-        for report in records("completeness_reports")
-        if str(report.get("report_ref") or "")
-    }
+    reports_by_ref: dict[str, Mapping[str, Any]] = {}
+    duplicate_report_refs: set[str] = set()
+    for report in records("completeness_reports"):
+        report_ref = str(report.get("report_ref") or "")
+        if (
+            set(report) != set(CompletenessReport.__dataclass_fields__)
+            or not report_ref
+            or report_ref in reports_by_ref
+        ):
+            duplicate_report_refs.add(report_ref)
+            continue
+        reports_by_ref[report_ref] = report
+    for report_ref in duplicate_report_refs:
+        reports_by_ref.pop(report_ref, None)
 
     outcomes: dict[str, set[str]] = {}
     for plan in records("capability_execution_plans"):

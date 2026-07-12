@@ -119,9 +119,20 @@ def _persisted_plan_authority() -> tuple[dict[str, object], RuntimeContractRegis
         "query_contracts": [query],
         "query_results": [{
             "query_contract_ref": query_ref,
+            "query_id": "clickhouse:plan-authority",
+            "query_hash": "query-hash",
             "result_ref": result_ref,
+            "rows_ref": "rows:plan-authority",
+            "row_count": 1,
             "completeness_report_ref": report_ref,
             "execution_status": "succeeded",
+            "observed_schema": {"window_id": "string", "paid_amount": "Decimal"},
+            "observed_windows": ["target_day"],
+            "observed_grain": ["window_id"],
+            "source_snapshot_refs": ["snapshot:market"],
+            "provider_stats": {},
+            "failure_reason": "",
+            "execution_attempt_ref": "attempt:plan-authority",
         }],
         "completeness_reports": [{
             "report_ref": report_ref,
@@ -407,6 +418,8 @@ def test_capability_outcome_executes_from_persisted_plan_query_result_chain():
         "failed_assertion",
         "bad_query_signature",
         "bad_capability_signature",
+        "malformed_result",
+        "malformed_completeness",
     ],
 )
 def test_capability_outcome_rejects_incomplete_or_mismatched_plan_query_chain(
@@ -439,6 +452,10 @@ def test_capability_outcome_rejects_incomplete_or_mismatched_plan_query_chain(
         authority["capability_execution_plans"][0][
             "capability_contract_signature"
         ] = "bad"
+    elif mutation == "malformed_result":
+        authority["query_results"][0].pop("query_hash")
+    elif mutation == "malformed_completeness":
+        authority["completeness_reports"][0]["unexpected"] = True
 
     assert _derive_capability_outcomes(
         ("market_health_compare",),
