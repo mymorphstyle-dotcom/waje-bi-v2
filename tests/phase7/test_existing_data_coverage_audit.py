@@ -895,38 +895,31 @@ def test_obligation_review_rejects_binding_result_without_persisted_plan_chain()
         ),
     ],
 )
-def test_obligation_review_rejects_every_nonterminal_required_capability_outcome(
+def test_capability_outcome_derivation_rejects_every_nonterminal_outcome(
     accepted_graph, runtime_authority, expected_outcome
 ):
-    from tools.phase7.run_live_conversation_system_test import review_case_obligations
-
-    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
-    review = review_case_obligations(
-        {
-            "status": "completed",
-            "answer_package": {"summary": "terminal boundary response"},
-            "accepted_graph": accepted_graph,
-            "scenario": {
-                "required_capabilities": ["answer_verify"],
-                "expected_dataset_states": {},
-                "allowed_claim_ceiling": "trust_boundary",
-                "terminal_boundary": "verified_answer",
-            },
-            "runtime_authority": runtime_authority,
-        },
-        registry,
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_capability_outcomes,
     )
 
-    assert review["capability_outcomes"] == {"answer_verify": expected_outcome}
-    assert review["nonterminal_required_capabilities"] == ["answer_verify"]
-    assert review["hard_acceptance_passed"] is False
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    outcomes = _derive_capability_outcomes(
+        ("answer_verify",),
+        accepted_capabilities=set(accepted_graph),
+        authority=runtime_authority,
+        registry=registry,
+    )
+
+    assert outcomes == {"answer_verify": expected_outcome}
 
 
 @pytest.mark.parametrize("terminal_outcome", ["executed", "degraded", "blocked"])
-def test_obligation_review_accepts_only_authority_backed_terminal_capability_outcomes(
+def test_capability_outcome_derivation_accepts_only_authority_backed_terminal_outcomes(
     terminal_outcome
 ):
-    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_capability_outcomes,
+    )
 
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
     accepted_graph = [] if terminal_outcome == "blocked" else ["answer_verify"]
@@ -967,34 +960,15 @@ def test_obligation_review_accepts_only_authority_backed_terminal_capability_out
                 "result_refs": ["result:answer-verify"],
             }],
         }
-    review = review_case_obligations(
-        {
-            "status": "completed",
-            "answer_package": {"summary": "terminal boundary response"},
-            "accepted_graph": accepted_graph,
-            "scenario": {
-                "required_capabilities": ["answer_verify"],
-                "expected_dataset_states": {},
-                "allowed_claim_ceiling": "trust_boundary",
-                "terminal_boundary": "verified_answer",
-            },
-            "runtime_authority": runtime_authority,
-        },
-        registry,
+    outcomes = _derive_capability_outcomes(
+        ("answer_verify",),
+        accepted_capabilities=set(accepted_graph),
+        authority=runtime_authority,
+        registry=registry,
     )
 
     expected = "blocked" if terminal_outcome == "blocked" else "unobserved"
-    assert review["capability_outcomes"]["answer_verify"] == expected
-    if terminal_outcome == "blocked":
-        assert review["capability_outcomes"] == {
-            "data_quality_profile": "blocked",
-            "metric_coverage_profile": "blocked",
-            "answer_verify": "blocked",
-        }
-        assert review["nonterminal_required_capabilities"] == []
-    else:
-        assert review["nonterminal_required_capabilities"] == ["answer_verify"]
-    assert review["hard_acceptance_passed"] is (terminal_outcome == "blocked")
+    assert outcomes == {"answer_verify": expected}
 
 
 def test_cli_case_selection_rejects_conflicts_cross_suite_and_unknown():

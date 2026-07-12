@@ -204,6 +204,7 @@ def test_obligation_review_uses_persisted_family_and_reports_authored_mismatch()
         ],
         "scenario": {
             "question_family": "business_object_impact_review",
+            "required_capabilities": ["event_window_compare"],
             "allowed_claim_ceiling": "trust_boundary",
             "terminal_boundary": "verified_answer",
         },
@@ -223,6 +224,20 @@ def test_obligation_review_uses_persisted_family_and_reports_authored_mismatch()
         "segment_breakdown",
         "segment_shift_compare",
     ]
+    assert review["authored_required_capabilities"] == ["event_window_compare"]
+    assert review["authored_required_capability_mismatches"] == [
+        "event_window_compare"
+    ]
+    assert review["required_capability_authority_diff"] == {
+        "authored_only": ["event_window_compare"],
+        "derived_only": [
+            "data_quality_profile",
+            "answer_verify",
+            "gameplay_activity_context",
+            "segment_breakdown",
+            "segment_shift_compare",
+        ],
+    }
 
 
 @pytest.mark.parametrize(
@@ -266,42 +281,112 @@ def test_obligation_review_fails_closed_without_one_valid_persisted_family(
 
 
 @pytest.mark.parametrize(
-    "artifact_state",
+    ("artifact_state", "expected_error"),
     [
-        "missing",
-        "corrupt",
-        "run_mismatch",
-        "missing_expected_run_id",
-        "missing_payload_run_id",
+        ("missing", "artifact_missing"),
+        ("corrupt", "artifact_invalid"),
+        ("run_mismatch", "run_id_mismatch"),
+        ("missing_expected_run_id", "run_id_missing"),
+        ("missing_payload_run_id", "persisted_run_id_missing"),
+        ("contract_id_mismatch", "analysis_contract_id_mismatch"),
+        ("effective_contract_mismatch", "effective_analysis_contract_id_mismatch"),
     ],
 )
 def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
-    tmp_path, artifact_state
+    tmp_path, monkeypatch, artifact_state, expected_error
 ):
-    from tools.phase7.run_live_conversation_system_test import _runtime_audit_package
+    from tools.phase7 import run_live_conversation_system_test as system_test
 
-    path = tmp_path / "answer_package.json"
-    if artifact_state == "corrupt":
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    path = artifact_root / "answer_package.json"
+    run_id = "run-expected"
+    contract = {
+        **_analysis_contract(_canonical_gap()),
+        "analysis_contract_id": f"analysis:{run_id}:1",
+    }
+    payload = {
+        "run_id": run_id,
+        "admin_audit": {"analysis_contract": contract},
+    }
+    if artifact_state == "missing":
+        pass
+    elif artifact_state == "corrupt":
         path.write_text("{not-json", encoding="utf-8")
     elif artifact_state == "run_mismatch":
-        path.write_text(json.dumps({"run_id": "run-other"}), encoding="utf-8")
+        path.write_text(json.dumps({**payload, "run_id": "run-other"}), encoding="utf-8")
     elif artifact_state == "missing_expected_run_id":
-        path.write_text(json.dumps({"run_id": "run-artifact"}), encoding="utf-8")
+        path.write_text(json.dumps(payload), encoding="utf-8")
     elif artifact_state == "missing_payload_run_id":
-        path.write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+        path.write_text(json.dumps({**payload, "run_id": ""}), encoding="utf-8")
+    elif artifact_state == "contract_id_mismatch":
+        stale = dict(contract)
+        stale["analysis_contract_id"] = "analysis:run-stale:1"
+        path.write_text(
+            json.dumps({**payload, "admin_audit": {"analysis_contract": stale}}),
+            encoding="utf-8",
+        )
+    else:
+        path.write_text(json.dumps(payload), encoding="utf-8")
     result = {
         "artifact_path": str(path),
         "answer_package": {
+            "artifact_path": str(path),
+            "analysis_contract": (
+                {**contract, "analysis_contract_id": "analysis:run-stale:1"}
+                if artifact_state == "effective_contract_mismatch"
+                else contract
+            ),
             "admin_audit": {
                 "analysis_contract": _analysis_contract(_canonical_gap())
             },
         },
     }
     if artifact_state != "missing_expected_run_id":
-        result["run_id"] = "run-expected"
-        result["answer_package"]["run_id"] = "run-expected"
+        result["run_id"] = run_id
 
-    assert _runtime_audit_package(result) == {}
+    assert system_test._runtime_audit_package(result) == {
+        "_authority_error": expected_error
+    }
+
+
+def test_runtime_audit_package_rejects_client_path_fallback(tmp_path, monkeypatch):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    (tmp_path / "artifacts").mkdir()
+
+    assert system_test._runtime_audit_package({
+        "run_id": "run-expected",
+        "answer_package": {"artifact_path": "artifacts/client.json"},
+    }) == {"_authority_error": "artifact_path_missing"}
+
+
+@pytest.mark.parametrize("path_kind", ["absolute_outside", "traversal", "symlink_escape"])
+def test_runtime_audit_package_rejects_artifact_path_escape(
+    tmp_path, monkeypatch, path_kind
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    if path_kind == "absolute_outside":
+        path = str(outside)
+    elif path_kind == "traversal":
+        path = "artifacts/../outside.json"
+    else:
+        link = artifact_root / "escape.json"
+        link.symlink_to(outside)
+        path = str(link)
+
+    assert system_test._runtime_audit_package({
+        "run_id": "run-expected",
+        "artifact_path": path,
+    }) == {"_authority_error": "artifact_path_outside_root"}
 
 
 @pytest.mark.parametrize(
@@ -739,13 +824,12 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
     contract = AnalysisContract(
         **{
             **analysis_contract_from_dict(authority["analysis_contract"]).__dict__,
-            "question_families": ("business_object_impact_review",),
+            "question_families": ("revenue_health_review",),
             "capability_requirements": (
                 "market_health_compare",
                 "source_reconciliation",
                 "data_quality_profile",
-                "gameplay_activity_context",
-                "event_window_compare",
+                "formula_decompose",
             ),
             "contract_gaps": (
                 gap,
@@ -765,8 +849,7 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
                     )
                     for capability_id in (
                         "data_quality_profile",
-                        "gameplay_activity_context",
-                        "event_window_compare",
+                        "formula_decompose",
                     )
                 ),
             ),
@@ -778,7 +861,7 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
         "answer_package": {"summary": "terminal"},
         "accepted_graph": ["market_health_compare"],
         "scenario": {
-            "question_family": "business_object_impact_review",
+            "question_family": "revenue_health_review",
             "required_capabilities": [
                 "market_health_compare",
                 "source_reconciliation",
@@ -815,11 +898,12 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
 
     assert review["capability_outcomes"] == {
         "data_quality_profile": "blocked",
-        "gameplay_activity_context": "blocked",
-        "event_window_compare": "blocked",
+        "formula_decompose": "blocked",
         "market_health_compare": "executed",
-        "source_reconciliation": "blocked",
     }
+    assert review["authored_required_capability_mismatches"] == [
+        "source_reconciliation"
+    ]
     assert review["capability_state_mismatches"] == []
     assert review["terminal_boundary"] == "verified_answer"
     assert review["terminal_outcome"] == "verified_answer"
@@ -827,9 +911,11 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
         "market_dashboard": "contract_partial"
     }
     assert review["expected_dataset_states"] == {
-        "market_dashboard": "contract_partial"
+        "market_dashboard": "executable"
     }
-    assert review["missing_current_data_obligations"] == []
+    assert review["missing_current_data_obligations"] == [
+        "market_dashboard:executable"
+    ]
     assert review["observed_capability_dataset_states"] == {
         "market_health_compare": [{
             "cell_id": "market_health_compare:market_dashboard",

@@ -267,8 +267,7 @@ def review_case_obligations(
         dict.fromkeys(
             (*resolution.required_capabilities,
              *resolution.conditional_capabilities,
-             *resolution.independent_capabilities,
-             *(str(item) for item in scenario.get("required_capabilities") or ()))
+             *resolution.independent_capabilities)
         )
     )
     authored_required = tuple(
@@ -433,6 +432,18 @@ def review_case_obligations(
             for capability_id in authored_required
             if capability_id not in required
         ],
+        "required_capability_authority_diff": {
+            "authored_only": [
+                capability_id
+                for capability_id in authored_required
+                if capability_id not in required
+            ],
+            "derived_only": [
+                capability_id
+                for capability_id in required
+                if capability_id not in authored_required
+            ],
+        },
         "required_capabilities": list(required),
         "conditional_capabilities": list(resolution.conditional_capabilities),
         "independent_capabilities": list(resolution.independent_capabilities),
@@ -490,6 +501,9 @@ def _persisted_question_family_authority(
     authored_family: str,
 ) -> tuple[str, str]:
     """Resolve one canonical family from the persisted effective contract."""
+    authority_error = str(authority.get("_authority_error") or "")
+    if authority_error:
+        return "", authority_error
     admin = authority.get("admin_audit") or authority
     if not isinstance(admin, Mapping):
         return "", "missing"
@@ -2228,25 +2242,61 @@ def _report_is_contract_accepted(
 
 
 def _runtime_audit_package(result: Mapping[str, Any]) -> dict[str, Any]:
-    client_package = result.get("answer_package") or {}
-    if not isinstance(client_package, Mapping):
-        client_package = {}
-    raw_path = result.get("artifact_path") or client_package.get("artifact_path")
+    def failure(reason: str) -> dict[str, Any]:
+        return {"_authority_error": reason}
+
+    raw_path = result.get("artifact_path")
     if not isinstance(raw_path, str) or not raw_path.strip():
-        return {}
-    path = Path(raw_path)
-    if not path.is_absolute():
-        path = ROOT / path
+        return failure("artifact_path_missing")
+    raw = Path(raw_path)
+    if ".." in raw.parts:
+        return failure("artifact_path_outside_root")
+    artifact_root = (ROOT / "artifacts").resolve()
+    candidate = raw if raw.is_absolute() else ROOT / raw
+    try:
+        path = candidate.resolve(strict=True)
+        path.relative_to(artifact_root)
+    except FileNotFoundError:
+        return failure("artifact_missing")
+    except (OSError, RuntimeError, ValueError):
+        return failure("artifact_path_outside_root")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return {}
+        return failure("artifact_invalid")
     if not isinstance(payload, Mapping):
-        return {}
-    expected_run_id = str(result.get("run_id") or client_package.get("run_id") or "")
+        return failure("artifact_invalid")
+    expected_run_id = str(result.get("run_id") or "")
     payload_run_id = str(payload.get("run_id") or "")
-    if not expected_run_id or not payload_run_id or payload_run_id != expected_run_id:
-        return {}
+    if not expected_run_id:
+        return failure("run_id_missing")
+    if not payload_run_id:
+        return failure("persisted_run_id_missing")
+    if payload_run_id != expected_run_id:
+        return failure("run_id_mismatch")
+    admin = payload.get("admin_audit")
+    if not isinstance(admin, Mapping):
+        return failure("persisted_analysis_contract_missing")
+    raw_contract = admin.get("analysis_contract")
+    if not isinstance(raw_contract, Mapping):
+        return failure("persisted_analysis_contract_missing")
+    try:
+        persisted_contract = analysis_contract_from_dict(raw_contract)
+    except (KeyError, TypeError, ValueError):
+        return failure("persisted_analysis_contract_invalid")
+    expected_contract_id = f"analysis:{expected_run_id}:1"
+    if persisted_contract.analysis_contract_id != expected_contract_id:
+        return failure("analysis_contract_id_mismatch")
+    client_package = result.get("answer_package") or {}
+    if not isinstance(client_package, Mapping):
+        client_package = {}
+    effective = result.get("analysis_contract") or client_package.get(
+        "analysis_contract"
+    )
+    if isinstance(effective, Mapping) and effective:
+        effective_id = str(effective.get("analysis_contract_id") or "")
+        if effective_id and effective_id != persisted_contract.analysis_contract_id:
+            return failure("effective_analysis_contract_id_mismatch")
     return dict(payload)
 
 
