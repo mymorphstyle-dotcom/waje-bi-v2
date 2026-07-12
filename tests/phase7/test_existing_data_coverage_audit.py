@@ -63,6 +63,19 @@ def test_suite_selector_keeps_fixed_eight_and_platform_tracks_distinct():
     assert {case["group"] for case in platform} == {"platform_current_data"}
 
 
+def test_all_suite_claim_ceilings_use_runtime_maximum_strength_taxonomy():
+    from tools.phase7.run_live_conversation_system_test import load_suite_cases
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    for suite in ("fixed-eight", "platform-current-data"):
+        for case in load_suite_cases(suite):
+            for turn in case["turns"]:
+                ceiling = str(
+                    (turn.get("scenario") or {}).get("allowed_claim_ceiling") or ""
+                )
+                assert registry.maximum_claim_strength_rank(ceiling) >= 0
+
+
 def test_obligation_review_resolves_contract_and_reports_typed_gaps():
     from tools.phase7.run_live_conversation_system_test import (
         review_case_obligations,

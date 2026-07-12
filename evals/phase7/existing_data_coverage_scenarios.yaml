@@ -141,6 +141,6 @@ conversation_cases:
           expected_dataset_states:
             paid_order_success: executable
           observed_dataset_states: {}
-          allowed_claim_ceiling: verified_observation
+          allowed_claim_ceiling: trust_boundary
           terminal_boundary: verified_answer
           clarification_resume: required

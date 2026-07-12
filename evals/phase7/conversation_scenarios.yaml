@@ -834,7 +834,7 @@ conversation_cases:
           required_capabilities: [segment_contribution, joint_attribution, outlier_scan]
           expected_dataset_states: {paid_order_success: executable, payment_attempt: source_unbound}
           excluded_inputs: {payment_attempt: missing_contract}
-          allowed_claim_ceiling: verified_observation
+          allowed_claim_ceiling: trust_boundary
           terminal_boundary: verified_answer
           reuse: required
         expect:

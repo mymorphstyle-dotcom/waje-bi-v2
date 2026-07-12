@@ -13,6 +13,7 @@ claim_strength_taxonomy:
     high: 3
     strong: 4
   maximum_strength_ranks:
+    insufficient: 0
     directional: 1
     candidate_driver: 2
     candidate_mechanism: 2

@@ -63,6 +63,7 @@ _REQUIRED_CLAIM_STRENGTHS = frozenset(
 )
 _REQUIRED_MAXIMUM_STRENGTHS = frozenset(
     {
+        "insufficient",
         "directional",
         "candidate_driver",
         "candidate_mechanism",
@@ -377,6 +378,7 @@ def _validate_claim_strength_taxonomy(value: Any) -> None:
         raise ValueError("runtime_claim_strength_taxonomy_order_invalid")
     maximum_ranks = value["maximum_strength_ranks"]
     expected_maximums = {
+        "insufficient": 0,
         "directional": claim_ranks["observed"],
         "candidate_driver": claim_ranks["medium"],
         "candidate_mechanism": claim_ranks["medium"],
