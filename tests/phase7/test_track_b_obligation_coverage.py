@@ -139,6 +139,12 @@ def test_independent_capability_selects_its_dataset_authority_cell_only(
                     "question_families": [],
                     "state": "contract_partial",
                 },
+                "market_health_compare:unrelated_family": {
+                    "capability": "market_health_compare",
+                    "datasets": ["market_dashboard"],
+                    "question_families": ["paid_amount_change_explanation"],
+                    "state": "contract_partial",
+                },
             }
         },
     )

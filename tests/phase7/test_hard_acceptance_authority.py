@@ -245,6 +245,10 @@ def test_obligation_review_uses_persisted_family_and_reports_authored_mismatch()
     [
         ([], "missing"),
         (["unknown_family"], "invalid"),
+        (
+            ["business_object_impact_review", "business_object_impact_review"],
+            "invalid_contract",
+        ),
     ],
 )
 def test_obligation_review_fails_closed_without_one_valid_persisted_family(

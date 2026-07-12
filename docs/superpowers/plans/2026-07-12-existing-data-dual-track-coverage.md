@@ -1066,9 +1066,8 @@ The persisted set may contain a primary business family plus orthogonal trust,
 evidence, or data-quality families. Resolve all entries, union capability
 obligations with registry ordering and stable de-duplication, and retain
 per-family capability provenance. Report authored and persisted family sets
-separately. Unknown or malformed entries fail closed. More than one family is
-not ambiguous by itself; reject a combination only when a versioned registry
-contract explicitly declares mutual exclusion.
+separately. Unknown, malformed, or duplicate entries fail closed. More than one
+distinct canonical family is valid and is not ambiguous by itself.
 
 Hard acceptance is derived from persisted authority for every required
 capability. Only `executed`, `degraded`, or `blocked` are terminal outcomes;

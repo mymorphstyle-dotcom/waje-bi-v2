@@ -523,9 +523,11 @@ def _persisted_question_family_authority(
         contract = analysis_contract_from_dict(raw_contract)
     except (KeyError, TypeError, ValueError):
         return (), "invalid_contract"
-    families = tuple(dict.fromkeys(contract.question_families))
+    families = contract.question_families
     if not families:
         return (), "missing"
+    if len(set(families)) != len(families):
+        return (), "invalid_contract"
     if any(family not in registry.question_family_ids for family in families):
         return (), "invalid"
     return families, "matched" if authored_family in families else "mismatch"
@@ -700,7 +702,9 @@ def _authority_resolved_dataset_states(
             if dataset_id not in datasets:
                 continue
             dataset_states.append(str(cell.get("state") or ""))
-            if capability in required_set:
+            if capability in required_set and (
+                not families or bool(set(question_families) & families)
+            ):
                 required_states.append(str(cell.get("state") or ""))
             if set(question_families) & families:
                 family_states.append(str(cell.get("state") or ""))

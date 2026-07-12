@@ -199,9 +199,8 @@ the reviewed obligation resolution across every persisted family, preserves
 registry ordering and stable de-duplication, and records the contributing
 families for every capability. Authored scenario families remain expectation
 inputs for mismatch reporting and cannot replace or narrow this persisted set.
-Multiplicity alone is valid. Evaluation fails closed for an unknown or invalid
-family, and treats a combination as incompatible only when the runtime registry
-explicitly declares those families mutually exclusive.
+Multiplicity alone is valid when every entry is a distinct canonical registry
+family. Unknown, invalid, or duplicate entries fail closed.
 
 ## Acceptance Track A: Fixed Eight Questions
 
