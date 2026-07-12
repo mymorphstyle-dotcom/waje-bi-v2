@@ -694,6 +694,12 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
                 "question_families": [],
                 "state": "executable",
             },
+            "source_reconciliation:market_dashboard": {
+                "capability": "source_reconciliation",
+                "datasets": ["market_dashboard"],
+                "question_families": [],
+                "state": "contract_partial",
+            },
         }
     }
 
@@ -706,12 +712,15 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
         "source_reconciliation": "blocked",
     }
     assert review["capability_state_mismatches"] == []
+    assert review["terminal_boundary"] == "verified_answer"
+    assert review["terminal_outcome"] == "verified_answer"
     assert review["observed_dataset_states"] == {
         "market_dashboard": "contract_partial"
     }
-    assert review["missing_current_data_obligations"] == [
-        "market_dashboard:executable"
-    ]
+    assert review["expected_dataset_states"] == {
+        "market_dashboard": "contract_partial"
+    }
+    assert review["missing_current_data_obligations"] == []
     assert review["observed_capability_dataset_states"] == {
         "market_health_compare": [{
             "cell_id": "market_health_compare:market_dashboard",

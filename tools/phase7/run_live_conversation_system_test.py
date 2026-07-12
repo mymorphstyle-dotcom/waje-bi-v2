@@ -370,8 +370,15 @@ def review_case_obligations(
         )
     ]
     claim_review = _review_claim_ceiling(authority, scenario, registry)
-    resolved_terminal_boundary = _authority_resolved_terminal_boundary(
-        str(scenario.get("terminal_boundary") or ""), expected_states
+    authored_terminal_boundary = str(scenario.get("terminal_boundary") or "")
+    resolved_terminal_boundary = (
+        _authority_resolved_terminal_boundary(
+            authored_terminal_boundary, expected_capability_states
+        )
+        if capability_authority_gate
+        else _authority_resolved_terminal_boundary(
+            authored_terminal_boundary, expected_states
+        )
     )
     terminal_scenario = dict(scenario)
     terminal_scenario["terminal_boundary"] = resolved_terminal_boundary

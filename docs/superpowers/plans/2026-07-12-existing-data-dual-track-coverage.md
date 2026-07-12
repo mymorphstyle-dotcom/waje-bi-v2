@@ -1075,6 +1075,11 @@ typed-gap aggregates remain visible for compatibility and reporting, but do not
 gate that case; this prevents a partial sibling capability on the same dataset
 from masking an executed required capability. Cases without capability-state
 authority retain the dataset-level gate.
+Terminal-boundary resolution uses the same mode. With capability-state
+authority, resolve only from those scoped states and the reviewed authored
+boundary; dataset aggregate state cannot promote an unrelated partial sibling
+into `contract_allowed_partial`. Dataset-only legacy cases retain the previous
+boundary resolver.
 
 Treat scenario `expected_dataset_states` as reviewed authored hypotheses and
 matrix-role declarations, not as current runtime authority. Before reviewing a

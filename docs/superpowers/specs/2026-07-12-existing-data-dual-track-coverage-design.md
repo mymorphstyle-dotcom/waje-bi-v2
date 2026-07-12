@@ -213,6 +213,10 @@ Acceptance requires:
   unrelated partial capability on the same dataset cannot overwrite an
   executed capability; dataset aggregation remains the legacy fallback when
   no capability-state authority exists;
+- terminal-boundary resolution follows the same authority mode: capability
+  state authority may refine the reviewed boundary, while dataset collapse is
+  reporting-only and cannot rewrite `verified_answer` because of an unrelated
+  partial sibling capability;
 - every currently executable required query has snapshot, result,
   completeness, binding, ContextManifest, and ReuseDecision authority;
 - market, gameplay, and external-event evidence survives unrelated paid-source
