@@ -1054,6 +1054,12 @@ when their bindings cannot be produced. Evaluation validates blocked gaps with
 the complete compiler-owned gap-ID grammar and binds each object ID to those
 persisted requested IDs or successful bindings; marker-prefix checks are not
 accepted as authority.
+When the runtime has not materialized a capability-binding record, evaluation
+may derive `executed` or `degraded` from the run-matched persisted admin audit.
+It must validate the capability contract ref/signature and every required plan
+slot through exact query-contract signatures, succeeded result refs, and linked
+completeness reports. Runtime summary flags and client-package fallbacks remain
+non-authoritative.
 
 Treat scenario `expected_dataset_states` as reviewed authored hypotheses and
 matrix-role declarations, not as current runtime authority. Before reviewing a

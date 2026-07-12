@@ -188,6 +188,11 @@ Acceptance requires:
   dimension identities, and blocked-gap review uses the compiler's complete
   gap-ID grammar plus those identities; a namespace, marker prefix, or client
   package alone cannot establish a terminal gap;
+- `executed` and `degraded` may be established by a persisted capability
+  binding or by the run-matched admin audit's validated capability execution
+  plan. The plan route must preserve the reviewed capability ref/signature and
+  an exact plan-slot -> query-contract -> result -> completeness chain; summary
+  booleans and client packages do not establish an outcome;
 - every currently executable required query has snapshot, result,
   completeness, binding, ContextManifest, and ReuseDecision authority;
 - market, gameplay, and external-event evidence survives unrelated paid-source

@@ -4,7 +4,15 @@ import json
 
 import pytest
 
-from bi_agent.runtime.analysis_contracts import AnalysisContract, ContractGap
+from bi_agent.runtime.analysis_contracts import (
+    AnalysisContract,
+    ContractGap,
+    query_contract_signature,
+)
+from bi_agent.runtime.runtime_contract_registry import (
+    CANONICAL_RUNTIME_BINDINGS_PATH,
+    RuntimeContractRegistry,
+)
 
 
 def _analysis_contract(*gaps: ContractGap) -> dict[str, object]:
@@ -39,6 +47,98 @@ def _canonical_gap() -> ContractGap:
         requires_clarification=False,
         diagnostic_context={},
     )
+
+
+def _persisted_plan_authority() -> tuple[dict[str, object], RuntimeContractRegistry]:
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    capability_id = "market_health_compare"
+    policy = registry.capability_inputs(capability_id)
+    query_ref = "query:run-plan-authority:1"
+    accepted = tuple(policy["minimum_readiness"]["accepted_completeness"])
+    query_family = str(policy["query_families"][0])
+    plan = {
+        "capability_id": capability_id,
+        "capability_contract_ref": registry.capability_contract_ref(capability_id),
+        "required_input_slots": [{
+            "slot_id": query_family,
+            "required": True,
+            "query_contract_refs": [query_ref],
+            "validation_query_contract_refs": [],
+            "accepted_completeness": list(accepted),
+            "required_fields": ["window_id", "paid_amount"],
+            "required_window_ids": list(policy.get("required_windows") or ()),
+        }],
+        "optional_input_slots": [],
+        "merge_strategy": policy.get("merge_strategy") or "by_query_family",
+        "minimum_readiness": dict(policy["minimum_readiness"]),
+        "degradation_policy": dict(policy["degradation_policy"]),
+        "supported_evidence_types": list(policy["supported_evidence_types"]),
+        "maximum_claim_strength": policy["maximum_claim_strength"],
+        "analysis_contract_ref": "analysis:run-plan-authority:1",
+        "supported_claim_types": list(policy["supported_claim_types"]),
+        "capability_contract_version": registry.contract_version,
+        "capability_contract_signature": registry.capability_contract_signature(
+            capability_id
+        ),
+        "claim_strength_taxonomy_version": registry.claim_strength_taxonomy_version,
+        "maximum_claim_strength_rank": registry.maximum_claim_strength_rank(
+            str(policy["maximum_claim_strength"])
+        ),
+    }
+    query = {
+        "query_contract_id": query_ref,
+        "analysis_contract_ref": plan["analysis_contract_ref"],
+        "query_intent": query_family,
+        "dataset_snapshot_refs": ["snapshot:market"],
+        "metric_bindings": [],
+        "dimension_bindings": [],
+        "window_refs": [],
+        "resolved_windows": [],
+        "filters": [],
+        "result_shape": {
+            "required_fields": ["window_id", "paid_amount"],
+            "unique_key": ["window_id"],
+            "grain": ["window_id"],
+            "required_window_ids": [],
+            "result_semantics": "complete_aggregate",
+            "dimension_presence_policy": "paired_required",
+        },
+        "completeness_assertions": ["execution_succeeded"],
+        "permission_scope": "analyst",
+        "workload_class": "interactive_aggregate",
+        "query_parameters": {},
+        "query_role_ref": "query-role:test",
+        "reconciliation_binding": None,
+        "join_expectation": None,
+    }
+    query["contract_signature"] = query_contract_signature(query)
+    result_ref = "result:plan-authority"
+    report_ref = "completeness:plan-authority"
+    return {
+        "capability_execution_plans": [plan],
+        "query_contracts": [query],
+        "query_results": [{
+            "query_contract_ref": query_ref,
+            "result_ref": result_ref,
+            "completeness_report_ref": report_ref,
+            "execution_status": "succeeded",
+        }],
+        "completeness_reports": [{
+            "report_ref": report_ref,
+            "query_contract_ref": query_ref,
+            "result_ref": result_ref,
+            "completeness_status": "complete",
+            "analysis_readiness": "ready",
+            "assertion_results": [{
+                "assertion": "execution_succeeded",
+                "passed": True,
+                "failure_reasons": [],
+                "details": {},
+            }],
+            "failure_reasons": [],
+            "coverage_summary": {},
+        }],
+    }, registry
 
 
 @pytest.mark.parametrize(
@@ -280,3 +380,69 @@ def test_capability_block_accepts_canonical_source_override_gap():
         accepted_capabilities=set(),
         authority={"analysis_contract": contract},
     ) == {"answer_verify": "blocked"}
+
+
+def test_capability_outcome_executes_from_persisted_plan_query_result_chain():
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_capability_outcomes,
+    )
+
+    authority, registry = _persisted_plan_authority()
+    assert _derive_capability_outcomes(
+        ("market_health_compare",),
+        accepted_capabilities={"market_health_compare"},
+        authority=authority,
+        registry=registry,
+    ) == {"market_health_compare": "executed"}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "partial",
+        "missing_result",
+        "mismatched_query",
+        "mismatched_result",
+        "missing_completeness",
+        "failed_assertion",
+        "bad_query_signature",
+        "bad_capability_signature",
+    ],
+)
+def test_capability_outcome_rejects_incomplete_or_mismatched_plan_query_chain(
+    mutation
+):
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_capability_outcomes,
+    )
+
+    authority, registry = _persisted_plan_authority()
+    if mutation == "partial":
+        authority["completeness_reports"][0].update({
+            "completeness_status": "partial",
+            "analysis_readiness": "degraded",
+        })
+    elif mutation == "missing_result":
+        authority["query_results"] = []
+    elif mutation == "mismatched_query":
+        authority["query_results"][0]["query_contract_ref"] = "query:other"
+    elif mutation == "mismatched_result":
+        authority["completeness_reports"][0]["result_ref"] = "result:other"
+    elif mutation == "missing_completeness":
+        authority["completeness_reports"] = []
+    elif mutation == "failed_assertion":
+        authority["completeness_reports"][0]["assertion_results"][0]["passed"] = False
+        authority["completeness_reports"][0]["failure_reasons"] = ["execution_failed"]
+    elif mutation == "bad_query_signature":
+        authority["query_contracts"][0]["contract_signature"] = "bad"
+    elif mutation == "bad_capability_signature":
+        authority["capability_execution_plans"][0][
+            "capability_contract_signature"
+        ] = "bad"
+
+    assert _derive_capability_outcomes(
+        ("market_health_compare",),
+        accepted_capabilities={"market_health_compare"},
+        authority=authority,
+        registry=registry,
+    ) == {"market_health_compare": "unobserved"}

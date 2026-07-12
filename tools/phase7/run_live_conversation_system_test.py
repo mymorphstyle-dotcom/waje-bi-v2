@@ -22,7 +22,14 @@ from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
     resolve_analysis_obligations,
 )
-from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
+from bi_agent.runtime.analysis_contracts import (
+    analysis_contract_from_dict,
+    query_contract_signature,
+)
+from bi_agent.runtime.authoritative_query_chain import (
+    AuthoritativeQueryChainError,
+    validate_capability_plan_semantics,
+)
 from bi_agent.runtime.claim_provenance import (
     validate_trusted_claim_provenance_record,
     validate_verified_claim_record,
@@ -299,6 +306,7 @@ def review_case_obligations(
         required,
         accepted_capabilities=actual,
         authority=authority,
+        registry=registry,
     )
     nonterminal_capabilities = [
         capability_id
@@ -549,6 +557,7 @@ def _derive_capability_outcomes(
     *,
     accepted_capabilities: set[str],
     authority: Mapping[str, Any],
+    registry: RuntimeContractRegistry | None = None,
 ) -> dict[str, str]:
     executions = _mapping_items_for_keys(
         authority,
@@ -593,6 +602,11 @@ def _derive_capability_outcomes(
         capability_id = str(binding.get("capability_id") or "")
         if capability_id:
             bindings_by_capability.setdefault(capability_id, []).append(binding)
+    plan_outcomes = (
+        _derive_plan_capability_outcomes(authority, registry)
+        if registry is not None
+        else {}
+    )
 
     blocked_capabilities: set[str] = set()
     terminal_gap_types = {
@@ -627,7 +641,7 @@ def _derive_capability_outcomes(
 
     outcomes: dict[str, str] = {}
     for capability_id in required:
-        observed: set[str] = set()
+        observed: set[str] = set(plan_outcomes.get(capability_id, ()))
         for binding in bindings_by_capability.get(capability_id, ()):
             binding_status = str(binding.get("status") or "")
             for ref in binding.get("result_refs") or ():
@@ -648,6 +662,143 @@ def _derive_capability_outcomes(
             else "unobserved"
         )
     return outcomes
+
+
+def _derive_plan_capability_outcomes(
+    authority: Mapping[str, Any],
+    registry: RuntimeContractRegistry,
+) -> dict[str, set[str]]:
+    admin = authority.get("admin_audit") or authority
+    if not isinstance(admin, Mapping):
+        return {}
+
+    def records(key: str) -> tuple[Mapping[str, Any], ...]:
+        value = admin.get(key) or ()
+        if not isinstance(value, (list, tuple)):
+            return ()
+        return tuple(item for item in value if isinstance(item, Mapping))
+
+    query_contracts: dict[str, Mapping[str, Any]] = {}
+    duplicate_query_refs: set[str] = set()
+    for query in records("query_contracts"):
+        query_ref = str(query.get("query_contract_id") or "")
+        if not query_ref or query_ref in query_contracts:
+            duplicate_query_refs.add(query_ref)
+            continue
+        try:
+            signature = query_contract_signature(query)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if signature != str(query.get("contract_signature") or ""):
+            continue
+        query_contracts[query_ref] = query
+    for query_ref in duplicate_query_refs:
+        query_contracts.pop(query_ref, None)
+
+    results_by_query: dict[str, list[Mapping[str, Any]]] = {}
+    for result in records("query_results"):
+        query_ref = str(result.get("query_contract_ref") or "")
+        if query_ref:
+            results_by_query.setdefault(query_ref, []).append(result)
+    reports_by_ref = {
+        str(report.get("report_ref") or ""): report
+        for report in records("completeness_reports")
+        if str(report.get("report_ref") or "")
+    }
+
+    outcomes: dict[str, set[str]] = {}
+    for plan in records("capability_execution_plans"):
+        try:
+            validate_capability_plan_semantics(plan, registry)
+        except (AuthoritativeQueryChainError, KeyError, TypeError, ValueError):
+            continue
+        capability_id = str(plan.get("capability_id") or "")
+        analysis_ref = str(plan.get("analysis_contract_ref") or "")
+        required_slots = tuple(
+            slot
+            for slot in plan.get("required_input_slots") or ()
+            if isinstance(slot, Mapping) and slot.get("required") is True
+        )
+        if not required_slots:
+            continue
+        slot_outcomes: list[str] = []
+        valid = True
+        for slot in required_slots:
+            primary_refs = tuple(slot.get("query_contract_refs") or ())
+            validation_refs = tuple(slot.get("validation_query_contract_refs") or ())
+            if not primary_refs:
+                valid = False
+                break
+            accepted = tuple(str(item) for item in slot.get("accepted_completeness") or ())
+            for query_ref in (*primary_refs, *validation_refs):
+                query = query_contracts.get(str(query_ref))
+                accepted_for_ref = ("complete",) if query_ref in validation_refs else accepted
+                outcome = _persisted_query_outcome(
+                    str(query_ref),
+                    query=query,
+                    analysis_contract_ref=analysis_ref,
+                    accepted_completeness=accepted_for_ref,
+                    results_by_query=results_by_query,
+                    reports_by_ref=reports_by_ref,
+                )
+                if not outcome:
+                    valid = False
+                    break
+                slot_outcomes.append(outcome)
+            if not valid:
+                break
+        if valid and slot_outcomes:
+            outcomes.setdefault(capability_id, set()).add(
+                "degraded" if "degraded" in slot_outcomes else "executed"
+            )
+    return outcomes
+
+
+def _persisted_query_outcome(
+    query_ref: str,
+    *,
+    query: Mapping[str, Any] | None,
+    analysis_contract_ref: str,
+    accepted_completeness: tuple[str, ...],
+    results_by_query: Mapping[str, list[Mapping[str, Any]]],
+    reports_by_ref: Mapping[str, Mapping[str, Any]],
+) -> str:
+    if (
+        query is None
+        or str(query.get("analysis_contract_ref") or "") != analysis_contract_ref
+    ):
+        return ""
+    results = results_by_query.get(query_ref) or ()
+    if len(results) != 1:
+        return ""
+    result = results[0]
+    result_ref = str(result.get("result_ref") or "")
+    report_ref = str(result.get("completeness_report_ref") or "")
+    report = reports_by_ref.get(report_ref)
+    if (
+        str(result.get("execution_status") or "") != "succeeded"
+        or not result_ref
+        or not report_ref
+        or report is None
+        or str(report.get("query_contract_ref") or "") != query_ref
+        or str(report.get("result_ref") or "") != result_ref
+        or str(report.get("report_ref") or "") != report_ref
+        or report.get("failure_reasons")
+    ):
+        return ""
+    assertions = report.get("assertion_results") or ()
+    if not assertions or any(
+        not isinstance(item, Mapping) or item.get("passed") is not True
+        for item in assertions
+    ):
+        return ""
+    completeness = str(report.get("completeness_status") or "")
+    readiness = str(report.get("analysis_readiness") or "")
+    if completeness == "complete" and readiness == "ready" and "complete" in accepted_completeness:
+        return "executed"
+    if completeness == "partial" and readiness == "degraded" and "partial" in accepted_completeness:
+        return "degraded"
+    return ""
 
 
 def _gap_identity_matches_contract(gap: Any, contract: Any) -> bool:
