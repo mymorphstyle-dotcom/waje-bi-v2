@@ -1679,7 +1679,7 @@ class LLMWorkflowTest(unittest.TestCase):
                     (),
                 )
 
-    def test_window_coverage_repair_offers_wait_without_changing_fixed_target(self):
+    def test_window_coverage_repair_recommends_terminal_degradation_and_allows_pause(self):
         gap = _business_query_repair_gap(({
             "action": "clarify",
             "reason": "window_coverage_failure",
@@ -1687,10 +1687,12 @@ class LLMWorkflowTest(unittest.TestCase):
             "failed_query_contract_ref": "query:internal",
         },))
 
-        self.assertEqual(len(gap["allowed_actions"]), 1)
-        action = gap["allowed_actions"][0]
-        self.assertEqual(action["action_kind"], "wait_for_source")
-        self.assertIn("不调整目标日期", action["business_semantics"])
+        self.assertEqual(len(gap["allowed_actions"]), 2)
+        continue_action, pause_action = gap["allowed_actions"]
+        self.assertEqual(continue_action["action_kind"], "omit_unavailable_context")
+        self.assertIn("固定目标窗口", continue_action["business_semantics"])
+        self.assertEqual(pause_action["action_kind"], "wait_for_source")
+        self.assertIn("不调整目标日期", pause_action["business_semantics"])
         self.assertNotIn("query:internal", json.dumps(gap, ensure_ascii=False))
 
     def test_workflow_and_persistence_share_answer_package_build_context(self):

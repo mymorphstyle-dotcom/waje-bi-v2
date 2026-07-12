@@ -442,7 +442,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         self.assertEqual(first["status"], "waiting_for_clarification")
         self.assertEqual(captured[0]["context_manifest"]["accepted_assumptions"], [])
-        self.assertEqual(resumed["status"], "completed")
+        self.assertEqual(resumed["status"], "completed", resumed)
         self.assertIsNone(resumed.get("clarification"))
         self.assertEqual(resumed["topic_id"], first["topic_id"])
         self.assertEqual(
@@ -490,6 +490,17 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
     def test_recommended_choice_advances_with_available_work_instead_of_wait_loop(self):
         calls = []
+        accepted_choice = {
+            "choice_id": "omit-context",
+            "action_kind": "omit_unavailable_context",
+            "business_label": "跳过背景证据继续",
+            "affected_capabilities": ["event_evidence"],
+            "source_run_id": "run-wait-action-original",
+        }
+        verified_package, authority_context, _ = _verified_delivery_package(
+            run_id="run-wait-action-resumed",
+            accepted_assumptions=(accepted_choice,),
+        )
 
         def workflow(request):
             calls.append(dict(request))
@@ -530,11 +541,31 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     },
                     analysis_runtime_records={},
                 )
-            return fake_workflow(request)
+            from tests.phase7.test_analysis_runtime_persistence import _authority_bundle
+
+            records = _authority_bundle(
+                run_id=request["run_id"],
+                thread_id=request["thread_id"],
+                topic_id=request["topic_id"],
+            )
+            return WorkflowRunResult(
+                status="draft",
+                run_id=request["run_id"],
+                answer_package=verified_package,
+                analysis_runtime_records=records,
+            )
 
         store = InMemoryConversationStore()
         store.save_analysis_runtime_records = lambda **_: "inserted"
-        core = ConversationAgentCore(store, workflow_runner=workflow)
+        core = ConversationAgentCore(
+            store,
+            workflow_runner=workflow,
+            evidence_resolver=authority_context["evidence_resolver"],
+            rows_loader=authority_context["rows_loader"],
+            evidence_writer=authority_context["evidence_resolver"]._runtime_writer(),
+            runtime_registry=authority_context["runtime_registry"],
+            release_resolver=authority_context["release_resolver"],
+        )
         first = core.run_message(
             thread_id="thread-wait-action",
             run_id="run-wait-action-original",
@@ -552,8 +583,17 @@ class AgentCoreBridgeTest(unittest.TestCase):
             first["clarification"]["recommended_choice_id"],
             "omit-context",
         )
-        self.assertEqual(resumed["status"], "completed")
+        self.assertEqual(resumed["status"], "completed", resumed)
         self.assertEqual(resumed["topic_id"], first["topic_id"])
+        self.assertNotIn("clarification", resumed)
+        self.assertEqual(
+            resumed["answer_package"]["verified_claims"][0]["claim_strength"],
+            "observed",
+        )
+        self.assertEqual(
+            resumed["answer_package"]["context_assumptions"],
+            [accepted_choice],
+        )
         self.assertEqual(len(calls), 2)
         self.assertEqual(
             calls[1]["accepted_degradation_choice"]["action_kind"],
