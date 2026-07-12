@@ -167,6 +167,8 @@ def build_answer_package(
             "follow_up_questions": follow_up_questions,
             "semantic_audit": semantic_audit,
             "quality_gate": quality_gate,
+            "contract_gap_diagnostics": contract_gap_diagnostics,
+            "accepted_degradation_choice": accepted_degradation_choice,
         },
         accepted_assumptions=accepted_assumptions,
     )
@@ -298,6 +300,28 @@ def build_answer_package(
                     "reason": str(exc),
                 }
             )
+    elif accepted_assumptions and not projection_errors:
+        context_owner = dict(context_manifest or {})
+        verified_manifest = build_context_manifest_record(
+            run_id=run_id,
+            thread_id=str(
+                context_owner.get("thread_id") or f"thread:runtime:{run_id}"
+            ),
+            topic_id=str(
+                context_owner.get("topic_id") or f"topic:runtime:{run_id}"
+            ),
+            sources=({
+                "type": "limitation",
+                "ref": (
+                    "limitation-authority:sha256:"
+                    f"{canonical_digest(accepted_assumptions)}"
+                ),
+                "can_support_claim": False,
+            },),
+            permission_context=context_owner.get("permission_context") or {},
+            accepted_assumptions=accepted_assumptions,
+            can_support_claims=False,
+        )
     if projection_errors:
         rejected = tuple(range(len(draft_claims)))
         verifier = {
@@ -543,7 +567,7 @@ def reverify_answer_package_for_delivery(
             assumption_errors.append(
                 {
                     "code": "accepted_assumptions_authority_mismatch",
-                    "reason": str(exc),
+                    "diagnostic": "authority_manifest_invalid",
                 }
             )
     authority_assumptions = _normalize_single_assumption(
@@ -553,18 +577,24 @@ def reverify_answer_package_for_delivery(
         authority_manifest.get("accepted_assumptions") or ()
     ):
         assumption_errors.append(
-            {"code": "accepted_assumptions_authority_mismatch"}
+            {
+                "code": "accepted_assumptions_authority_mismatch",
+                "diagnostic": "authority_shape_invalid",
+            }
         )
     authority_material = _material_assumption_projection(authority_assumptions)
-    if any(
-        not _single_assumption_shape_valid(layer)
-        or _material_assumption_projection(_normalize_single_assumption(layer))
-        != authority_material
-        for layer in candidate_layers
-    ):
-        assumption_errors.append(
-            {"code": "accepted_assumptions_authority_mismatch"}
-        )
+    layer_names = ("context", "graph", "choice")
+    for layer_name, layer in zip(layer_names, candidate_layers):
+        if (
+            not _single_assumption_shape_valid(layer)
+            or _material_assumption_projection(_normalize_single_assumption(layer))
+            != authority_material
+        ):
+            assumption_errors.append({
+                "code": "accepted_assumptions_authority_mismatch",
+                "diagnostic": "candidate_layer_mismatch",
+                "layer": layer_name,
+            })
     candidate["context_assumptions"] = to_jsonable(authority_assumptions)
     candidate["accepted_graph_metadata"] = {
         "accepted_assumptions": to_jsonable(authority_assumptions)
@@ -600,6 +630,12 @@ def reverify_answer_package_for_delivery(
             "follow_up_questions": candidate.get("follow_up_questions"),
             "semantic_audit": candidate.get("semantic_audit"),
             "quality_gate": candidate.get("quality_gate"),
+            "contract_gap_diagnostics": reported_admin.get(
+                "contract_gap_diagnostics"
+            ) or (),
+            "accepted_degradation_choice": candidate.get(
+                "accepted_degradation_choice"
+            ) or {},
         },
         accepted_assumptions=authority_assumptions,
     )
@@ -2972,6 +3008,31 @@ def _is_terminal_explanation_delivery(value: Any) -> bool:
         return False
     if re.search(r"\d+(?:\.\d+)?\s*(?:%|ngn|奈拉|元|万|亿)", visible, re.IGNORECASE):
         return False
+    accepted_choice = value.get("accepted_degradation_choice") or {}
+    if accepted_choice:
+        if raw.get("boundary_only") is not True or raw.get("structured_claim_ids") != []:
+            return False
+        known_gap_ids = {
+            str(item.get("gap_id"))
+            for item in value.get("contract_gap_diagnostics") or ()
+            if isinstance(item, Mapping) and item.get("gap_id")
+        }
+        used_gap_ids = {str(item) for item in raw.get("used_contract_gap_ids") or ()}
+        known_action_ids = {
+            str(item)
+            for item in (
+                accepted_choice.get("choice_id"),
+                accepted_choice.get("action_kind"),
+            )
+            if item
+        }
+        used_action_ids = {str(item) for item in raw.get("used_next_action_ids") or ()}
+        if (
+            not used_gap_ids.issubset(known_gap_ids)
+            or not used_action_ids.issubset(known_action_ids)
+            or not (used_gap_ids or used_action_ids)
+        ):
+            return False
     return True
 
 

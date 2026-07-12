@@ -43,10 +43,14 @@ def build_context_manifest_record(
     sources: Sequence[Mapping[str, Any]],
     permission_context: Mapping[str, Any] | None = None,
     accepted_assumptions: Sequence[Mapping[str, Any]] = (),
+    can_support_claims: bool = True,
 ) -> dict[str, Any]:
     if not run_id or not thread_id or not topic_id:
         raise EvidenceIntegrityError("context_manifest_owner_missing")
-    normalized_sources = _canonical_sources(sources)
+    normalized_sources = _canonical_sources(
+        sources,
+        can_support_claims=can_support_claims,
+    )
     if not normalized_sources:
         raise EvidenceIntegrityError("context_manifest_sources_missing")
     payload = canonical_value(
@@ -60,7 +64,7 @@ def build_context_manifest_record(
                 dict(item) for item in accepted_assumptions if isinstance(item, Mapping)
             ],
             "manifest_schema_version": _CONTEXT_MANIFEST_SCHEMA_VERSION,
-            "can_support_claims": True,
+            "can_support_claims": can_support_claims,
         }
     )
     digest = canonical_digest(payload)
@@ -217,6 +221,7 @@ def validated_context_manifest_record(
         sources=record.get("sources") or (),
         permission_context=record.get("permission_context") or {},
         accepted_assumptions=record.get("accepted_assumptions") or (),
+        can_support_claims=record.get("can_support_claims") is True,
     )
     if canonical_value(record) != canonical_value(rebuilt):
         raise EvidenceIntegrityError("context_manifest_integrity_invalid")
@@ -269,6 +274,8 @@ def validate_verified_claim_record(
 
 def _canonical_sources(
     sources: Sequence[Mapping[str, Any]],
+    *,
+    can_support_claims: bool = True,
 ) -> list[dict[str, Any]]:
     normalized = []
     seen = set()
@@ -279,14 +286,17 @@ def _canonical_sources(
             raise EvidenceIntegrityError("context_manifest_source_invalid")
         source_type = str(source.get("type") or "")
         ref = str(source.get("ref") or "")
-        if source_type not in {"evidence", "completeness"} or not ref:
+        allowed_types = {"evidence", "completeness"}
+        if not can_support_claims:
+            allowed_types.add("limitation")
+        if source_type not in allowed_types or not ref:
             raise EvidenceIntegrityError("context_manifest_source_invalid")
         item = {
             "type": source_type,
             "ref": ref,
             "can_support_claim": source.get("can_support_claim") is True,
         }
-        if not item["can_support_claim"]:
+        if item["can_support_claim"] is not can_support_claims:
             raise EvidenceIntegrityError("context_manifest_source_not_claim_ready")
         key = (source_type, ref)
         if key not in seen:

@@ -7737,6 +7737,26 @@ def _sanitize_terminal_explanation(
         value["repair_path"] = _terminal_repair_path(state, status)
     if _repair_path_invents_fixed_future_window(repair_path):
         value["repair_path"] = _terminal_repair_path(state, status)
+    gap_ids = [
+        str(item.get("gap_id"))
+        for item in state.get("contract_gap_diagnostics") or ()
+        if isinstance(item, Mapping) and item.get("gap_id")
+    ]
+    accepted_choice = state.get("request", {}).get("accepted_degradation_choice") or {}
+    next_action_ids = [
+        str(identifier)
+        for identifier in (
+            accepted_choice.get("choice_id"),
+            accepted_choice.get("action_kind"),
+        )
+        if identifier
+    ]
+    value.update({
+        "boundary_only": True,
+        "used_contract_gap_ids": gap_ids,
+        "used_next_action_ids": next_action_ids,
+        "structured_claim_ids": [],
+    })
     return value
 
 

@@ -154,6 +154,88 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     },
                 )
 
+    def test_zero_claim_degradation_has_context_only_assumption_authority(self):
+        choice = {
+            "choice_id": "omit-context",
+            "action_kind": "omit_unavailable_context",
+            "affected_capabilities": ["event_evidence"],
+        }
+        package = build_answer_package(
+            run_id="run-zero-claim-degradation",
+            draft_claims=(), evidence=(), checkpoint_events=(),
+            proposed_graph=(), accepted_graph=(),
+            rejected_or_degraded_mutations=(), validator_results=(),
+            sql_text="", sql_hash="", artifact_audit={},
+            final_explanation={
+                "status": "degraded",
+                "explanation": "当前证据不足以支持业务结论。",
+                "owner": "业务数据负责人",
+                "repair_path": "补齐背景证据后继续。",
+            },
+            context_manifest={
+                "thread_id": "thread-zero-claim",
+                "topic_id": "topic-zero-claim",
+                "permission_context": {"role": "analyst"},
+            },
+            context_assumptions=(choice,),
+            accepted_degradation_choice=choice,
+            compiler_runtime_plan={
+                "graph_metadata": {"accepted_assumptions": [choice]}
+            },
+        )
+        manifest = package["admin_audit"]["context_manifest"]
+        self.assertFalse(manifest["can_support_claims"])
+        self.assertEqual(manifest["accepted_assumptions"], [choice])
+        delivered = reverify_answer_package_for_delivery(
+            package,
+            evidence_resolver=None,
+            rows_loader=None,
+            runtime_registry=None,
+        )
+        errors = {
+            item.get("code")
+            for item in delivered["admin_audit"]["verifier"].get("errors", ())
+        }
+        self.assertNotIn("accepted_assumptions_authority_mismatch", errors)
+
+    def test_zero_claim_boundary_text_requires_typed_degradation_refs(self):
+        choice = {"choice_id": "omit-context", "action_kind": "omit_unavailable_context"}
+        base = {
+            "final_explanation": {
+                "status": "degraded",
+                "explanation": "当前证据不足以支持业务结论。",
+                "owner": "业务数据负责人",
+                "repair_path": "补齐背景证据后继续。",
+                "boundary_only": True,
+                "used_contract_gap_ids": ["gap:event"],
+                "used_next_action_ids": ["omit-context"],
+                "structured_claim_ids": [],
+            },
+            "contract_gap_diagnostics": [{"gap_id": "gap:event"}],
+            "accepted_degradation_choice": choice,
+        }
+        valid = verify_answer_package(
+            draft_claims=(), evidence=(), visible_limitations=(),
+            delivery_text=base, accepted_assumptions=(choice,),
+        )
+        self.assertNotIn(
+            "free_text_without_verified_claim",
+            {item.get("code") for item in valid["errors"]},
+        )
+        unknown = deepcopy(base)
+        unknown["final_explanation"]["used_contract_gap_ids"] = ["gap:unknown"]
+        mixed = deepcopy(base)
+        mixed["final_explanation"]["structured_claim_ids"] = ["claim:1"]
+        for candidate in (unknown, mixed):
+            checked = verify_answer_package(
+                draft_claims=(), evidence=(), visible_limitations=(),
+                delivery_text=candidate, accepted_assumptions=(choice,),
+            )
+            self.assertIn(
+                "free_text_without_verified_claim",
+                {item.get("code") for item in checked["errors"]},
+            )
+
     def test_agent_core_passes_and_persists_fixed_analysis_clock(self):
         captured = {}
         fixed_context = {
