@@ -742,9 +742,10 @@ def _boundary_gap_authorizes_claim_intents(
         except (KeyError, OSError, TypeError, ValueError):
             return False
         return (
-            gap.gap_id
+            len(source_ids) > 1
+            and metric_contract_refs.issubset(target_metric_refs)
+            and gap.gap_id
             == f"metric:{metric_id}:source_ambiguous:{','.join(source_ids)}"
-            and bool(metric_contract_refs.intersection(target_metric_refs))
             and gap.gap_type == "contract_partial"
             and gap.dataset_id == ""
             and gap.owner == "contract_owner"

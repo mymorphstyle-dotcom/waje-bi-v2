@@ -1148,14 +1148,26 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
         )
-        unbound_metric_id = "active_users"
+        bound_metric_id = "active_users"
+        bound_source = registry.metric_sources(bound_metric_id)["market_dashboard"]
+        active_binding = {
+            **analysis["metric_bindings"][0],
+            **{
+                key: value
+                for key, value in bound_source.items()
+                if key in analysis["metric_bindings"][0]
+            },
+            "metric_id": bound_metric_id,
+        }
+        unbound_metric_id = "paid_amount"
         unbound_sources = registry.metric_sources(unbound_metric_id)
-        linked_claim_intents = ["comparative_change"]
+        linked_claim_intents = ["comparative_change", "source_reconciliation"]
         compiler_linked_analysis = {
             **analysis,
             "claim_intents": linked_claim_intents,
+            "metric_bindings": [active_binding],
             "target_metric_refs": [
-                *analysis["target_metric_refs"],
+                active_binding["contract_ref"],
                 *(
                     source["contract_ref"]
                     for source in unbound_sources.values()
