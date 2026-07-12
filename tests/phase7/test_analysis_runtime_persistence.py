@@ -1052,6 +1052,46 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             "published",
         )
 
+    def test_queryless_contract_capability_without_boundary_is_unsupported(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _authority_bundle()
+        analysis = {
+            **bundle["analysis_contract"],
+            "claim_intents": ["recurring_pattern_existence"],
+            "capability_requirements": ["answer_verify", "evidence_reduce"],
+            "dataset_requirements": [],
+            "metric_bindings": [],
+            "dimension_bindings": [],
+            "contract_gaps": [],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle.update(
+            {
+                "analysis_contract": analysis,
+                "query_contracts": (),
+                "query_execution_records": (),
+                "rows_records": (),
+                "snapshot_records": (),
+                "completeness_records": (),
+                "capability_binding_records": (),
+                "evidence_manifests": (),
+                "context_manifests": (),
+                "trusted_provenance_records": (),
+                "verified_claims": (),
+                "claim_links": (),
+                "repair_attempts": (),
+            }
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_analysis_claim_intent_unsupported",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            )
+
     def test_zero_claim_postgres_run_publishes_and_replays_without_claim_rows(self):
         bundle = _authority_bundle()
         bundle["context_manifests"] = ()

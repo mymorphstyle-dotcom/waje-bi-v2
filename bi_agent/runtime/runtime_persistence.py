@@ -604,6 +604,20 @@ def _validated_unbound_claim_intents(
         for gap in boundary_gaps
         for claim_type in gap.affected_claim_types
     }
+    has_terminal_boundary_gap = any(
+        gap.requires_clarification
+        and bool(gap.owner)
+        and bool(gap.repair_options)
+        and (
+            "analysis_contract" in gap.affected_capabilities
+            or bool(
+                set(gap.affected_capabilities).intersection(
+                    analysis.capability_requirements
+                )
+            )
+        )
+        for gap in boundary_gaps
+    )
     try:
         registry = RuntimeContractRegistry.from_path(
             CANONICAL_RUNTIME_BINDINGS_PATH
@@ -621,6 +635,7 @@ def _validated_unbound_claim_intents(
             claim_type
             for capability_id in analysis.capability_requirements
             for inputs in (registry.capability_inputs(capability_id),)
+            if has_terminal_boundary_gap
             if not inputs.get("query_families")
             and not inputs.get("required_metrics")
             and inputs.get("minimum_readiness", {}).get("required_slots") == "none"
