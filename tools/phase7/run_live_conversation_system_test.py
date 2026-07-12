@@ -246,6 +246,11 @@ def review_case_obligations(
     if not isinstance(authority, Mapping):
         raise ValueError("runtime_authority_invalid")
     observed_states, observed_gaps = _derive_runtime_dataset_states(authority)
+    capability_outcomes = _derive_capability_outcomes(
+        required,
+        accepted_capabilities=actual,
+        authority=authority,
+    )
     excluded = scenario.get("excluded_inputs") or {}
     if not isinstance(excluded, Mapping):
         raise ValueError("excluded_input_expectation_invalid")
@@ -303,6 +308,7 @@ def review_case_obligations(
         "allowed_claim_ceiling": scenario.get("allowed_claim_ceiling"),
         "terminal_boundary": scenario.get("terminal_boundary"),
         "missing_required_capabilities": missing_capabilities,
+        "capability_outcomes": capability_outcomes,
         "expected_dataset_states": dict(expected_states),
         "observed_dataset_states": dict(observed_states),
         "observed_typed_gaps": {
@@ -325,6 +331,80 @@ def review_case_obligations(
         "reuse_passed": reuse_passed,
         "hard_acceptance_passed": hard_passed,
     }
+
+
+def _derive_capability_outcomes(
+    required: tuple[str, ...],
+    *,
+    accepted_capabilities: set[str],
+    authority: Mapping[str, Any],
+) -> dict[str, str]:
+    executions = _mapping_items_for_keys(
+        authority,
+        {"query_executions", "query_results"},
+    )
+    result_readiness: dict[str, str] = {}
+    for execution in executions:
+        refs = tuple(
+            dict.fromkeys(
+                str(ref)
+                for ref in (
+                    execution.get("result_ref"),
+                    *(execution.get("result_refs") or ()),
+                )
+                if ref
+            )
+        )
+        execution_status = str(
+            execution.get("execution_status") or execution.get("status") or ""
+        )
+        completeness = str(execution.get("completeness_status") or "")
+        readiness = str(execution.get("analysis_readiness") or "")
+        outcome = ""
+        if (
+            execution_status in {"succeeded", "completed", "executed", "ready"}
+            and completeness in {"complete", "ready"}
+            and readiness in {"", "ready"}
+        ):
+            outcome = "executed"
+        elif (
+            execution_status in {"succeeded", "completed", "executed", "degraded"}
+            and completeness == "partial"
+            and readiness == "degraded"
+        ):
+            outcome = "degraded"
+        for ref in refs:
+            if outcome == "executed" or ref not in result_readiness:
+                result_readiness[ref] = outcome
+
+    bindings_by_capability: dict[str, list[Mapping[str, Any]]] = {}
+    for binding in _mapping_items_for_keys(authority, {"capability_bindings"}):
+        capability_id = str(binding.get("capability_id") or "")
+        if capability_id:
+            bindings_by_capability.setdefault(capability_id, []).append(binding)
+
+    outcomes: dict[str, str] = {}
+    for capability_id in required:
+        if capability_id not in accepted_capabilities:
+            outcomes[capability_id] = "missing_route"
+            continue
+        observed: set[str] = set()
+        for binding in bindings_by_capability.get(capability_id, ()):
+            binding_status = str(binding.get("status") or "")
+            for ref in binding.get("result_refs") or ():
+                readiness = result_readiness.get(str(ref), "")
+                if binding_status == "ready" and readiness == "executed":
+                    observed.add("executed")
+                elif binding_status in {"ready", "degraded"} and readiness == "degraded":
+                    observed.add("degraded")
+        outcomes[capability_id] = (
+            "executed"
+            if "executed" in observed
+            else "degraded"
+            if "degraded" in observed
+            else "unobserved"
+        )
+    return outcomes
 
 
 _DATASET_STATE_PRECEDENCE = {

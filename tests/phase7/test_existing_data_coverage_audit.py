@@ -381,6 +381,68 @@ def test_obligation_coverage_outcomes_are_mutually_exclusive_and_authoritative()
     }
 
 
+def test_obligation_review_requires_binding_result_and_completeness_chain():
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    turn = {
+        "status": "completed",
+        "accepted_graph": [
+            "metric_coverage_profile",
+            "data_quality_profile",
+            "answer_verify",
+        ],
+        "scenario": {
+            "question_family": "data_quality_or_evidence_review",
+            "target_metrics": ["paid_amount"],
+            "expected_dataset_states": {},
+            "allowed_claim_ceiling": "trust_boundary",
+            "terminal_boundary": "verified_answer",
+        },
+        "runtime_authority": {
+            "query_executions": [
+                {
+                    "result_ref": "result:complete",
+                    "execution_status": "succeeded",
+                    "completeness_status": "complete",
+                    "analysis_readiness": "ready",
+                },
+                {
+                    "result_ref": "result:partial",
+                    "execution_status": "succeeded",
+                    "completeness_status": "partial",
+                    "analysis_readiness": "degraded",
+                },
+            ],
+            "capability_bindings": [
+                {
+                    "capability_id": "metric_coverage_profile",
+                    "status": "ready",
+                    "result_refs": ["result:complete"],
+                },
+                {
+                    "capability_id": "data_quality_profile",
+                    "status": "degraded",
+                    "result_refs": ["result:partial"],
+                },
+                {
+                    "capability_id": "answer_verify",
+                    "status": "ready",
+                    "result_refs": ["result:missing"],
+                },
+            ],
+        },
+    }
+
+    review = review_case_obligations(turn, registry)
+
+    assert review["capability_outcomes"] == {
+        "metric_coverage_profile": "executed",
+        "data_quality_profile": "degraded",
+        "answer_verify": "unobserved",
+    }
+
+
 def test_cli_case_selection_rejects_conflicts_cross_suite_and_unknown():
     from tools.phase7.run_live_conversation_system_test import resolve_cli_cases
 
