@@ -2433,6 +2433,15 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     )
                 )
                 self.assertNotIn("answer_verify", gap.affected_capabilities)
+                self.assertTrue(
+                    set(gap.affected_claim_types).issubset(
+                        set(
+                            registry.capability_inputs(expected_capability).get(
+                                "supported_claim_types", ()
+                            )
+                        )
+                    )
+                )
         self.assertEqual(
             set(resumed.analysis_contract.capability_requirements),
             {"answer_verify", "formula_decompose", "data_quality_profile"},

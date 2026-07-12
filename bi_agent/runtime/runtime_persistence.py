@@ -299,13 +299,6 @@ def validate_analysis_runtime_records(
             supported_claim_intents,
         )
     )
-    if unbound_claim_intents and (
-        verified_claims or claim_links or trusted_provenance_records
-    ):
-        raise EvidenceIntegrityError(
-            "runtime_persistence_unbound_claim_intent_requires_zero_claims"
-        )
-
     evidence_by_ref: dict[str, Mapping[str, Any]] = {}
     for raw in evidence_manifests:
         payload = canonical_value(raw)
@@ -381,7 +374,6 @@ def validate_analysis_runtime_records(
         _validate_verified_claim_contract_boundary(
             payload,
             analysis=typed_analysis,
-            unbound_claim_intents=unbound_claim_intents,
             evidence_by_ref=evidence_by_ref,
             bindings_by_ref=bindings_by_ref,
             registry=claim_registry,
@@ -762,11 +754,39 @@ def _boundary_gap_authorizes_claim_intents(
     return True
 
 
+def _contract_gap_blocks_binding_claim(
+    analysis: AnalysisContract,
+    *,
+    capability_id: str,
+    claim_type: str,
+) -> bool:
+    for gap in analysis.contract_gaps:
+        if not (
+            gap.requires_clarification
+            or gap.gap_type in {
+                "source_unbound",
+                "permission_blocked",
+                "dataset_snapshot_unavailable_as_of",
+                "unsupported_grain",
+                "query_completeness_failed",
+            }
+        ):
+            continue
+        if gap.affected_claim_types and claim_type not in gap.affected_claim_types:
+            continue
+        affected = tuple(gap.affected_capabilities)
+        if not affected:
+            return True
+        concrete = {item for item in affected if item != "analysis_contract"}
+        if not concrete or capability_id in concrete:
+            return True
+    return False
+
+
 def _validate_verified_claim_contract_boundary(
     payload: Mapping[str, Any],
     *,
     analysis: AnalysisContract,
-    unbound_claim_intents: set[str],
     evidence_by_ref: Mapping[str, Mapping[str, Any]],
     bindings_by_ref: Mapping[str, CapabilityBindingRecord],
     registry: RuntimeContractRegistry,
@@ -774,7 +794,6 @@ def _validate_verified_claim_contract_boundary(
     claim_type = str(payload.get("claim_type") or "")
     if (
         claim_type not in analysis.claim_intents
-        or claim_type in unbound_claim_intents
     ):
         raise EvidenceIntegrityError(
             "runtime_persistence_verified_claim_intent_mismatch"
@@ -793,6 +812,15 @@ def _validate_verified_claim_contract_boundary(
         raise EvidenceIntegrityError(
             "runtime_persistence_verified_claim_binding_mismatch"
         )
+    for binding in linked_bindings:
+        if _contract_gap_blocks_binding_claim(
+            analysis,
+            capability_id=binding.capability_id,
+            claim_type=claim_type,
+        ):
+            raise EvidenceIntegrityError(
+                "runtime_persistence_verified_claim_gap_blocked"
+            )
     try:
         claim_strength_rank = registry.claim_strength_rank(
             str(payload.get("claim_strength") or "")

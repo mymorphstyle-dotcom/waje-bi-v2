@@ -107,6 +107,16 @@ A missing paid or payment-attempt input cannot erase a valid market, gameplay,
 or external-event query. Capability plans and contract gaps retain exact
 ownership, result refs, completeness refs, and accepted evidence ceilings.
 
+Independence is proven from the authoritative capability binding and its
+declared dataset, query, validation, and claim dependencies. A material gap
+with empty `affected_capabilities` is global and conservative; it cannot be
+used to infer an independent executable sibling. When a scoped gap is accepted,
+the compiler partitions claim intents and ceilings by capability. The omitted
+chain blocks only its affected claims and evidence. A ready sibling may persist
+a verified claim only from its own complete binding, result, completeness, and
+evidence provenance. Overlapping claim types do not transfer authority from an
+omitted capability to a ready sibling.
+
 ### 4. Register the existing paid-success facts as authority
 
 Add a narrow registration workflow for the current paid-order archive and

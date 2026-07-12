@@ -1000,6 +1000,111 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             "published",
         )
 
+    def test_ready_claim_persists_when_omitted_sibling_has_separate_claim_chain(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _authority_bundle()
+        ready_claim_type = bundle["verified_claims"][0]["claim_type"]
+        omitted_claim_type = "formula_component_contribution"
+        analysis = {
+            **bundle["analysis_contract"],
+            "claim_intents": [ready_claim_type, omitted_claim_type],
+            "capability_requirements": [
+                *bundle["analysis_contract"]["capability_requirements"],
+                "formula_decompose",
+            ],
+            "contract_gaps": [{
+                "gap_type": "source_unbound",
+                "gap_id": "dataset:paid_order_success:source_unbound",
+                "dataset_id": "paid_order_success",
+                "affected_capabilities": ["formula_decompose"],
+                "affected_claim_types": [omitted_claim_type],
+                "owner": "data_owner",
+                "repair_options": ["register_dataset_snapshot", "bind_source"],
+                "requires_clarification": True,
+                "diagnostic_context": {},
+            }],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            ),
+            "published",
+        )
+
+    def test_overlapping_claim_label_does_not_cross_authorize_omitted_capability(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _authority_bundle()
+        claim_type = bundle["verified_claims"][0]["claim_type"]
+        analysis = {
+            **bundle["analysis_contract"],
+            "capability_requirements": [
+                *bundle["analysis_contract"]["capability_requirements"],
+                "formula_decompose",
+            ],
+            "contract_gaps": [{
+                "gap_type": "source_unbound",
+                "gap_id": "dataset:paid_order_success:source_unbound",
+                "dataset_id": "paid_order_success",
+                "affected_capabilities": ["formula_decompose"],
+                "affected_claim_types": [claim_type],
+                "owner": "data_owner",
+                "repair_options": ["register_dataset_snapshot", "bind_source"],
+                "requires_clarification": True,
+                "diagnostic_context": {},
+            }],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            ),
+            "published",
+        )
+
+    def test_global_or_ready_capability_gap_blocks_ready_claim(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        for affected_kind in ("global", "ready"):
+            bundle = _authority_bundle()
+            affected = (
+                []
+                if affected_kind == "global"
+                else [bundle["analysis_contract"]["capability_requirements"][0]]
+            )
+            with self.subTest(affected=affected):
+                claim_type = bundle["verified_claims"][0]["claim_type"]
+                analysis = {
+                    **bundle["analysis_contract"],
+                    "contract_gaps": [{
+                        "gap_type": "contract_partial",
+                        "gap_id": "claim_authority:incomplete",
+                        "dataset_id": "",
+                        "affected_capabilities": affected,
+                        "affected_claim_types": [claim_type],
+                        "owner": "contract_owner",
+                        "repair_options": ["bind_capability_claim_types"],
+                        "requires_clarification": True,
+                        "diagnostic_context": {},
+                    }],
+                }
+                analysis["contract_signature"] = analysis_contract_signature(analysis)
+                bundle["analysis_contract"] = analysis
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_verified_claim_gap_blocked",
+                ):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-task9", **bundle
+                    )
+
     def test_queryless_contract_capability_persists_zero_claim_boundary(self):
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature
 

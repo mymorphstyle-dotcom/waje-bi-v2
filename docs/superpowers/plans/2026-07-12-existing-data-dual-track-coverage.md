@@ -33,6 +33,13 @@
   degraded capabilities remain AnalysisContract requirements even when omitted
   from the resumed graph; unrelated capabilities remain removed. Malformed
   mappings fail closed.
+- Ready-sibling degradation requires authoritative dependency proof from the
+  capability binding. Material gaps with empty `affected_capabilities` are
+  global and cannot trigger automatic omission. Claim intents and ceilings are
+  partitioned by capability: an omitted gap blocks only its affected claim and
+  evidence chains, while a ready sibling may persist claims solely through its
+  own complete binding, results, completeness, evidence refs, and verifier
+  provenance. Shared claim-type labels never grant cross-capability authority.
 
 ---
 

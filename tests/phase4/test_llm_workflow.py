@@ -1102,6 +1102,68 @@ class LLMWorkflowTest(unittest.TestCase):
             "omit_unavailable_context",
         )
 
+    def test_global_gap_cannot_prove_ready_sibling_independence(self):
+        result = type(
+            "ClarificationResult",
+            (),
+            {
+                "status": "clarify",
+                "typed_gaps": ({
+                    "gap_type": "contract_partial",
+                    "requires_clarification": True,
+                    "affected_capabilities": (),
+                },),
+                "bound_capability_inputs": {
+                    "market_health_compare": type(
+                        "Bound", (), {"status": "ready", "binding_manifest_ref": "binding:market"}
+                    )(),
+                },
+            },
+        )()
+        state = {
+            "request": {
+                "accepted_degradation_choice": {
+                    "action_kind": "continue_with_boundary_only",
+                }
+            },
+            "analysis_runtime_result": result,
+        }
+
+        self.assertEqual(_route_after_query_repair(state), "degraded")
+        self.assertEqual(
+            state["request"]["accepted_degradation_choice"]["action_kind"],
+            "continue_with_boundary_only",
+        )
+
+    def test_explicit_wait_and_redirect_are_not_rewritten_for_ready_sibling(self):
+        result = type(
+            "ClarificationResult",
+            (),
+            {
+                "status": "clarify",
+                "typed_gaps": ({
+                    "gap_type": "source_unbound",
+                    "requires_clarification": True,
+                    "affected_capabilities": ("event_evidence",),
+                },),
+                "bound_capability_inputs": {
+                    "market_health_compare": type(
+                        "Bound", (), {"status": "ready", "binding_manifest_ref": "binding:market"}
+                    )(),
+                },
+            },
+        )()
+        for action in ("wait_for_source", "user_redirect"):
+            state = {
+                "request": {"accepted_degradation_choice": {"action_kind": action}},
+                "analysis_runtime_result": result,
+            }
+            self.assertEqual(_route_after_query_repair(state), "clarify")
+            self.assertEqual(
+                state["request"]["accepted_degradation_choice"]["action_kind"],
+                action,
+            )
+
     def test_analysis_runtime_request_is_typed_and_requires_fixed_clock(self):
         request = AnalysisRuntimeRequest.create(
             run_id="run-runtime",

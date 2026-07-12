@@ -2569,10 +2569,14 @@ def _has_authority_ready_independent_capability(
 
     if result is None:
         return False
+    material_gaps = tuple(
+        gap for gap in typed_gaps if bool(gap.get("requires_clarification"))
+    )
+    if any(not tuple(gap.get("affected_capabilities") or ()) for gap in material_gaps):
+        return False
     affected = {
         str(capability)
-        for gap in typed_gaps
-        if bool(gap.get("requires_clarification"))
+        for gap in material_gaps
         for capability in gap.get("affected_capabilities") or ()
         if str(capability)
     }
