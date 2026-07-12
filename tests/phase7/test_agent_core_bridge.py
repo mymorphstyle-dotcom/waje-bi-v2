@@ -488,49 +488,49 @@ class AgentCoreBridgeTest(unittest.TestCase):
             {"role": "analyst"},
         )
 
-    def test_recommended_wait_action_stays_waiting_without_running_workflow_again(self):
+    def test_recommended_choice_advances_with_available_work_instead_of_wait_loop(self):
         calls = []
 
         def workflow(request):
             calls.append(dict(request))
-            if len(calls) > 1:
-                raise AssertionError("wait action must not rerun analysis")
-            return WorkflowRunResult(
-                status="waiting_for_clarification",
-                run_id=request["run_id"],
-                answer_package={
-                    "status": "waiting_for_clarification",
-                    "accepted_graph": ["event_evidence"],
-                    "analysis_contract": {"analysis_contract_id": "analysis:wait:1"},
-                    "analysis_route": {"requested_nodes": ["event_evidence"]},
-                    "clarification": {
-                        "questions": [{
-                            "question": "当前来源不可用，怎么继续？",
-                            "options": [
-                                "等待业务数据就绪",
-                                "跳过背景证据继续",
-                                "tell the agent to do differently",
+            if len(calls) == 1:
+                return WorkflowRunResult(
+                    status="waiting_for_clarification",
+                    run_id=request["run_id"],
+                    answer_package={
+                        "status": "waiting_for_clarification",
+                        "accepted_graph": ["compare_periods", "event_evidence"],
+                        "analysis_contract": {"analysis_contract_id": "analysis:wait:1"},
+                        "analysis_route": {"requested_nodes": ["compare_periods", "event_evidence"]},
+                        "clarification": {
+                            "questions": [{
+                                "question": "当前来源不可用，怎么继续？",
+                                "options": [
+                                    "等待业务数据就绪",
+                                    "跳过背景证据继续",
+                                    "tell the agent to do differently",
+                                ],
+                            }],
+                            "recommended_assumption": {"option": "等待业务数据就绪"},
+                            "choice_actions": [
+                                {
+                                    "choice_id": "wait-source",
+                                    "action_kind": "wait_for_source",
+                                    "business_label": "等待业务数据就绪",
+                                    "affected_capabilities": ["event_evidence"],
+                                },
+                                {
+                                    "choice_id": "omit-context",
+                                    "action_kind": "omit_unavailable_context",
+                                    "business_label": "跳过背景证据继续",
+                                    "affected_capabilities": ["event_evidence"],
+                                },
                             ],
-                        }],
-                        "recommended_assumption": {"option": "等待业务数据就绪"},
-                        "choice_actions": [
-                            {
-                                "choice_id": "wait-source",
-                                "action_kind": "wait_for_source",
-                                "business_label": "等待业务数据就绪",
-                                "affected_capabilities": ["event_evidence"],
-                            },
-                            {
-                                "choice_id": "omit-context",
-                                "action_kind": "omit_unavailable_context",
-                                "business_label": "跳过背景证据继续",
-                                "affected_capabilities": ["event_evidence"],
-                            },
-                        ],
+                        },
                     },
-                },
-                analysis_runtime_records={},
-            )
+                    analysis_runtime_records={},
+                )
+            return fake_workflow(request)
 
         store = InMemoryConversationStore()
         store.save_analysis_runtime_records = lambda **_: "inserted"
@@ -548,13 +548,17 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )
 
         self.assertEqual(first["status"], "waiting_for_clarification")
-        self.assertEqual(resumed["status"], "waiting_for_clarification")
-        self.assertEqual(len(calls), 1)
         self.assertEqual(
-            store.runs["run-wait-action-resumed"]["status"],
-            "waiting_for_clarification",
+            first["clarification"]["recommended_choice_id"],
+            "omit-context",
         )
-        self.assertNotIn("run-wait-action-resumed", store.answer_packages)
+        self.assertEqual(resumed["status"], "completed")
+        self.assertEqual(resumed["topic_id"], first["topic_id"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            calls[1]["accepted_degradation_choice"]["action_kind"],
+            "omit_unavailable_context",
+        )
 
     def test_query_gap_waiting_persists_zero_claim_runtime_bundle_before_return(self):
         class CapturingStore(InMemoryConversationStore):
@@ -3692,6 +3696,39 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertIn(
             "final_answer_audit_unavailable",
             turn["answer_quality"]["risk_markers"],
+        )
+
+    def test_eval_review_quality_delta_requires_complete_matched_audits(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.review_analysis_contract_eval import review_artifact
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "artifacts" / "phase7"
+            root.mkdir(parents=True)
+            current = root / "current.json"
+            baseline = root / "baseline.json"
+            payload = {
+                "case_id": "audit-gated-comparison",
+                "turns": [{
+                    "index": 1,
+                    "run_id": "run-missing-audit",
+                    "real_clickhouse_review": {"runtime_correctness": {}},
+                }],
+            }
+            current.write_text(json.dumps(payload), encoding="utf-8")
+            baseline.write_text(json.dumps(payload), encoding="utf-8")
+
+            review = review_artifact(current, baseline=baseline)
+
+        comparison = review["baseline_comparison"]["answer_quality_delta"]
+        self.assertEqual(
+            comparison,
+            {
+                "available": False,
+                "reason": "complete_run_matched_final_audit_required",
+                "delta": None,
+            },
         )
 
     def test_strict_eval_treats_final_wording_anchor_as_warning(self):

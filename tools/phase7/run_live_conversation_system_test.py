@@ -1549,12 +1549,32 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
         if turn.get("obligation_review")
     ]
     required = sum(len(item.get("required_capabilities") or ()) for item in obligations)
-    missing = sum(len(item.get("missing_required_capabilities") or ()) for item in obligations)
-    datasets: dict[str, dict[str, int]] = {}
+    expected_datasets: dict[str, dict[str, int]] = {}
+    observed_datasets: dict[str, dict[str, int]] = {}
     for item in obligations:
         for dataset_id, state in (item.get("expected_dataset_states") or {}).items():
-            states = datasets.setdefault(str(dataset_id), {})
+            states = expected_datasets.setdefault(str(dataset_id), {})
             states[str(state)] = states.get(str(state), 0) + 1
+            observed_state = str(
+                (item.get("observed_dataset_states") or {}).get(dataset_id)
+                or "unobserved"
+            )
+            observed_states = observed_datasets.setdefault(str(dataset_id), {})
+            observed_states[observed_state] = observed_states.get(observed_state, 0) + 1
+        for dataset_id, state in (item.get("observed_dataset_states") or {}).items():
+            if dataset_id in (item.get("expected_dataset_states") or {}):
+                continue
+            states = observed_datasets.setdefault(str(dataset_id), {})
+            states[str(state)] = states.get(str(state), 0) + 1
+    outcome_counts = {
+        outcome: sum(
+            1
+            for item in obligations
+            for value in (item.get("capability_outcomes") or {}).values()
+            if value == outcome
+        )
+        for outcome in ("executed", "degraded", "unobserved", "missing_route")
+    }
     runtime_correctness = {
         key: bool(turns) and all(
             ((turn.get("real_clickhouse_review") or {}).get("runtime_correctness") or {}).get(key)
@@ -1573,13 +1593,20 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "obligation_coverage": {
             "required": required,
-            "executed": required - missing,
-            "degraded": sum(len(item.get("expected_typed_gaps") or {}) for item in obligations),
-            "missing": missing + sum(
-                len(item.get("missing_current_data_obligations") or ()) for item in obligations
-            ),
+            "accepted": required - outcome_counts["missing_route"],
+            **outcome_counts,
         },
-        "dataset_coverage": datasets,
+        "expected_dataset_coverage": expected_datasets,
+        "observed_dataset_coverage": observed_datasets,
+        "dataset_coverage": {
+            "deprecated": True,
+            "meaning": "expected_dataset_coverage",
+            "coverage": expected_datasets,
+        },
+        "dataset_coverage_deprecated": {
+            "meaning": "expected_dataset_coverage",
+            "coverage": expected_datasets,
+        },
         "runtime_correctness": runtime_correctness,
         "hard_acceptance": {
             "runtime_passed": all(runtime_correctness.values()),

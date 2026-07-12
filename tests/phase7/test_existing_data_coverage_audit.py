@@ -314,6 +314,73 @@ def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
     assert failed["reuse_coverage"] == {"required": 1, "passed": 0}
 
 
+def test_coverage_summary_separates_expected_from_observed_dataset_states():
+    from tools.phase7.run_live_conversation_system_test import _coverage_summary
+
+    summary = _coverage_summary([
+        {
+            "obligation_review": {
+                "required_capabilities": ["compare_periods"],
+                "missing_required_capabilities": [],
+                "expected_dataset_states": {
+                    "paid_order_success": "executable",
+                    "payment_attempt": "source_unbound",
+                },
+                "observed_dataset_states": {
+                    "paid_order_success": "executable",
+                },
+                "missing_current_data_obligations": [
+                    "payment_attempt:source_unbound"
+                ],
+                "hard_acceptance_passed": False,
+            },
+            "real_clickhouse_review": {"runtime_correctness": {}},
+        }
+    ])
+
+    assert summary["expected_dataset_coverage"] == {
+        "paid_order_success": {"executable": 1},
+        "payment_attempt": {"source_unbound": 1},
+    }
+    assert summary["observed_dataset_coverage"] == {
+        "paid_order_success": {"executable": 1},
+        "payment_attempt": {"unobserved": 1},
+    }
+    assert summary["dataset_coverage_deprecated"] == {
+        "meaning": "expected_dataset_coverage",
+        "coverage": summary["expected_dataset_coverage"],
+    }
+
+
+def test_obligation_coverage_outcomes_are_mutually_exclusive_and_authoritative():
+    from tools.phase7.run_live_conversation_system_test import _coverage_summary
+
+    summary = _coverage_summary([
+        {
+            "obligation_review": {
+                "required_capabilities": ["ready", "partial", "unseen", "unrouted"],
+                "capability_outcomes": {
+                    "ready": "executed",
+                    "partial": "degraded",
+                    "unseen": "unobserved",
+                    "unrouted": "missing_route",
+                },
+                "hard_acceptance_passed": False,
+            },
+            "real_clickhouse_review": {"runtime_correctness": {}},
+        }
+    ])
+
+    assert summary["obligation_coverage"] == {
+        "required": 4,
+        "accepted": 3,
+        "executed": 1,
+        "degraded": 1,
+        "unobserved": 1,
+        "missing_route": 1,
+    }
+
+
 def test_cli_case_selection_rejects_conflicts_cross_suite_and_unknown():
     from tools.phase7.run_live_conversation_system_test import resolve_cli_cases
 

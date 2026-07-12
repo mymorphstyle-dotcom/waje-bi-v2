@@ -32,14 +32,34 @@ def review_artifact(
             _load(baseline_path),
             artifact_path=baseline_path,
         )
+        quality_available = (
+            review["final_answer_audit_coverage"]["available"]
+            == len(review["turns"])
+            and baseline_review["final_answer_audit_coverage"]["available"]
+            == len(baseline_review["turns"])
+            and bool(review["turns"])
+            and bool(baseline_review["turns"])
+        )
         review["baseline_comparison"] = {
             "answer_quality_delta": {
-                key: round(
-                    review["answer_quality"][key]
-                    - baseline_review["answer_quality"][key],
-                    2,
-                )
-                for key in _QUALITY_DIMENSIONS
+                "available": quality_available,
+                "reason": (
+                    ""
+                    if quality_available
+                    else "complete_run_matched_final_audit_required"
+                ),
+                "delta": (
+                    {
+                        key: round(
+                            review["answer_quality"][key]
+                            - baseline_review["answer_quality"][key],
+                            2,
+                        )
+                        for key in _QUALITY_DIMENSIONS
+                    }
+                    if quality_available
+                    else None
+                ),
             },
             "runtime_regressions": [
                 key
@@ -110,7 +130,17 @@ def _review_payload(
     return {
         "case_id": str(payload.get("case_id") or ""),
         "obligation_coverage": obligation,
-        "dataset_coverage": supplied_coverage.get("dataset_coverage") or {},
+        "expected_dataset_coverage": supplied_coverage.get(
+            "expected_dataset_coverage"
+        ) or {},
+        "observed_dataset_coverage": supplied_coverage.get(
+            "observed_dataset_coverage"
+        ) or {},
+        "dataset_coverage": supplied_coverage.get("dataset_coverage") or {
+            "deprecated": True,
+            "meaning": "expected_dataset_coverage",
+            "coverage": supplied_coverage.get("expected_dataset_coverage") or {},
+        },
         "runtime_correctness": runtime,
         "hard_acceptance": supplied_coverage.get("hard_acceptance") or {
             "runtime_passed": all(runtime.values()),
