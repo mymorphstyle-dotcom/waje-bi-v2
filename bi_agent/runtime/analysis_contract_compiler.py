@@ -119,13 +119,6 @@ def compile_analysis_contract(
         dependencies.dimension_owners,
         dependencies.dimension_dataset_ids,
     )
-    accepted_claim_intents, claim_intent_gaps = _bind_claim_intents(
-        proposal,
-        capabilities,
-        metric_bindings,
-        registry,
-    )
-    affected_capabilities = capabilities or ("analysis_contract",)
     accepted_terminal_gaps, clarification_outcome_ref = (
         _accepted_terminal_gap_authority(proposal)
     )
@@ -140,6 +133,13 @@ def compile_analysis_contract(
             ),
         )
     )
+    accepted_claim_intents, claim_intent_gaps = _bind_claim_intents(
+        proposal,
+        contract_capabilities,
+        metric_bindings,
+        registry,
+    )
+    affected_capabilities = capabilities or ("analysis_contract",)
     contract_dataset_ids = _dedupe(
         (
             *required_dataset_ids,

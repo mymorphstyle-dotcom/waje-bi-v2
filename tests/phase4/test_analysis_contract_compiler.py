@@ -2461,6 +2461,33 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             boundary_only.analysis_contract.dataset_requirements,
         )
 
+        omitted_all_affected = compile_analysis_contract(
+            run_id="run-terminal-gap-no-ready-capability",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "accepted_degradation_choice": choice,
+                "accepted_terminal_gap_authority": authority,
+                "resume_thread_id": "thread-terminal-gap",
+                "resume_topic_id": "topic-terminal-gap",
+            },
+            accepted_capabilities=(),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+        self.assertEqual(
+            set(omitted_all_affected.analysis_contract.claim_intents),
+            {
+                "formula_component_contribution",
+                "contract_coverage_and_trust_boundary",
+            },
+        )
+        self.assertNotIn(
+            "segment_contribution_or_mix_shift",
+            omitted_all_affected.analysis_contract.claim_intents,
+        )
+
         carried_ids = {gap.gap_id for gap in carried}
 
         invalid_authorities = (
