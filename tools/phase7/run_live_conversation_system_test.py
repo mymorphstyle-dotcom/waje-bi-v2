@@ -241,6 +241,7 @@ def review_case_obligations(
         dict.fromkeys(
             (*resolution.required_capabilities,
              *resolution.conditional_capabilities,
+             *resolution.independent_capabilities,
              *(str(item) for item in scenario.get("required_capabilities") or ()))
         )
     )
@@ -254,6 +255,15 @@ def review_case_obligations(
     if not isinstance(authored_expected_states, Mapping):
         raise ValueError("dataset_state_expectation_invalid")
     expected_states = dict(authored_expected_states)
+    authored_capability_states = scenario.get("expected_capability_states") or {}
+    if not isinstance(authored_capability_states, Mapping):
+        raise ValueError("capability_state_expectation_invalid")
+    expected_capability_states = {
+        str(capability_id): str(state)
+        for capability_id, state in authored_capability_states.items()
+    }
+    unresolved_authority_capabilities: list[str] = []
+    ambiguous_authority_capabilities: list[str] = []
     unresolved_authority_roles: list[str] = []
     ambiguous_authority_roles: list[str] = []
     authored_authority_mismatches: list[str] = []
@@ -271,6 +281,16 @@ def review_case_obligations(
             for dataset_id, state in expected_states.items()
             if authored_expected_states.get(dataset_id) != state
         ]
+        (
+            expected_capability_states,
+            unresolved_authority_capabilities,
+            ambiguous_authority_capabilities,
+        ) = _authority_resolved_capability_states(
+            authored_capability_states,
+            dataset_roles=tuple(str(item) for item in authored_expected_states),
+            question_family=family,
+            coverage_authority=coverage_authority,
+        )
     authority = turn_record.get("runtime_authority") or {}
     if not isinstance(authority, Mapping):
         raise ValueError("runtime_authority_invalid")
@@ -284,6 +304,18 @@ def review_case_obligations(
         capability_id
         for capability_id, outcome in capability_outcomes.items()
         if outcome not in {"executed", "degraded", "blocked"}
+    ]
+    capability_state_mismatches = [
+        f"{capability_id}:{expected_state}->{capability_outcomes.get(capability_id, 'missing')}"
+        for capability_id, expected_state in expected_capability_states.items()
+        if (
+            expected_state == "executable"
+            and capability_outcomes.get(capability_id) != "executed"
+        )
+        or (
+            expected_state != "executable"
+            and capability_outcomes.get(capability_id) not in {"degraded", "blocked"}
+        )
     ]
     authored_excluded = scenario.get("excluded_inputs") or {}
     if not isinstance(authored_excluded, Mapping):
@@ -336,6 +368,8 @@ def review_case_obligations(
     )
     hard_passed = (
         not nonterminal_capabilities
+        and not capability_state_mismatches
+        and not unresolved_authority_capabilities
         and not unresolved_authority_roles
         and not missing_data
         and not mismatched_gaps
@@ -349,6 +383,7 @@ def review_case_obligations(
         "question_family": family,
         "required_capabilities": list(required),
         "conditional_capabilities": list(resolution.conditional_capabilities),
+        "independent_capabilities": list(resolution.independent_capabilities),
         "minimum_publishable_evidence": list(resolution.minimum_publishable_evidence),
         "allowed_claim_ceiling": scenario.get("allowed_claim_ceiling"),
         "authored_terminal_boundary": scenario.get("terminal_boundary"),
@@ -356,6 +391,11 @@ def review_case_obligations(
         "missing_required_capabilities": missing_capabilities,
         "capability_outcomes": capability_outcomes,
         "nonterminal_required_capabilities": nonterminal_capabilities,
+        "authored_expected_capability_states": dict(authored_capability_states),
+        "expected_capability_states": expected_capability_states,
+        "capability_state_mismatches": capability_state_mismatches,
+        "unresolved_authority_capabilities": unresolved_authority_capabilities,
+        "ambiguous_authority_capabilities": ambiguous_authority_capabilities,
         "authored_expected_dataset_states": dict(authored_expected_states),
         "expected_dataset_states": dict(expected_states),
         "authored_authority_mismatches": authored_authority_mismatches,
@@ -383,6 +423,48 @@ def review_case_obligations(
         "reuse_passed": reuse_passed,
         "hard_acceptance_passed": hard_passed,
     }
+
+
+def _authority_resolved_capability_states(
+    authored_states: Mapping[str, Any],
+    *,
+    dataset_roles: tuple[str, ...],
+    question_family: str,
+    coverage_authority: Mapping[str, Any],
+) -> tuple[dict[str, str], list[str], list[str]]:
+    cells = coverage_authority.get("cells") or {}
+    if not isinstance(cells, Mapping):
+        raise ValueError("coverage_authority_cells_invalid")
+    resolved: dict[str, str] = {}
+    unresolved: list[str] = []
+    ambiguous: list[str] = []
+    role_set = set(dataset_roles)
+    for raw_capability_id in authored_states:
+        capability_id = str(raw_capability_id)
+        applicable: list[str] = []
+        for cell in cells.values():
+            if not isinstance(cell, Mapping):
+                raise ValueError("coverage_authority_cell_invalid")
+            if str(cell.get("capability") or "") != capability_id:
+                continue
+            state = str(cell.get("state") or "")
+            if state not in _DATASET_STATE_PRECEDENCE:
+                continue
+            datasets = {str(item) for item in cell.get("datasets") or ()}
+            families = {str(item) for item in cell.get("question_families") or ()}
+            if (not role_set or role_set & datasets) and (
+                not families or question_family in families
+            ):
+                applicable.append(state)
+        if not applicable:
+            unresolved.append(capability_id)
+            continue
+        if len(set(applicable)) > 1:
+            ambiguous.append(capability_id)
+        resolved[capability_id] = max(
+            applicable, key=lambda state: _DATASET_STATE_PRECEDENCE[state]
+        )
+    return resolved, unresolved, ambiguous
 
 
 def _authority_resolved_dataset_states(

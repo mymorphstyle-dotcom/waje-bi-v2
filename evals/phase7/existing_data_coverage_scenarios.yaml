@@ -76,6 +76,22 @@ conversation_cases:
           allowed_claim_ceiling: directional
           terminal_boundary: verified_answer
 
+  - id: platform_market_health_independent
+    group: platform_current_data
+    turns:
+      - user: "先只用现有经营盘判断昨天的收入健康度，给出能够独立验证的结果。"
+        scenario:
+          question_family: revenue_health_review
+          target_metrics: [paid_amount]
+          required_capabilities: []
+          expected_capability_states:
+            market_health_compare: executable
+          expected_dataset_states:
+            market_dashboard: executable
+          observed_dataset_states: {}
+          allowed_claim_ceiling: directional
+          terminal_boundary: verified_answer
+
   - id: platform_segment_permission
     group: platform_current_data
     turns:

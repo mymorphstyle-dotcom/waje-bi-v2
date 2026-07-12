@@ -149,6 +149,7 @@ def test_obligation_review_resolves_contract_and_reports_typed_gaps():
             "driver_decomposition",
             "compare_periods",
             "answer_verify",
+            "metric_timeseries",
         ],
         "scenario": {
             "question_family": "paid_amount_change_explanation",
