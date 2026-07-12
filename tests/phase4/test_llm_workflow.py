@@ -643,6 +643,30 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("never objects, dates, or descriptions", text)
         self.assertIn("Do not select compare_periods", text)
 
+    def test_analysis_route_prompt_separates_context_from_metric_dataset_authority(self):
+        text = "\n".join(
+            message["content"]
+            for message in build_prompt(
+                "analysis_route",
+                {
+                    "allowed_dataset_ids": ["paid_order_success", "gameplay"],
+                    "allowed_context_source_ids": ["gameplay"],
+                },
+            ).messages
+        )
+
+        self.assertIn(
+            "context_sources must use only allowed_context_source_ids",
+            text,
+        )
+        self.assertIn("An empty context_sources array is valid", text)
+        self.assertIn("dataset_requirements", text)
+        self.assertIn("Metric-only datasets", text)
+        self.assertNotIn(
+            "context_sources must come from allowed_dataset_ids",
+            text,
+        )
+
     def test_query_gap_clarification_prompt_has_business_options_and_escape(self):
         prompt = build_prompt(
             "query_gap_clarification",

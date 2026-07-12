@@ -1860,8 +1860,10 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             "reason": str(feedback.get("reason") or ""),
             "correction": (
                 "Return registered unique typed ids. context_sources must use only "
-                "allowed_context_source_ids; metric-only datasets belong in dataset "
-                "requirements or source selection. Preserve confirmed material axes."
+                "allowed_context_source_ids. An empty context_sources array is valid "
+                "when no business-context source is requested. Metric-only datasets "
+                "belong in dataset_requirements, target_metrics, or source selection. "
+                "Preserve confirmed material axes."
             ),
         }
     output = _invoke_llm(state, "analysis_route", route_payload)

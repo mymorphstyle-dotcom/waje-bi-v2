@@ -5,7 +5,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-13.v36"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-13.v37"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 
 
@@ -362,14 +362,14 @@ def _task_rules(task: str) -> str:
             "summaries; say product default importance and stability rules instead. "
             "Return analysis_requirements as a typed JSON object with target_metrics, "
             "requested_components, requested_dimensions, baselines, context_sources, "
-            "diagnostic_tags, "
+            "dataset_requirements, diagnostic_tags, "
             "claim_intents, and scope. These values are proposals only and cannot claim "
             "that data exists, a contract is valid, a query is safe, or execution will succeed. "
             "Use diagnostic_tags only for typed business diagnostics represented by the "
             "runtime contract and copy only exact ids supplied in allowed_diagnostic_ids; "
             "local reconciliation decides their capability obligations. "
             "Do not reproduce or guess the obligation capability set. Use only exact machine "
-            "ids already present in intent or capability cards. "
+            "ids already present in intent, capability cards, or the supplied allowed lists. "
             "claim_intents must come from allowed_claim_types of the selected capability "
             "cards; never write a Chinese sentence or invent an id there. target_metrics "
             "must preserve intent.target_metric. requested_components may include only "
@@ -377,12 +377,16 @@ def _task_rules(task: str) -> str:
             "do not add paid_amount to a market active-user question. baselines must be a "
             "list of supported symbolic ids such as previous_day, rolling_7_day_baseline, "
             "or same_weekday_last_week, never objects, dates, or descriptions. context_sources "
-            "must use reviewed dataset ids from the supplied contracts. Prefer a source-specific "
+            "must use only allowed_context_source_ids. An empty context_sources array is valid "
+            "and required when no business-context source is requested. Metric-only datasets "
+            "must never appear in context_sources; keep them in target_metrics, "
+            "dataset_requirements, or source-specific capability selection. dataset_requirements "
+            "may include only exact ids from allowed_dataset_ids. Prefer a source-specific "
             "capability when it is the capability card that allows the target metric. Do not "
             "select compare_periods when its metric contract excludes the target metric. "
             "Check each card.runtime_input_contract before selecting it. Do not add a data "
             "quality capability when its required_metrics or allowed_datasets would introduce "
-            "an unrelated source. context_sources must come from allowed_dataset_ids."
+            "an unrelated source."
         ),
         "query_gap_clarification": (
             "Turn the supplied business gap projections and business labels into one concise "

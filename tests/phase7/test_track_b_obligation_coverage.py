@@ -673,6 +673,10 @@ def test_route_design_retries_metric_only_context_and_persists_repaired_context(
 
     assert payloads[0]["allowed_context_source_ids"]
     assert "node_retry_feedback" in payloads[1]
+    correction = payloads[1]["node_retry_feedback"]["correction"]
+    assert "context_sources must use only allowed_context_source_ids" in correction
+    assert "An empty context_sources array is valid" in correction
+    assert "dataset_requirements" in correction
     assert state["analysis_route"]["analysis_requirements"]["context_sources"] == [
         "gameplay"
     ]
@@ -712,6 +716,36 @@ def test_route_design_retries_metric_only_context_and_persists_repaired_context(
     }
     assert requested <= contract_capabilities
     assert requested <= planned | terminal
+
+
+def test_route_requirements_keep_metric_dataset_outside_context_sources():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    workflow._validate_route_analysis_requirements(
+        {
+            "analysis_requirements": {
+                "target_metrics": ["paid_amount"],
+                "context_sources": [],
+                "dataset_requirements": ["paid_order_success"],
+            }
+        },
+        _registry(),
+    )
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="analysis_route_contract_invalid:analysis_requirements:context_sources",
+    ):
+        workflow._validate_route_analysis_requirements(
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["paid_amount"],
+                    "context_sources": ["paid_order_success"],
+                    "dataset_requirements": [],
+                }
+            },
+            _registry(),
+        )
 
 
 def test_normalized_question_families_preserve_secondary_analysis_axis():
