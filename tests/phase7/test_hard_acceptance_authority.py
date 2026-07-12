@@ -56,6 +56,7 @@ def _persisted_plan_authority() -> tuple[dict[str, object], RuntimeContractRegis
     query_ref = "query:run-plan-authority:1"
     accepted = tuple(policy["minimum_readiness"]["accepted_completeness"])
     query_family = str(policy["query_families"][0])
+    required_windows = ("target_day",)
     plan = {
         "capability_id": capability_id,
         "capability_contract_ref": registry.capability_contract_ref(capability_id),
@@ -66,7 +67,7 @@ def _persisted_plan_authority() -> tuple[dict[str, object], RuntimeContractRegis
             "validation_query_contract_refs": [],
             "accepted_completeness": list(accepted),
             "required_fields": ["window_id", "paid_amount"],
-            "required_window_ids": list(policy.get("required_windows") or ()),
+            "required_window_ids": list(required_windows),
         }],
         "optional_input_slots": [],
         "merge_strategy": policy.get("merge_strategy") or "by_query_family",
@@ -90,16 +91,32 @@ def _persisted_plan_authority() -> tuple[dict[str, object], RuntimeContractRegis
         "analysis_contract_ref": plan["analysis_contract_ref"],
         "query_intent": query_family,
         "dataset_snapshot_refs": ["snapshot:market"],
-        "metric_bindings": [],
+        "metric_bindings": [{
+            "metric_id": "paid_amount",
+            "contract_ref": "contract:paid_amount",
+            "dataset_id": "market_dashboard",
+            "expression": "sum(paid_amount)",
+            "aggregation": "sum",
+            "required_fields": ["paid_amount"],
+            "grain": ["window_id"],
+            "value_semantics": "raw_scalar",
+            "display_format": "number",
+            "claim_types": ["comparative_change"],
+            "numerator_metric": "",
+            "denominator_metric": "",
+            "zero_denominator_policy": "null",
+            "reconciliation_strategy": "additive_sum",
+            "reconciliation_tolerance": 0.01,
+        }],
         "dimension_bindings": [],
-        "window_refs": [],
+        "window_refs": list(required_windows),
         "resolved_windows": [],
         "filters": [],
         "result_shape": {
             "required_fields": ["window_id", "paid_amount"],
             "unique_key": ["window_id"],
             "grain": ["window_id"],
-            "required_window_ids": [],
+            "required_window_ids": list(required_windows),
             "result_semantics": "complete_aggregate",
             "dimension_presence_policy": "paired_required",
         },
@@ -114,7 +131,14 @@ def _persisted_plan_authority() -> tuple[dict[str, object], RuntimeContractRegis
     query["contract_signature"] = query_contract_signature(query)
     result_ref = "result:plan-authority"
     report_ref = "completeness:plan-authority"
+    accepted_contract = _analysis_contract()
+    accepted_contract.update({
+        "analysis_contract_id": plan["analysis_contract_ref"],
+        "capability_requirements": [capability_id],
+        "contract_gaps": [],
+    })
     return {
+        "analysis_contract": accepted_contract,
         "capability_execution_plans": [plan],
         "query_contracts": [query],
         "query_results": [{
@@ -420,6 +444,13 @@ def test_capability_outcome_executes_from_persisted_plan_query_result_chain():
         "bad_capability_signature",
         "malformed_result",
         "malformed_completeness",
+        "wrong_query_intent",
+        "wrong_metric",
+        "wrong_windows",
+        "wrong_result_fields",
+        "wrong_assertion_identity",
+        "stale_analysis_contract",
+        "duplicate_result_ref",
     ],
 )
 def test_capability_outcome_rejects_incomplete_or_mismatched_plan_query_chain(
@@ -456,6 +487,46 @@ def test_capability_outcome_rejects_incomplete_or_mismatched_plan_query_chain(
         authority["query_results"][0].pop("query_hash")
     elif mutation == "malformed_completeness":
         authority["completeness_reports"][0]["unexpected"] = True
+    elif mutation == "wrong_query_intent":
+        authority["query_contracts"][0]["query_intent"] = "different_family"
+        authority["query_contracts"][0]["contract_signature"] = query_contract_signature(
+            authority["query_contracts"][0]
+        )
+    elif mutation == "wrong_metric":
+        authority["query_contracts"][0]["metric_bindings"][0]["metric_id"] = "paid_users"
+        authority["query_contracts"][0]["contract_signature"] = query_contract_signature(
+            authority["query_contracts"][0]
+        )
+    elif mutation == "wrong_windows":
+        authority["query_contracts"][0]["result_shape"]["required_window_ids"] = []
+        authority["query_contracts"][0]["contract_signature"] = query_contract_signature(
+            authority["query_contracts"][0]
+        )
+    elif mutation == "wrong_result_fields":
+        authority["query_contracts"][0]["result_shape"]["required_fields"] = [
+            "window_id"
+        ]
+        authority["query_contracts"][0]["contract_signature"] = query_contract_signature(
+            authority["query_contracts"][0]
+        )
+    elif mutation == "wrong_assertion_identity":
+        authority["completeness_reports"][0]["assertion_results"][0][
+            "assertion"
+        ] = "unrelated_check"
+    elif mutation == "stale_analysis_contract":
+        authority["capability_execution_plans"][0][
+            "analysis_contract_ref"
+        ] = "analysis:stale"
+        authority["query_contracts"][0]["analysis_contract_ref"] = "analysis:stale"
+        authority["query_contracts"][0]["contract_signature"] = query_contract_signature(
+            authority["query_contracts"][0]
+        )
+    elif mutation == "duplicate_result_ref":
+        authority["query_results"].append({
+            **authority["query_results"][0],
+            "query_contract_ref": "query:other",
+            "completeness_report_ref": "completeness:other",
+        })
 
     assert _derive_capability_outcomes(
         ("market_health_compare",),

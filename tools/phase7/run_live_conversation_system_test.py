@@ -24,8 +24,14 @@ from bi_agent.runtime.analysis_obligations import (
 )
 from bi_agent.runtime.analysis_contracts import (
     CompletenessReport,
+    DimensionBinding,
+    JoinExpectation,
+    MetricBinding,
     QueryContract,
     QueryResultEnvelope,
+    ReconciliationBinding,
+    ResolvedWindow,
+    ResultShape,
     analysis_contract_from_dict,
     query_contract_signature,
 )
@@ -674,6 +680,11 @@ def _derive_plan_capability_outcomes(
     admin = authority.get("admin_audit") or authority
     if not isinstance(admin, Mapping):
         return {}
+    try:
+        accepted_contract = analysis_contract_from_dict(admin.get("analysis_contract"))
+    except (KeyError, TypeError, ValueError):
+        return {}
+    accepted_analysis_ref = accepted_contract.analysis_contract_id
 
     def records(key: str) -> tuple[Mapping[str, Any], ...]:
         value = admin.get(key) or ()
@@ -682,6 +693,7 @@ def _derive_plan_capability_outcomes(
         return tuple(item for item in value if isinstance(item, Mapping))
 
     query_contracts: dict[str, Mapping[str, Any]] = {}
+    query_objects: dict[str, QueryContract] = {}
     duplicate_query_refs: set[str] = set()
     for query in records("query_contracts"):
         query_ref = str(query.get("query_contract_id") or "")
@@ -698,11 +710,18 @@ def _derive_plan_capability_outcomes(
             continue
         if signature != str(query.get("contract_signature") or ""):
             continue
+        try:
+            query_object = _query_contract_from_mapping(query)
+        except (KeyError, TypeError, ValueError):
+            continue
         query_contracts[query_ref] = query
+        query_objects[query_ref] = query_object
     for query_ref in duplicate_query_refs:
         query_contracts.pop(query_ref, None)
+        query_objects.pop(query_ref, None)
 
     results_by_query: dict[str, list[Mapping[str, Any]]] = {}
+    result_ref_counts: dict[str, int] = {}
     result_fields = set(QueryResultEnvelope.__dataclass_fields__) - {"rows"}
     for result in records("query_results"):
         if set(result) != result_fields:
@@ -710,6 +729,21 @@ def _derive_plan_capability_outcomes(
         query_ref = str(result.get("query_contract_ref") or "")
         if query_ref:
             results_by_query.setdefault(query_ref, []).append(result)
+        result_ref = str(result.get("result_ref") or "")
+        if result_ref:
+            result_ref_counts[result_ref] = result_ref_counts.get(result_ref, 0) + 1
+    duplicate_result_refs = {
+        result_ref for result_ref, count in result_ref_counts.items() if count > 1
+    }
+    if duplicate_result_refs:
+        results_by_query = {
+            query_ref: [
+                result
+                for result in results
+                if str(result.get("result_ref") or "") not in duplicate_result_refs
+            ]
+            for query_ref, results in results_by_query.items()
+        }
     reports_by_ref: dict[str, Mapping[str, Any]] = {}
     duplicate_report_refs: set[str] = set()
     for report in records("completeness_reports"):
@@ -727,12 +761,30 @@ def _derive_plan_capability_outcomes(
 
     outcomes: dict[str, set[str]] = {}
     for plan in records("capability_execution_plans"):
+        plan_refs = {
+            str(ref)
+            for slot in (
+                *(plan.get("required_input_slots") or ()),
+                *(plan.get("optional_input_slots") or ()),
+            )
+            if isinstance(slot, Mapping)
+            for ref in (
+                *(slot.get("query_contract_refs") or ()),
+                *(slot.get("validation_query_contract_refs") or ()),
+            )
+            if str(ref)
+        }
+        plan_queries = {
+            ref: query_objects[ref] for ref in plan_refs if ref in query_objects
+        }
         try:
-            validate_capability_plan_semantics(plan, registry)
+            validate_capability_plan_semantics(plan, registry, plan_queries)
         except (AuthoritativeQueryChainError, KeyError, TypeError, ValueError):
             continue
         capability_id = str(plan.get("capability_id") or "")
         analysis_ref = str(plan.get("analysis_contract_ref") or "")
+        if analysis_ref != accepted_analysis_ref:
+            continue
         required_slots = tuple(
             slot
             for slot in plan.get("required_input_slots") or ()
@@ -751,7 +803,8 @@ def _derive_plan_capability_outcomes(
             accepted = tuple(str(item) for item in slot.get("accepted_completeness") or ())
             for query_ref in (*primary_refs, *validation_refs):
                 query = query_contracts.get(str(query_ref))
-                accepted_for_ref = ("complete",) if query_ref in validation_refs else accepted
+                is_validation = query_ref in validation_refs
+                accepted_for_ref = ("complete",) if is_validation else accepted
                 outcome = _persisted_query_outcome(
                     str(query_ref),
                     query=query,
@@ -759,6 +812,14 @@ def _derive_plan_capability_outcomes(
                     accepted_completeness=accepted_for_ref,
                     results_by_query=results_by_query,
                     reports_by_ref=reports_by_ref,
+                    expected_fields=(
+                        () if is_validation else tuple(slot.get("required_fields") or ())
+                    ),
+                    expected_windows=(
+                        ()
+                        if is_validation
+                        else tuple(slot.get("required_window_ids") or ())
+                    ),
                 )
                 if not outcome:
                     valid = False
@@ -773,6 +834,87 @@ def _derive_plan_capability_outcomes(
     return outcomes
 
 
+def _query_contract_from_mapping(value: Mapping[str, Any]) -> QueryContract:
+    metrics = tuple(
+        MetricBinding(
+            **{
+                **item,
+                "required_fields": tuple(item.get("required_fields") or ()),
+                "grain": tuple(item.get("grain") or ()),
+                "claim_types": tuple(item.get("claim_types") or ()),
+            }
+        )
+        for item in value.get("metric_bindings") or ()
+        if isinstance(item, Mapping)
+    )
+    dimensions = tuple(
+        DimensionBinding(
+            **{
+                **item,
+                "allowed_grains": tuple(item.get("allowed_grains") or ()),
+            }
+        )
+        for item in value.get("dimension_bindings") or ()
+        if isinstance(item, Mapping)
+    )
+    windows = tuple(
+        ResolvedWindow(**item)
+        for item in value.get("resolved_windows") or ()
+        if isinstance(item, Mapping)
+    )
+    shape = value.get("result_shape")
+    if not isinstance(shape, Mapping):
+        raise TypeError("query_result_shape_invalid")
+    result_shape = ResultShape(
+        **{
+            **shape,
+            "required_fields": tuple(shape.get("required_fields") or ()),
+            "unique_key": tuple(shape.get("unique_key") or ()),
+            "grain": tuple(shape.get("grain") or ()),
+            "required_window_ids": tuple(shape.get("required_window_ids") or ()),
+        }
+    )
+    reconciliation = value.get("reconciliation_binding")
+    join = value.get("join_expectation")
+    return QueryContract(
+        query_contract_id=str(value["query_contract_id"]),
+        analysis_contract_ref=str(value["analysis_contract_ref"]),
+        query_intent=str(value["query_intent"]),
+        dataset_snapshot_refs=tuple(value.get("dataset_snapshot_refs") or ()),
+        metric_bindings=metrics,
+        dimension_bindings=dimensions,
+        window_refs=tuple(value.get("window_refs") or ()),
+        resolved_windows=windows,
+        filters=tuple(
+            dict(item)
+            for item in value.get("filters") or ()
+            if isinstance(item, Mapping)
+        ),
+        result_shape=result_shape,
+        completeness_assertions=tuple(value.get("completeness_assertions") or ()),
+        permission_scope=str(value["permission_scope"]),
+        workload_class=str(value["workload_class"]),
+        contract_signature=str(value["contract_signature"]),
+        query_parameters=dict(value.get("query_parameters") or {}),
+        query_role_ref=str(value.get("query_role_ref") or ""),
+        reconciliation_binding=(
+            ReconciliationBinding(**reconciliation)
+            if isinstance(reconciliation, Mapping)
+            else None
+        ),
+        join_expectation=(
+            JoinExpectation(
+                **{
+                    **join,
+                    "audit_fields": tuple(join.get("audit_fields") or ()),
+                }
+            )
+            if isinstance(join, Mapping)
+            else None
+        ),
+    )
+
+
 def _persisted_query_outcome(
     query_ref: str,
     *,
@@ -781,11 +923,20 @@ def _persisted_query_outcome(
     accepted_completeness: tuple[str, ...],
     results_by_query: Mapping[str, list[Mapping[str, Any]]],
     reports_by_ref: Mapping[str, Mapping[str, Any]],
+    expected_fields: tuple[str, ...],
+    expected_windows: tuple[str, ...],
 ) -> str:
     if (
         query is None
         or str(query.get("analysis_contract_ref") or "") != analysis_contract_ref
     ):
+        return ""
+    shape = query.get("result_shape") or {}
+    if not isinstance(shape, Mapping):
+        return ""
+    if expected_fields and tuple(shape.get("required_fields") or ()) != expected_fields:
+        return ""
+    if expected_windows and tuple(shape.get("required_window_ids") or ()) != expected_windows:
         return ""
     results = results_by_query.get(query_ref) or ()
     if len(results) != 1:
@@ -810,6 +961,19 @@ def _persisted_query_outcome(
         not isinstance(item, Mapping) or item.get("passed") is not True
         for item in assertions
     ):
+        return ""
+    required_assertions = tuple(query.get("completeness_assertions") or ())
+    observed_assertions = tuple(str(item.get("assertion") or "") for item in assertions)
+    assertion_aliases = {
+        "required_fields_present": "required_fields",
+        "required_windows_complete": "required_windows",
+        "source_snapshot_matches_contract": "snapshot_watermark",
+        "unique_result_grain": "unique_key",
+    }
+    expected_assertions = tuple(
+        assertion_aliases.get(name, name) for name in required_assertions
+    )
+    if any(observed_assertions.count(name) != 1 for name in expected_assertions):
         return ""
     completeness = str(report.get("completeness_status") or "")
     readiness = str(report.get("analysis_readiness") or "")
