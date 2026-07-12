@@ -30,7 +30,7 @@ def _analysis_contract(*gaps: ContractGap) -> dict[str, object]:
 def _canonical_gap() -> ContractGap:
     return ContractGap(
         gap_type="contract_partial",
-        gap_id="capability:answer_verify:required_query:unbound",
+        gap_id="capability:answer_verify:required_query:answer:unbound",
         dataset_id="paid_order_success",
         affected_capabilities=("answer_verify",),
         affected_claim_types=(),
@@ -116,6 +116,28 @@ def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
                 **_analysis_contract(_canonical_gap()),
                 "contract_gaps": [{
                     **_canonical_gap().to_dict(),
+                    "gap_id": "capability:answer_verify:required_query",
+                }],
+            }
+        },
+        {
+            "analysis_contract": {
+                **_analysis_contract(_canonical_gap()),
+                "scope": {
+                    "requested_metric_ids": ["paid_amount"],
+                    "requested_dimension_ids": [],
+                },
+                "contract_gaps": [{
+                    **_canonical_gap().to_dict(),
+                    "gap_id": "metric:paid_amount:missing",
+                }],
+            }
+        },
+        {
+            "analysis_contract": {
+                **_analysis_contract(_canonical_gap()),
+                "contract_gaps": [{
+                    **_canonical_gap().to_dict(),
                     "gap_type": "source_unbound",
                     "gap_id": "capability:answer_verify:contract_partial",
                 }],
@@ -175,8 +197,27 @@ def test_capability_block_accepts_compiler_dimension_gap_without_binding():
         requires_clarification=False,
         diagnostic_context={},
     )
+    analysis_contract = _analysis_contract(gap)
+    analysis_contract["scope"] = {
+        "requested_metric_ids": [],
+        "requested_dimension_ids": ["unbound_dimension"],
+    }
     assert _derive_capability_outcomes(
         ("answer_verify",),
         accepted_capabilities=set(),
-        authority={"analysis_contract": _analysis_contract(gap)},
+        authority={"analysis_contract": analysis_contract},
     ) == {"answer_verify": "blocked"}
+
+
+def test_compiler_scope_persists_requested_metric_and_dimension_identities():
+    from bi_agent.runtime.analysis_contract_compiler import _scope
+
+    assert _scope({
+        "scope": "full_sample",
+        "target_metrics": ["paid_amount"],
+        "requested_dimensions": ["unbound_dimension"],
+    }) == {
+        "type": "full_sample",
+        "requested_metric_ids": ("paid_amount",),
+        "requested_dimension_ids": ("unbound_dimension",),
+    }

@@ -657,11 +657,21 @@ def _gap_identity_matches_contract(gap: Any, contract: Any) -> bool:
     namespace, object_id = parts[:2]
     datasets = set(contract.dataset_requirements)
     capabilities = set(contract.capability_requirements)
+    requested_metrics = {
+        str(item) for item in contract.scope.get("requested_metric_ids") or ()
+    }
+    requested_dimensions = {
+        str(item) for item in contract.scope.get("requested_dimension_ids") or ()
+    }
     bound_object = {
         "dataset": object_id in datasets and gap.dataset_id == object_id,
         "capability": object_id in capabilities,
-        "metric": True,
-        "dimension": True,
+        "metric": object_id in requested_metrics
+        or object_id in {binding.metric_id for binding in contract.metric_bindings},
+        "dimension": object_id in requested_dimensions
+        or object_id in {
+            binding.dimension_id for binding in contract.dimension_bindings
+        },
         "claim_intent": object_id in set(gap.affected_claim_types),
         "claim_intents": object_id == "unbound",
         "window": True,
@@ -689,36 +699,69 @@ def _gap_identity_matches_contract(gap: Any, contract: Any) -> bool:
     if gap.gap_type == "capability_metric_unsupported":
         return namespace == "metric" and parts[-1] == "capability_metric_family_unsupported"
     if gap.gap_type == "contract_partial":
-        markers = {
-            "dataset": {"contract_partial", "schema_missing", "evidence_state"},
-            "metric": {
-                "missing",
-                "schema_missing",
-                "invalid",
-                "capability_metric_family_unsupported",
-                "source_ambiguous",
-            },
-            "dimension": {"missing", "schema_missing", "source_ambiguous"},
-            "claim_intent": {"unsupported"},
-            "capability": {
-                "missing",
-                "query_shape",
-                "required_window",
-                "required_context_source",
-                "required_dimension",
-                "required_query",
-            },
-        }
-        if namespace == "claim_intents":
-            return parts == ["claim_intents", "unbound"]
-        if namespace == "window":
-            return object_id.split(":", 1)[0] in {
-                "duplicate_baseline",
-                "unsupported_baseline",
-                "unsupported_target_semantic",
-            }
-        return len(parts) >= 3 and parts[2] in markers.get(namespace, set())
+        return _contract_partial_gap_id_valid(parts, capabilities)
     return True
+
+
+def _contract_partial_gap_id_valid(
+    parts: list[str], capabilities: set[str]
+) -> bool:
+    namespace, object_id = parts[:2]
+    if namespace == "claim_intents":
+        return parts == ["claim_intents", "unbound"]
+    if namespace == "window":
+        return len(parts) == 3 and object_id in {
+            "duplicate_baseline",
+            "unsupported_baseline",
+            "unsupported_target_semantic",
+        }
+    if len(parts) < 3:
+        return False
+    marker = parts[2]
+    if namespace == "dataset":
+        if marker in {"contract_partial", "schema_missing"}:
+            return len(parts) == 4 and bool(parts[3])
+        return (
+            marker == "evidence_state"
+            and len(parts) == 6
+            and bool(parts[3])
+            and parts[4] == "capability"
+            and parts[5] in capabilities
+        )
+    if namespace == "metric":
+        if marker in {"missing", "schema_missing", "source_ambiguous"}:
+            return len(parts) == 4 and bool(parts[3])
+        if marker == "invalid":
+            return len(parts) == 4 and parts[3] in {
+                "display_policy",
+                "reconciliation_strategy",
+                "reconciliation_tolerance",
+            }
+        return marker == "capability_metric_family_unsupported" and len(parts) == 3
+    if namespace == "dimension":
+        return (
+            marker in {"missing", "schema_missing", "source_ambiguous"}
+            and len(parts) == 4
+            and bool(parts[3])
+        )
+    if namespace == "claim_intent":
+        return marker == "unsupported" and len(parts) == 3
+    if namespace != "capability":
+        return False
+    if marker == "missing":
+        return len(parts) == 4 and bool(parts[3])
+    if marker == "query_shape":
+        return (
+            len(parts) == 6
+            and bool(parts[3])
+            and parts[4] == "missing"
+            and bool(parts[5])
+        )
+    if marker in {"required_window", "required_query"}:
+        return len(parts) == 5 and bool(parts[3]) and parts[4] == "unbound"
+    if marker in {"required_context_source", "required_dimension"}:
+        return len(parts) == 4 and parts[3] == "unbound"
+    return False
 
 
 _DATASET_STATE_PRECEDENCE = {

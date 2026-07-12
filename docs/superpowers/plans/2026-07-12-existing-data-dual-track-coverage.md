@@ -1049,6 +1049,11 @@ capability. Only `executed`, `degraded`, or `blocked` are terminal outcomes;
 `blocked` requires a typed contract gap whose `affected_capabilities` contains
 the exact capability. Accepted-graph membership alone is not authority, and
 `unobserved` or `missing_route` fail the case.
+The compiled contract scope persists requested metric and dimension IDs even
+when their bindings cannot be produced. Evaluation validates blocked gaps with
+the complete compiler-owned gap-ID grammar and binds each object ID to those
+persisted requested IDs or successful bindings; marker-prefix checks are not
+accepted as authority.
 
 Treat scenario `expected_dataset_states` as reviewed authored hypotheses and
 matrix-role declarations, not as current runtime authority. Before reviewing a

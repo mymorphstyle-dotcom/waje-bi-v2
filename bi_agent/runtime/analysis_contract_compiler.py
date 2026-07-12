@@ -1808,10 +1808,14 @@ def _contract_gap(
 def _scope(proposal: Mapping[str, Any]) -> dict[str, Any]:
     value = proposal.get("scope")
     if isinstance(value, Mapping):
-        return dict(value)
-    if value not in (None, ""):
-        return {"type": str(value)}
-    return {"type": "full_sample"}
+        scope = dict(value)
+    elif value not in (None, ""):
+        scope = {"type": str(value)}
+    else:
+        scope = {"type": "full_sample"}
+    scope["requested_metric_ids"] = _values(proposal, "target_metrics")
+    scope["requested_dimension_ids"] = _values(proposal, "requested_dimensions")
+    return scope
 
 
 def _filters(proposal: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:

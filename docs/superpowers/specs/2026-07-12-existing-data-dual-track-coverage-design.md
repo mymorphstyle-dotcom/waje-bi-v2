@@ -184,6 +184,10 @@ Acceptance requires:
   `blocked`; `blocked` requires a typed persisted contract gap whose
   `affected_capabilities` names that exact capability, while `unobserved` and
   `missing_route` always fail;
+- the accepted AnalysisContract persists compiler-owned requested metric and
+  dimension identities, and blocked-gap review uses the compiler's complete
+  gap-ID grammar plus those identities; a namespace, marker prefix, or client
+  package alone cannot establish a terminal gap;
 - every currently executable required query has snapshot, result,
   completeness, binding, ContextManifest, and ReuseDecision authority;
 - market, gameplay, and external-event evidence survives unrelated paid-source

@@ -240,7 +240,10 @@ def test_obligation_review_enforces_claim_ceiling_and_terminal_boundary(
     authority_gaps = [
         {
             **gap,
-            "gap_id": f"dataset:{gap['dataset_id']}:{gap['gap_type']}",
+            "gap_id": (
+                f"dataset:{gap['dataset_id']}:{gap['gap_type']}"
+                + (":required_fields" if gap["gap_type"] == "contract_partial" else "")
+            ),
             "affected_capabilities": required_capabilities,
             "owner": "contract_owner",
         }
