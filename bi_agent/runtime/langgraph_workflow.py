@@ -178,6 +178,17 @@ def _exception_reason(exc: BaseException) -> str:
 
 def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRunResult:
     request = dict(request or {})
+    context_manifest = request.get("context_manifest") or {}
+    manifest_assumption = next(
+        (
+            item
+            for item in context_manifest.get("accepted_assumptions") or ()
+            if isinstance(item, Mapping)
+        ),
+        {},
+    )
+    if manifest_assumption and not request.get("accepted_degradation_choice"):
+        request["accepted_degradation_choice"] = dict(manifest_assumption)
     state: WorkflowState = {
         "request": request,
         "run_id": request.get("run_id") or "phase4-draft",

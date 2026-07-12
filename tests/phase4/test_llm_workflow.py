@@ -1720,6 +1720,41 @@ class LLMWorkflowTest(unittest.TestCase):
             [choice],
         )
 
+    def test_workflow_entry_promotes_manifest_only_assumption_into_runtime_request(self):
+        choice = {
+            "action_kind": "omit_unavailable_context",
+            "affected_capabilities": ["event_evidence"],
+            "source_run_id": "run-source",
+        }
+        captured = {}
+
+        class CapturingGraph:
+            def invoke(self, state, config):
+                captured["request"] = deepcopy(state["request"])
+                return {
+                    **state,
+                    "workflow_status": "draft",
+                    "answer_package": _build_answer_package_from_state(state),
+                }
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow.build_pattern_graph",
+            return_value=CapturingGraph(),
+        ):
+            result = workflow_module.run_pattern_workflow({
+                "run_id": "run-resumed",
+                "llm_client": object(),
+                "context_manifest": {"accepted_assumptions": [choice]},
+            })
+
+        self.assertEqual(captured["request"]["accepted_degradation_choice"], choice)
+        self.assertEqual(result.answer_package["context_assumptions"], [choice])
+        self.assertEqual(result.answer_package["accepted_degradation_choice"], choice)
+        self.assertEqual(
+            result.answer_package["accepted_graph_metadata"]["accepted_assumptions"],
+            [choice],
+        )
+
     def test_workflow_and_persistence_share_answer_package_build_context(self):
         request = {
             "run_id": "run-shared-build-context",
