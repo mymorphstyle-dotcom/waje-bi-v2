@@ -106,6 +106,7 @@ ROUTE_BLOCKED_CAPABILITY_IDS = frozenset(
 
 class WorkflowState(TypedDict, total=False):
     request: dict[str, Any]
+    accepted_assumptions: list[dict[str, Any]]
     run_id: str
     checkpoint_events: list[dict[str, Any]]
     validator_results: list[dict[str, Any]]
@@ -189,8 +190,14 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
     )
     if manifest_assumption and not request.get("accepted_degradation_choice"):
         request["accepted_degradation_choice"] = dict(manifest_assumption)
+    accepted_choice = request.get("accepted_degradation_choice") or {}
     state: WorkflowState = {
         "request": request,
+        "accepted_assumptions": (
+            [dict(accepted_choice)]
+            if isinstance(accepted_choice, Mapping) and accepted_choice
+            else []
+        ),
         "run_id": request.get("run_id") or "phase4-draft",
         "checkpoint_events": [],
         "validator_results": [],
@@ -5658,13 +5665,22 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
     records = compiled.mutations.records if compiled else ()
     request = state.get("request", {})
     context_manifest = request.get("context_manifest") or {}
+    state_assumption = next(
+        (
+            item
+            for item in state.get("accepted_assumptions") or ()
+            if isinstance(item, Mapping)
+        ),
+        {},
+    )
     artifact_path = str(
         Path(request.get("artifact_root", "artifacts/phase-4"))
         / state["run_id"]
         / "answer_package.json"
     )
     accepted_degradation_choice = dict(
-        request.get("accepted_degradation_choice")
+        state_assumption
+        or request.get("accepted_degradation_choice")
         or (request.get("clarification_resume_context") or {}).get(
             "accepted_degradation_choice"
         )

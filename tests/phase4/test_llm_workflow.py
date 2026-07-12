@@ -1731,10 +1731,17 @@ class LLMWorkflowTest(unittest.TestCase):
         class CapturingGraph:
             def invoke(self, state, config):
                 captured["request"] = deepcopy(state["request"])
+                captured["accepted_assumptions"] = deepcopy(
+                    state["accepted_assumptions"]
+                )
+                projected_request = deepcopy(state["request"])
+                projected_request.pop("accepted_degradation_choice", None)
+                projected_request.pop("context_manifest", None)
+                projected_state = {**state, "request": projected_request}
                 return {
-                    **state,
+                    **projected_state,
                     "workflow_status": "draft",
-                    "answer_package": _build_answer_package_from_state(state),
+                    "answer_package": _build_answer_package_from_state(projected_state),
                 }
 
         with patch(
@@ -1748,6 +1755,7 @@ class LLMWorkflowTest(unittest.TestCase):
             })
 
         self.assertEqual(captured["request"]["accepted_degradation_choice"], choice)
+        self.assertEqual(captured["accepted_assumptions"], [choice])
         self.assertEqual(result.answer_package["context_assumptions"], [choice])
         self.assertEqual(result.answer_package["accepted_degradation_choice"], choice)
         self.assertEqual(
