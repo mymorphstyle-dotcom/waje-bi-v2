@@ -696,7 +696,11 @@ def _gap_identity_matches_contract(gap: Any, contract: Any) -> bool:
         ):
             return bool(parts[3])
         if namespace == "capability" and len(parts) == 5:
-            return parts[2] == "query_shape" and parts[4] == "contract_absent"
+            return (
+                parts[2] == "query_shape"
+                and bool(parts[3])
+                and parts[4] == "contract_absent"
+            )
         return (
             namespace in {"metric", "dimension", "dataset", "capability"}
             and len(parts) == 3

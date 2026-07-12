@@ -110,6 +110,10 @@ def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
             }
             for gap_type, gap_id in (
                 ("contract_absent", "metric:paid_amount:extra:contract_absent"),
+                (
+                    "contract_absent",
+                    "capability:answer_verify:query_shape::contract_absent",
+                ),
                 ("source_unbound", "dataset:paid_order_success:extra:source_unbound"),
                 ("unsupported_grain", "dimension:channel:grain"),
                 ("unsupported_grain", "dimension:channel:fake:grain"),
