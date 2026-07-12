@@ -1096,6 +1096,42 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(ambiguous_context, ("market_health_compare",))
 
+    def test_route_reconciliation_carries_independent_capability_dataset(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        requested, reconciled = workflow_module.reconcile_analysis_route(
+            ("market_health_compare",),
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["paid_amount"],
+                    "dataset_requirements": ["paid_order_success"],
+                    "baselines": ["previous_day"],
+                    "claim_intents": ["comparative_change"],
+                }
+            },
+            {
+                "question_family": "revenue_health_review",
+                "question_families": ["revenue_health_review"],
+                "target_metric": "paid_amount",
+            },
+            registry,
+        )
+
+        self.assertIn("market_health_compare", requested)
+        self.assertEqual(
+            reconciled["analysis_requirements"]["dataset_requirements"],
+            ["paid_order_success", "market_dashboard"],
+        )
+        self.assertEqual(
+            reconciled["obligation_resolution"][
+                "capability_dataset_requirements"
+            ]["market_health_compare"],
+            ["market_dashboard"],
+        )
+
     def test_route_reconciliation_is_idempotent_and_question_text_independent(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 

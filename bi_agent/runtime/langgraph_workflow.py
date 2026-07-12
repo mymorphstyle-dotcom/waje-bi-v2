@@ -58,6 +58,7 @@ from bi_agent.runtime.capability_registry import llm_capability_cards
 from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
+    capability_dataset_requirements,
     resolve_analysis_obligations,
 )
 from bi_agent.runtime.data_contract_diagnostics import (
@@ -1578,6 +1579,22 @@ def reconcile_analysis_route(
         for capability in obligations
         if capability not in requested_set
     ]
+    capability_datasets = capability_dataset_requirements(
+        reconciled,
+        request.target_metrics,
+        registry,
+    )
+    carried_datasets = list(requirements.get("dataset_requirements") or ())
+    carried_datasets.extend(
+        dataset_id
+        for capability_id in reconciled
+        for dataset_id in capability_datasets.get(capability_id, ())
+    )
+    if carried_datasets:
+        requirements["dataset_requirements"] = list(
+            dict.fromkeys(str(item) for item in carried_datasets if item)
+        )
+        output["analysis_requirements"] = requirements
     output["obligation_resolution"] = {
         "status": "resolved",
         "required_capabilities": list(resolution.required_capabilities),
@@ -1585,6 +1602,10 @@ def reconcile_analysis_route(
         "minimum_publishable_evidence": list(
             resolution.minimum_publishable_evidence
         ),
+        "capability_dataset_requirements": {
+            capability_id: list(dataset_ids)
+            for capability_id, dataset_ids in capability_datasets.items()
+        },
         "mutations": [*input_mutations, *obligation_mutations],
     }
     return reconciled, output

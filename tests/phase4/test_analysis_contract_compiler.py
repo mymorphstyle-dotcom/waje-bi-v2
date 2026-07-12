@@ -1561,6 +1561,71 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             )
         )
 
+    def test_reconciled_independent_capability_carries_its_exact_dataset_into_compile(self):
+        from bi_agent.runtime.analysis_obligations import (
+            capability_dataset_requirements,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        requirements = {
+            "target_metrics": ["paid_amount"],
+            "dataset_requirements": ["paid_order_success"],
+            "baselines": ["previous_day"],
+            "claim_intents": ["comparative_change"],
+        }
+        accepted = ("market_health_compare",)
+        carried = capability_dataset_requirements(
+            ("market_health_compare",),
+            ("paid_amount",),
+            registry,
+        )
+        requirements["dataset_requirements"] = list(
+            dict.fromkeys(
+                (
+                    *requirements["dataset_requirements"],
+                    *carried["market_health_compare"],
+                )
+            )
+        )
+        self.assertEqual(
+            requirements["dataset_requirements"],
+            ["paid_order_success", "market_dashboard"],
+        )
+
+        dashboard, channel = _market_dashboard_snapshots()
+        catalog, resolver, released = canonical_release_catalog(dashboard, channel)
+        released_by_dataset = {item.dataset_id: item for item in released}
+        outcome = compile_analysis_contract(
+            run_id="run-independent-route-source",
+            proposal=requirements,
+            accepted_capabilities=accepted,
+            catalog=catalog,
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+            release_resolver=resolver,
+        )
+
+        plans = {plan.capability_id: plan for plan in outcome.capability_plans}
+        refs = tuple(
+            ref
+            for slot in plans["market_health_compare"].required_input_slots
+            for ref in slot.query_contract_refs
+        )
+        self.assertEqual(len(refs), 1)
+        query = next(
+            query
+            for query in outcome.query_contracts
+            if query.query_contract_id == refs[0]
+        )
+        self.assertEqual(query.query_intent, "daily_metric_baselines")
+        self.assertEqual(
+            query.dataset_snapshot_refs,
+            (released_by_dataset["market_dashboard"].snapshot_ref,),
+        )
+
     def test_explicit_claim_outside_capability_ceiling_is_rejected(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         outcome = compile_analysis_contract(

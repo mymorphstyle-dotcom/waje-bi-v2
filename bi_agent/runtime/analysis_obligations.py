@@ -105,6 +105,57 @@ def resolve_analysis_obligations(
     )
 
 
+def capability_dataset_requirements(
+    capabilities: Sequence[str],
+    target_metrics: Sequence[str],
+    registry: RuntimeContractRegistry,
+) -> dict[str, tuple[str, ...]]:
+    resolved: dict[str, tuple[str, ...]] = {}
+    targets = tuple(dict.fromkeys(str(item) for item in target_metrics if item))
+    for capability_id in dict.fromkeys(str(item) for item in capabilities if item):
+        try:
+            contract = registry.capability_inputs(capability_id)
+        except KeyError:
+            continue
+        metric_mode = str(contract.get("metric_mode") or "")
+        allowed_metrics = set(contract.get("allowed_metrics") or ())
+        required_metrics = tuple(contract.get("required_metrics") or ())
+        optional_metrics = set(contract.get("optional_metrics") or ())
+        metrics = (
+            tuple(metric for metric in targets if metric in allowed_metrics)
+            if metric_mode == "requested"
+            else tuple(
+                dict.fromkeys(
+                    (
+                        *(metric for metric in required_metrics if metric in targets),
+                        *(metric for metric in targets if metric in optional_metrics),
+                    )
+                )
+            )
+        )
+        allowed_datasets = set(contract.get("allowed_datasets") or ())
+        datasets: list[str] = []
+        for metric_id in metrics:
+            try:
+                sources = tuple(registry.metric_sources(metric_id))
+            except (KeyError, TypeError, ValueError):
+                continue
+            reviewed = tuple(
+                dataset_id
+                for dataset_id in sources
+                if not allowed_datasets or dataset_id in allowed_datasets
+            )
+            if len(reviewed) == 1 or (
+                reviewed
+                and str(contract.get("source_selection") or "")
+                == "all_required_datasets"
+            ):
+                datasets.extend(reviewed)
+        if datasets:
+            resolved[capability_id] = tuple(dict.fromkeys(datasets))
+    return resolved
+
+
 def obligation_condition_matches(condition: str, request: ObligationRequest) -> bool:
     matches = {
         "baselines_present": bool(request.baselines),
