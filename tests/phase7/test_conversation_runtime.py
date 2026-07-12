@@ -491,6 +491,35 @@ class ConversationRuntimeTest(unittest.TestCase):
             any(event["event"] == "conversation_orchestrator_llm_evaluated" for event in result.audit_events)
         )
 
+    def test_llm_cannot_inherit_runnable_turn_without_existing_topic(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-empty-llm-route", owner_id="analyst-1")
+        fake = FakeConversationLLM(
+            {
+                "intent": "follow_up",
+                "topic_relation": "inherit_current",
+                "business_summary": "用户希望执行一项业务分析。",
+                "confidence": 0.91,
+            }
+        )
+        runtime = ConversationRuntime(store, llm_client=fake)
+
+        result = runtime.handle_message(
+            "thread-empty-llm-route",
+            "分析收入构成，同时核对可用数据。",
+        )
+
+        self.assertEqual(result.turn_intent.intent, "new_topic")
+        self.assertEqual(result.topic_relation, "new_topic")
+        self.assertIsNotNone(result.topic_id)
+        self.assertEqual(result.run_request.topic_id, result.topic_id)
+        self.assertEqual(result.context_manifest.topic_id, result.topic_id)
+        self.assertEqual(
+            store.get_thread("thread-empty-llm-route").current_topic_id,
+            result.topic_id,
+        )
+        self.assertEqual(len(fake.calls), 1)
+
     def test_clear_followup_uses_local_orchestrator_without_llm_call(self):
         store = InMemoryConversationStore()
         store.create_thread("thread-local-route", owner_id="analyst-1")

@@ -716,6 +716,10 @@ def _validated_orchestration(
     elif topic_relation == "select_referenced_topic" and topic_count < 2:
         return _local_fallback(local, "local_conversation_orchestrator_fallback")
 
+    if topic_count == 0 and _should_run(intent, topic_relation):
+        intent = "new_topic"
+        topic_relation = "new_topic"
+
     business_summary = output.get("business_summary")
     if not isinstance(business_summary, str) or not business_summary.strip():
         business_summary = _intent_summary(intent, "")
