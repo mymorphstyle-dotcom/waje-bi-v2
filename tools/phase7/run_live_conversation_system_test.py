@@ -2266,12 +2266,18 @@ def _runtime_audit_package(result: Mapping[str, Any]) -> dict[str, Any]:
         return failure("artifact_invalid")
     if not isinstance(payload, Mapping):
         return failure("artifact_invalid")
-    expected_run_id = str(result.get("run_id") or "")
-    payload_run_id = str(payload.get("run_id") or "")
-    if not expected_run_id:
+    raw_expected_run_id = result.get("run_id")
+    raw_payload_run_id = payload.get("run_id")
+    if raw_expected_run_id is None or raw_expected_run_id == "":
         return failure("run_id_missing")
-    if not payload_run_id:
+    if not isinstance(raw_expected_run_id, str):
+        return failure("run_id_invalid")
+    if raw_payload_run_id is None or raw_payload_run_id == "":
         return failure("persisted_run_id_missing")
+    if not isinstance(raw_payload_run_id, str):
+        return failure("persisted_run_id_invalid")
+    expected_run_id = raw_expected_run_id
+    payload_run_id = raw_payload_run_id
     if payload_run_id != expected_run_id:
         return failure("run_id_mismatch")
     admin = payload.get("admin_audit")
@@ -2290,12 +2296,21 @@ def _runtime_audit_package(result: Mapping[str, Any]) -> dict[str, Any]:
     client_package = result.get("answer_package") or {}
     if not isinstance(client_package, Mapping):
         client_package = {}
-    effective = result.get("analysis_contract") or client_package.get(
-        "analysis_contract"
+    effective_present = "analysis_contract" in result or (
+        isinstance(client_package, Mapping) and "analysis_contract" in client_package
     )
-    if isinstance(effective, Mapping) and effective:
-        effective_id = str(effective.get("analysis_contract_id") or "")
-        if effective_id and effective_id != persisted_contract.analysis_contract_id:
+    effective = (
+        result.get("analysis_contract")
+        if "analysis_contract" in result
+        else client_package.get("analysis_contract")
+    )
+    if effective_present:
+        if not isinstance(effective, Mapping):
+            return failure("effective_analysis_contract_invalid")
+        effective_id = effective.get("analysis_contract_id")
+        if not isinstance(effective_id, str) or not effective_id:
+            return failure("effective_analysis_contract_invalid")
+        if effective_id != persisted_contract.analysis_contract_id:
             return failure("effective_analysis_contract_id_mismatch")
     return dict(payload)
 

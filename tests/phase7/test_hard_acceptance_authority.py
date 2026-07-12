@@ -290,6 +290,10 @@ def test_obligation_review_fails_closed_without_one_valid_persisted_family(
         ("missing_payload_run_id", "persisted_run_id_missing"),
         ("contract_id_mismatch", "analysis_contract_id_mismatch"),
         ("effective_contract_mismatch", "effective_analysis_contract_id_mismatch"),
+        ("expected_run_id_nonstring", "run_id_invalid"),
+        ("persisted_run_id_nonstring", "persisted_run_id_invalid"),
+        ("effective_contract_nonmapping", "effective_analysis_contract_invalid"),
+        ("effective_contract_missing_id", "effective_analysis_contract_invalid"),
     ],
 )
 def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
@@ -320,6 +324,8 @@ def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
         path.write_text(json.dumps(payload), encoding="utf-8")
     elif artifact_state == "missing_payload_run_id":
         path.write_text(json.dumps({**payload, "run_id": ""}), encoding="utf-8")
+    elif artifact_state == "persisted_run_id_nonstring":
+        path.write_text(json.dumps({**payload, "run_id": 123}), encoding="utf-8")
     elif artifact_state == "contract_id_mismatch":
         stale = dict(contract)
         stale["analysis_contract_id"] = "analysis:run-stale:1"
@@ -329,22 +335,29 @@ def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
         )
     else:
         path.write_text(json.dumps(payload), encoding="utf-8")
+    effective_contract = (
+        {**contract, "analysis_contract_id": "analysis:run-stale:1"}
+        if artifact_state == "effective_contract_mismatch"
+        else []
+        if artifact_state == "effective_contract_nonmapping"
+        else {}
+        if artifact_state == "effective_contract_missing_id"
+        else contract
+    )
     result = {
         "artifact_path": str(path),
         "answer_package": {
             "artifact_path": str(path),
-            "analysis_contract": (
-                {**contract, "analysis_contract_id": "analysis:run-stale:1"}
-                if artifact_state == "effective_contract_mismatch"
-                else contract
-            ),
+            "analysis_contract": effective_contract,
             "admin_audit": {
                 "analysis_contract": _analysis_contract(_canonical_gap())
             },
         },
     }
     if artifact_state != "missing_expected_run_id":
-        result["run_id"] = run_id
+        result["run_id"] = (
+            123 if artifact_state == "expected_run_id_nonstring" else run_id
+        )
 
     assert system_test._runtime_audit_package(result) == {
         "_authority_error": expected_error
