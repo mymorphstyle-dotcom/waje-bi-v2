@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from collections.abc import Mapping
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -26,6 +26,7 @@ from bi_agent.runtime.claim_provenance import (
     validate_trusted_claim_provenance_record,
     validate_verified_claim_record,
 )
+from bi_agent.runtime.coverage_audit import audit_existing_data_coverage
 from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_value
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
@@ -37,8 +38,15 @@ def load_cases(path: str) -> list[dict[str, Any]]:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         return []
+    defaults = raw.get("analysis_context_defaults") or {}
+    if not isinstance(defaults, Mapping):
+        raise ValueError("eval_analysis_context_defaults_invalid")
     cases = raw.get("conversation_cases", [])
-    return [case for case in cases if isinstance(case, dict) and case.get("id")]
+    loaded = [deepcopy(case) for case in cases if isinstance(case, dict) and case.get("id")]
+    for case in loaded:
+        if defaults and not case.get("analysis_context"):
+            case["analysis_context"] = dict(defaults)
+    return loaded
 
 
 def select_cases(cases: list[dict[str, Any]], case_id: str | None) -> list[dict[str, Any]]:
@@ -210,6 +218,8 @@ def _review_expectations(turn: dict[str, Any], turn_record: dict[str, Any]) -> d
 def review_case_obligations(
     turn_record: Mapping[str, Any],
     registry: RuntimeContractRegistry,
+    *,
+    coverage_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Review executable obligations without constraining answer wording."""
     scenario = turn_record.get("scenario") or {}
@@ -239,9 +249,26 @@ def review_case_obligations(
         if str(item)
     }
     missing_capabilities = [item for item in required if item not in actual]
-    expected_states = scenario.get("expected_dataset_states") or {}
-    if not isinstance(expected_states, Mapping):
+    authored_expected_states = scenario.get("expected_dataset_states") or {}
+    if not isinstance(authored_expected_states, Mapping):
         raise ValueError("dataset_state_expectation_invalid")
+    expected_states = dict(authored_expected_states)
+    unresolved_authority_roles: list[str] = []
+    authored_authority_mismatches: list[str] = []
+    if coverage_authority is not None:
+        expected_states, unresolved_authority_roles = (
+            _authority_resolved_dataset_states(
+                authored_expected_states,
+                required=required,
+                question_family=family,
+                coverage_authority=coverage_authority,
+            )
+        )
+        authored_authority_mismatches = [
+            f"{dataset_id}:{authored_expected_states[dataset_id]}->{state}"
+            for dataset_id, state in expected_states.items()
+            if authored_expected_states.get(dataset_id) != state
+        ]
     authority = turn_record.get("runtime_authority") or {}
     if not isinstance(authority, Mapping):
         raise ValueError("runtime_authority_invalid")
@@ -251,9 +278,14 @@ def review_case_obligations(
         accepted_capabilities=actual,
         authority=authority,
     )
-    excluded = scenario.get("excluded_inputs") or {}
-    if not isinstance(excluded, Mapping):
+    authored_excluded = scenario.get("excluded_inputs") or {}
+    if not isinstance(authored_excluded, Mapping):
         raise ValueError("excluded_input_expectation_invalid")
+    expected_gaps = dict(authored_excluded)
+    if coverage_authority is not None:
+        expected_gaps = _authority_resolved_expected_gaps(
+            authored_excluded, expected_states
+        )
     missing_data = [
         f"{dataset_id}:{state}"
         for dataset_id, state in expected_states.items()
@@ -261,20 +293,25 @@ def review_case_obligations(
     ]
     mismatched_gaps = [
         f"{dataset_id}:{gap_type}"
-        for dataset_id, gap_type in excluded.items()
+        for dataset_id, gap_type in authored_excluded.items()
         if dataset_id not in expected_states
     ]
     missing_expected_gaps = [
         f"{dataset_id}:{gap_type}"
-        for dataset_id, gap_type in excluded.items()
+        for dataset_id, gap_type in expected_gaps.items()
         if not _gap_expectation_matches(
             str(gap_type), observed_gaps.get(str(dataset_id), ())
         )
     ]
     claim_review = _review_claim_ceiling(authority, scenario, registry)
+    resolved_terminal_boundary = _authority_resolved_terminal_boundary(
+        str(scenario.get("terminal_boundary") or ""), expected_states
+    )
+    terminal_scenario = dict(scenario)
+    terminal_scenario["terminal_boundary"] = resolved_terminal_boundary
     terminal_review = _review_terminal_boundary(
         turn_record,
-        scenario,
+        terminal_scenario,
         observed_states,
     )
     clarification_required = scenario.get("clarification_resume") == "required"
@@ -292,6 +329,7 @@ def review_case_obligations(
     )
     hard_passed = (
         not missing_capabilities
+        and not unresolved_authority_roles
         and not missing_data
         and not mismatched_gaps
         and not missing_expected_gaps
@@ -306,15 +344,20 @@ def review_case_obligations(
         "conditional_capabilities": list(resolution.conditional_capabilities),
         "minimum_publishable_evidence": list(resolution.minimum_publishable_evidence),
         "allowed_claim_ceiling": scenario.get("allowed_claim_ceiling"),
-        "terminal_boundary": scenario.get("terminal_boundary"),
+        "authored_terminal_boundary": scenario.get("terminal_boundary"),
+        "terminal_boundary": resolved_terminal_boundary,
         "missing_required_capabilities": missing_capabilities,
         "capability_outcomes": capability_outcomes,
+        "authored_expected_dataset_states": dict(authored_expected_states),
         "expected_dataset_states": dict(expected_states),
+        "authored_authority_mismatches": authored_authority_mismatches,
+        "unresolved_authority_dataset_roles": unresolved_authority_roles,
         "observed_dataset_states": dict(observed_states),
         "observed_typed_gaps": {
             dataset_id: list(gaps) for dataset_id, gaps in observed_gaps.items()
         },
-        "expected_typed_gaps": dict(excluded),
+        "authored_expected_typed_gaps": dict(authored_excluded),
+        "expected_typed_gaps": dict(expected_gaps),
         "missing_current_data_obligations": missing_data,
         "invalid_typed_gaps": mismatched_gaps,
         "missing_expected_typed_gaps": missing_expected_gaps,
@@ -331,6 +374,81 @@ def review_case_obligations(
         "reuse_passed": reuse_passed,
         "hard_acceptance_passed": hard_passed,
     }
+
+
+def _authority_resolved_dataset_states(
+    authored_states: Mapping[str, Any],
+    *,
+    required: tuple[str, ...],
+    question_family: str,
+    coverage_authority: Mapping[str, Any],
+) -> tuple[dict[str, str], list[str]]:
+    cells = coverage_authority.get("cells") or {}
+    if not isinstance(cells, Mapping):
+        raise ValueError("coverage_authority_cells_invalid")
+    resolved: dict[str, str] = {}
+    unresolved: list[str] = []
+    required_set = set(required)
+    for raw_dataset_id in authored_states:
+        dataset_id = str(raw_dataset_id)
+        required_states: list[str] = []
+        family_states: list[str] = []
+        dataset_states: list[str] = []
+        for cell in cells.values():
+            if not isinstance(cell, Mapping):
+                raise ValueError("coverage_authority_cell_invalid")
+            datasets = {str(item) for item in cell.get("datasets") or ()}
+            capability = str(cell.get("capability") or "")
+            families = {str(item) for item in cell.get("question_families") or ()}
+            if dataset_id not in datasets:
+                continue
+            dataset_states.append(str(cell.get("state") or ""))
+            if capability in required_set:
+                required_states.append(str(cell.get("state") or ""))
+            if question_family in families:
+                family_states.append(str(cell.get("state") or ""))
+        states = required_states or family_states or dataset_states
+        valid = [state for state in states if state in _DATASET_STATE_PRECEDENCE]
+        if not valid:
+            unresolved.append(dataset_id)
+            continue
+        selector = max if required_states or family_states else min
+        resolved[dataset_id] = selector(
+            valid, key=lambda state: _DATASET_STATE_PRECEDENCE[state]
+        )
+    return resolved, unresolved
+
+
+def _authority_resolved_terminal_boundary(
+    authored_boundary: str,
+    expected_states: Mapping[str, str],
+) -> str:
+    states = set(expected_states.values())
+    if "permission_blocked" in states:
+        return "permission_blocked"
+    if states and states != {"executable"}:
+        return "contract_allowed_partial"
+    return authored_boundary
+
+
+def _authority_resolved_expected_gaps(
+    authored_gaps: Mapping[str, Any],
+    expected_states: Mapping[str, str],
+) -> dict[str, str]:
+    gap_states = {
+        "source_unbound",
+        "contract_partial",
+        "permission_blocked",
+        "snapshot_unavailable_as_of",
+    }
+    resolved: dict[str, str] = {}
+    for dataset_id, state in expected_states.items():
+        authored = str(authored_gaps.get(dataset_id) or "")
+        if authored and _normalized_gap_state(authored) == state:
+            resolved[dataset_id] = authored
+        elif state in gap_states:
+            resolved[dataset_id] = state
+    return resolved
 
 
 def _derive_capability_outcomes(
@@ -699,7 +817,12 @@ def _review_terminal_boundary(
             status == "completed" and "permission_blocked" in observed_states.values()
         ),
         "contract_allowed_partial": status == "completed" and any(
-            state in {"contract_partial", "degraded", "source_unbound"}
+            state in {
+                "contract_partial",
+                "degraded",
+                "source_unbound",
+                "snapshot_unavailable_as_of",
+            }
             for state in observed_states.values()
         ),
     }
@@ -1815,6 +1938,27 @@ def run_case(
 ) -> dict[str, Any]:
     thread_id = _case_thread_id(case)
     analysis_context = dict(case.get("analysis_context") or {})
+    coverage_authority = None
+    requires_coverage_authority = any(
+        isinstance(turn.get("scenario"), Mapping)
+        and bool((turn.get("scenario") or {}).get("expected_dataset_states"))
+        for turn in case.get("turns") or ()
+        if isinstance(turn, Mapping)
+    )
+    if real_clickhouse and requires_coverage_authority:
+        raw_as_of = analysis_context.get("as_of")
+        if not isinstance(raw_as_of, str):
+            raise RuntimeError("eval_coverage_authority_as_of_required")
+        try:
+            coverage_authority = audit_existing_data_coverage(
+                RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+                snapshot_records=core.store.list_dataset_snapshots(),
+                release_resolver=core.release_resolver,
+                as_of=datetime.fromisoformat(raw_as_of),
+                permission_scope="analyst",
+            )
+        except Exception as exc:
+            raise RuntimeError("eval_coverage_authority_unavailable") from exc
     required_datasets = tuple(case.get("required_datasets") or ())
     turns: list[dict[str, Any]] = []
     prior_topic_id: str | None = None
@@ -1898,6 +2042,7 @@ def run_case(
             turn_record["obligation_review"] = review_case_obligations(
                 turn_record,
                 RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+                coverage_authority=coverage_authority,
             )
         turn_record["strict_quality_failed"] = bool(
             strict_quality and _strict_quality_failed(turn_record)

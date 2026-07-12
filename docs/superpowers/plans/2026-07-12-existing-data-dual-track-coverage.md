@@ -1044,6 +1044,16 @@ obligation resolver plus typed scenario requirements. Missing excluded inputs
 produce expected typed gaps; missing current-data obligations fail strict
 acceptance.
 
+Treat scenario `expected_dataset_states` as reviewed authored hypotheses and
+matrix-role declarations, not as current runtime authority. Before reviewing a
+real fixed or platform turn, resolve the applicable capability/dataset cells
+from the same PostgreSQL snapshot/release authority and fixed `as_of` used by
+the coverage audit. Report authored, authority-resolved, and actually observed
+states separately. Hard acceptance compares runtime observations with the
+authority-resolved states and fails closed when authority cannot resolve a
+declared dataset role; a stale authored hypothesis is a contract-review finding
+and cannot turn an unavailable-as-of release into an executable obligation.
+
 - [ ] **Step 5: Extend review output**
 
 Each suite review reports:

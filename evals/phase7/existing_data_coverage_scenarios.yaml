@@ -1,5 +1,14 @@
 schema_version: "phase7-platform-current-data-v1"
 expectation_policy: structured_contracts_only
+analysis_context_defaults:
+  as_of: "2026-06-03T12:00:00+01:00"
+  target_date: "2026-06-02"
+  previous_day: "2026-06-01"
+  rolling_7_day_start: "2026-05-26"
+  rolling_7_day_end: "2026-06-01"
+  same_weekday_last_week: "2026-05-26"
+  pattern_history_start: "2026-01-01"
+  anomaly_history_start: "2026-05-03"
 conversation_cases:
   - id: platform_paid_amount_change
     group: platform_current_data

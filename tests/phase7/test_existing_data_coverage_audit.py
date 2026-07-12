@@ -63,6 +63,26 @@ def test_suite_selector_keeps_fixed_eight_and_platform_tracks_distinct():
     assert {case["group"] for case in platform} == {"platform_current_data"}
 
 
+def test_platform_suite_applies_fixed_authority_clock_to_every_case():
+    from tools.phase7.run_live_conversation_system_test import load_suite_cases
+
+    contexts = [case.get("analysis_context") for case in load_suite_cases("platform-current-data")]
+    assert contexts
+    assert all(
+        context == {
+            "as_of": "2026-06-03T12:00:00+01:00",
+            "target_date": "2026-06-02",
+            "previous_day": "2026-06-01",
+            "rolling_7_day_start": "2026-05-26",
+            "rolling_7_day_end": "2026-06-01",
+            "same_weekday_last_week": "2026-05-26",
+            "pattern_history_start": "2026-01-01",
+            "anomaly_history_start": "2026-05-03",
+        }
+        for context in contexts
+    )
+
+
 def test_all_suite_claim_ceilings_use_runtime_maximum_strength_taxonomy():
     from tools.phase7.run_live_conversation_system_test import load_suite_cases
 
@@ -275,6 +295,133 @@ def test_runtime_observation_does_not_copy_expected_and_requires_excluded_gap():
     assert review["missing_current_data_obligations"] == ["gameplay_channel:contract_partial"]
     assert review["missing_expected_typed_gaps"] == ["gameplay_channel:contract_partial"]
     assert review["hard_acceptance_passed"] is False
+
+
+def test_obligation_review_resolves_current_state_from_release_authority():
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    turn = {
+        "status": "completed",
+        "accepted_graph": [
+            "metric_coverage_profile",
+            "data_quality_profile",
+            "answer_verify",
+        ],
+        "scenario": {
+            "question_family": "data_quality_or_evidence_review",
+            "target_metrics": ["paid_amount"],
+            "expected_dataset_states": {"paid_order_success": "executable"},
+            "allowed_claim_ceiling": "trust_boundary",
+            "terminal_boundary": "contract_allowed_partial",
+        },
+        "runtime_authority": {
+            "contract_gaps": [{
+                "dataset_id": "paid_order_success",
+                "gap_type": "dataset_snapshot_unavailable_as_of",
+            }],
+        },
+    }
+    coverage_authority = {
+        "as_of": "2026-06-03T12:00:00+01:00",
+        "permission_scope": "analyst",
+        "cells": {
+            "data_quality_profile:paid_order_success": {
+                "capability": "data_quality_profile",
+                "datasets": ["paid_order_success"],
+                "question_families": ["data_quality_or_evidence_review"],
+                "state": "snapshot_unavailable_as_of",
+            },
+        },
+    }
+
+    review = review_case_obligations(
+        turn,
+        registry,
+        coverage_authority=coverage_authority,
+    )
+
+    assert review["authored_expected_dataset_states"] == {
+        "paid_order_success": "executable"
+    }
+    assert review["expected_dataset_states"] == {
+        "paid_order_success": "snapshot_unavailable_as_of"
+    }
+    assert review["authored_authority_mismatches"] == [
+        "paid_order_success:executable->snapshot_unavailable_as_of"
+    ]
+    assert review["expected_typed_gaps"] == {
+        "paid_order_success": "snapshot_unavailable_as_of"
+    }
+    assert review["missing_current_data_obligations"] == []
+    assert review["hard_acceptance_passed"] is True
+
+
+def test_obligation_review_fails_closed_when_declared_role_has_no_authority_cell():
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    review = review_case_obligations(
+        {
+            "status": "completed",
+            "accepted_graph": ["data_quality_profile", "answer_verify"],
+            "scenario": {
+                "question_family": "data_quality_or_evidence_review",
+                "target_metrics": ["paid_amount"],
+                "expected_dataset_states": {"paid_order_success": "executable"},
+                "allowed_claim_ceiling": "trust_boundary",
+                "terminal_boundary": "verified_answer",
+            },
+            "runtime_authority": {},
+        },
+        registry,
+        coverage_authority={"cells": {}},
+    )
+
+    assert review["unresolved_authority_dataset_roles"] == ["paid_order_success"]
+    assert review["hard_acceptance_passed"] is False
+
+
+def test_authority_resolution_uses_dataset_role_cell_when_route_is_independent():
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    review = review_case_obligations(
+        {
+            "status": "completed",
+            "accepted_graph": ["pattern_scan", "segment_contribution", "joint_attribution"],
+            "scenario": {
+                "question_family": "pattern_explanation",
+                "target_metrics": ["paid_amount"],
+                "requested_dimensions": ["channel"],
+                "expected_dataset_states": {"market_dashboard_channel": "executable"},
+                "allowed_claim_ceiling": "directional",
+                "terminal_boundary": "contract_allowed_partial",
+            },
+            "runtime_authority": {
+                "contract_gaps": [{
+                    "dataset_id": "market_dashboard_channel",
+                    "gap_type": "contract_partial",
+                }]
+            },
+        },
+        registry,
+        coverage_authority={
+            "cells": {
+                "market_pattern_compare:market_dashboard_channel": {
+                    "capability": "market_pattern_compare",
+                    "datasets": ["market_dashboard_channel"],
+                    "question_families": [],
+                    "state": "contract_partial",
+                }
+            }
+        },
+    )
+
+    assert review["unresolved_authority_dataset_roles"] == []
+    assert review["expected_dataset_states"] == {
+        "market_dashboard_channel": "contract_partial"
+    }
 
 
 def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
