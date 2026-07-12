@@ -1933,8 +1933,27 @@ def _select_source_datasets(
         str(contract.get("source_selection") or "") == "all_required_datasets"
         for contract in owner_contracts
     )
-    selected = tuple(
-        dataset_id for dataset_id in candidates if dataset_id in requested_datasets
+    allowed = {
+        dataset_id
+        for contract in owner_contracts
+        for dataset_id in _mapping_values(contract, "allowed_datasets")
+    }
+    requested_source_unrestricted = any(
+        "data_quality_probe" in _mapping_values(contract, "query_families")
+        for contract in owner_contracts
+    )
+    requested = tuple(
+        dataset_id
+        for dataset_id in candidates
+        if dataset_id in requested_datasets
+    )
+    reviewed_requested = tuple(
+        dataset_id for dataset_id in requested if dataset_id in allowed
+    )
+    selected = (
+        requested
+        if requested_source_unrestricted or not allowed or not reviewed_requested
+        else reviewed_requested
     )
     if selected:
         if all_required or len(selected) == 1:
@@ -1943,11 +1962,6 @@ def _select_source_datasets(
             item_kind, item_id, selected, affected, affected_claim_types
         )
 
-    allowed = {
-        dataset_id
-        for contract in owner_contracts
-        for dataset_id in _mapping_values(contract, "allowed_datasets")
-    }
     if allowed:
         constrained = tuple(
             dataset_id for dataset_id in candidates if dataset_id in allowed
