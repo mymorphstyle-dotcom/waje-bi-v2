@@ -2000,13 +2000,28 @@ def _select_source_datasets(
     reviewed_requested = tuple(
         dataset_id for dataset_id in requested if dataset_id in allowed
     )
+    purpose_resolved = _requested_sources_resolve_by_capability(
+        requested,
+        affected,
+        registry,
+    )
     selected = (
         requested
-        if requested_source_unrestricted or not allowed or not reviewed_requested
+        if (
+            purpose_resolved
+            or requested_source_unrestricted
+            or not allowed
+            or not reviewed_requested
+        )
         else reviewed_requested
     )
     if selected:
-        if all_required or requested_source_unrestricted or len(selected) == 1:
+        if (
+            all_required
+            or purpose_resolved
+            or requested_source_unrestricted
+            or len(selected) == 1
+        ):
             excluded_requested = tuple(
                 dataset_id for dataset_id in requested if dataset_id not in selected
             )
@@ -2091,6 +2106,40 @@ def _capability_reviews_dataset(
         return True
     allowed = _mapping_values(contract, "allowed_datasets")
     return not allowed or dataset_id in allowed
+
+
+def _requested_sources_resolve_by_capability(
+    requested: tuple[str, ...],
+    owners: tuple[str, ...],
+    registry: RuntimeContractRegistry,
+) -> bool:
+    if not requested:
+        return False
+    covered: set[str] = set()
+    observed_owner = False
+    for owner in owners:
+        if owner == "analysis_contract":
+            continue
+        contract = _registry_entry(registry.capability_inputs, owner)
+        if contract is None:
+            continue
+        observed_owner = True
+        query_families = _mapping_values(contract, "query_families")
+        quality_only = query_families == ("data_quality_probe",)
+        allowed = _mapping_values(contract, "allowed_datasets")
+        owned = (
+            requested
+            if quality_only or not allowed
+            else tuple(dataset_id for dataset_id in requested if dataset_id in allowed)
+        )
+        all_required = (
+            str(contract.get("source_selection") or "")
+            == "all_required_datasets"
+        )
+        if len(owned) > 1 and not quality_only and not all_required:
+            return False
+        covered.update(owned)
+    return observed_owner and covered == set(requested)
 
 
 def _source_ambiguity_gap(
