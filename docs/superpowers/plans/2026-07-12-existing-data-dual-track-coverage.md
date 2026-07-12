@@ -1052,7 +1052,10 @@ the coverage audit. Report authored, authority-resolved, and actually observed
 states separately. Hard acceptance compares runtime observations with the
 authority-resolved states and fails closed when authority cannot resolve a
 declared dataset role; a stale authored hypothesis is a contract-review finding
-and cannot turn an unavailable-as-of release into an executable obligation.
+and cannot turn an unavailable-as-of release into an executable obligation. If
+a role has authority cells but no reviewed capability or question-family link,
+use the most conservative state across those cells and report the ambiguous
+role; never select an optimistic cell to satisfy the authored hypothesis.
 
 - [ ] **Step 5: Extend review output**
 

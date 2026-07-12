@@ -419,9 +419,60 @@ def test_authority_resolution_uses_dataset_role_cell_when_route_is_independent()
     )
 
     assert review["unresolved_authority_dataset_roles"] == []
+    assert review["ambiguous_authority_dataset_roles"] == [
+        "market_dashboard_channel"
+    ]
     assert review["expected_dataset_states"] == {
         "market_dashboard_channel": "contract_partial"
     }
+
+
+def test_ambiguous_dataset_role_resolution_uses_conservative_authority_state():
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    review = review_case_obligations(
+        {
+            "status": "completed",
+            "accepted_graph": ["compare_periods", "driver_decomposition"],
+            "scenario": {
+                "question_family": "paid_amount_change_explanation",
+                "target_metrics": ["paid_amount"],
+                "expected_dataset_states": {"market_dashboard": "executable"},
+                "allowed_claim_ceiling": "directional",
+                "terminal_boundary": "contract_allowed_partial",
+            },
+            "runtime_authority": {
+                "contract_gaps": [{
+                    "dataset_id": "market_dashboard",
+                    "gap_type": "contract_partial",
+                }]
+            },
+        },
+        registry,
+        coverage_authority={
+            "cells": {
+                "market_health_compare:market_dashboard": {
+                    "capability": "market_health_compare",
+                    "datasets": ["market_dashboard"],
+                    "question_families": [],
+                    "state": "executable",
+                },
+                "source_reconciliation:market_dashboard": {
+                    "capability": "source_reconciliation",
+                    "datasets": ["market_dashboard"],
+                    "question_families": [],
+                    "state": "contract_partial",
+                },
+            }
+        },
+    )
+
+    assert review["expected_dataset_states"] == {
+        "market_dashboard": "contract_partial"
+    }
+    assert review["ambiguous_authority_dataset_roles"] == ["market_dashboard"]
+    assert review["missing_current_data_obligations"] == []
 
 
 def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():

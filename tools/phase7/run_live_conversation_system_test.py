@@ -254,9 +254,10 @@ def review_case_obligations(
         raise ValueError("dataset_state_expectation_invalid")
     expected_states = dict(authored_expected_states)
     unresolved_authority_roles: list[str] = []
+    ambiguous_authority_roles: list[str] = []
     authored_authority_mismatches: list[str] = []
     if coverage_authority is not None:
-        expected_states, unresolved_authority_roles = (
+        expected_states, unresolved_authority_roles, ambiguous_authority_roles = (
             _authority_resolved_dataset_states(
                 authored_expected_states,
                 required=required,
@@ -352,6 +353,7 @@ def review_case_obligations(
         "expected_dataset_states": dict(expected_states),
         "authored_authority_mismatches": authored_authority_mismatches,
         "unresolved_authority_dataset_roles": unresolved_authority_roles,
+        "ambiguous_authority_dataset_roles": ambiguous_authority_roles,
         "observed_dataset_states": dict(observed_states),
         "observed_typed_gaps": {
             dataset_id: list(gaps) for dataset_id, gaps in observed_gaps.items()
@@ -382,12 +384,13 @@ def _authority_resolved_dataset_states(
     required: tuple[str, ...],
     question_family: str,
     coverage_authority: Mapping[str, Any],
-) -> tuple[dict[str, str], list[str]]:
+) -> tuple[dict[str, str], list[str], list[str]]:
     cells = coverage_authority.get("cells") or {}
     if not isinstance(cells, Mapping):
         raise ValueError("coverage_authority_cells_invalid")
     resolved: dict[str, str] = {}
     unresolved: list[str] = []
+    ambiguous: list[str] = []
     required_set = set(required)
     for raw_dataset_id in authored_states:
         dataset_id = str(raw_dataset_id)
@@ -412,11 +415,12 @@ def _authority_resolved_dataset_states(
         if not valid:
             unresolved.append(dataset_id)
             continue
-        selector = max if required_states or family_states else min
-        resolved[dataset_id] = selector(
+        if not required_states and not family_states:
+            ambiguous.append(dataset_id)
+        resolved[dataset_id] = max(
             valid, key=lambda state: _DATASET_STATE_PRECEDENCE[state]
         )
-    return resolved, unresolved
+    return resolved, unresolved, ambiguous
 
 
 def _authority_resolved_terminal_boundary(
