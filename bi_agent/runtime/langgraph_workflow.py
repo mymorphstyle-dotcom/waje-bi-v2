@@ -2123,7 +2123,16 @@ def _canonical_baseline(value: str, aliases: Mapping[str, str]) -> str:
         marker in compact for marker in ("日均", "天均", "均值", "平均")
     ):
         return "rolling_7_day_baseline"
-    if "前日" in compact or "前一天" in compact:
+    if any(
+        marker in compact
+        for marker in (
+            "前日",
+            "前一日",
+            "前一天",
+            "前天",
+            "前一个完整业务日",
+        )
+    ):
         return "previous_day"
     return value
 

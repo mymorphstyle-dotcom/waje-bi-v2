@@ -492,6 +492,20 @@ def _use_high_value_claim_ceiling(bundle, *, claim_intents=("candidate_driver",)
 
 
 class AnalysisRuntimePersistenceTest(unittest.TestCase):
+    def test_descriptive_relative_day_baselines_are_canonicalized(self):
+        from bi_agent.runtime.langgraph_workflow import _canonical_baselines
+
+        self.assertEqual(
+            _canonical_baselines(
+                (
+                    "前一日（前天）的收入值",
+                    "与前天相比",
+                    "前一个完整业务日",
+                )
+            ),
+            ("previous_day",),
+        )
+
     def test_event_claim_projection_and_client_provenance_ignore_raw_injection(self):
         from bi_agent.runtime.answer_package import (
             build_answer_package,
