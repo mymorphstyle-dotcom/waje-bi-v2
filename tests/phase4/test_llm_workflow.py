@@ -1160,6 +1160,33 @@ class LLMWorkflowTest(unittest.TestCase):
                     state["boundary_decision"]["boundary_status"], "needs_question"
                 )
 
+    def test_unknown_diagnostic_tag_becomes_typed_route_conflict(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        requested, route = workflow_module.reconcile_analysis_route(
+            ("data_quality_profile",),
+            {"analysis_requirements": {"diagnostic_tags": ["model_invented_tag"]}},
+            {
+                "question_family": "data_quality_or_evidence_review",
+                "question_families": ["data_quality_or_evidence_review"],
+                "target_metric": "paid_amount",
+            },
+            registry,
+        )
+        state = {"route_material_conflicts": (), "boundary_decision": {}}
+        workflow_module._consume_obligation_route_conflict(state, route)
+
+        self.assertEqual(requested, ("data_quality_profile",))
+        self.assertEqual(route["obligation_resolution"]["status"], "conflict")
+        self.assertEqual(
+            route["obligation_resolution"]["error"],
+            "'unknown_diagnostic_obligation:model_invented_tag'",
+        )
+        self.assertEqual(state["boundary_decision"]["boundary_status"], "needs_question")
+
     def test_all_diagnostic_tags_reconcile_from_registry_contracts(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 

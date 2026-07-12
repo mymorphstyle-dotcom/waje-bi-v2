@@ -1515,7 +1515,7 @@ def reconcile_analysis_route(
     )
     try:
         resolution = resolve_analysis_obligations(request, registry)
-    except ValueError as exc:
+    except (KeyError, ValueError) as exc:
         error = str(exc)
         output["obligation_resolution"] = {
             "status": "conflict",
