@@ -279,6 +279,11 @@ def review_case_obligations(
         accepted_capabilities=actual,
         authority=authority,
     )
+    nonterminal_capabilities = [
+        capability_id
+        for capability_id, outcome in capability_outcomes.items()
+        if outcome not in {"executed", "degraded", "blocked"}
+    ]
     authored_excluded = scenario.get("excluded_inputs") or {}
     if not isinstance(authored_excluded, Mapping):
         raise ValueError("excluded_input_expectation_invalid")
@@ -329,7 +334,7 @@ def review_case_obligations(
         and _has_exact_reuse_decision(authority)
     )
     hard_passed = (
-        not missing_capabilities
+        not nonterminal_capabilities
         and not unresolved_authority_roles
         and not missing_data
         and not mismatched_gaps
@@ -349,6 +354,7 @@ def review_case_obligations(
         "terminal_boundary": resolved_terminal_boundary,
         "missing_required_capabilities": missing_capabilities,
         "capability_outcomes": capability_outcomes,
+        "nonterminal_required_capabilities": nonterminal_capabilities,
         "authored_expected_dataset_states": dict(authored_expected_states),
         "expected_dataset_states": dict(expected_states),
         "authored_authority_mismatches": authored_authority_mismatches,
@@ -505,11 +511,23 @@ def _derive_capability_outcomes(
         if capability_id:
             bindings_by_capability.setdefault(capability_id, []).append(binding)
 
+    blocked_capabilities: set[str] = set()
+    for gap in _mapping_items_for_keys(authority, {"contract_gaps"}):
+        if not (
+            str(gap.get("gap_type") or "").strip()
+            and str(gap.get("gap_id") or "").strip()
+            and str(gap.get("owner") or "").strip()
+        ):
+            continue
+        affected = gap.get("affected_capabilities") or ()
+        if isinstance(affected, str) or not isinstance(affected, (list, tuple)):
+            continue
+        blocked_capabilities.update(
+            str(item).strip() for item in affected if str(item).strip()
+        )
+
     outcomes: dict[str, str] = {}
     for capability_id in required:
-        if capability_id not in accepted_capabilities:
-            outcomes[capability_id] = "missing_route"
-            continue
         observed: set[str] = set()
         for binding in bindings_by_capability.get(capability_id, ()):
             binding_status = str(binding.get("status") or "")
@@ -524,6 +542,10 @@ def _derive_capability_outcomes(
             if "executed" in observed
             else "degraded"
             if "degraded" in observed
+            else "blocked"
+            if capability_id in blocked_capabilities
+            else "missing_route"
+            if capability_id not in accepted_capabilities
             else "unobserved"
         )
     return outcomes
@@ -1780,7 +1802,13 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
             for value in (item.get("capability_outcomes") or {}).values()
             if value == outcome
         )
-        for outcome in ("executed", "degraded", "unobserved", "missing_route")
+        for outcome in (
+            "executed",
+            "degraded",
+            "blocked",
+            "unobserved",
+            "missing_route",
+        )
     }
     runtime_correctness = {
         key: bool(turns) and all(

@@ -190,9 +190,23 @@ def test_obligation_review_enforces_claim_ceiling_and_terminal_boundary(
     expected_state = "permission_blocked" if boundary == "permission_blocked" else "contract_partial"
     if boundary == "verified_answer":
         dataset, expected_state = "paid_order_success", "executable"
+    required_capabilities = [
+        "data_quality_profile",
+        "answer_verify",
+        "metric_coverage_profile",
+    ]
+    authority_gaps = [
+        {
+            **gap,
+            "gap_id": f"dataset:{gap['dataset_id']}:{gap['gap_type']}",
+            "affected_capabilities": required_capabilities,
+            "owner": "contract_owner",
+        }
+        for gap in gaps
+    ]
     turn = {
         "status": status,
-        "accepted_graph": ["data_quality_profile", "answer_verify", "metric_coverage_profile"],
+        "accepted_graph": required_capabilities,
         "scenario": {
             "question_family": "data_quality_or_evidence_review",
             "target_metrics": ["paid_amount"],
@@ -202,9 +216,22 @@ def test_obligation_review_enforces_claim_ceiling_and_terminal_boundary(
             "excluded_inputs": ({dataset: gaps[0]["gap_type"]} if gaps else {}),
         },
         "runtime_authority": {
-            "query_executions": ([{"dataset_id": dataset, "execution_status": "succeeded", "completeness_status": "complete"}] if boundary == "verified_answer" else []),
-            "contract_gaps": gaps,
-            "capability_bindings": [{"binding_manifest_ref": "binding:test", "capability_id": "data_quality_profile", "maximum_claim_strength": "directional", "result_refs": ["result:test"], "status": "ready"}],
+            "query_executions": ([{"dataset_id": dataset, "result_ref": "result:test", "execution_status": "succeeded", "completeness_status": "complete", "analysis_readiness": "ready"}] if boundary == "verified_answer" else []),
+            "contract_gaps": authority_gaps,
+            "capability_bindings": [
+                {
+                    "binding_manifest_ref": (
+                        "binding:test"
+                        if capability_id == "data_quality_profile"
+                        else f"binding:{capability_id}"
+                    ),
+                    "capability_id": capability_id,
+                    "maximum_claim_strength": "directional",
+                    "result_refs": ["result:test"],
+                    "status": "ready",
+                }
+                for capability_id in required_capabilities
+            ],
             "evidence_manifests": [{"evidence_ref": "evidence:test", "binding_manifest_ref": "binding:test", "result_refs": ["result:test"]}],
             "verified_claims": [{"claim_ref": "claim:test", "claim_strength": claim_strength, "evidence_refs": ["evidence:test"], "result_refs": ["result:test"]}],
         },
@@ -319,6 +346,13 @@ def test_obligation_review_resolves_current_state_from_release_authority():
             "contract_gaps": [{
                 "dataset_id": "paid_order_success",
                 "gap_type": "dataset_snapshot_unavailable_as_of",
+                "gap_id": "dataset:paid_order_success:dataset_snapshot_unavailable_as_of",
+                "affected_capabilities": [
+                    "metric_coverage_profile",
+                    "data_quality_profile",
+                    "answer_verify",
+                ],
+                "owner": "data_owner",
             }],
         },
     }
@@ -670,6 +704,7 @@ def test_obligation_coverage_outcomes_are_mutually_exclusive_and_authoritative()
         "accepted": 3,
         "executed": 1,
         "degraded": 1,
+        "blocked": 0,
         "unobserved": 1,
         "missing_route": 1,
     }
@@ -735,6 +770,107 @@ def test_obligation_review_requires_binding_result_and_completeness_chain():
         "data_quality_profile": "degraded",
         "answer_verify": "unobserved",
     }
+
+
+@pytest.mark.parametrize(
+    ("accepted_graph", "runtime_authority", "expected_outcome"),
+    [
+        (["answer_verify"], {}, "unobserved"),
+        ([], {}, "missing_route"),
+        (
+            [],
+            {
+                "contract_gaps": [{
+                    "gap_type": "contract_partial",
+                    "gap_id": "dataset:paid_order_success:contract_partial",
+                    "dataset_id": "paid_order_success",
+                    "affected_capabilities": ["different_capability"],
+                    "owner": "contract_owner",
+                }]
+            },
+            "missing_route",
+        ),
+    ],
+)
+def test_obligation_review_rejects_every_nonterminal_required_capability_outcome(
+    accepted_graph, runtime_authority, expected_outcome
+):
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    review = review_case_obligations(
+        {
+            "status": "completed",
+            "answer_package": {"summary": "terminal boundary response"},
+            "accepted_graph": accepted_graph,
+            "scenario": {
+                "required_capabilities": ["answer_verify"],
+                "expected_dataset_states": {},
+                "allowed_claim_ceiling": "trust_boundary",
+                "terminal_boundary": "verified_answer",
+            },
+            "runtime_authority": runtime_authority,
+        },
+        registry,
+    )
+
+    assert review["capability_outcomes"] == {"answer_verify": expected_outcome}
+    assert review["nonterminal_required_capabilities"] == ["answer_verify"]
+    assert review["hard_acceptance_passed"] is False
+
+
+@pytest.mark.parametrize("terminal_outcome", ["executed", "degraded", "blocked"])
+def test_obligation_review_accepts_only_authority_backed_terminal_capability_outcomes(
+    terminal_outcome
+):
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    accepted_graph = [] if terminal_outcome == "blocked" else ["answer_verify"]
+    if terminal_outcome == "blocked":
+        runtime_authority = {
+            "contract_gaps": [{
+                "gap_type": "contract_partial",
+                "gap_id": "capability:answer_verify:contract_partial",
+                "dataset_id": "paid_order_success",
+                "affected_capabilities": ["answer_verify"],
+                "owner": "contract_owner",
+            }]
+        }
+    else:
+        partial = terminal_outcome == "degraded"
+        runtime_authority = {
+            "query_executions": [{
+                "result_ref": "result:answer-verify",
+                "execution_status": "succeeded",
+                "completeness_status": "partial" if partial else "complete",
+                "analysis_readiness": "degraded" if partial else "ready",
+            }],
+            "capability_bindings": [{
+                "capability_id": "answer_verify",
+                "status": "degraded" if partial else "ready",
+                "result_refs": ["result:answer-verify"],
+            }],
+        }
+    review = review_case_obligations(
+        {
+            "status": "completed",
+            "answer_package": {"summary": "terminal boundary response"},
+            "accepted_graph": accepted_graph,
+            "scenario": {
+                "required_capabilities": ["answer_verify"],
+                "expected_dataset_states": {},
+                "allowed_claim_ceiling": "trust_boundary",
+                "terminal_boundary": "verified_answer",
+            },
+            "runtime_authority": runtime_authority,
+        },
+        registry,
+    )
+
+    assert review["capability_outcomes"] == {"answer_verify": terminal_outcome}
+    assert review["nonterminal_required_capabilities"] == []
+    assert review["hard_acceptance_passed"] is True
 
 
 def test_cli_case_selection_rejects_conflicts_cross_suite_and_unknown():

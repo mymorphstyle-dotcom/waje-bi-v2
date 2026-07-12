@@ -179,6 +179,11 @@ Acceptance requires:
 - clarification resumes the original topic;
 - every capability required by the reviewed obligation contract is accepted,
   explicitly degraded, or blocked with an exact contract gap;
+- hard acceptance evaluates persisted capability outcomes, not accepted-graph
+  membership: each required capability must be `executed`, `degraded`, or
+  `blocked`; `blocked` requires a typed persisted contract gap whose
+  `affected_capabilities` names that exact capability, while `unobserved` and
+  `missing_route` always fail;
 - every currently executable required query has snapshot, result,
   completeness, binding, ContextManifest, and ReuseDecision authority;
 - market, gameplay, and external-event evidence survives unrelated paid-source

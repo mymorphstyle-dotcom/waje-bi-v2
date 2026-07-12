@@ -1044,6 +1044,12 @@ obligation resolver plus typed scenario requirements. Missing excluded inputs
 produce expected typed gaps; missing current-data obligations fail strict
 acceptance.
 
+Hard acceptance is derived from persisted authority for every required
+capability. Only `executed`, `degraded`, or `blocked` are terminal outcomes;
+`blocked` requires a typed contract gap whose `affected_capabilities` contains
+the exact capability. Accepted-graph membership alone is not authority, and
+`unobserved` or `missing_route` fail the case.
+
 Treat scenario `expected_dataset_states` as reviewed authored hypotheses and
 matrix-role declarations, not as current runtime authority. Before reviewing a
 real fixed or platform turn, resolve the applicable capability/dataset cells
