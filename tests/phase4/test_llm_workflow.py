@@ -152,6 +152,39 @@ def _llm_input_payload(answer_package, task):
 
 
 class LLMWorkflowTest(unittest.TestCase):
+    def test_question_family_normalization_maps_stable_diagnostic_vocabulary(self):
+        normalized = workflow_module._normalize_question_families(
+            {
+                "question_family": "change_explanation",
+                "question_families": [
+                    "change_explanation",
+                    "evidence_quality",
+                    "multi_baseline",
+                ],
+                "secondary_question_families": ["evidence_quality"],
+            }
+        )
+
+        self.assertEqual(
+            normalized["question_family"],
+            "paid_amount_change_explanation",
+        )
+        self.assertEqual(
+            normalized["question_families"],
+            [
+                "paid_amount_change_explanation",
+                "data_quality_or_evidence_review",
+                "custom_baseline_comparison",
+            ],
+        )
+        self.assertEqual(
+            normalized["secondary_question_families"],
+            [
+                "data_quality_or_evidence_review",
+                "custom_baseline_comparison",
+            ],
+        )
+
     def test_business_intent_rejects_non_mapping_optional_contract_as_typed_llm_failure(self):
         state = {
             "request": {"question": "检查业务规律"},
@@ -909,6 +942,131 @@ class LLMWorkflowTest(unittest.TestCase):
             "query_gap_recommendation_repair_invalid",
         ):
             _generate_query_gap_clarification(state(RecommendationRepairLLM(2)))
+
+    def test_ready_independent_capability_forces_omit_recommendation_across_multiple_gaps(self):
+        class VaryingRecommendationLLM(FakeLLMClient):
+            def __init__(self, option_index):
+                super().__init__()
+                self.option_index = option_index
+
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                if task == "query_gap_clarification":
+                    return FakeLLMResult(
+                        {
+                            "questions": [{
+                                "question": "如何继续？",
+                                "options": ["等待", "继续", "tell the agent to do differently"],
+                            }],
+                            "recommended_assumption": {"assumption": "等待所有背景数据"},
+                            "decision_summary": "需要选择。",
+                            "display_summary": "等待确认。",
+                        },
+                        {"task": task},
+                    )
+                if task == "query_gap_recommendation_repair":
+                    return FakeLLMResult(
+                        {
+                            "option_index": self.option_index,
+                            "brief_reason": "模型建议。",
+                            "display_summary": "已建议。",
+                        },
+                        {"task": task},
+                    )
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
+
+        def state(option_index):
+            return {
+                "request": {},
+                "analysis_route": {
+                    "requested_nodes": [
+                        "market_health_compare",
+                        "event_evidence",
+                        "gameplay_context",
+                    ]
+                },
+                "analysis_runtime_result": type(
+                    "ClarificationResult",
+                    (),
+                    {
+                        "typed_gaps": ({
+                            "gap_type": "dataset_snapshot_unavailable_as_of",
+                            "requires_clarification": True,
+                            "owner": "data_owner",
+                            "affected_capabilities": ("event_evidence",),
+                            "repair_options": ("wait_for_snapshot_availability",),
+                        }, {
+                            "gap_type": "contract_partial",
+                            "requires_clarification": True,
+                            "owner": "contract_owner",
+                            "affected_capabilities": ("gameplay_context",),
+                            "repair_options": ("bind_source",),
+                        }),
+                        "bound_capability_inputs": {
+                            "market_health_compare": type(
+                                "Bound", (), {"status": "ready", "binding_manifest_ref": "binding:market"}
+                            )(),
+                            "event_evidence": type("Bound", (), {"status": "blocked"})(),
+                            "gameplay_context": type("Bound", (), {"status": "degraded"})(),
+                        },
+                    },
+                )(),
+                "query_repair_decisions": [],
+                "intent": {"target_metric": "active_users", "time_window": "previous_day"},
+                "llm_client": VaryingRecommendationLLM(option_index),
+                "llm_calls": [],
+                "checkpoint_events": [],
+            }
+
+        for option_index in (0, 1):
+            result = _generate_query_gap_clarification(state(option_index))
+            clarification = result["query_gap_clarification"]
+            recommended = clarification["recommended_assumption"]["option"]
+            action_by_label = {
+                item["business_label"]: item["action_kind"]
+                for item in clarification["choice_actions"]
+            }
+            self.assertEqual(action_by_label[recommended], "omit_unavailable_context")
+
+    def test_boundary_only_acceptance_is_scoped_to_gaps_when_ready_sibling_exists(self):
+        result = type(
+            "ClarificationResult",
+            (),
+            {
+                "status": "clarify",
+                "typed_gaps": ({
+                    "gap_type": "dataset_snapshot_unavailable_as_of",
+                    "requires_clarification": True,
+                    "affected_capabilities": ("event_evidence",),
+                },),
+                "bound_capability_inputs": {
+                    "market_health_compare": type(
+                        "Bound", (), {"status": "ready", "binding_manifest_ref": "binding:market"}
+                    )(),
+                    "event_evidence": type("Bound", (), {"status": "blocked"})(),
+                },
+            },
+        )()
+        state = {
+            "request": {
+                "accepted_degradation_choice": {
+                    "choice_id": "continue-with-boundary",
+                    "action_kind": "continue_with_boundary_only",
+                    "affected_capabilities": ["event_evidence"],
+                }
+            },
+            "analysis_runtime_result": result,
+        }
+
+        self.assertEqual(_route_after_query_repair(state), "degraded")
+        self.assertEqual(
+            state["request"]["accepted_degradation_choice"]["action_kind"],
+            "omit_unavailable_context",
+        )
 
     def test_analysis_runtime_request_is_typed_and_requires_fixed_clock(self):
         request = AnalysisRuntimeRequest.create(

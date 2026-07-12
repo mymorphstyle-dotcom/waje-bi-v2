@@ -2327,6 +2327,19 @@ def _route_after_query_repair(state: WorkflowState) -> str:
         if isinstance(accepted_choice, Mapping)
         else ""
     )
+    if (
+        accepted_action == "continue_with_boundary_only"
+        and _has_authority_ready_independent_capability(
+            result,
+            tuple(dict(item) for item in getattr(result, "typed_gaps", ())),
+        )
+    ):
+        accepted_choice = {
+            **dict(accepted_choice),
+            "action_kind": "omit_unavailable_context",
+        }
+        state["request"]["accepted_degradation_choice"] = accepted_choice
+        accepted_action = "omit_unavailable_context"
     if result.status == "clarify" and accepted_action in {
         "omit_unavailable_context",
         "continue_with_boundary_only",
@@ -2439,11 +2452,32 @@ def _generate_query_gap_clarification(state: WorkflowState) -> WorkflowState:
     first_question["options"] = options
     output["questions"] = [first_question]
     output["choice_actions"] = choice_actions
+    forced_ready_sibling_option = ""
+    if _has_authority_ready_independent_capability(result, typed_gaps):
+        forced_ready_sibling_option = next(
+            (
+                str(action.get("business_label") or "")
+                for action in choice_actions
+                if action.get("action_kind") == "omit_unavailable_context"
+            ),
+            "",
+        )
+        if not forced_ready_sibling_option:
+            raise WorkflowFailure(
+                "query_gap_ready_sibling_action_missing",
+                failure_type="contract",
+            )
     recommended = output.get("recommended_assumption") or {}
     recommended_option = str(
         recommended.get("option") if isinstance(recommended, Mapping) else ""
     ).strip()
-    if not recommended_option or recommended_option not in options:
+    if forced_ready_sibling_option:
+        recommended_option = forced_ready_sibling_option
+        output["recommended_assumption"] = {"option": recommended_option}
+        output["recommendation_reason"] = (
+            "保留已有权威绑定的可执行分析，仅省略当前不可用的独立背景能力。"
+        )
+    elif not recommended_option or recommended_option not in options:
         business_options = [
             option
             for option in options
@@ -2475,6 +2509,30 @@ def _generate_query_gap_clarification(state: WorkflowState) -> WorkflowState:
     state["query_gap_clarification"] = output
     state["workflow_status"] = "waiting_for_clarification"
     return state
+
+
+def _has_authority_ready_independent_capability(
+    result: Any,
+    typed_gaps: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Return true when a verified ready binding is outside every material gap."""
+
+    if result is None:
+        return False
+    affected = {
+        str(capability)
+        for gap in typed_gaps
+        if bool(gap.get("requires_clarification"))
+        for capability in gap.get("affected_capabilities") or ()
+        if str(capability)
+    }
+    bound_inputs = getattr(result, "bound_capability_inputs", {}) or {}
+    return any(
+        str(capability) not in affected
+        and getattr(bound, "status", "") == "ready"
+        and bool(getattr(bound, "binding_manifest_ref", ""))
+        for capability, bound in bound_inputs.items()
+    )
 
 
 def _route_after_query_gap_clarification(state: WorkflowState) -> str:
