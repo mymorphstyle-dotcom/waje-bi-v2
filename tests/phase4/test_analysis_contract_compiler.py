@@ -1383,6 +1383,114 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             {gap.gap_id for gap in outcome.analysis_contract.contract_gaps},
         )
 
+    def test_cross_source_quality_owner_does_not_widen_strong_capability_binding(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        dashboard, channel = _market_dashboard_snapshots()
+        catalog, resolver, released = canonical_release_catalog(dashboard, channel)
+        released_by_dataset = {item.dataset_id: item for item in released}
+
+        outcome = compile_analysis_contract(
+            run_id="run-purpose-scoped-source-selection",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "dataset_requirements": [
+                    "market_dashboard",
+                    "market_dashboard_channel",
+                ],
+                "baselines": ["previous_day"],
+                "claim_intents": [
+                    "comparative_change",
+                    "contract_coverage_and_trust_boundary",
+                ],
+                "target_semantic": "2026-06-02",
+            },
+            accepted_capabilities=(
+                "market_health_compare",
+                "data_quality_check",
+            ),
+            catalog=catalog,
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+            release_resolver=resolver,
+        )
+
+        queries_by_ref = {
+            query.query_contract_id: query for query in outcome.query_contracts
+        }
+        plans = {plan.capability_id: plan for plan in outcome.capability_plans}
+        market_ref = plans["market_health_compare"].required_input_slots[0].query_contract_refs
+        self.assertEqual(len(market_ref), 1)
+        self.assertEqual(
+            queries_by_ref[market_ref[0]].dataset_snapshot_refs,
+            (released_by_dataset["market_dashboard"].snapshot_ref,),
+        )
+        quality_refs = tuple(
+            ref
+            for slot in plans["data_quality_check"].required_input_slots
+            for ref in slot.query_contract_refs
+        )
+        self.assertEqual(
+            {
+                queries_by_ref[ref].dataset_snapshot_refs[0]
+                for ref in quality_refs
+            },
+            {
+                released_by_dataset["market_dashboard"].snapshot_ref,
+                released_by_dataset["market_dashboard_channel"].snapshot_ref,
+            },
+        )
+        self.assertFalse(
+            any(
+                gap.dataset_id == "market_dashboard_channel"
+                and "market_health_compare" in gap.affected_capabilities
+                for gap in outcome.analysis_contract.contract_gaps
+            )
+        )
+
+    def test_explicit_unreviewed_source_is_audited_while_strong_query_stays_bound(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        dashboard, channel = _market_dashboard_snapshots()
+        catalog, resolver, _ = canonical_release_catalog(dashboard, channel)
+
+        outcome = compile_analysis_contract(
+            run_id="run-explicit-unreviewed-source",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "dataset_requirements": [
+                    "market_dashboard",
+                    "market_dashboard_channel",
+                ],
+                "baselines": ["previous_day"],
+                "claim_intents": ["comparative_change"],
+                "target_semantic": "2026-06-02",
+            },
+            accepted_capabilities=("market_health_compare",),
+            catalog=catalog,
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+            release_resolver=resolver,
+        )
+
+        self.assertTrue(outcome.query_contracts)
+        gap = next(
+            gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_id
+            == "metric:paid_amount:requested_source_unreviewed:market_dashboard_channel"
+        )
+        self.assertEqual(gap.affected_capabilities, ("market_health_compare",))
+        self.assertEqual(gap.dataset_id, "market_dashboard_channel")
+        self.assertEqual(
+            gap.diagnostic_context["reviewed_dataset_ids"],
+            ["market_dashboard"],
+        )
+
     def test_explicit_claim_outside_capability_ceiling_is_rejected(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         outcome = compile_analysis_contract(
