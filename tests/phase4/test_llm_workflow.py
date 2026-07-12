@@ -201,6 +201,48 @@ class LLMWorkflowTest(unittest.TestCase):
                 {"question_family": "model_invented_family"}
             )
 
+    def test_question_family_normalization_rejects_conflicting_canonical_primary_candidates(self):
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "question_family_primary_conflict:pattern_explanation,revenue_health_review",
+        ):
+            workflow_module._normalize_question_families(
+                {
+                    "primary_question_family": "revenue_health_review",
+                    "question_family": "pattern_explanation",
+                }
+            )
+
+    def test_question_family_normalization_rejects_conflicting_unique_diagnostics(self):
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "question_family_primary_conflict:business_object_impact_review,paid_amount_change_explanation",
+        ):
+            workflow_module._normalize_question_families(
+                {
+                    "primary_question_family": "driver_focus",
+                    "question_family": "event_impact",
+                }
+            )
+
+    def test_question_family_normalization_deduplicates_same_result_candidates(self):
+        normalized = workflow_module._normalize_question_families(
+            {
+                "primary_question_family": "driver_focus",
+                "question_family": "driver_focus",
+                "question_families": ["driver_focus"],
+            }
+        )
+
+        self.assertEqual(
+            normalized["primary_question_family"],
+            "paid_amount_change_explanation",
+        )
+        self.assertEqual(
+            normalized["question_families"],
+            ["paid_amount_change_explanation"],
+        )
+
     def test_question_family_normalization_is_idempotent_for_canonical_families(self):
         intent = {
             "question_family": "custom_baseline_comparison",
