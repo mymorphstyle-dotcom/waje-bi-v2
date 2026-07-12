@@ -426,6 +426,7 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
             resolver=self.resolver,
             rows_loader=self.resolver.rows_loader,
             runtime_registry=self.registry,
+            release_resolver=self.context["release_resolver"],
         )
 
         self.assertEqual(chain.primary_results[0].row_count, 1)
@@ -629,6 +630,7 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
                 resolver=self.resolver,
                 rows_loader=self.resolver.rows_loader,
                 runtime_registry=self.registry,
+                release_resolver=self.context["release_resolver"],
             )
 
     def test_redigested_binding_cannot_expand_denormalized_claim_types(self):
@@ -650,6 +652,7 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
                 resolver=self.resolver,
                 rows_loader=self.resolver.rows_loader,
                 runtime_registry=self.registry,
+                release_resolver=self.context["release_resolver"],
             )
 
     def test_rows_ref_and_content_addressed_storage_ref_are_distinct(self):

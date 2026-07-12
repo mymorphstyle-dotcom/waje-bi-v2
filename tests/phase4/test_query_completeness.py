@@ -123,8 +123,8 @@ def raw_paid_snapshot(watermark="2026-07-04", snapshot_ref="snapshot:paid:1"):
 
 
 def authorize_paid_snapshot(snapshot):
-    logical_id = f"paid-logical:{snapshot.snapshot_ref}"
-    revision = f"paid-load:{snapshot.watermark}"
+    logical_id = snapshot.logical_snapshot_id or f"paid-logical:{snapshot.snapshot_ref}"
+    revision = snapshot.load_revision or f"paid-load:{snapshot.watermark}"
     release_ref = dataset_snapshot_release_ref(
         logical_id,
         revision,

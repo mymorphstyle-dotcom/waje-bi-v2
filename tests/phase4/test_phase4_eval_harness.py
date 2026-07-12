@@ -180,9 +180,13 @@ class Phase4EvalHarnessTest(unittest.TestCase):
 
         self.assertFalse(result.engineering_fixture_passed)
         self.assertEqual(result.month_start_case.status, "degraded")
-        self.assertEqual(result.sibling_summary.passed_count, 3)
+        self.assertEqual(result.sibling_summary.passed_count, 0)
+        self.assertEqual(len(result.sibling_summary.degraded_or_blocked), 4)
         self.assertTrue(
-            all(case.reason for case in result.sibling_summary.degraded_or_blocked)
+            all(
+                case.reason == "legacy_fixture_non_authoritative"
+                for case in result.sibling_summary.degraded_or_blocked
+            )
         )
 
     def test_real_eval_reports_external_dependency_block_when_clickhouse_env_missing(self):
@@ -386,7 +390,7 @@ cases:
         self.assertTrue(result.passed)
         self.assertFalse(result.mismatches)
 
-    def test_real_eval_degrades_when_history_is_too_short_but_query_succeeded(self):
+    def test_legacy_row_eval_stays_degraded_without_bound_runtime_authority(self):
         case = {
             "case_id": "short_history",
             "pattern_family": "intra_period",
@@ -409,7 +413,7 @@ cases:
             )
 
         self.assertEqual(result.status, "degraded")
-        self.assertIn("insufficient_comparable_periods", result.reason)
+        self.assertEqual(result.reason, "missing_bound_capability_input")
         self.assertEqual(result.owner, "")
         self.assertFalse(result.business_conclusion_published)
 

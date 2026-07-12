@@ -28,6 +28,7 @@ from bi_agent.runtime.query_completeness import validate_query_result
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from tests.phase4.test_clickhouse_query_compiler import metric as reviewed_metric
 from tests.phase4.test_query_completeness import (
+    _PAID_RELEASE_RESOLVER,
     baseline_contract,
     complete_rows,
     paid_snapshot,
@@ -200,6 +201,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             reports={contract.query_contract_id: report},
             evidence_authority=authority,
             runtime_registry=registry,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
 
         self.assertEqual(bound.status, "ready", bound.reasons)
@@ -267,6 +269,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
                 evidence_resolver=authority,
                 rows_loader=authority.rows_loader,
                 runtime_registry=registry,
+                release_resolver=_PAID_RELEASE_RESOLVER,
             )["status"],
             "passed",
         )
@@ -291,6 +294,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             evidence_resolver=authority,
             rows_loader=authority.rows_loader,
             runtime_registry=drifted_registry_contract,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(drifted_registry["status"], "failed")
         self.assertIn(
@@ -329,6 +333,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             evidence_resolver=authority,
             rows_loader=authority.rows_loader,
             runtime_registry=registry,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(mixed["status"], "failed")
         self.assertIn(
@@ -349,6 +354,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             evidence_resolver=authority,
             rows_loader=authority.rows_loader,
             runtime_registry=registry,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(separated_context["status"], "passed")
 
@@ -361,6 +367,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
                     evidence_resolver=authority,
                     rows_loader=authority.rows_loader,
                     runtime_registry=registry,
+                    release_resolver=_PAID_RELEASE_RESOLVER,
                 )
                 self.assertEqual(strength_result["status"], "failed")
                 self.assertTrue(
@@ -577,6 +584,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             rows_loader=authority.rows_loader,
             evidence_writer=ValidButWrongBindingWriter(),
             runtime_registry=registry,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(valid_but_wrong_writer_bound.status, "blocked")
         self.assertIn(
@@ -852,6 +860,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             rows_loader=authority.rows_loader,
             evidence_writer=authority._runtime_writer(),
             runtime_registry=registry,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(protocol_bound.status, "ready")
 
@@ -863,6 +872,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             rows_loader=authority.rows_loader,
             evidence_writer=authority._runtime_writer(),
             runtime_registry=registry,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(tampered_query_bound.status, "blocked")
         self.assertIn("query_execution_record_integrity", tampered_query_bound.reasons[0])
@@ -875,6 +885,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             rows_loader=authority.rows_loader,
             evidence_writer=authority._runtime_writer(),
             runtime_registry=registry,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(wrong_type_bound.status, "blocked")
         self.assertIn("query_execution_record_integrity", wrong_type_bound.reasons[0])
@@ -887,6 +898,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             rows_loader=authority.rows_loader,
             evidence_writer=authority._runtime_writer(),
             runtime_registry=registry,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(resigned_snapshot_bound.status, "blocked")
         self.assertIn("snapshot_record_binding", resigned_snapshot_bound.reasons[0])
@@ -899,6 +911,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             rows_loader=resigned_authority.rows_loader,
             evidence_writer=authority._runtime_writer(),
             runtime_registry=registry,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(resigned_permission_bound.status, "blocked")
         self.assertIn(
@@ -914,6 +927,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             rows_loader=authority.rows_loader,
             evidence_writer=WrongTypeWriter(),
             runtime_registry=registry,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(wrong_writer_bound.status, "blocked")
         self.assertIn("runtime_evidence_writer_record_invalid", wrong_writer_bound.reasons[0])
@@ -926,6 +940,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             rows_loader=authority.rows_loader,
             evidence_writer=authority._runtime_writer(),
             runtime_registry=registry,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(wrong_resolver.status, "blocked")
         self.assertTrue(

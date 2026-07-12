@@ -2,14 +2,39 @@ from dataclasses import replace
 import unittest
 
 from bi_agent.runtime.analysis_contracts import QueryResultEnvelope
-from bi_agent.runtime.clickhouse_revenue_rows import ClickHouseRevenueRows
+from bi_agent.runtime.clickhouse_revenue_rows import (
+    ClickHouseRevenueRows as _ClickHouseRevenueRows,
+)
 from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult, ClickHouseRuntime
-from bi_agent.runtime.query_executor import AggregateRowsStore, ClickHouseQueryExecutor
+from bi_agent.runtime.query_executor import (
+    AggregateRowsStore,
+    ClickHouseQueryExecutor as _ClickHouseQueryExecutor,
+)
 from tests.phase4.test_clickhouse_query_compiler import (
     contract,
     resigned,
-    snapshot,
+    snapshot as raw_snapshot,
 )
+from tests.phase4.test_query_completeness import (
+    _PAID_RELEASE_RESOLVER,
+    authorize_paid_snapshot,
+)
+
+
+class ClickHouseQueryExecutor(_ClickHouseQueryExecutor):
+    def __init__(self, runtime, **kwargs):
+        kwargs.setdefault("release_resolver", _PAID_RELEASE_RESOLVER)
+        super().__init__(runtime, **kwargs)
+
+
+class ClickHouseRevenueRows(_ClickHouseRevenueRows):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("release_resolver", _PAID_RELEASE_RESOLVER)
+        super().__init__(*args, **kwargs)
+
+
+def snapshot():
+    return authorize_paid_snapshot(raw_snapshot())
 
 
 class FakeRuntime:
