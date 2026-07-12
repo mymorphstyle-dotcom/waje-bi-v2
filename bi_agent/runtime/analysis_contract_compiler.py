@@ -1730,19 +1730,55 @@ def _scope_gaps(
                 for capability_id in capabilities
                 for claim_type in claim_types_by_capability.get(capability_id, ())
             )
+        if (
+            not claim_types
+            and _is_direct_analysis_source_ambiguity(gap, capabilities)
+        ):
+            claim_types = affected_claim_types
         scoped_claim_types = (
             claim_types
             if claim_types_by_capability is not None
             else claim_types or affected_claim_types
         )
+        diagnostic_context = gap.diagnostic_context
+        if (
+            scoped_claim_types
+            and _is_direct_analysis_source_ambiguity(gap, capabilities)
+        ):
+            diagnostic_context = {
+                **gap.diagnostic_context,
+                "claim_intents": list(scoped_claim_types),
+            }
         scoped.append(
             replace(
                 gap,
                 affected_capabilities=capabilities,
                 affected_claim_types=scoped_claim_types,
+                diagnostic_context=diagnostic_context,
             )
         )
     return tuple(scoped)
+
+
+def _is_direct_analysis_source_ambiguity(
+    gap: ContractGap,
+    capabilities: tuple[str, ...],
+) -> bool:
+    diagnostic = gap.diagnostic_context
+    item_kind = str(diagnostic.get("item_kind") or "")
+    item_id = str(diagnostic.get("item_id") or "")
+    return (
+        capabilities == ("analysis_contract",)
+        and item_kind in {"metric", "dimension"}
+        and bool(item_id)
+        and gap.gap_type == "contract_partial"
+        and gap.gap_id.startswith(f"{item_kind}:{item_id}:source_ambiguous:")
+        and gap.dataset_id == ""
+        and gap.owner == "contract_owner"
+        and gap.repair_options
+        == ("select_dataset_requirement", "clarify_source_scope")
+        and gap.requires_clarification is True
+    )
 
 
 def _merge_contract_gaps(

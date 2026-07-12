@@ -1907,6 +1907,51 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             },
         )
 
+    def test_source_ambiguity_links_inferred_claim_intents_from_bound_peer_metric(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-inferred-target-claim-link",
+            proposal={
+                "target_metrics": ["active_users", "paid_amount"],
+                "requested_dimensions": ["channel"],
+                "metric_dataset_overrides": {
+                    "active_users": "market_dashboard",
+                },
+            },
+            accepted_capabilities=("answer_verify",),
+            catalog=DatasetCatalog(
+                (snapshot("market_dashboard", "market", "2026-06-03"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        self.assertEqual(
+            outcome.analysis_contract.claim_intents,
+            ("comparative_change", "source_reconciliation"),
+        )
+        for gap_prefix in (
+            "metric:paid_amount:source_ambiguous:",
+            "dimension:channel:source_ambiguous:",
+        ):
+            with self.subTest(gap_prefix=gap_prefix):
+                gap = next(
+                    gap
+                    for gap in outcome.analysis_contract.contract_gaps
+                    if gap.gap_id.startswith(gap_prefix)
+                )
+                self.assertEqual(
+                    gap.affected_claim_types,
+                    outcome.analysis_contract.claim_intents,
+                )
+                self.assertEqual(
+                    gap.diagnostic_context["claim_intents"],
+                    list(outcome.analysis_contract.claim_intents),
+                )
+
     def test_future_snapshot_is_typed_unavailable_as_of_not_source_unbound(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         future = DatasetSnapshot(
