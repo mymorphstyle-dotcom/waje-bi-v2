@@ -1672,12 +1672,62 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
         mixed["analysis_contract"] = analysis
         with self.assertRaisesRegex(
             EvidenceIntegrityError,
-            "runtime_persistence_unbound_claim_intent_requires_zero_claims",
+            "runtime_persistence_verified_claim_gap_blocked",
         ):
             InMemoryConversationStore().save_analysis_runtime_records(
                 run_id="run-task9", **mixed
             )
 
+    def test_unbound_sentinel_is_wildcard_only_for_its_affected_capability(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _authority_bundle()
+        ready_capability = bundle["analysis_contract"]["capability_requirements"][0]
+        analysis = {
+            **bundle["analysis_contract"],
+            "claim_intents": [
+                bundle["verified_claims"][0]["claim_type"],
+                "unbound_claim_intent",
+            ],
+            "capability_requirements": [ready_capability, "formula_decompose"],
+            "contract_gaps": [{
+                "gap_type": "contract_partial",
+                "gap_id": "claim_intents:unbound",
+                "dataset_id": "",
+                "affected_capabilities": ["formula_decompose"],
+                "affected_claim_types": ["unbound_claim_intent"],
+                "owner": "contract_owner",
+                "repair_options": [
+                    "bind_capability_claim_types",
+                    "bind_metric_claim_types",
+                    "clarify_claim_intent",
+                ],
+                "requires_clarification": True,
+                "diagnostic_context": {},
+            }],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            ),
+            "published",
+        )
+
+        analysis["contract_gaps"][0]["affected_capabilities"] = [ready_capability]
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_verified_claim_gap_blocked",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            )
+
+        canonical_gap = dict(analysis["contract_gaps"][0])
         fake = _authority_bundle()
         analysis = {
             **fake["analysis_contract"],

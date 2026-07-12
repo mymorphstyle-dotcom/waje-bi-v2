@@ -374,6 +374,7 @@ def validate_analysis_runtime_records(
         _validate_verified_claim_contract_boundary(
             payload,
             analysis=typed_analysis,
+            unbound_claim_intents=unbound_claim_intents,
             evidence_by_ref=evidence_by_ref,
             bindings_by_ref=bindings_by_ref,
             registry=claim_registry,
@@ -670,7 +671,8 @@ def _validated_unbound_claim_intents(
         if gap.gap_type == "contract_partial"
         and gap.gap_id == "claim_intents:unbound"
         and gap.dataset_id == ""
-        and gap.affected_capabilities == expected_capabilities
+        and bool(gap.affected_capabilities)
+        and set(gap.affected_capabilities).issubset(expected_capabilities)
         and gap.affected_claim_types == (sentinel,)
         and gap.owner == "contract_owner"
         and gap.repair_options
@@ -759,6 +761,7 @@ def _contract_gap_blocks_binding_claim(
     *,
     capability_id: str,
     claim_type: str,
+    unbound_claim_intents: set[str],
 ) -> bool:
     for gap in analysis.contract_gaps:
         if not (
@@ -772,7 +775,15 @@ def _contract_gap_blocks_binding_claim(
             }
         ):
             continue
-        if gap.affected_claim_types and claim_type not in gap.affected_claim_types:
+        affected_claim_types = set(gap.affected_claim_types)
+        if (
+            affected_claim_types
+            and not (
+                "unbound_claim_intent" in affected_claim_types
+                and "unbound_claim_intent" in unbound_claim_intents
+            )
+            and claim_type not in affected_claim_types
+        ):
             continue
         affected = tuple(gap.affected_capabilities)
         if not affected:
@@ -787,10 +798,12 @@ def _validate_verified_claim_contract_boundary(
     payload: Mapping[str, Any],
     *,
     analysis: AnalysisContract,
+    unbound_claim_intents: set[str] | None = None,
     evidence_by_ref: Mapping[str, Mapping[str, Any]],
     bindings_by_ref: Mapping[str, CapabilityBindingRecord],
     registry: RuntimeContractRegistry,
 ) -> None:
+    unbound_claim_intents = set(unbound_claim_intents or ())
     claim_type = str(payload.get("claim_type") or "")
     if (
         claim_type not in analysis.claim_intents
@@ -817,6 +830,7 @@ def _validate_verified_claim_contract_boundary(
             analysis,
             capability_id=binding.capability_id,
             claim_type=claim_type,
+            unbound_claim_intents=unbound_claim_intents,
         ):
             raise EvidenceIntegrityError(
                 "runtime_persistence_verified_claim_gap_blocked"
