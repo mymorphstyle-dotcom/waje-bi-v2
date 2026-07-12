@@ -14,6 +14,11 @@ from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.analysis_assets import build_analysis_assets
 from bi_agent.runtime.answer_package import reverify_answer_package_for_delivery
+from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
+from bi_agent.runtime.analysis_obligations import (
+    ObligationRequest,
+    resolve_analysis_obligations,
+)
 from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult, run_pattern_workflow
@@ -226,6 +231,26 @@ class ConversationAgentCore:
                         choice=accepted_degradation_choice,
                         outcome_ref=outcome_ref,
                     )
+                    normalized_choice = _authority_closed_degradation_choice(
+                        accepted_degradation_choice,
+                        authority,
+                        self.runtime_registry,
+                    )
+                    if normalized_choice != accepted_degradation_choice:
+                        accepted_degradation_choice = normalized_choice
+                        outcome_ref = record_outcome(
+                            source_run_id=source_run_id,
+                            thread_id=thread_id,
+                            topic_id=turn.topic_id or "",
+                            choice=accepted_degradation_choice,
+                        )
+                        authority = resolve_authority(
+                            source_run_id=source_run_id,
+                            thread_id=thread_id,
+                            topic_id=turn.topic_id or "",
+                            choice=accepted_degradation_choice,
+                            outcome_ref=outcome_ref,
+                        )
                 except Exception as exc:
                     self.store.upsert_run(
                         run_id,
@@ -260,6 +285,13 @@ class ConversationAgentCore:
                             "clarification_resume_authority_failed"
                         ),
                     }
+                request["accepted_degradation_choice"] = accepted_degradation_choice
+                context_manifest = _manifest_with_accepted_choice(
+                    context_manifest,
+                    accepted_degradation_choice,
+                )
+                request["context_manifest"] = context_manifest
+                self.store.record_context_manifest(context_manifest)
                 request["accepted_terminal_gap_authority"] = authority
                 request["clarification_outcome_ref"] = outcome_ref
         if self.row_provider is not None:
@@ -1136,6 +1168,87 @@ def _dry_run_follow_up_questions(accepted_graph: list[str]) -> list[str]:
         "要复核异常日期对结果的影响吗？",
         "要换成日均口径再算一次吗？",
     ]
+
+
+def _authority_closed_degradation_choice(
+    choice: Mapping[str, Any],
+    authority: Mapping[str, Any],
+    registry: RuntimeContractRegistry | None,
+) -> dict[str, Any]:
+    action_kind = str(choice.get("action_kind") or "")
+    if action_kind not in {
+        "omit_unavailable_context",
+        "continue_with_boundary_only",
+    }:
+        return dict(choice)
+    source = authority.get("analysis_contract")
+    if not isinstance(source, Mapping):
+        return dict(choice)
+    try:
+        contract = analysis_contract_from_dict(source)
+    except (KeyError, TypeError, ValueError):
+        return dict(choice)
+    registry = registry or RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
+    target_metrics = tuple(
+        dict.fromkeys(binding.metric_id for binding in contract.metric_bindings)
+    ) or tuple(
+        metric
+        for metric in contract.target_metric_refs
+        if metric in registry.metric_ids
+    )
+    if not target_metrics:
+        return dict(choice)
+    resolution = resolve_analysis_obligations(
+        ObligationRequest(
+            question_families=contract.question_families,
+            diagnostic_tags=(),
+            target_metrics=target_metrics,
+            requested_dimensions=tuple(
+                binding.dimension_id for binding in contract.dimension_bindings
+            ),
+            baselines=tuple(
+                window.window_id
+                for window in contract.resolved_windows
+                if window.role != "target"
+            ),
+            context_sources=(),
+            claim_intents=contract.claim_intents,
+        ),
+        registry,
+    )
+    obligation_capabilities = set(
+        (
+            *resolution.required_capabilities,
+            *resolution.conditional_capabilities,
+            *resolution.independent_capabilities,
+        )
+    )
+    obligation_capabilities.update(contract.capability_requirements)
+    nonready = {
+        capability
+        for gap in contract.contract_gaps
+        for capability in gap.affected_capabilities
+        if capability in obligation_capabilities
+    }
+    affected = [
+        capability
+        for capability in contract.capability_requirements
+        if capability in nonready
+    ]
+    if not affected:
+        return dict(choice)
+    return {**dict(choice), "affected_capabilities": affected}
+
+
+def _manifest_with_accepted_choice(
+    manifest: Mapping[str, Any],
+    choice: Mapping[str, Any],
+) -> dict[str, Any]:
+    updated = dict(manifest)
+    updated["accepted_assumptions"] = [dict(choice)]
+    return updated
 
 
 def _manifest_with_dry_run_source(manifest: dict[str, Any], run_id: str, role: str) -> dict[str, Any]:

@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime
 import json
 
@@ -42,6 +43,62 @@ def _choice(run_id="run-source"):
         "affected_capabilities": ["compare_periods"],
         "source_run_id": run_id,
     }
+
+
+def _segment_closure_contract(run_id="run-segment-source"):
+    from bi_agent.runtime.analysis_contracts import ContractGap
+
+    outcome = compile_analysis_contract(
+        run_id=run_id,
+        proposal={
+            "question_families": ["segment_or_factor_attribution"],
+            "target_metrics": ["paid_amount"],
+            "requested_dimensions": ["channel"],
+            "baselines": ["previous_day"],
+            "claim_intents": ["segment_contribution_or_mix_shift"],
+        },
+        accepted_capabilities=(
+            "data_quality_profile",
+            "answer_verify",
+            "gameplay_activity_context",
+            "segment_breakdown",
+            "segment_shift_compare",
+        ),
+        catalog=DatasetCatalog(()),
+        registry=RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+        as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+        permission_scope="analyst",
+    )
+    contract = replace(
+        outcome.analysis_contract,
+        contract_gaps=(
+            ContractGap(
+                gap_type="source_unbound",
+                gap_id="dataset:gameplay:source_unbound",
+                dataset_id="gameplay",
+                affected_capabilities=("gameplay_activity_context",),
+                owner="data_owner",
+                repair_options=("bind_source",),
+                requires_clarification=True,
+            ),
+            ContractGap(
+                gap_type="permission_blocked",
+                gap_id="dataset:gameplay_channel:permission_blocked",
+                dataset_id="gameplay_channel",
+                affected_capabilities=(
+                    "segment_breakdown",
+                    "segment_shift_compare",
+                ),
+                owner="permission_owner",
+                repair_options=("request_permission",),
+                requires_clarification=True,
+            ),
+        ),
+    ).to_dict()
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    return contract
 
 
 def _seed_memory_store():
@@ -308,6 +365,113 @@ def test_agent_core_resume_injects_authority_resolved_from_persisted_source_bund
     assert calls[1]["clarification_outcome_ref"].startswith(
         "clarification-outcome:"
     )
+
+
+def test_agent_core_resume_closes_every_nonready_obligation_from_authority():
+    store = InMemoryConversationStore()
+    store.create_thread("thread-segment-closure")
+    topic = store.create_topic(
+        "thread-segment-closure", title="渠道贡献", summary="渠道贡献分析"
+    )
+    store.set_current_topic("thread-segment-closure", topic.topic_id)
+    contract = _segment_closure_contract()
+    choice_action = {
+        "choice_id": "continue-segment-boundary",
+        "action_kind": "continue_with_boundary_only",
+        "business_label": "保留边界继续",
+        "affected_capabilities": ["gameplay_activity_context"],
+    }
+    store.upsert_run(
+        "run-segment-source",
+        thread_id="thread-segment-closure",
+        topic_id=topic.topic_id,
+        status="waiting_for_clarification",
+        request={
+            "question": "昨天渠道贡献如何？",
+            "accepted_graph": list(contract["capability_requirements"]),
+            "analysis_contract": contract,
+            "clarification": {
+                "questions": [{
+                    "question": "缺口怎么处理？",
+                    "options": ["保留边界继续", "等待来源"],
+                }],
+                "recommended_assumption": {"option": "保留边界继续"},
+                "choice_actions": [choice_action],
+            },
+        },
+    )
+    store.analysis_runtime_authority["analysis_contract"][
+        contract["analysis_contract_id"]
+    ] = contract
+    store.set_pending_clarification(
+        "thread-segment-closure", topic.topic_id, "run-segment-source"
+    )
+    store.save_clarification_state(ClarificationState(
+        run_id="run-segment-source",
+        topic_id=topic.topic_id,
+        question="缺口怎么处理？",
+        options=[ClarificationOption(
+            option_id="continue-segment-boundary",
+            label="保留边界继续",
+            description="保留边界继续",
+            recommended=True,
+        )],
+    ))
+    calls = []
+
+    def workflow(request):
+        calls.append(dict(request))
+        return WorkflowRunResult(
+            status="failed",
+            run_id=request["run_id"],
+            failure_reason="test_stop_after_authority_resolution",
+        )
+
+    result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
+        thread_id="thread-segment-closure",
+        run_id="run-segment-resumed",
+        user_message="按推荐继续",
+        clarification={"answer_text": "按推荐继续"},
+    )
+
+    assert result["status"] == "failed"
+    effective = calls[0]["accepted_degradation_choice"]
+    assert effective["affected_capabilities"] == [
+        "gameplay_activity_context",
+        "segment_breakdown",
+        "segment_shift_compare",
+    ]
+    assert "data_quality_profile" not in effective["affected_capabilities"]
+    assert "answer_verify" not in effective["affected_capabilities"]
+    assert calls[0]["accepted_terminal_gap_authority"][
+        "clarification_outcome"
+    ]["choice"] == effective
+    from bi_agent.runtime.analysis_contract_compiler import (
+        _accepted_terminal_gap_authority,
+    )
+
+    carried, outcome_ref = _accepted_terminal_gap_authority({
+        "accepted_degradation_choice": effective,
+        "accepted_terminal_gap_authority": calls[0][
+            "accepted_terminal_gap_authority"
+        ],
+        "resume_thread_id": "thread-segment-closure",
+        "resume_topic_id": topic.topic_id,
+    })
+    assert outcome_ref == calls[0]["clarification_outcome_ref"]
+    assert [gap.gap_id for gap in carried] == [
+        "dataset:gameplay:source_unbound",
+        "dataset:gameplay_channel:permission_blocked",
+    ]
+    assert {
+        capability
+        for gap in carried
+        for capability in gap.affected_capabilities
+    } >= {
+        "gameplay_activity_context",
+        "segment_breakdown",
+        "segment_shift_compare",
+    }
 
 
 def test_agent_core_returns_typed_failure_when_resume_authority_rejects():
