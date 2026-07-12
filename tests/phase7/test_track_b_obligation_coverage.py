@@ -1,3 +1,6 @@
+import json
+
+from bi_agent.runtime.analysis_contracts import AnalysisContract
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
@@ -8,13 +11,32 @@ def _registry() -> RuntimeContractRegistry:
     return RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
 
 
-def _executed_market_authority() -> dict:
+def _executed_market_authority(tmp_path, monkeypatch) -> dict:
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
     capabilities = (
         "data_quality_profile",
         "formula_decompose",
         "market_health_compare",
     )
-    return {
+    run_id = "run-track-b-market-authority"
+    admin_audit = {
+        "analysis_contract": AnalysisContract(
+            analysis_contract_id=f"analysis:{run_id}:1",
+            contract_version="1",
+            question_families=("revenue_health_review",),
+            target_metric_refs=("paid_amount",),
+            claim_intents=(),
+            scope={},
+            business_timezone="Europe/London",
+            as_of="2026-06-03T12:00:00+01:00",
+            resolved_windows=(),
+            metric_bindings=(),
+            dimension_bindings=(),
+            dataset_requirements=("market_dashboard",),
+            capability_requirements=capabilities,
+            permission_scope="analyst",
+        ).to_dict(),
         "query_executions": [
             {
                 "dataset_id": "market_dashboard",
@@ -34,9 +56,22 @@ def _executed_market_authority() -> dict:
             for capability in capabilities
         ],
     }
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    path = tmp_path / "artifacts" / "phase-7" / run_id / "answer_package.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"run_id": run_id, "admin_audit": admin_audit}),
+        encoding="utf-8",
+    )
+    return system_test._runtime_audit_package({
+        "run_id": run_id,
+        "artifact_path": str(path),
+    })
 
 
-def test_obligation_review_does_not_execute_from_legacy_market_bindings():
+def test_obligation_review_does_not_execute_from_legacy_market_bindings(
+    tmp_path, monkeypatch
+):
     from tools.phase7.run_live_conversation_system_test import review_case_obligations
 
     review = review_case_obligations(
@@ -55,7 +90,7 @@ def test_obligation_review_does_not_execute_from_legacy_market_bindings():
                 "allowed_claim_ceiling": "directional",
                 "terminal_boundary": "verified_answer",
             },
-            "runtime_authority": _executed_market_authority(),
+            "runtime_authority": _executed_market_authority(tmp_path, monkeypatch),
         },
         _registry(),
     )
@@ -66,7 +101,9 @@ def test_obligation_review_does_not_execute_from_legacy_market_bindings():
     assert "market_health_compare" in review["nonterminal_required_capabilities"]
 
 
-def test_independent_capability_selects_its_dataset_authority_cell_only():
+def test_independent_capability_selects_its_dataset_authority_cell_only(
+    tmp_path, monkeypatch
+):
     from tools.phase7.run_live_conversation_system_test import review_case_obligations
 
     review = review_case_obligations(
@@ -85,7 +122,7 @@ def test_independent_capability_selects_its_dataset_authority_cell_only():
                 "allowed_claim_ceiling": "directional",
                 "terminal_boundary": "verified_answer",
             },
-            "runtime_authority": _executed_market_authority(),
+            "runtime_authority": _executed_market_authority(tmp_path, monkeypatch),
         },
         _registry(),
         coverage_authority={
@@ -241,12 +278,15 @@ def test_route_reconciliation_closes_all_obligations_idempotently():
             )
 
 
-def test_capability_authority_is_conservative_across_ambiguous_applicable_cells():
+def test_capability_authority_is_conservative_across_ambiguous_applicable_cells(
+    tmp_path, monkeypatch
+):
     from tools.phase7.run_live_conversation_system_test import review_case_obligations
 
-    authority = _executed_market_authority()
-    authority["capability_bindings"][-1]["status"] = "degraded"
-    authority["query_executions"][-1].update(
+    authority = _executed_market_authority(tmp_path, monkeypatch)
+    admin_audit = authority["admin_audit"]
+    admin_audit["capability_bindings"][-1]["status"] = "degraded"
+    admin_audit["query_executions"][-1].update(
         completeness_status="partial", analysis_readiness="degraded"
     )
     review = review_case_obligations(
@@ -298,7 +338,9 @@ def test_capability_authority_is_conservative_across_ambiguous_applicable_cells(
     ]
 
 
-def test_capability_authority_does_not_bind_an_unrelated_dataset_role():
+def test_capability_authority_does_not_bind_an_unrelated_dataset_role(
+    tmp_path, monkeypatch
+):
     from tools.phase7.run_live_conversation_system_test import review_case_obligations
 
     review = review_case_obligations(
@@ -320,7 +362,7 @@ def test_capability_authority_does_not_bind_an_unrelated_dataset_role():
                 "allowed_claim_ceiling": "directional",
                 "terminal_boundary": "verified_answer",
             },
-            "runtime_authority": _executed_market_authority(),
+            "runtime_authority": _executed_market_authority(tmp_path, monkeypatch),
         },
         _registry(),
         coverage_authority={
