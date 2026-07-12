@@ -7,6 +7,7 @@ import pytest
 from bi_agent.runtime.analysis_contracts import (
     AnalysisContract,
     ContractGap,
+    analysis_contract_from_dict,
     query_contract_signature,
 )
 from bi_agent.runtime.runtime_contract_registry import (
@@ -639,6 +640,89 @@ def test_capability_outcome_rejects_incomplete_or_mismatched_plan_query_chain(
         authority=authority,
         registry=registry,
     ) == {"market_health_compare": "unobserved"}
+
+
+def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
+    from tools.phase7.run_live_conversation_system_test import review_case_obligations
+
+    authority, registry = _persisted_plan_authority()
+    gap = ContractGap(
+        gap_type="contract_partial",
+        gap_id="capability:source_reconciliation:required_query:probe:unbound",
+        dataset_id="market_dashboard",
+        affected_capabilities=("source_reconciliation",),
+        affected_claim_types=(),
+        owner="contract_owner",
+        repair_options=("bind_required_query_contract",),
+        requires_clarification=False,
+        diagnostic_context={},
+    )
+    contract = AnalysisContract(
+        **{
+            **analysis_contract_from_dict(authority["analysis_contract"]).__dict__,
+            "capability_requirements": (
+                "market_health_compare",
+                "source_reconciliation",
+            ),
+            "contract_gaps": (gap,),
+        }
+    )
+    authority["analysis_contract"] = contract.to_dict()
+    turn = {
+        "status": "completed",
+        "answer_package": {"summary": "terminal"},
+        "accepted_graph": ["market_health_compare"],
+        "scenario": {
+            "required_capabilities": [
+                "market_health_compare",
+                "source_reconciliation",
+            ],
+            "expected_capability_states": {
+                "market_health_compare": "executable",
+            },
+            "expected_dataset_states": {"market_dashboard": "executable"},
+            "allowed_claim_ceiling": "trust_boundary",
+            "terminal_boundary": "verified_answer",
+        },
+        "runtime_authority": authority,
+    }
+    coverage_authority = {
+        "cells": {
+            "market_health_compare:market_dashboard": {
+                "capability": "market_health_compare",
+                "datasets": ["market_dashboard"],
+                "question_families": [],
+                "state": "executable",
+            },
+        }
+    }
+
+    review = review_case_obligations(
+        turn, registry, coverage_authority=coverage_authority
+    )
+
+    assert review["capability_outcomes"] == {
+        "market_health_compare": "executed",
+        "source_reconciliation": "blocked",
+    }
+    assert review["capability_state_mismatches"] == []
+    assert review["observed_dataset_states"] == {
+        "market_dashboard": "contract_partial"
+    }
+    assert review["missing_current_data_obligations"] == [
+        "market_dashboard:executable"
+    ]
+    assert review["observed_capability_dataset_states"] == {
+        "market_health_compare": [{
+            "cell_id": "market_health_compare:market_dashboard",
+            "dataset_id": "market_dashboard",
+            "authority_state": "executable",
+            "outcome": "executed",
+            "observed_state": "executable",
+        }]
+    }
+    assert review["dataset_obligation_gate_mode"] == "capability_authority"
+    assert review["hard_acceptance_passed"] is True
 
 
 def test_capability_outcome_rejects_generic_execution_binding_fallback():

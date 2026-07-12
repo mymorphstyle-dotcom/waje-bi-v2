@@ -207,6 +207,12 @@ Acceptance requires:
   plan. The plan route must preserve the reviewed capability ref/signature and
   an exact plan-slot -> query-contract -> result -> completeness chain; summary
   booleans and client packages do not establish an outcome;
+- when coverage authority resolves expected states per capability, hard
+  acceptance compares those exact capability states with terminal outcomes.
+  Dataset-level state collapse remains reporting-only in that mode, so an
+  unrelated partial capability on the same dataset cannot overwrite an
+  executed capability; dataset aggregation remains the legacy fallback when
+  no capability-state authority exists;
 - every currently executable required query has snapshot, result,
   completeness, binding, ContextManifest, and ReuseDecision authority;
 - market, gameplay, and external-event evidence survives unrelated paid-source

@@ -1069,6 +1069,12 @@ It must validate the capability contract ref/signature and every required plan
 slot through exact query-contract signatures, succeeded result refs, and linked
 completeness reports. Runtime summary flags and client-package fallbacks remain
 non-authoritative.
+If the coverage audit resolves expected capability states, strict acceptance
+uses the exact capability-state/outcome pairs. Dataset-level observed state and
+typed-gap aggregates remain visible for compatibility and reporting, but do not
+gate that case; this prevents a partial sibling capability on the same dataset
+from masking an executed required capability. Cases without capability-state
+authority retain the dataset-level gate.
 
 Treat scenario `expected_dataset_states` as reviewed authored hypotheses and
 matrix-role declarations, not as current runtime authority. Before reviewing a

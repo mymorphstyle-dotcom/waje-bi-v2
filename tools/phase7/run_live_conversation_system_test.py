@@ -336,6 +336,14 @@ def review_case_obligations(
             and capability_outcomes.get(capability_id) not in {"degraded", "blocked"}
         )
     ]
+    capability_authority_gate = bool(
+        coverage_authority is not None and expected_capability_states
+    )
+    observed_capability_dataset_states = _capability_dataset_observations(
+        expected_capability_states,
+        capability_outcomes,
+        coverage_authority,
+    )
     authored_excluded = scenario.get("excluded_inputs") or {}
     if not isinstance(authored_excluded, Mapping):
         raise ValueError("excluded_input_expectation_invalid")
@@ -389,10 +397,10 @@ def review_case_obligations(
         not nonterminal_capabilities
         and not capability_state_mismatches
         and not unresolved_authority_capabilities
-        and not unresolved_authority_roles
-        and not missing_data
+        and (capability_authority_gate or not unresolved_authority_roles)
+        and (capability_authority_gate or not missing_data)
         and not mismatched_gaps
-        and not missing_expected_gaps
+        and (capability_authority_gate or not missing_expected_gaps)
         and claim_review["passed"]
         and terminal_review["passed"]
         and clarification_passed
@@ -413,6 +421,12 @@ def review_case_obligations(
         "authored_expected_capability_states": dict(authored_capability_states),
         "expected_capability_states": expected_capability_states,
         "capability_state_mismatches": capability_state_mismatches,
+        "observed_capability_dataset_states": observed_capability_dataset_states,
+        "dataset_obligation_gate_mode": (
+            "capability_authority"
+            if capability_authority_gate
+            else "dataset_legacy_fallback"
+        ),
         "unresolved_authority_capabilities": unresolved_authority_capabilities,
         "ambiguous_authority_capabilities": ambiguous_authority_capabilities,
         "authored_expected_dataset_states": dict(authored_expected_states),
@@ -442,6 +456,40 @@ def review_case_obligations(
         "reuse_passed": reuse_passed,
         "hard_acceptance_passed": hard_passed,
     }
+
+
+def _capability_dataset_observations(
+    expected_states: Mapping[str, str],
+    outcomes: Mapping[str, str],
+    coverage_authority: Mapping[str, Any] | None,
+) -> dict[str, list[dict[str, str]]]:
+    if coverage_authority is None:
+        return {}
+    cells = coverage_authority.get("cells") or {}
+    if not isinstance(cells, Mapping):
+        return {}
+    observations: dict[str, list[dict[str, str]]] = {}
+    for cell_id, cell in sorted(cells.items(), key=lambda item: str(item[0])):
+        if not isinstance(cell, Mapping):
+            continue
+        capability_id = str(cell.get("capability") or "")
+        if capability_id not in expected_states:
+            continue
+        outcome = str(outcomes.get(capability_id) or "")
+        observed_state = {
+            "executed": "executable",
+            "degraded": "degraded",
+            "blocked": str(cell.get("state") or "blocked"),
+        }.get(outcome, "unobserved")
+        for dataset_id in cell.get("datasets") or ():
+            observations.setdefault(capability_id, []).append({
+                "cell_id": str(cell_id),
+                "dataset_id": str(dataset_id),
+                "authority_state": str(cell.get("state") or ""),
+                "outcome": outcome,
+                "observed_state": observed_state,
+            })
+    return observations
 
 
 def _authority_resolved_capability_states(
