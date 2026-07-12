@@ -127,7 +127,28 @@ def compile_analysis_contract(
     )
     affected_capabilities = capabilities or ("analysis_contract",)
     accepted_terminal_gaps, clarification_outcome_ref = (
-        _accepted_terminal_gap_authority(proposal, capabilities)
+        _accepted_terminal_gap_authority(proposal)
+    )
+    contract_capabilities = _dedupe(
+        (
+            *capabilities,
+            *(
+                capability
+                for gap in accepted_terminal_gaps
+                for capability in gap.affected_capabilities
+                if capability != "analysis_contract"
+            ),
+        )
+    )
+    contract_dataset_ids = _dedupe(
+        (
+            *required_dataset_ids,
+            *(
+                gap.dataset_id
+                for gap in accepted_terminal_gaps
+                if gap.dataset_id
+            ),
+        )
     )
     resolution = _resolve_advisory_windows(
         target_semantic=str(proposal.get("target_semantic") or "yesterday"),
@@ -239,8 +260,8 @@ def compile_analysis_contract(
         resolved_windows=resolution.windows,
         metric_bindings=metric_bindings,
         dimension_bindings=dimension_bindings,
-        dataset_requirements=required_dataset_ids,
-        capability_requirements=capabilities,
+        dataset_requirements=contract_dataset_ids,
+        capability_requirements=contract_capabilities,
         permission_scope=permission_scope,
         contract_gaps=tuple(gaps),
         clarification_outcome_ref=clarification_outcome_ref,
@@ -250,7 +271,6 @@ def compile_analysis_contract(
 
 def _accepted_terminal_gap_authority(
     proposal: Mapping[str, Any],
-    accepted_capabilities: tuple[str, ...],
 ) -> tuple[tuple[ContractGap, ...], str]:
     choice = proposal.get("accepted_degradation_choice")
     if not isinstance(choice, Mapping):
@@ -347,7 +367,7 @@ def _accepted_terminal_gap_authority(
     )
     if outcome_ref != expected_outcome_ref:
         raise ValueError("accepted_terminal_gap_outcome_ref_invalid")
-    allowed_scope = set(accepted_capabilities) | {"analysis_contract"}
+    allowed_scope = affected | {"analysis_contract"}
     carried = tuple(
         replace(
             gap,
@@ -355,7 +375,6 @@ def _accepted_terminal_gap_authority(
                 capability
                 for capability in (*gap.affected_capabilities, "analysis_contract")
                 if capability in allowed_scope
-                and (capability == "analysis_contract" or capability in affected)
             ),
         )
         for gap in prior.contract_gaps

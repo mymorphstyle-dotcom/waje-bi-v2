@@ -2241,17 +2241,57 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 for gap in carried
             )
         )
+        paid_gap = next(
+            gap
+            for gap in resumed.analysis_contract.contract_gaps
+            if gap.gap_id == "dataset:paid_order_success:source_unbound"
+        )
+        self.assertIn("data_quality_profile", paid_gap.affected_capabilities)
+        self.assertIn("formula_decompose", paid_gap.affected_capabilities)
         for gap in carried:
             with self.subTest(gap_id=gap.gap_id):
-                self.assertEqual(gap.affected_capabilities, ("analysis_contract",))
+                expected_capability = (
+                    "formula_decompose"
+                    if gap.gap_id.startswith("capability:formula_decompose:")
+                    else "data_quality_profile"
+                )
+                self.assertEqual(
+                    gap.affected_capabilities,
+                    (expected_capability, "analysis_contract"),
+                )
                 self.assertTrue(
                     set(gap.affected_capabilities).issubset(
-                        {"answer_verify", "analysis_contract"}
+                        set(choice["affected_capabilities"])
+                        | {"analysis_contract"}
                     )
                 )
+                self.assertNotIn("answer_verify", gap.affected_capabilities)
+        self.assertEqual(
+            set(resumed.analysis_contract.capability_requirements),
+            {"answer_verify", "formula_decompose", "data_quality_profile"},
+        )
         self.assertEqual(
             resumed.analysis_contract.clarification_outcome_ref,
             outcome_payload["outcome_ref"],
+        )
+        boundary_only = compile_analysis_contract(
+            run_id="run-terminal-gap-boundary-only",
+            proposal={
+                "target_metrics": [],
+                "accepted_degradation_choice": choice,
+                "accepted_terminal_gap_authority": authority,
+                "resume_thread_id": "thread-terminal-gap",
+                "resume_topic_id": "topic-terminal-gap",
+            },
+            accepted_capabilities=("answer_verify",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+        self.assertIn(
+            "paid_order_success",
+            boundary_only.analysis_contract.dataset_requirements,
         )
 
         carried_ids = {gap.gap_id for gap in carried}

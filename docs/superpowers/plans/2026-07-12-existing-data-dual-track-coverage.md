@@ -28,8 +28,11 @@
   choice through immutable PostgreSQL authority. Run-request JSON cannot
   authorize carried gaps. The resolver verifies exact payload/signature/run
   ownership and returns a persisted clarification-outcome ref; carried
-  `affected_capabilities` are exact-scoped to resumed accepted capabilities plus
-  `analysis_contract`, with malformed mappings failing closed.
+  `affected_capabilities` are exact-scoped to the prior canonical gap intersected
+  with the persisted accepted choice, plus `analysis_contract`. Choice-scoped
+  degraded capabilities remain AnalysisContract requirements even when omitted
+  from the resumed graph; unrelated capabilities remain removed. Malformed
+  mappings fail closed.
 
 ---
 

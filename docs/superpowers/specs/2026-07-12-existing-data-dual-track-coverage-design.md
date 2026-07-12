@@ -158,8 +158,11 @@ thread, and topic. Resume resolves that record together with the source
 AnalysisContract from PostgreSQL authority and verifies the exact stored
 payload, contract signature, run owner, and selected choice before compilation.
 Mutable analysis-run request JSON is context only and cannot authorize carried
-gaps. A carried gap is narrowed to the exact intersection of the accepted
-choice, the resumed accepted capability set, and `analysis_contract`; malformed
+gaps. A carried gap is narrowed to the exact intersection of the persisted
+accepted choice and the prior canonical gap, then adds `analysis_contract` as
+the control boundary. The accepted choice remains a contract requirement even
+when its degraded capability is intentionally omitted from the resumed graph;
+capabilities outside that choice are removed. Malformed
 capability mappings, stale records, owner drift, signature drift, and choices
 without a resolvable outcome ref fail closed.
 

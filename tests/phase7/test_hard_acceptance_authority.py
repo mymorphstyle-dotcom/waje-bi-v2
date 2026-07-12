@@ -440,6 +440,49 @@ def test_capability_outcome_executes_from_persisted_plan_query_result_chain():
     ) == {"market_health_compare": "executed"}
 
 
+def test_hard_acceptance_outcomes_preserve_choice_scoped_block_and_executed_path():
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_capability_outcomes,
+    )
+
+    authority, registry = _persisted_plan_authority()
+    blocked = ContractGap(
+        gap_type="contract_partial",
+        gap_id=(
+            "capability:data_quality_profile:required_query:"
+            "data_quality_probe:unbound"
+        ),
+        dataset_id="paid_order_success",
+        affected_capabilities=("data_quality_profile", "analysis_contract"),
+        affected_claim_types=(),
+        owner="analysis_contract_owner",
+        repair_options=("bind_required_query_contract",),
+        requires_clarification=True,
+        diagnostic_context={},
+    )
+    authority["analysis_contract"]["capability_requirements"] = [
+        "market_health_compare",
+        "data_quality_profile",
+    ]
+    authority["analysis_contract"]["contract_gaps"] = [blocked.to_dict()]
+
+    outcomes = _derive_capability_outcomes(
+        ("market_health_compare", "data_quality_profile"),
+        accepted_capabilities={"market_health_compare"},
+        authority=authority,
+        registry=registry,
+    )
+
+    assert outcomes == {
+        "market_health_compare": "executed",
+        "data_quality_profile": "blocked",
+    }
+    assert all(
+        state in {"executed", "degraded", "blocked"}
+        for state in outcomes.values()
+    )
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
