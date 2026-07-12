@@ -501,8 +501,12 @@ def test_queryless_signed_plans_are_terminal_without_query_execution():
         permission_scope="analyst",
     )
     authority = {
+        "checkpoint_events": [
+            {"node": "reduce_evidence", "status": "completed"},
+        ],
         "admin_audit": {
             "analysis_contract": outcome.analysis_contract.to_dict(),
+            "verifier": {"status": "passed", "errors": []},
             "capability_execution_plans": [
                 asdict(plan) for plan in outcome.capability_plans
             ],
@@ -513,6 +517,37 @@ def test_queryless_signed_plans_are_terminal_without_query_execution():
         "answer_verify": {"executed"},
         "evidence_reduce": {"executed"},
     }
+
+    assert _derive_plan_capability_outcomes(
+        {
+            **authority,
+            "checkpoint_events": [],
+            "admin_audit": {
+                **authority["admin_audit"],
+                "verifier": {"status": "failed", "errors": ["blocked"]},
+            },
+        },
+        _registry(),
+    ) == {}
+
+
+@pytest.mark.parametrize(
+    "completion_authority",
+    ["", "client_flag", "checkpoint_completed:", "checkpoint_completed:Bad-Node"],
+)
+def test_queryless_completion_authority_contract_rejects_invalid_grammar(
+    completion_authority,
+):
+    from copy import deepcopy
+    from bi_agent.runtime.contracts import load_contract
+
+    payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
+    payload["capability_inputs"]["answer_verify"][
+        "completion_authority"
+    ] = completion_authority
+
+    with pytest.raises(ValueError, match="runtime_capability_completion_authority"):
+        RuntimeContractRegistry(payload)
 
 
 def test_capability_authority_is_conservative_across_ambiguous_applicable_cells(

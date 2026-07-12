@@ -663,6 +663,7 @@ capability_inputs:
     required_metrics: []
     supported_claim_types: []
     minimum_readiness: {required_slots: none, accepted_completeness: []}
+    completion_authority: verifier_passed
     degradation_policy: {missing_required_input: block_unverified_claim}
     supported_evidence_types: []
     maximum_claim_strength: verifier_only
@@ -820,6 +821,7 @@ capability_inputs:
     required_metrics: []
     supported_claim_types: [comparative_change, recurring_pattern_existence]
     minimum_readiness: {required_slots: none, accepted_completeness: []}
+    completion_authority: checkpoint_completed:reduce_evidence
     degradation_policy: {missing_required_input: block_reduced_claim}
     supported_evidence_types: []
     maximum_claim_strength: reducer_only

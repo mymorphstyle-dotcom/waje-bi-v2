@@ -4,6 +4,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 import yaml
@@ -107,6 +108,28 @@ class RuntimeContractRegistry:
                 raise ValueError(
                     "runtime_capability_maximum_claim_strength_unknown:"
                     f"{capability_id}:{maximum or 'missing'}"
+                )
+            required_slots = (contract.get("minimum_readiness") or {}).get(
+                "required_slots"
+            )
+            completion_authority = contract.get("completion_authority")
+            if required_slots == "none":
+                if not (
+                    completion_authority == "verifier_passed"
+                    or isinstance(completion_authority, str)
+                    and re.fullmatch(
+                        r"checkpoint_completed:[a-z][a-z0-9_]*",
+                        completion_authority,
+                    )
+                ):
+                    raise ValueError(
+                        "runtime_capability_completion_authority_invalid:"
+                        f"{capability_id}:{completion_authority or 'missing'}"
+                    )
+            elif completion_authority is not None:
+                raise ValueError(
+                    "runtime_capability_completion_authority_unexpected:"
+                    f"{capability_id}"
                 )
         self._payload = deepcopy(dict(payload))
         self._source_ref = source_ref

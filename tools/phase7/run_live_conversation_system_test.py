@@ -943,6 +943,12 @@ def _derive_plan_capability_outcomes(
                 and minimum_readiness.get("required_slots") == "none"
                 and not plan.get("required_input_slots")
                 and not plan.get("optional_input_slots")
+                and _queryless_completion_authority_passed(
+                    capability_id,
+                    authority=authority,
+                    admin=admin,
+                    registry=registry,
+                )
             ):
                 outcomes.setdefault(capability_id, set()).add("executed")
             continue
@@ -986,6 +992,49 @@ def _derive_plan_capability_outcomes(
                 "degraded" if "degraded" in slot_outcomes else "executed"
             )
     return outcomes
+
+
+def _queryless_completion_authority_passed(
+    capability_id: str,
+    *,
+    authority: Mapping[str, Any],
+    admin: Mapping[str, Any],
+    registry: RuntimeContractRegistry,
+) -> bool:
+    try:
+        completion = str(
+            registry.capability_inputs(capability_id).get(
+                "completion_authority"
+            )
+            or ""
+        )
+    except KeyError:
+        return False
+    if completion == "verifier_passed":
+        verifier = admin.get("verifier")
+        return bool(
+            isinstance(verifier, Mapping)
+            and verifier.get("status") == "passed"
+            and isinstance(verifier.get("errors"), (list, tuple))
+            and not verifier.get("errors")
+        )
+    prefix = "checkpoint_completed:"
+    if not completion.startswith(prefix):
+        return False
+    node = completion[len(prefix):]
+    events = authority.get("checkpoint_events")
+    if not isinstance(events, (list, tuple)):
+        return False
+    matching = tuple(
+        event
+        for event in events
+        if isinstance(event, Mapping) and event.get("node") == node
+    )
+    return bool(
+        matching
+        and any(event.get("status") == "completed" for event in matching)
+        and not any(event.get("status") == "failed" for event in matching)
+    )
 
 
 def _query_contract_from_mapping(value: Mapping[str, Any]) -> QueryContract:
