@@ -8,6 +8,7 @@ from io import StringIO
 from unittest.mock import patch
 
 from bi_agent.conversation.agent_core import ConversationAgentCore
+from bi_agent.conversation.models import ConversationRunRequest
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult
@@ -571,12 +572,26 @@ class AgentCoreBridgeTest(unittest.TestCase):
             run_id="run-wait-action-original",
             user_message="活动是否影响昨天？",
         )
-        resumed = core.run_message(
-            thread_id="thread-wait-action",
-            run_id="run-wait-action-resumed",
-            user_message="按推荐继续",
-            clarification={"answer_text": "按推荐继续"},
-        )
+        original_to_dict = ConversationRunRequest.to_dict
+
+        def persisted_projection(run_request):
+            payload = original_to_dict(run_request)
+            payload["clarification_resume_context"].pop(
+                "accepted_degradation_choice", None
+            )
+            return payload
+
+        with patch.object(
+            ConversationRunRequest,
+            "to_dict",
+            persisted_projection,
+        ):
+            resumed = core.run_message(
+                thread_id="thread-wait-action",
+                run_id="run-wait-action-resumed",
+                user_message="按推荐继续",
+                clarification={"answer_text": "按推荐继续"},
+            )
 
         self.assertEqual(first["status"], "waiting_for_clarification")
         self.assertEqual(

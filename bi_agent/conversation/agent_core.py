@@ -180,6 +180,17 @@ class ConversationAgentCore:
         accepted_degradation_choice = dict(
             resume_context.get("accepted_degradation_choice") or {}
         )
+        if not accepted_degradation_choice:
+            accepted_degradation_choice = dict(
+                next(
+                    (
+                        item
+                        for item in context_manifest.get("accepted_assumptions") or ()
+                        if isinstance(item, Mapping)
+                    ),
+                    {},
+                )
+            )
         if accepted_degradation_choice:
             request["accepted_degradation_choice"] = accepted_degradation_choice
         if self.row_provider is not None:
