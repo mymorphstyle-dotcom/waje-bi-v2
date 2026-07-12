@@ -328,6 +328,8 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
                 "compare_periods",
                 "evidence_reduce",
                 "answer_verify",
+                "market_health_compare",
+                "user_mix_contribution",
             ),
         )
         self.assertFalse(compiled.mutations.rejected_or_degraded)

@@ -1527,6 +1527,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 ("event_evidence", "context_coverage_required"),
                 ("data_quality_profile", "obligation_required"),
                 ("outlier_scan", "obligation_required"),
+                ("change_point_scan", "obligation_independent"),
             ],
         )
         second = workflow_module.reconcile_analysis_route(
@@ -7359,6 +7360,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 "data_quality_profile",
                 "compare_periods",
                 "answer_verify",
+                "user_mix_contribution",
             ),
         )
 

@@ -1701,6 +1701,7 @@ def reconcile_analysis_route(
     obligations = (
         *resolution.required_capabilities,
         *resolution.conditional_capabilities,
+        *resolution.independent_capabilities,
     )
     reconciled = tuple(dict.fromkeys((*requested, *obligations)))
     requested_set = set(requested)
@@ -1711,6 +1712,8 @@ def reconcile_analysis_route(
             "reason": (
                 "obligation_conditional"
                 if capability in resolution.conditional_capabilities
+                else "obligation_independent"
+                if capability in resolution.independent_capabilities
                 else "obligation_required"
             ),
         }
@@ -1745,6 +1748,7 @@ def reconcile_analysis_route(
         "status": "resolved",
         "required_capabilities": list(resolution.required_capabilities),
         "conditional_capabilities": list(resolution.conditional_capabilities),
+        "independent_capabilities": list(resolution.independent_capabilities),
         "minimum_publishable_evidence": list(
             resolution.minimum_publishable_evidence
         ),

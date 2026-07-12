@@ -184,6 +184,7 @@ def compile_graph(
         (
             *obligation_resolution.required_capabilities,
             *obligation_resolution.conditional_capabilities,
+            *obligation_resolution.independent_capabilities,
         )
         if obligation_resolution is not None
         else ()
@@ -239,6 +240,8 @@ def compile_graph(
                     reason=(
                         "obligation_conditional"
                         if node in obligation_resolution.conditional_capabilities
+                        else "obligation_independent"
+                        if node in obligation_resolution.independent_capabilities
                         else "obligation_required"
                     ),
                 )

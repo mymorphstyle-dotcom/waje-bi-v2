@@ -143,6 +143,104 @@ def test_platform_matrix_exercises_executable_independent_result_authority():
     assert ("market_health_compare", "revenue_health_review") in covered
 
 
+def test_platform_obligations_compile_to_terminal_graph_closure():
+    from bi_agent.runtime.analysis_obligations import (
+        ObligationRequest,
+        resolve_analysis_obligations,
+    )
+    from bi_agent.runtime.compiler import compile_graph
+    from tools.phase7.run_live_conversation_system_test import load_suite_cases
+
+    registry = _registry()
+    for case in load_suite_cases("platform-current-data"):
+        for turn in case["turns"]:
+            scenario = turn["scenario"]
+            family = scenario["question_family"]
+            requirements = {
+                key: list(scenario.get(key) or ())
+                for key in (
+                    "diagnostic_tags",
+                    "target_metrics",
+                    "requested_dimensions",
+                    "baselines",
+                    "context_sources",
+                    "claim_intents",
+                )
+            }
+            request = ObligationRequest(
+                question_families=(family,),
+                diagnostic_tags=tuple(requirements["diagnostic_tags"]),
+                target_metrics=tuple(requirements["target_metrics"]),
+                requested_dimensions=tuple(requirements["requested_dimensions"]),
+                baselines=tuple(requirements["baselines"]),
+                context_sources=tuple(requirements["context_sources"]),
+                claim_intents=tuple(requirements["claim_intents"]),
+            )
+            resolution = resolve_analysis_obligations(request, registry)
+            expected = set(
+                (
+                    *resolution.required_capabilities,
+                    *resolution.conditional_capabilities,
+                    *resolution.independent_capabilities,
+                )
+            )
+
+            compiled = compile_graph(
+                question_family=family,
+                question_families=(family,),
+                target_metric=requirements["target_metrics"][0],
+                requested_nodes=("data_quality_profile",),
+                bound_context={"analysis_requirements": requirements},
+                runtime_registry=registry,
+            )
+
+            assert expected <= set(compiled.mutations.accepted_graph), (
+                case["id"],
+                expected - set(compiled.mutations.accepted_graph),
+            )
+
+
+def test_route_reconciliation_closes_all_obligations_idempotently():
+    from bi_agent.runtime.langgraph_workflow import reconcile_analysis_route
+    from tools.phase7.run_live_conversation_system_test import load_suite_cases
+
+    registry = _registry()
+    for case in load_suite_cases("platform-current-data"):
+        for turn in case["turns"]:
+            scenario = turn["scenario"]
+            family = scenario["question_family"]
+            requirements = {
+                key: list(scenario.get(key) or ())
+                for key in (
+                    "diagnostic_tags",
+                    "target_metrics",
+                    "requested_dimensions",
+                    "baselines",
+                    "context_sources",
+                    "claim_intents",
+                )
+            }
+            intent = {
+                "question_family": family,
+                "question_families": [family],
+                "target_metric": requirements["target_metrics"][0],
+            }
+            route = {"analysis_requirements": requirements}
+
+            first, first_output = reconcile_analysis_route(
+                ("data_quality_profile",), route, intent, registry
+            )
+            second, second_output = reconcile_analysis_route(
+                first, first_output, intent, registry
+            )
+
+            assert second == first, case["id"]
+            assert second_output["obligation_resolution"]["mutations"] == [], (
+                case["id"],
+                second_output["obligation_resolution"]["mutations"],
+            )
+
+
 def test_capability_authority_is_conservative_across_ambiguous_applicable_cells():
     from tools.phase7.run_live_conversation_system_test import review_case_obligations
 
