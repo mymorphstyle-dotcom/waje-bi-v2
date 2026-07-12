@@ -488,6 +488,12 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "understand_business_intent")
     intent_payload = _business_intent_payload(request)
     output = _invoke_llm(state, "business_intent", intent_payload)
+    answer_contract = output.get("answer_contract") or {}
+    if not isinstance(answer_contract, Mapping):
+        raise WorkflowFailure(
+            "business_intent_contract_invalid:answer_contract",
+            failure_type="llm_contract",
+        )
     pattern_family = _normalize_pattern_family(output.get("pattern_family"), request)
     pattern_params = _normalize_pattern_params(request, output, pattern_family)
     pattern_family, pattern_params = _repair_pattern_family_and_params(
@@ -515,7 +521,7 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         "baseline_candidates": list(output.get("baseline_candidates") or []),
         "sub_intents": list(output.get("sub_intents") or []),
         "ambiguous_slots": list(output.get("ambiguous_slots") or []),
-        "answer_contract": dict(output.get("answer_contract") or {}),
+        "answer_contract": dict(answer_contract),
         "baseline": request.get("baseline") or output.get("baseline") or {},
         "target": request.get("target") or output.get("target") or {},
         "question": request.get("question", ""),
@@ -2287,7 +2293,10 @@ def _route_after_query_repair(state: WorkflowState) -> str:
         if isinstance(accepted_choice, Mapping)
         else ""
     )
-    if result.status == "clarify" and accepted_action == "omit_unavailable_context":
+    if result.status == "clarify" and accepted_action in {
+        "omit_unavailable_context",
+        "continue_with_boundary_only",
+    }:
         state["accepted_degraded_query_outcome"] = True
         return "degraded"
     if result.status == "clarify":
@@ -2585,6 +2594,7 @@ def _group_query_gap_actions(
             )
     priority = {
         "omit_unavailable_context": 0,
+        "continue_with_boundary_only": 0,
         "use_permitted_aggregate": 0,
         "wait_for_source": 1,
         "request_permission": 2,
@@ -2654,35 +2664,31 @@ def _business_query_gap_projection(
             str(item) for item in gap.get("affected_capabilities") or () if str(item)
         )
         actions: list[dict[str, Any]] = []
-        if gap_type == "dataset_snapshot_unavailable_as_of":
+        if gap_type in {
+            "dataset_snapshot_unavailable_as_of",
+            "source_unbound",
+            "contract_partial",
+        }:
             independent_capabilities = tuple(
                 capability
                 for capability in accepted_capabilities
                 if capability not in affected_capabilities
             )
-            degradation_allows_omit = False
-            if registry is not None:
-                for capability in affected_capabilities:
-                    try:
-                        policy = registry.capability_inputs(capability).get(
-                            "degradation_policy"
-                        ) or {}
-                    except KeyError:
-                        continue
-                    missing_policy = str(policy.get("missing_required_input") or "")
-                    if missing_policy in {
-                        "omit_path",
-                        "context_only",
-                        "report_contract_gap",
-                        "block_candidate_impact",
-                    }:
-                        degradation_allows_omit = True
-            if independent_capabilities and degradation_allows_omit:
+            if independent_capabilities:
                 actions.append(
                     {
                         "choice_id": "continue_without_unavailable_context",
                         "action_kind": "omit_unavailable_context",
                         "business_semantics": "继续可验证的主指标分析，并明确缺少相关业务背景证据",
+                        "affected_capabilities": list(affected_capabilities),
+                    }
+                )
+            elif not independent_capabilities:
+                actions.append(
+                    {
+                        "choice_id": "continue_with_boundary_only",
+                        "action_kind": "continue_with_boundary_only",
+                        "business_semantics": "基于当前证据边界完成限制说明，不发布业务结论",
                         "affected_capabilities": list(affected_capabilities),
                     }
                 )

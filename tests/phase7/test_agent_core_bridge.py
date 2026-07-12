@@ -697,6 +697,74 @@ class AgentCoreBridgeTest(unittest.TestCase):
             "omit_unavailable_context",
         )
 
+    def test_no_ready_capability_recommends_boundary_terminal_and_resumes_once(self):
+        calls = []
+
+        def workflow(request):
+            calls.append(dict(request))
+            if len(calls) == 1:
+                return WorkflowRunResult(
+                    status="waiting_for_clarification",
+                    run_id=request["run_id"],
+                    answer_package={
+                        "status": "waiting_for_clarification",
+                        "accepted_graph": ["event_evidence"],
+                        "analysis_contract": {"analysis_contract_id": "analysis:no-ready:1"},
+                        "analysis_route": {"requested_nodes": ["event_evidence"]},
+                        "clarification": {
+                            "questions": [{
+                                "question": "当前没有可执行证据路径，怎么继续？",
+                                "options": [
+                                    "等待业务数据就绪",
+                                    "完成证据边界说明",
+                                    "tell the agent to do differently",
+                                ],
+                            }],
+                            "recommended_assumption": {"option": "等待业务数据就绪"},
+                            "choice_actions": [
+                                {
+                                    "choice_id": "wait-source",
+                                    "action_kind": "wait_for_source",
+                                    "business_label": "等待业务数据就绪",
+                                    "affected_capabilities": ["event_evidence"],
+                                },
+                                {
+                                    "choice_id": "boundary-only",
+                                    "action_kind": "continue_with_boundary_only",
+                                    "business_label": "完成证据边界说明",
+                                    "affected_capabilities": ["event_evidence"],
+                                },
+                            ],
+                        },
+                    },
+                    analysis_runtime_records={},
+                )
+            return fake_workflow(request)
+
+        store = InMemoryConversationStore()
+        store.save_analysis_runtime_records = lambda **_: "inserted"
+        core = ConversationAgentCore(store, workflow_runner=workflow)
+        first = core.run_message(
+            thread_id="thread-no-ready-boundary",
+            run_id="run-no-ready-original",
+            user_message="现有证据能否支持这个判断？",
+        )
+        resumed = core.run_message(
+            thread_id="thread-no-ready-boundary",
+            run_id="run-no-ready-resumed",
+            user_message="按推荐继续",
+            clarification={"answer_text": "按推荐继续"},
+        )
+
+        self.assertEqual(first["status"], "waiting_for_clarification")
+        self.assertEqual(first["clarification"]["recommended_choice_id"], "boundary-only")
+        self.assertEqual(resumed["status"], "completed", resumed)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            calls[1]["accepted_degradation_choice"]["action_kind"],
+            "continue_with_boundary_only",
+        )
+
     def test_query_gap_waiting_persists_zero_claim_runtime_bundle_before_return(self):
         class CapturingStore(InMemoryConversationStore):
             def save_analysis_runtime_records(self, **kwargs):

@@ -63,6 +63,7 @@ from bi_agent.runtime.langgraph_workflow import (
     repair_final_answer_with_verified_claim,
     _route_after_next_action,
     _route_after_query_gap_clarification,
+    _route_after_query_repair,
     _route_after_clarification,
     _route_after_accept_analysis,
     _route_after_semantic_audit,
@@ -151,6 +152,33 @@ def _llm_input_payload(answer_package, task):
 
 
 class LLMWorkflowTest(unittest.TestCase):
+    def test_business_intent_rejects_non_mapping_optional_contract_as_typed_llm_failure(self):
+        state = {
+            "request": {"question": "检查业务规律"},
+            "llm_client": FakeLLMClient({
+                "business_intent": {
+                    "question_family": "pattern_explanation",
+                    "target_metric": "paid_amount",
+                    "pattern_family": "weekly",
+                    "scope": "full_sample",
+                    "time_window": "recent_period",
+                    "target_claim": "是否存在规律",
+                    "baseline_candidates": [],
+                    "status_message": "已识别",
+                    "display_summary": "已识别",
+                    "answer_contract": ["malformed"],
+                }
+            }),
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "business_intent_contract_invalid:answer_contract",
+        ):
+            _understand_business_intent(state)
+
     def test_degraded_route_preserves_ready_authority_claim_when_other_sources_are_unbound(self):
         claim = {
             "text": "大盘付费金额下降 8%。",
@@ -1532,6 +1560,67 @@ class LLMWorkflowTest(unittest.TestCase):
             supported_claim_route["analysis_requirements"]["claim_intents"],
             ["recurring_pattern_existence"],
         )
+
+    def test_material_source_gaps_offer_progress_for_ready_sibling_or_boundary_terminal(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        gap_types = (
+            "dataset_snapshot_unavailable_as_of",
+            "source_unbound",
+            "contract_partial",
+        )
+        for gap_type in gap_types:
+            gap = {
+                "gap_type": gap_type,
+                "requires_clarification": True,
+                "owner": "contract_owner",
+                "affected_capabilities": ("event_evidence",),
+                "repair_options": ("choose_supported_claim_intent",),
+            }
+            with self.subTest(gap_type=gap_type, path="ready_sibling"):
+                projected = _business_query_gap_projection(
+                    (gap,),
+                    {"target_metric": "paid_amount", "time_window": "target_day"},
+                    accepted_capabilities=("compare_periods", "event_evidence"),
+                    registry=registry,
+                )
+                actions = projected[0]["allowed_actions"]
+                self.assertEqual(actions[0]["action_kind"], "omit_unavailable_context")
+                self.assertNotIn(
+                    "continue_with_boundary_only",
+                    {item["action_kind"] for item in actions},
+                )
+            with self.subTest(gap_type=gap_type, path="no_ready_capability"):
+                projected = _business_query_gap_projection(
+                    (gap,),
+                    {"target_metric": "paid_amount", "time_window": "target_day"},
+                    accepted_capabilities=("event_evidence",),
+                    registry=registry,
+                )
+                actions = projected[0]["allowed_actions"]
+                self.assertEqual(
+                    actions[0]["action_kind"], "continue_with_boundary_only"
+                )
+                self.assertEqual(actions[1]["action_kind"], "wait_for_source")
+
+    def test_accepted_boundary_terminal_does_not_reask_same_gap(self):
+        from types import SimpleNamespace
+
+        state = {
+            "request": {
+                "accepted_degradation_choice": {
+                    "action_kind": "continue_with_boundary_only",
+                    "affected_capabilities": ["event_evidence"],
+                }
+            },
+            "analysis_runtime_result": SimpleNamespace(status="clarify"),
+        }
+
+        self.assertEqual(_route_after_query_repair(state), "degraded")
+        self.assertTrue(state["accepted_degraded_query_outcome"])
 
     def test_query_gap_actions_group_atomic_affected_capabilities_and_stage_overflow(self):
         actions = (
