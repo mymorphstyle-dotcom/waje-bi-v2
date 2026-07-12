@@ -287,6 +287,7 @@ def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
             "resumed_status": "completed",
             "scenario": {"clarification_resume": "required"},
             "obligation_review": {"hard_acceptance_passed": True, "clarification_resume_passed": True},
+            "quality_review": {"display_status": "", "direct_answer": False},
             "real_clickhouse_review": {"runtime_correctness": {"all_required_queries_complete": True, "all_capabilities_bound": True, "all_claims_traceable": True}},
         },
         {
@@ -295,11 +296,13 @@ def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
             "scenario": {"reuse": "required"},
             "runtime_authority": {"reuse_decisions": [{"decision": "reuse"}]},
             "obligation_review": {"hard_acceptance_passed": True, "reuse_passed": True},
+            "quality_review": {"display_status": "ready", "direct_answer": True},
             "real_clickhouse_review": {"runtime_correctness": {"all_required_queries_complete": True, "all_capabilities_bound": True, "all_claims_traceable": True}},
         },
         {"topic_id": "topic-2", "resumed_topic_id": "topic-2", "resumed_status": "completed", "scenario": {}},
     ]
     summary = _coverage_summary(turns)
+    assert summary["final_answer_audit_coverage"] == {"reviewed": 1, "total": 3}
     assert summary["clarification_resume"] == {"required": 1, "passed": 1}
     assert summary["reuse_coverage"] == {"required": 1, "passed": 1}
     turns[0]["resumed_status"] = "failed"

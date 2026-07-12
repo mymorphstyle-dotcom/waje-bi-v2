@@ -1594,7 +1594,16 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
             ),
         },
         "final_answer_audit_coverage": {
-            "reviewed": sum(bool(turn.get("quality_review")) for turn in turns),
+            "reviewed": sum(
+                bool(
+                    str(
+                        ((_effective_result(turn).get("quality_review") or {}).get(
+                            "display_status"
+                        ) or "")
+                    ).strip()
+                )
+                for turn in turns
+            ),
             "total": len(turns),
         },
         "clarification_resume": {
