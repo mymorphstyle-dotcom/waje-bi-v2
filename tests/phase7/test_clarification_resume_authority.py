@@ -50,7 +50,7 @@ def test_early_clarification_resume_preserves_source_topic_family(monkeypatch):
     monkeypatch.setattr(
         workflow,
         "_invoke_llm",
-        lambda state, node, payload: {
+        lambda state, node, payload, **kwargs: {
             "question_family": "pattern_explanation",
             "question_families": ["pattern_explanation"],
             "target_metric": "paid_amount",
@@ -1938,6 +1938,141 @@ def test_resume_authority_rejects_nonunique_contract_target_ref(failure):
         match="material_authority_contract_target_metrics_unresolvable",
     ):
         _validate_signed_authority_pair(contract, material)
+
+
+@pytest.mark.parametrize(
+    "target_ref",
+    [
+        "contracts/metrics/paid-amount.metric.yaml@0.1",
+        "contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.paid_amount",
+    ],
+)
+def test_completed_material_preflight_resolves_queryless_reviewed_target_ref(
+    target_ref,
+):
+    from bi_agent.conversation.clarification_authority import (
+        preflight_completed_material_authority,
+    )
+
+    contract = _source_contract()
+    contract["target_metric_refs"] = [target_ref]
+    contract["metric_bindings"] = []
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    material = _signed_material_authority(
+        runtime_material=_runtime_material_for_contract(contract),
+    )
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+
+    assert preflight_completed_material_authority(
+        material_authority=material,
+        analysis_contract=contract,
+        run_id="run-source",
+        thread_id="thread-source",
+        topic_id="topic-source",
+        runtime_registry=registry,
+    ) == ("paid_amount",)
+
+
+@pytest.mark.parametrize(
+    "target_ref",
+    [
+        "contracts/backlog/missing-contracts.yaml#component_contracts",
+        "contracts/metrics/unknown.metric.yaml@0.1",
+    ],
+)
+def test_completed_material_preflight_rejects_ambiguous_or_unknown_queryless_target(
+    target_ref,
+):
+    from bi_agent.conversation.clarification_authority import (
+        preflight_completed_material_authority,
+    )
+
+    contract = _source_contract()
+    contract["target_metric_refs"] = [target_ref]
+    contract["metric_bindings"] = []
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    material = _signed_material_authority(
+        runtime_material=_runtime_material_for_contract(contract),
+    )
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^material_authority_contract_target_metrics_unresolvable$",
+    ):
+        preflight_completed_material_authority(
+            material_authority=material,
+            analysis_contract=contract,
+            run_id="run-source",
+            thread_id="thread-source",
+            topic_id="topic-source",
+            runtime_registry=registry,
+        )
+
+
+def test_bound_contract_overlap_does_not_load_runtime_registry(monkeypatch):
+    from bi_agent.conversation.clarification_authority import (
+        validate_material_authority_contract_overlap,
+    )
+    from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
+
+    contract = _source_contract()
+    material = _signed_material_authority(
+        runtime_material=_runtime_material_for_contract(contract),
+    )
+    typed_contract = analysis_contract_from_dict(
+        {
+            key: value
+            for key, value in contract.items()
+            if key != "contract_signature"
+        }
+    )
+
+    def fail_registry_load(*_args, **_kwargs):
+        raise AssertionError("bound target must not load runtime registry")
+
+    monkeypatch.setattr(RuntimeContractRegistry, "from_path", fail_registry_load)
+
+    validate_material_authority_contract_overlap(material, typed_contract)
+
+
+def test_queryless_completed_material_preflight_rejects_registry_digest_drift():
+    from bi_agent.conversation.clarification_authority import (
+        preflight_completed_material_authority,
+    )
+
+    contract = _source_contract()
+    contract["target_metric_refs"] = [
+        "contracts/metrics/paid-amount.metric.yaml@0.1"
+    ]
+    contract["metric_bindings"] = []
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    material = _signed_material_authority(
+        runtime_material=_runtime_material_for_contract(contract),
+    )
+    drifted_registry = deepcopy(
+        RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+    )
+    drifted_registry._source_payload_digest = "0" * 64
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^completed_material_authority_runtime_registry_mismatch$",
+    ):
+        preflight_completed_material_authority(
+            material_authority=material,
+            analysis_contract=contract,
+            run_id="run-source",
+            thread_id="thread-source",
+            topic_id="topic-source",
+            runtime_registry=drifted_registry,
+        )
 
 
 @pytest.mark.parametrize("material_scope", [None, "", {}, "full_sample"])

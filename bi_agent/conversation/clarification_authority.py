@@ -22,6 +22,10 @@ from bi_agent.runtime.evidence_authority import (
     canonical_digest,
     canonical_value,
 )
+from bi_agent.runtime.runtime_contract_registry import (
+    CANONICAL_RUNTIME_BINDINGS_PATH,
+    RuntimeContractRegistry,
+)
 
 
 _MATERIAL_AUTHORITY_KEYS = frozenset(
@@ -654,6 +658,8 @@ def _query_owner_capability_ids(
 def validate_material_authority_contract_overlap(
     material_authority: Mapping[str, Any],
     analysis_contract: AnalysisContract,
+    *,
+    runtime_registry: RuntimeContractRegistry | None = None,
 ) -> None:
     intent_material = material_authority.get("intent_material")
     route_material = material_authority.get("route_material_slots")
@@ -667,7 +673,36 @@ def validate_material_authority_contract_overlap(
         raise EvidenceIntegrityError(
             "material_authority_contract_question_families_mismatch"
         )
-    contract_target_metrics = _contract_target_metric_ids(analysis_contract)
+    unresolved_target_refs = {
+        contract_ref
+        for contract_ref in analysis_contract.target_metric_refs
+        if not any(
+            binding.contract_ref == contract_ref
+            for binding in analysis_contract.metric_bindings
+        )
+    }
+    if unresolved_target_refs:
+        execution_material = material_authority.get("execution_material")
+        if not isinstance(execution_material, Mapping):
+            raise EvidenceIntegrityError(
+                "material_authority_execution_material_missing"
+            )
+        runtime_registry = runtime_registry or RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        )
+        if (
+            execution_material.get("runtime_contract_version")
+            != runtime_registry.contract_version
+            or execution_material.get("runtime_registry_digest")
+            != runtime_registry.source_payload_digest
+        ):
+            raise EvidenceIntegrityError(
+                "material_authority_contract_runtime_registry_mismatch"
+            )
+    contract_target_metrics = _contract_target_metric_ids(
+        analysis_contract,
+        runtime_registry=runtime_registry,
+    )
     if any(
         tuple(targets or ()) != contract_target_metrics
         for targets in (
@@ -716,6 +751,71 @@ def validate_material_authority_contract_overlap(
         raise EvidenceIntegrityError(
             "material_authority_contract_accepted_graph_mismatch"
         )
+
+
+def preflight_completed_material_authority(
+    *,
+    material_authority: Mapping[str, Any],
+    analysis_contract: Mapping[str, Any],
+    run_id: str,
+    thread_id: str,
+    topic_id: str,
+    runtime_registry: RuntimeContractRegistry | None = None,
+) -> tuple[str, ...]:
+    if not isinstance(analysis_contract, Mapping):
+        raise EvidenceIntegrityError(
+            "completed_material_authority_contract_invalid"
+        )
+    contract_payload = dict(analysis_contract)
+    embedded_signature = str(
+        contract_payload.pop("contract_signature", "") or ""
+    )
+    try:
+        typed_contract = analysis_contract_from_dict(contract_payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise EvidenceIntegrityError(
+            "completed_material_authority_contract_invalid"
+        ) from exc
+    if (
+        not embedded_signature
+        or analysis_contract_signature(typed_contract) != embedded_signature
+    ):
+        raise EvidenceIntegrityError(
+            "completed_material_authority_contract_invalid"
+        )
+    if not isinstance(material_authority, Mapping):
+        raise EvidenceIntegrityError(
+            "completed_material_authority_carrier_invalid"
+        )
+    validated_material = validate_material_authority(
+        material_authority,
+        source_run_id=_required(run_id, "source_run_id"),
+        thread_id=thread_id,
+        topic_id=topic_id,
+        require_execution_material=True,
+    )
+    registry = runtime_registry or RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
+    execution_material = validated_material["execution_material"]
+    if (
+        execution_material["runtime_contract_version"]
+        != registry.contract_version
+        or execution_material["runtime_registry_digest"]
+        != registry.source_payload_digest
+    ):
+        raise EvidenceIntegrityError(
+            "completed_material_authority_runtime_registry_mismatch"
+        )
+    validate_material_authority_contract_overlap(
+        validated_material,
+        typed_contract,
+        runtime_registry=registry,
+    )
+    return _contract_target_metric_ids(
+        typed_contract,
+        runtime_registry=registry,
+    )
 
 
 def validate_completed_followup_authority(
@@ -1956,16 +2056,31 @@ def _canonical_baseline_sequence(value: Any) -> tuple[str, ...]:
 
 def _contract_target_metric_ids(
     analysis_contract: AnalysisContract,
+    *,
+    runtime_registry: RuntimeContractRegistry | None = None,
 ) -> tuple[str, ...]:
     metric_ids: list[str] = []
     for contract_ref in analysis_contract.target_metric_refs:
-        matches = tuple(
+        bound_matches = tuple(
             dict.fromkeys(
                 binding.metric_id
                 for binding in analysis_contract.metric_bindings
                 if binding.contract_ref == contract_ref
             )
         )
+        if bound_matches:
+            matches = bound_matches
+        elif runtime_registry is None:
+            matches = ()
+        else:
+            matches = tuple(
+                metric_id
+                for metric_id in runtime_registry.metric_ids
+                if any(
+                    str(source.get("contract_ref") or "") == contract_ref
+                    for source in runtime_registry.metric_sources(metric_id).values()
+                )
+            )
         if len(matches) != 1:
             raise EvidenceIntegrityError(
                 "material_authority_contract_target_metrics_unresolvable"
@@ -1976,7 +2091,20 @@ def _contract_target_metric_ids(
         raise EvidenceIntegrityError(
             "material_authority_contract_target_metrics_unresolvable"
         )
-    return tuple(metric_ids)
+    requested_metric_ids = tuple(
+        analysis_contract.scope.get("requested_metric_ids") or ()
+    )
+    resolved_metric_ids = tuple(metric_ids)
+    resolved_metric_set = set(resolved_metric_ids)
+    if requested_metric_ids and tuple(
+        metric_id
+        for metric_id in requested_metric_ids
+        if metric_id in resolved_metric_set
+    ) != resolved_metric_ids:
+        raise EvidenceIntegrityError(
+            "material_authority_contract_target_metrics_unresolvable"
+        )
+    return resolved_metric_ids
 
 
 def _contract_material_scope(scope: Mapping[str, Any]) -> Any:

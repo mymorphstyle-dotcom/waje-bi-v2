@@ -850,7 +850,154 @@ class AgentCoreBridgeTest(unittest.TestCase):
             )
         )
 
-    def test_completed_material_authority_anchor_failure_uses_persistence_failure_path(self):
+    def test_queryless_completed_material_authority_resolves_reviewed_target(self):
+        def workflow(request):
+            result = fake_workflow(request)
+            records = _queryless_runtime_records_for_request(request)
+            return _completed_runtime_workflow_result(
+                request,
+                answer_package=result.answer_package,
+                records=records,
+                artifact_path="",
+            )
+
+        store = InMemoryConversationStore()
+        result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
+            thread_id="thread-queryless-completed-authority",
+            run_id="run-queryless-completed-authority",
+            user_message="当前付费金额的数据边界是什么？",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        authority = store.resolve_completed_material_authority(
+            source_run_id=result["run_id"],
+            thread_id="thread-queryless-completed-authority",
+            topic_id=result["topic_id"],
+        )
+        self.assertEqual(
+            authority["material_authority"]["intent_material"]["target_metrics"],
+            ["paid_amount"],
+        )
+
+    def test_cross_owner_completed_authority_fails_before_any_publication(self):
+        class PublicationTrackingStore(InMemoryConversationStore):
+            def __init__(self):
+                super().__init__()
+                self.runtime_saves = 0
+
+            def save_analysis_runtime_records(self, **kwargs):
+                self.runtime_saves += 1
+                return super().save_analysis_runtime_records(**kwargs)
+
+        def workflow(request):
+            result = fake_workflow(request)
+            records = _queryless_runtime_records_for_request(request)
+            completed = _completed_runtime_workflow_result(
+                request,
+                answer_package=result.answer_package,
+                records=records,
+                artifact_path="",
+            )
+            foreign_owner = {
+                **request,
+                "run_id": "run-foreign-owner",
+                "thread_id": "thread-foreign-owner",
+                "topic_id": "topic-foreign-owner",
+            }
+            return replace(
+                completed,
+                completed_material_authority=(
+                    _completed_material_authority_for_records(
+                        foreign_owner,
+                        records,
+                    )
+                ),
+            )
+
+        store = PublicationTrackingStore()
+        result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
+            thread_id="thread-current-owner",
+            run_id="run-current-owner",
+            user_message="当前付费金额的数据边界是什么？",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["failure_reason"],
+            "completed_material_authority_preflight_failed",
+        )
+        self.assertEqual(
+            result["failure_subreason"],
+            "material_authority_owner_mismatch",
+        )
+        self.assertEqual(store.runtime_saves, 0)
+        self.assertNotIn("run-current-owner", store.answer_packages)
+        self.assertEqual(dict(store.analysis_assets), {})
+        self.assertEqual(
+            dict(store.analysis_runtime_authority).get("analysis_contract", {}),
+            {},
+        )
+
+    def test_unknown_or_ambiguous_queryless_target_fails_before_runtime_publication(self):
+        class PublicationTrackingStore(InMemoryConversationStore):
+            def __init__(self):
+                super().__init__()
+                self.runtime_publication_attempts = 0
+
+            def save_analysis_runtime_records(self, **kwargs):
+                self.runtime_publication_attempts += 1
+                return super().save_analysis_runtime_records(**kwargs)
+
+        for target_ref in (
+            "contracts/metrics/unknown.metric.yaml@0.1",
+            "contracts/backlog/missing-contracts.yaml#component_contracts",
+        ):
+            with self.subTest(target_ref=target_ref):
+                def workflow(request):
+                    result = fake_workflow(request)
+                    records = _queryless_runtime_records_for_request(
+                        request,
+                        target_ref=target_ref,
+                    )
+                    return _completed_runtime_workflow_result(
+                        request,
+                        answer_package=result.answer_package,
+                        records=records,
+                        artifact_path=result.artifact_path,
+                    )
+
+                store = PublicationTrackingStore()
+                result = ConversationAgentCore(
+                    store,
+                    workflow_runner=workflow,
+                ).run_message(
+                    thread_id=f"thread-queryless-preflight-{store.runtime_publication_attempts}",
+                    user_message="当前付费金额的数据边界是什么？",
+                )
+
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(
+                    result["failure_reason"],
+                    "completed_material_authority_preflight_failed",
+                )
+                self.assertEqual(
+                    result["failure_subreason"],
+                    "material_authority_contract_target_metrics_unresolvable",
+                )
+                self.assertEqual(
+                    result["artifact_path"],
+                    "artifacts/phase-7/run-agent-core/answer_package.json",
+                )
+                self.assertEqual(store.runtime_publication_attempts, 0)
+                self.assertNotIn(result["run_id"], store.answer_packages)
+                self.assertFalse(
+                    any(
+                        event["event_type"] == "analysis_runtime_partial_publication"
+                        for event in store.audit_events
+                    )
+                )
+
+    def test_completed_material_authority_anchor_failure_is_typed_finalization_failure(self):
         class FailingAuthorityStore(InMemoryConversationStore):
             def finalize_completed_material_authority(self, **_kwargs):
                 raise EvidenceIntegrityError(
@@ -863,6 +1010,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 status=result.status,
                 run_id=result.run_id,
                 answer_package=result.answer_package,
+                artifact_path=result.artifact_path,
                 completed_material_authority={"invalid": "store owns validation"},
             )
 
@@ -879,7 +1027,15 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(
             result["failure_reason"],
-            "analysis_runtime_persistence_failed",
+            "completed_material_authority_finalization_failed",
+        )
+        self.assertEqual(
+            result["failure_subreason"],
+            "completed_followup_authority_anchor_unavailable",
+        )
+        self.assertEqual(
+            result["artifact_path"],
+            "artifacts/phase-7/run-agent-core/answer_package.json",
         )
         self.assertEqual(
             store.runs["run-completed-anchor-failure"]["status"],
@@ -888,11 +1044,18 @@ class AgentCoreBridgeTest(unittest.TestCase):
         failure = next(
             event
             for event in store.audit_events
-            if event["event_type"] == "analysis_runtime_persistence_failed"
+            if event["event_type"]
+            == "completed_material_authority_finalization_failed"
         )
         self.assertEqual(
-            failure["payload"]["reason"],
+            failure["payload"]["failure_subreason"],
             "completed_followup_authority_anchor_unavailable",
+        )
+        self.assertFalse(
+            any(
+                event["event_type"] == "analysis_runtime_partial_publication"
+                for event in store.audit_events
+            )
         )
 
     def test_completed_authority_failure_leaves_zero_result_reuse_candidates(self):
@@ -7197,6 +7360,44 @@ def _authoritative_runtime_records_for_request(request):
         topic_id=request["topic_id"],
         analysis_contract_ref=f"analysis:{request['run_id']}:1",
     )
+
+
+def _queryless_runtime_records_for_request(
+    request,
+    *,
+    target_ref="contracts/metrics/paid-amount.metric.yaml@0.1",
+):
+    from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+    records = _authoritative_runtime_records_for_request(request)
+    contract = deepcopy(records["analysis_contract"])
+    contract.update(
+        {
+            "target_metric_refs": [target_ref],
+            "claim_intents": [],
+            "metric_bindings": [],
+            "capability_requirements": [],
+            "contract_gaps": [],
+        }
+    )
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    records["analysis_contract"] = contract
+    for key in (
+        "query_contracts",
+        "query_execution_records",
+        "rows_records",
+        "snapshot_records",
+        "completeness_records",
+        "capability_binding_records",
+        "evidence_manifests",
+        "context_manifests",
+        "trusted_provenance_records",
+        "verified_claims",
+        "claim_links",
+        "repair_attempts",
+    ):
+        records[key] = []
+    return records
 
 
 def _completed_runtime_workflow_result(

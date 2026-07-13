@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Mapping
 from datetime import date, datetime
@@ -9,7 +10,10 @@ from typing import Any, Callable, Optional
 from uuid import uuid4
 
 from bi_agent.conversation.postgres_store import PostgresConversationStore
-from bi_agent.conversation.clarification_authority import build_material_authority
+from bi_agent.conversation.clarification_authority import (
+    build_material_authority,
+    preflight_completed_material_authority,
+)
 from bi_agent.conversation.models import (
     ClarificationOption,
     ClarificationState,
@@ -28,7 +32,10 @@ from bi_agent.runtime.analysis_obligations import (
     resolve_analysis_obligations,
 )
 from bi_agent.runtime.compiler import compile_graph
-from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
+from bi_agent.runtime.evidence_authority import (
+    EvidenceIntegrityError,
+    RuntimeEvidenceAuthority,
+)
 from bi_agent.runtime.artifacts import synchronize_existing_artifact
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult, run_pattern_workflow
 from bi_agent.runtime.runtime_contract_registry import (
@@ -794,12 +801,12 @@ class ConversationAgentCore:
         )
         persisted_context_manifest = None
         result_candidate_records: Mapping[str, Any] | None = None
+        completed_material_authority = getattr(
+            result,
+            "completed_material_authority",
+            None,
+        )
         try:
-            completed_material_authority = getattr(
-                result,
-                "completed_material_authority",
-                None,
-            )
             if (
                 (
                     getattr(result, "analysis_runtime_result", None)
@@ -823,6 +830,33 @@ class ConversationAgentCore:
                         answer_package=package,
                         request=request,
                         artifact_path=result.artifact_path,
+                    )
+                try:
+                    preflight_completed_material_authority(
+                        material_authority=completed_material_authority,
+                        analysis_contract=records.get("analysis_contract") or {},
+                        run_id=run_id,
+                        thread_id=thread_id,
+                        topic_id=turn.topic_id or "",
+                        runtime_registry=self.runtime_registry,
+                    )
+                except Exception as exc:
+                    return _completed_material_authority_failure(
+                        store=self.store,
+                        failure_reason=(
+                            "completed_material_authority_preflight_failed"
+                        ),
+                        exc=exc,
+                        run_id=run_id,
+                        thread_id=thread_id,
+                        turn_id=turn.turn_id,
+                        topic_id=turn.topic_id or "",
+                        request=request,
+                        artifact_path=result.artifact_path,
+                        context_manifest=context_manifest,
+                        intent=turn.turn_intent.intent,
+                        topic_relation=turn.topic_relation,
+                        llm_calls=workflow_llm_calls,
                     )
                 verified_claims = tuple(records.get("verified_claims") or ())
                 contexts_by_ref = {
@@ -949,46 +983,23 @@ class ConversationAgentCore:
                     request=_persistable_request(request),
                 )
         except Exception as exc:
-            _record_workflow_failure_llm_audits(
-                self.store,
-                thread_id=thread_id,
-                topic_id=turn.topic_id or "",
+            return _completed_material_authority_failure(
+                store=self.store,
+                failure_reason=(
+                    "completed_material_authority_finalization_failed"
+                ),
+                exc=exc,
                 run_id=run_id,
-                llm_calls=workflow_llm_calls,
-            )
-            self.store.upsert_run(
-                run_id,
                 thread_id=thread_id,
                 turn_id=turn.turn_id,
                 topic_id=turn.topic_id or "",
-                status="failed",
-                request={
-                    **_persistable_request(request),
-                    "failure_reason": "analysis_runtime_persistence_failed",
-                },
+                request=request,
+                artifact_path=result.artifact_path,
+                context_manifest=context_manifest,
+                intent=turn.turn_intent.intent,
+                topic_relation=turn.topic_relation,
+                llm_calls=workflow_llm_calls,
             )
-            self.store.add_audit_event(
-                "analysis_runtime_persistence_failed",
-                thread_id=thread_id,
-                topic_id=turn.topic_id or "",
-                run_id=run_id,
-                ref=run_id,
-                payload={
-                    "reason": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-            )
-            return {
-                "status": "failed",
-                "run_id": run_id,
-                "turn_id": turn.turn_id,
-                "topic_id": turn.topic_id,
-                "intent": turn.turn_intent.intent,
-                "topic_relation": turn.topic_relation,
-                "context_manifest": context_manifest,
-                "failure_reason": "analysis_runtime_persistence_failed",
-                "llm_calls": list(workflow_llm_calls),
-            }
         followup_index_failure: dict[str, str] | None = None
         if result_candidate_records is not None:
             try:
@@ -1121,6 +1132,79 @@ def _record_workflow_failure_llm_audits(
             ref=response_id or f"{run_id}:llm-call:{index}",
             payload=audit,
         )
+
+
+def _completed_material_authority_failure(
+    *,
+    store: Any,
+    failure_reason: str,
+    exc: Exception,
+    run_id: str,
+    thread_id: str,
+    turn_id: str,
+    topic_id: str,
+    request: dict[str, Any],
+    artifact_path: str,
+    context_manifest: Mapping[str, Any],
+    intent: str,
+    topic_relation: str,
+    llm_calls: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    failure_subreason = _safe_completed_authority_subreason(exc)
+    _record_workflow_failure_llm_audits(
+        store,
+        thread_id=thread_id,
+        topic_id=topic_id,
+        run_id=run_id,
+        llm_calls=llm_calls,
+    )
+    store.upsert_run(
+        run_id,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        topic_id=topic_id,
+        status="failed",
+        request={
+            **_persistable_request(request),
+            "failure_reason": failure_reason,
+            "failure_subreason": failure_subreason,
+            "artifact_path": artifact_path,
+        },
+    )
+    store.add_audit_event(
+        failure_reason,
+        thread_id=thread_id,
+        topic_id=topic_id,
+        run_id=run_id,
+        ref=run_id,
+        payload={
+            "failure_subreason": failure_subreason,
+            "reason": str(exc),
+            "error_type": type(exc).__name__,
+            "artifact_path": artifact_path,
+        },
+    )
+    return {
+        "status": "failed",
+        "run_id": run_id,
+        "turn_id": turn_id,
+        "topic_id": topic_id,
+        "intent": intent,
+        "topic_relation": topic_relation,
+        "artifact_path": artifact_path,
+        "context_manifest": dict(context_manifest),
+        "failure_reason": failure_reason,
+        "failure_subreason": failure_subreason,
+        "llm_calls": list(llm_calls),
+    }
+
+
+def _safe_completed_authority_subreason(exc: Exception) -> str:
+    if isinstance(exc, EvidenceIntegrityError):
+        reason = str(exc).strip()
+        if re.fullmatch(r"[a-z][a-z0-9_.:-]*", reason):
+            return reason
+    return type(exc).__name__
 
 
 def _conversation_llm_from_env() -> Any:
