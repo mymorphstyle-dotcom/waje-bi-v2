@@ -587,19 +587,25 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
     if request.get("force_langgraph_failure"):
         raise RuntimeError("forced_langgraph_failure")
     _maybe_force_node_failure(state, "understand_business_intent")
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
     intent_payload = _business_intent_payload(
         {
             **request,
             "_retry_selected_families": state.get(
                 "last_business_intent_families", ()
             ),
-        }
+        },
+        registry=registry,
     )
     output = _invoke_llm(
         state,
         "business_intent",
         intent_payload,
-        output_validator=_validate_business_intent_pattern_output,
+        output_validator=lambda candidate: _validate_business_intent_provider_output(
+            candidate,
+            request,
+            registry,
+        ),
     )
     answer_contract = output.get("answer_contract", {})
     if not isinstance(answer_contract, Mapping):
@@ -607,7 +613,6 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
             "business_intent_contract_invalid:answer_contract",
             failure_type="llm_contract",
         )
-    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
     material = _material_business_intent_values(request, output, registry)
     pattern_family = str(material["pattern_family"])
     production_like = _production_like_request(request)
@@ -1265,9 +1270,32 @@ def _ordered_resume_question_families(
     return tuple(_question_family_values(family_fields))
 
 
-def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
-    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+def _business_intent_payload(
+    request: dict[str, Any],
+    *,
+    registry: RuntimeContractRegistry | None = None,
+) -> dict[str, Any]:
+    registry = registry or RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
     baseline_semantics = baseline_llm_semantics()
+    (
+        context_compatibility,
+        context_backed_dimensions,
+        dimension_sources,
+    ) = _context_family_compatibility_projection(registry)
+    metric_sources = {
+        metric_id: set(registry.metric_sources(metric_id))
+        for metric_id in registry.metric_ids
+    }
+    dimension_compatibility = {
+        metric_id: _target_dimension_family_compatibility(
+            context_backed_dimensions,
+            dimension_sources,
+            target_sources,
+        )
+        for metric_id, target_sources in metric_sources.items()
+    }
     allowed_claim_types = tuple(
         dict.fromkeys(
             str(claim_type)
@@ -1288,6 +1316,8 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
         "allowed_claim_types": allowed_claim_types,
         "allowed_dimension_ids": registry.dimension_ids,
         "allowed_component_metric_ids": registry.metric_ids,
+        "context_source_question_family_compatibility": context_compatibility,
+        "dimension_question_family_compatibility": dimension_compatibility,
     }
     raw_analysis_context = request.get("analysis_context")
     if raw_analysis_context is not None:
@@ -1439,52 +1469,121 @@ def _validate_context_family_axis(
     intent: Mapping[str, Any], registry: RuntimeContractRegistry
 ) -> None:
     target_metric = str(intent.get("target_metric") or "")
+    (
+        context_compatibility,
+        context_backed_dimensions,
+        dimension_sources,
+    ) = _context_family_compatibility_projection(registry)
     try:
         target_sources = set(registry.metric_sources(target_metric))
     except (KeyError, TypeError, ValueError):
         target_sources = set()
+    dimension_compatibility = _target_dimension_family_compatibility(
+        context_backed_dimensions,
+        dimension_sources,
+        target_sources,
+    )
     context_sources = tuple(
         str(dataset_id)
         for dataset_id in intent.get("context_sources") or ()
         if str(dataset_id)
     )
-    unrelated = tuple(
-        dataset_id
-        for dataset_id in context_sources
-        if dataset_id not in target_sources
-    )
     selected_families = _intent_question_family_set(intent)
-    for dataset_id in unrelated:
-        compatible = _compatible_context_question_families(
-            dataset_id, registry
-        )
-        if compatible and not selected_families.intersection(compatible):
+    for dataset_id in context_sources:
+        compatible = set(context_compatibility.get(dataset_id, ()))
+        if not compatible:
+            raise WorkflowFailure(
+                f"context_family_axis_unmapped:{dataset_id}",
+                failure_type="llm_contract",
+            )
+        if not selected_families.intersection(compatible):
             raise WorkflowFailure(
                 f"context_family_axis_missing:{dataset_id}",
                 failure_type="llm_contract",
             )
     for dimension_id in intent.get("requested_dimensions") or ():
-        try:
-            dimension_sources = registry.dimension_sources(str(dimension_id))
-        except KeyError:
+        dimension_key = str(dimension_id)
+        if dimension_key not in dimension_compatibility:
             continue
-        if set(dimension_sources).intersection(target_sources):
-            continue
-        for dataset_id in dimension_sources:
-            if (
-                dataset_id in target_sources
-                or "business_context"
-                not in registry.dataset(dataset_id).get("intent_roles", ())
-            ):
-                continue
-            compatible = _compatible_context_question_families(
-                dataset_id, registry
+        compatible = set(dimension_compatibility[dimension_key])
+        if not compatible:
+            raise WorkflowFailure(
+                f"context_family_axis_unmapped:dimension:{dimension_key}",
+                failure_type="llm_contract",
             )
-            if compatible and not selected_families.intersection(compatible):
-                raise WorkflowFailure(
-                    f"context_family_axis_missing:dimension:{dimension_id}:{dataset_id}",
-                    failure_type="llm_contract",
-                )
+        if not selected_families.intersection(compatible):
+            context_dataset = next(
+                (
+                    str(dataset_id)
+                    for dataset_id in dimension_sources.get(dimension_key, ())
+                    if str(dataset_id) in context_compatibility
+                ),
+                "unmapped",
+            )
+            raise WorkflowFailure(
+                "context_family_axis_missing:dimension:"
+                f"{dimension_key}:{context_dataset}",
+                failure_type="llm_contract",
+            )
+
+
+def _context_family_compatibility_projection(
+    registry: RuntimeContractRegistry,
+) -> tuple[
+    dict[str, list[str]],
+    dict[str, list[str]],
+    dict[str, tuple[str, ...]],
+]:
+    context_source_ids = tuple(str(item) for item in registry.context_source_ids)
+    context_source_set = set(context_source_ids)
+    context_compatibility = {
+        dataset_id: sorted(
+            _compatible_context_question_families(dataset_id, registry)
+        )
+        for dataset_id in context_source_ids
+    }
+    dimension_compatibility: dict[str, list[str]] = {}
+    dimension_sources_by_id: dict[str, tuple[str, ...]] = {}
+    for dimension_id in registry.dimension_ids:
+        dimension_sources = tuple(
+            str(dataset_id)
+            for dataset_id in registry.dimension_sources(dimension_id)
+        )
+        dimension_sources_by_id[str(dimension_id)] = dimension_sources
+        context_sources = tuple(
+            dataset_id
+            for dataset_id in dimension_sources
+            if dataset_id in context_source_set
+        )
+        if not context_sources:
+            continue
+        dimension_compatibility[str(dimension_id)] = sorted(
+            {
+                family
+                for dataset_id in context_sources
+                for family in context_compatibility[dataset_id]
+            }
+        )
+    return (
+        context_compatibility,
+        dimension_compatibility,
+        dimension_sources_by_id,
+    )
+
+
+def _target_dimension_family_compatibility(
+    context_backed_dimensions: Mapping[str, list[str]],
+    dimension_sources: Mapping[str, Sequence[str]],
+    target_sources: set[str],
+) -> dict[str, list[str]]:
+    return {
+        dimension_id: families
+        for dimension_id, families in context_backed_dimensions.items()
+        if not target_sources.intersection(
+            str(dataset_id)
+            for dataset_id in dimension_sources.get(dimension_id, ())
+        )
+    }
 
 
 def _compatible_context_question_families(
@@ -1595,8 +1694,14 @@ def _question_family_values(raw: Any) -> list[str]:
     return []
 
 
-def _normalize_question_families(intent: dict[str, Any]) -> dict[str, Any]:
-    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+def _normalize_question_families(
+    intent: dict[str, Any],
+    *,
+    registry: RuntimeContractRegistry | None = None,
+) -> dict[str, Any]:
+    registry = registry or RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
     canonical_ids = set(registry.question_family_ids)
     diagnostic_ids = set(registry.diagnostic_obligation_ids)
     explicit_primary = str(intent.get("primary_question_family") or "")
@@ -1875,6 +1980,38 @@ def _validate_business_intent_pattern_output(output: Mapping[str, Any]) -> None:
         raise LLMOutputError(
             "invalid_llm_output_material:pattern_params:intra_period_target_required"
         )
+
+
+def _validate_business_intent_provider_output(
+    output: Mapping[str, Any],
+    request: Mapping[str, Any],
+    registry: RuntimeContractRegistry,
+) -> None:
+    _validate_business_intent_pattern_output(output)
+    try:
+        material = _material_business_intent_values(request, output, registry)
+        requirements = _validated_business_intent_requirements(
+            output.get("analysis_requirements"), registry
+        )
+        intent = _normalize_question_families(
+            {
+                "question_family": material["question_family"],
+                "primary_question_family": output.get(
+                    "primary_question_family"
+                ),
+                "question_families": output.get("question_families") or (),
+                "secondary_question_families": output.get(
+                    "secondary_question_families"
+                )
+                or (),
+                "target_metric": material["target_metric"],
+                **requirements,
+            },
+            registry=registry,
+        )
+        _validate_context_family_axis(intent, registry)
+    except WorkflowFailure as exc:
+        raise LLMOutputError(_exception_reason(exc)) from exc
 
 
 def _normalize_pattern_family(

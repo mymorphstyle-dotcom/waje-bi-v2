@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 from bi_agent.conversation.models import CLARIFICATION_ESCAPE_OPTION
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v49"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v50"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 CLARIFICATION_PROMPT_TASKS = frozenset(
     {"boundary_decision", "clarification_question", "query_gap_clarification"}
@@ -306,7 +306,18 @@ def _task_rules(task: str) -> str:
             "analysis_requirements with exactly context_sources, claim_intents, "
             "requested_dimensions, and requested_components arrays. Copy only ids from "
             "the corresponding allowed_* lists in the input; use empty arrays when a "
-            "material axis was not requested. "
+            "material axis was not requested. For every selected context source, include "
+            "at least one question family listed for that source in "
+            "context_source_question_family_compatibility. Choose target_metric first, "
+            "then use only that target_metric's nested map in "
+            "dimension_question_family_compatibility. For every requested dimension "
+            "listed in that nested map, include at least one of its compatible question "
+            "families. A requested dimension absent from the chosen target metric's map "
+            "is metric-native or has no context-family requirement. Keep the user's main "
+            "business question as "
+            "the primary family and add a compatible secondary family when the context "
+            "axis is supporting material. Do not add a context source, dimension, or "
+            "question family that the user's business wording does not request. "
             "After choosing question_family, pattern_family must be exactly one of: "
             f"{pattern_families}. Never return null, none, or an invented pattern family. "
             "pattern_params must be a JSON object for every business intent. For weekly, "

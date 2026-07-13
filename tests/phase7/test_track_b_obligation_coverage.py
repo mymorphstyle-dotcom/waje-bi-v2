@@ -370,7 +370,7 @@ def test_business_intent_carries_registry_validated_material_requirements(
 
     captured = {}
 
-    def invoke(state, node, payload):
+    def invoke(state, node, payload, **kwargs):
         captured.update(payload)
         return {
             "question_family": "business_object_impact_review",
@@ -448,7 +448,7 @@ def test_business_intent_missing_context_family_axis_fails_after_one_node_call(
 
     payloads = []
 
-    def invoke(state, node, payload):
+    def invoke(state, node, payload, **kwargs):
         payloads.append(payload)
         return {
             "question_family": "data_quality_or_evidence_review",
@@ -577,6 +577,379 @@ def test_context_family_axis_discovers_new_reviewed_family_from_registry():
     )
 
 
+def test_business_intent_payload_exposes_registry_context_family_compatibility():
+    from bi_agent.runtime import langgraph_workflow as workflow
+    from bi_agent.runtime.llm_prompts import build_prompt
+
+    payload = workflow._business_intent_payload(
+        {
+            "question": "检查收入变化及相关业务背景。",
+            "run_mode": "production",
+            "analysis_context": {"target_date": "2026-06-02"},
+        }
+    )
+
+    assert payload["context_source_question_family_compatibility"] == {
+        "external_event": [
+            "anomaly_or_black_swan_review",
+            "business_object_impact_review",
+            "pattern_explanation",
+        ],
+        "gameplay": [
+            "business_object_impact_review",
+            "segment_or_factor_attribution",
+        ],
+        "gameplay_channel": [
+            "business_object_impact_review",
+            "segment_or_factor_attribution",
+        ],
+        "internal_operation_event": [
+            "anomaly_or_black_swan_review",
+            "business_object_impact_review",
+            "pattern_explanation",
+        ],
+    }
+    assert payload["dimension_question_family_compatibility"]["paid_amount"][
+        "gameplay"
+    ] == [
+        "business_object_impact_review",
+        "segment_or_factor_attribution",
+    ]
+    assert (
+        "gameplay"
+        not in payload["dimension_question_family_compatibility"][
+            "player_bet_amount"
+        ]
+    )
+    prompt_text = "\n".join(
+        message["content"] for message in build_prompt("business_intent", payload).messages
+    )
+    assert "include at least one question family listed for that source" in prompt_text
+    assert "add a compatible secondary family" in prompt_text
+
+
+class _SyntheticContextRegistry:
+    def __init__(
+        self,
+        base,
+        *,
+        metric_sources=None,
+        dimension_sources=None,
+        empty_family_capabilities=False,
+    ):
+        self._base = base
+        self._metric_sources = metric_sources or {}
+        self._dimension_sources = dimension_sources or {}
+        self._empty_family_capabilities = empty_family_capabilities
+
+    @property
+    def dimension_ids(self):
+        return tuple(
+            dict.fromkeys((*self._base.dimension_ids, *self._dimension_sources))
+        )
+
+    def metric_sources(self, metric_id):
+        if metric_id in self._metric_sources:
+            return self._metric_sources[metric_id]
+        return self._base.metric_sources(metric_id)
+
+    def dimension_sources(self, dimension_id):
+        if dimension_id in self._dimension_sources:
+            return self._dimension_sources[dimension_id]
+        return self._base.dimension_sources(dimension_id)
+
+    def question_family_obligation(self, question_family):
+        if self._empty_family_capabilities:
+            return {
+                "required_capabilities": [],
+                "independent_capabilities": [],
+                "conditional_rules": [],
+            }
+        return self._base.question_family_obligation(question_family)
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+
+def test_context_family_axis_checks_explicit_context_source_even_when_dual_role():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    registry = _SyntheticContextRegistry(
+        _registry(), metric_sources={"paid_amount": ["gameplay"]}
+    )
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="context_family_axis_missing:gameplay",
+    ):
+        workflow._validate_context_family_axis(
+            {
+                "target_metric": "paid_amount",
+                "question_families": ["revenue_health_review"],
+                "context_sources": ["gameplay"],
+                "requested_dimensions": [],
+            },
+            registry,
+        )
+
+
+def test_metric_native_context_backed_dimension_needs_no_unrelated_family():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    workflow._validate_context_family_axis(
+        {
+            "target_metric": "player_bet_amount",
+            "question_families": ["revenue_health_review"],
+            "context_sources": [],
+            "requested_dimensions": ["gameplay"],
+        },
+        _registry(),
+    )
+
+
+def test_context_backed_multi_source_dimension_uses_exposed_family_union():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    registry = _SyntheticContextRegistry(
+        _registry(),
+        dimension_sources={
+            "composite_context": ["gameplay", "external_event"]
+        },
+    )
+
+    workflow._validate_context_family_axis(
+        {
+            "target_metric": "paid_amount",
+            "question_families": ["anomaly_or_black_swan_review"],
+            "context_sources": [],
+            "requested_dimensions": ["composite_context"],
+        },
+        registry,
+    )
+
+
+def test_context_family_axis_rejects_empty_registry_compatibility():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    registry = _SyntheticContextRegistry(
+        _registry(), empty_family_capabilities=True
+    )
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="context_family_axis_unmapped:gameplay",
+    ):
+        workflow._validate_context_family_axis(
+            {
+                "target_metric": "paid_amount",
+                "question_families": ["business_object_impact_review"],
+                "context_sources": ["gameplay"],
+                "requested_dimensions": [],
+            },
+            registry,
+        )
+
+
+def _context_family_provider_state(outputs):
+    from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
+
+    class SequencedCompletions:
+        attempt_count = 0
+
+        def create(self, **kwargs):
+            output = outputs[min(self.attempt_count, len(outputs) - 1)]
+            self.attempt_count += 1
+            message = type(
+                "Message",
+                (),
+                {"content": json.dumps(output, ensure_ascii=False)},
+            )()
+            choice = type("Choice", (), {"message": message})()
+            return type(
+                "Response",
+                (),
+                {
+                    "id": f"context-family-{self.attempt_count}",
+                    "choices": [choice],
+                    "usage": None,
+                },
+            )()
+
+    completions = SequencedCompletions()
+    client = OpenAICompatibleLLMClient(
+        provider="openai_compatible",
+        model="context-family-model",
+        api_key="test-key",
+    )
+    client._client = type(
+        "Client",
+        (),
+        {"chat": type("Chat", (), {"completions": completions})()},
+    )()
+    return {
+        "request": {
+            "question": "检查收入变化及相关业务背景。",
+            "run_mode": "production",
+            "analysis_context": {"target_date": "2026-06-02"},
+        },
+        "llm_client": client,
+        "llm_calls": [],
+        "checkpoint_events": [],
+    }, completions
+
+
+@pytest.mark.parametrize(
+    ("requirements", "valid_secondary_family"),
+    (
+        (
+            {
+                "context_sources": ["gameplay"],
+                "claim_intents": ["comparative_change"],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+            "business_object_impact_review",
+        ),
+        (
+            {
+                "context_sources": [],
+                "claim_intents": ["segment_contribution_or_mix_shift"],
+                "requested_dimensions": ["gameplay"],
+                "requested_components": [],
+            },
+            "segment_or_factor_attribution",
+        ),
+    ),
+)
+def test_real_provider_retries_context_family_incoherence_inside_shared_client(
+    requirements,
+    valid_secondary_family,
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    invalid = {
+        "question_family": "revenue_health_review",
+        "question_families": ["revenue_health_review"],
+        "primary_question_family": "revenue_health_review",
+        "secondary_question_families": [],
+        "target_metric": "paid_amount",
+        "pattern_family": "rolling",
+        "pattern_params": {},
+        "scope": "full_sample",
+        "time_window": "2026-06-02",
+        "target_claim": "检查付费金额经营表现及相关背景",
+        "baseline_candidates": [],
+        "analysis_requirements": requirements,
+        "status_message": "已完成意图识别。",
+        "display_summary": "已绑定业务问题。",
+    }
+    valid = {
+        **invalid,
+        "question_families": [
+            "revenue_health_review",
+            valid_secondary_family,
+        ],
+        "secondary_question_families": [valid_secondary_family],
+    }
+    outputs = [invalid, invalid, valid]
+    state, completions = _context_family_provider_state(outputs)
+
+    workflow._understand_business_intent(state)
+
+    assert completions.attempt_count == 3
+    assert valid_secondary_family in state["intent"]["question_families"]
+    assert state["llm_calls"][-1]["attempt_count"] == 3
+
+
+def test_real_provider_context_family_exhaustion_keeps_safe_failed_audit():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    invalid = {
+        "question_family": "revenue_health_review",
+        "question_families": ["revenue_health_review"],
+        "primary_question_family": "revenue_health_review",
+        "secondary_question_families": [],
+        "target_metric": "paid_amount",
+        "pattern_family": "rolling",
+        "pattern_params": {},
+        "scope": "full_sample",
+        "time_window": "2026-06-02",
+        "target_claim": "检查付费金额经营表现及相关背景",
+        "baseline_candidates": [],
+        "analysis_requirements": {
+            "context_sources": ["gameplay"],
+            "claim_intents": ["comparative_change"],
+            "requested_dimensions": [],
+            "requested_components": [],
+        },
+        "status_message": "已完成意图识别。",
+        "display_summary": "已绑定业务问题。",
+    }
+    state, completions = _context_family_provider_state([invalid])
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="context_family_axis_missing:gameplay",
+    ):
+        workflow._understand_business_intent(state)
+
+    assert completions.attempt_count == 3
+    audit = state["llm_calls"][-1]
+    assert audit["status"] == "failed"
+    assert audit["attempt_count"] == 3
+    assert len(audit["attempt_failures"]) == 3
+    assert audit["failure_code"] == "context_family_axis_missing:gameplay"
+    assert "raw_response_content" not in audit
+
+
+def test_business_intent_provider_validator_uses_injected_registry(monkeypatch):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    registry = _registry()
+
+    def fail_registry_reload(*args, **kwargs):
+        raise RuntimeError("unexpected_registry_reload")
+
+    monkeypatch.setattr(
+        workflow.RuntimeContractRegistry,
+        "from_path",
+        fail_registry_reload,
+    )
+    payload = workflow._business_intent_payload(
+        {"question": "检查付费金额及相关业务背景。"},
+        registry=registry,
+    )
+    assert payload["allowed_target_metric_ids"] == registry.metric_ids
+
+    workflow._validate_business_intent_provider_output(
+        {
+            "question_family": "revenue_health_review",
+            "question_families": [
+                "revenue_health_review",
+                "business_object_impact_review",
+            ],
+            "primary_question_family": "revenue_health_review",
+            "secondary_question_families": [
+                "business_object_impact_review"
+            ],
+            "target_metric": "paid_amount",
+            "pattern_family": "rolling",
+            "pattern_params": {},
+            "scope": "full_sample",
+            "time_window": "2026-06-02",
+            "target_claim": "检查付费金额及相关业务背景",
+            "analysis_requirements": {
+                "context_sources": ["gameplay"],
+                "claim_intents": ["comparative_change"],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+        },
+        {"run_mode": "production"},
+        registry,
+    )
+
+
 def test_context_family_axis_rejects_incompatible_reviewed_family():
     from bi_agent.runtime import langgraph_workflow as workflow
 
@@ -610,7 +983,7 @@ def test_metric_only_dataset_never_establishes_context_family_compatibility():
 def test_business_intent_context_family_axis_fails_closed_after_one_call(monkeypatch):
     from bi_agent.runtime import langgraph_workflow as workflow
 
-    def invoke(state, node, payload):
+    def invoke(state, node, payload, **kwargs):
         return {
             "question_family": "data_quality_or_evidence_review",
             "question_families": ["data_quality_or_evidence_review"],
