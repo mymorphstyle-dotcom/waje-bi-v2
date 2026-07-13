@@ -13,6 +13,7 @@ from bi_agent.runtime.capability_execution import (
     bind_capability_inputs,
     validate_bound_capability_input,
 )
+from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     RuntimeEvidenceAuthority,
@@ -25,6 +26,7 @@ from bi_agent.runtime.evidence_authority import (
 )
 from bi_agent.runtime.query_audit import query_audit_refs
 from bi_agent.runtime.query_completeness import validate_query_result
+from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from tests.phase4.test_clickhouse_query_compiler import metric as reviewed_metric
 from tests.phase4.test_query_completeness import (
@@ -34,6 +36,20 @@ from tests.phase4.test_query_completeness import (
     paid_snapshot,
     successful_result,
 )
+
+
+class _RowsRuntime:
+    def __init__(self, rows):
+        self.rows = tuple(rows)
+
+    def aggregate(self, sql, query_id, **kwargs):
+        return ClickHouseQueryResult(
+            ok=True,
+            rows=self.rows,
+            query_id=query_id,
+        )
+
+    bounded_context = aggregate
 
 
 class RuntimeEvidenceAuthorityTest(unittest.TestCase):
@@ -972,8 +988,8 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             canonical_rows_hash(tuple(reversed(rows)), ("window_id", "channel")),
         )
 
-    def test_query_execution_rows_are_idempotent_across_result_order(self):
-        contract = baseline_contract()
+    def test_query_execution_rows_are_idempotent_across_executor_result_order(self):
+        contract = baseline_contract(metric=reviewed_metric())
         contract = replace(
             contract,
             contract_signature=query_contract_signature(contract),
@@ -981,38 +997,70 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
         snapshot = paid_snapshot()
         original_rows = complete_rows()
         reordered_rows = tuple(reversed(original_rows))
-        first_result = successful_result(contract, rows=original_rows)
-        second_result = successful_result(contract, rows=reordered_rows)
         authority = RuntimeEvidenceAuthority()
-
-        first = _record_query_execution(
-            authority,
+        attempt_ref = "attempt:test:canonical-row-order"
+        first_result = ClickHouseQueryExecutor(
+            _RowsRuntime(original_rows),
+            evidence_authority=authority,
+            release_resolver=_PAID_RELEASE_RESOLVER,
+        ).execute(
             contract,
-            first_result,
             {snapshot.snapshot_ref: snapshot},
+            execution_attempt_ref=attempt_ref,
         )
-        second = _record_query_execution(
-            authority,
+        second_result = ClickHouseQueryExecutor(
+            _RowsRuntime(reordered_rows),
+            evidence_authority=authority,
+            release_resolver=_PAID_RELEASE_RESOLVER,
+        ).execute(
             contract,
-            second_result,
             {snapshot.snapshot_ref: snapshot},
+            execution_attempt_ref=attempt_ref,
         )
+        first = authority.resolve_query_execution(first_result.result_ref)
+        second = authority.resolve_query_execution(second_result.result_ref)
+        first_report = validate_query_result(contract, first_result, snapshot)
+        second_report = validate_query_result(contract, second_result, snapshot)
         first_completeness = _record_completeness(
             authority,
-            validate_query_result(contract, first_result, snapshot),
+            first_report,
         )
         second_completeness = _record_completeness(
             authority,
-            validate_query_result(contract, second_result, snapshot),
+            second_report,
         )
 
         self.assertNotEqual(first_result.rows, second_result.rows)
-        self.assertNotEqual(
+        self.assertEqual(
             first_result.observed_windows,
+            ("target_day", "previous_day"),
+        )
+        self.assertEqual(
             second_result.observed_windows,
+            first_result.observed_windows,
         )
         self.assertEqual(first, second)
+        expected_result_payload = first_result.to_dict()
+        expected_result_payload.pop("rows", None)
+        self.assertEqual(
+            dict(first.result_payload),
+            expected_result_payload,
+        )
+        self.assertEqual(first_report, second_report)
         self.assertEqual(first_completeness, second_completeness)
+        self.assertEqual(
+            _record_query_execution(
+                authority,
+                contract,
+                first_result,
+                {snapshot.snapshot_ref: snapshot},
+            ),
+            first,
+        )
+        self.assertEqual(
+            _record_completeness(authority, first_report),
+            first_completeness,
+        )
         first_rows = authority.resolve_rows(first.rows_ref)
         second_rows = authority.resolve_rows(second.rows_ref)
         self.assertEqual(first_rows, second_rows)
@@ -1024,6 +1072,99 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
                 contract.result_shape.unique_key,
             ),
         )
+
+    def test_unexpected_window_failures_are_idempotent_across_executor_result_order(self):
+        contract = baseline_contract(metric=reviewed_metric())
+        contract = replace(
+            contract,
+            contract_signature=query_contract_signature(contract),
+        )
+        snapshot = paid_snapshot()
+        rows = (
+            {
+                "window_id": "unexpected_b",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "paid_amount": 2.0,
+            },
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "paid_amount": 3.0,
+            },
+            {
+                "window_id": "unexpected_a",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "paid_amount": 1.0,
+            },
+        )
+        authority = RuntimeEvidenceAuthority()
+        results = tuple(
+            ClickHouseQueryExecutor(
+                _RowsRuntime(ordered_rows),
+                evidence_authority=authority,
+                release_resolver=_PAID_RELEASE_RESOLVER,
+            ).execute(
+                contract,
+                {snapshot.snapshot_ref: snapshot},
+                execution_attempt_ref="attempt:test:unexpected-window-order",
+            )
+            for ordered_rows in (rows, tuple(reversed(rows)))
+        )
+        reports = tuple(
+            validate_query_result(contract, result, snapshot)
+            for result in results
+        )
+        records = tuple(
+            _record_completeness(authority, report)
+            for report in reports
+        )
+
+        self.assertEqual(
+            results[0].observed_windows,
+            ("target_day", "unexpected_a", "unexpected_b"),
+        )
+        self.assertEqual(
+            results[0].observed_windows,
+            results[1].observed_windows,
+        )
+        self.assertEqual(
+            reports[0].assertion_results,
+            reports[1].assertion_results,
+        )
+        self.assertEqual(
+            reports[0].failure_reasons,
+            reports[1].failure_reasons,
+        )
+        expected_unexpected_reasons = (
+            "unexpected_window:unexpected_a",
+            "unexpected_window:unexpected_b",
+        )
+        self.assertEqual(
+            tuple(
+                reason
+                for reason in reports[0].failure_reasons
+                if reason.startswith("unexpected_window:")
+            ),
+            expected_unexpected_reasons,
+        )
+        complete_days = next(
+            assertion
+            for assertion in reports[0].assertion_results
+            if assertion["assertion"] == "complete_window_days"
+        )
+        self.assertEqual(
+            tuple(
+                reason
+                for reason in complete_days["failure_reasons"]
+                if reason.startswith("unexpected_window:")
+            ),
+            expected_unexpected_reasons,
+        )
+        self.assertEqual(records[0], records[1])
+        self.assertEqual(records[0].report_digest, records[1].report_digest)
 
     def test_canonical_result_rows_support_empty_and_digest_fallback_ordering(self):
         self.assertTrue(

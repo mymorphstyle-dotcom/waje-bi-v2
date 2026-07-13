@@ -562,10 +562,6 @@ def _write_query_execution(
     put_typed("rows", result.rows_ref, rows_record)
     result_payload = _canonical_value(result.to_dict())
     result_payload.pop("rows", None)
-    if result.execution_status == "succeeded":
-        result_payload["observed_windows"] = list(
-            _ordered_observed_windows(ordered_rows)
-        )
     record_payload = {
         "query_contract": _canonical_value(contract.to_dict()),
         "result": result_payload,
@@ -633,14 +629,6 @@ def _write_completeness(
     ):
         raise EvidenceIntegrityError("completeness_provenance_mismatch")
     payload = _canonical_value(report.to_dict())
-    coverage = payload.get("coverage_summary")
-    if isinstance(coverage, Mapping) and "observed_windows" in coverage:
-        payload["coverage_summary"] = {
-            **coverage,
-            "observed_windows": list(
-                query_record.result_payload.get("observed_windows") or ()
-            ),
-        }
     digest = canonical_digest(payload)
     record = CompletenessRecord(
         record_ref=f"completeness-record:{report.report_ref}:{digest}",
@@ -653,19 +641,6 @@ def _write_completeness(
     put_typed("completeness", record.record_ref, record)
     link_latest(report.report_ref, record)
     return record
-
-
-def _ordered_observed_windows(
-    rows: Sequence[Mapping[str, Any]],
-) -> tuple[str, ...]:
-    return tuple(
-        dict.fromkeys(
-            str(row.get("window_id") or "")
-            for row in rows
-            if row.get("window_id") not in (None, "")
-        )
-    )
-
 
 def _record_capability_binding(
     writer: RuntimeEvidenceWriter | RuntimeEvidenceAuthority,

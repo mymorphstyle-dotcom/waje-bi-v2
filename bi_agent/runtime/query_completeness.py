@@ -1380,8 +1380,12 @@ def _window_membership(
         if valid:
             observations.setdefault(window_id, set()).add(observation_key)
     return (
-        {window_id: len(keys) for window_id, keys in observations.items()},
-        _dedupe(reasons),
+        {
+            window.window_id: len(observations[window.window_id])
+            for window in contract.resolved_windows
+            if window.window_id in observations
+        },
+        _canonical_membership_reasons(contract, reasons),
     )
 
 
@@ -1482,7 +1486,30 @@ def _context_window_membership(
                     valid = False
         if valid:
             counts[window_id] = window.required_complete_days
-    return counts, _dedupe(reasons)
+    return counts, _canonical_membership_reasons(contract, reasons)
+
+
+def _canonical_membership_reasons(
+    contract: QueryContract,
+    reasons: Iterable[str],
+) -> tuple[str, ...]:
+    window_order = {
+        window.window_id: index
+        for index, window in enumerate(contract.resolved_windows)
+    }
+    unknown_rank = len(window_order)
+
+    def reason_key(reason: str) -> tuple[int, str, str]:
+        fields = reason.split(":", 2)
+        window_id = fields[1] if len(fields) > 1 else ""
+        rank = window_order.get(window_id, unknown_rank)
+        return (
+            rank,
+            "" if rank < unknown_rank else window_id,
+            reason,
+        )
+
+    return tuple(sorted({str(reason) for reason in reasons}, key=reason_key))
 
 
 def _event_recurrence_occurs_in_window(

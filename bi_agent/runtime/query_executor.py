@@ -297,7 +297,7 @@ class ClickHouseQueryExecutor:
             completeness_report_ref=audit_refs.completeness_report_ref,
             rows=rows,
             observed_schema=_observed_schema(rows),
-            observed_windows=_observed_windows(rows),
+            observed_windows=_observed_windows(rows, contract),
             observed_grain=_observed_grain(rows, contract.result_shape.grain),
             source_snapshot_refs=contract.dataset_snapshot_refs,
             provider_stats=provider_stats,
@@ -413,13 +413,27 @@ def _observed_schema(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     }
 
 
-def _observed_windows(rows: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
-    return tuple(
+def _observed_windows(
+    rows: Sequence[Mapping[str, Any]],
+    contract: QueryContract,
+) -> tuple[str, ...]:
+    observed = {
+        str(row["window_id"])
+        for row in rows
+        if row.get("window_id") not in (None, "")
+    }
+    contract_order = tuple(
         dict.fromkeys(
-            str(row["window_id"])
-            for row in rows
-            if row.get("window_id") not in (None, "")
+            (
+                *(window.window_id for window in contract.resolved_windows),
+                *contract.window_refs,
+            )
         )
+    )
+    known = tuple(window_id for window_id in contract_order if window_id in observed)
+    return (
+        *known,
+        *sorted(observed.difference(contract_order)),
     )
 
 
