@@ -394,6 +394,15 @@ def canonical_rows_hash(
     rows: Sequence[Mapping[str, Any]],
     unique_key_fields: Sequence[str],
 ) -> str:
+    return canonical_digest(
+        _canonical_ordered_rows(rows, unique_key_fields)
+    )
+
+
+def _canonical_ordered_rows(
+    rows: Sequence[Mapping[str, Any]],
+    unique_key_fields: Sequence[str],
+) -> tuple[Mapping[str, Any], ...]:
     normalized = []
     keys_seen = set()
     key_fields = tuple(str(field) for field in unique_key_fields if field)
@@ -419,19 +428,26 @@ def canonical_rows_hash(
             sort_key = canonical_digest(canonical_row)
         normalized.append((sort_key, canonical_row))
     normalized.sort(key=lambda item: item[0])
-    return canonical_digest(tuple(row for _, row in normalized))
+    return tuple(row for _, row in normalized)
+
+
+def canonical_result_rows(
+    rows: Sequence[Mapping[str, Any]],
+    unique_key_fields: Sequence[str],
+) -> tuple[Mapping[str, Any], ...]:
+    try:
+        return _canonical_ordered_rows(rows, unique_key_fields)
+    except EvidenceIntegrityError as exc:
+        if not str(exc).startswith("unique_key_fields_missing:"):
+            raise
+        return _canonical_ordered_rows(rows, ())
 
 
 def canonical_result_rows_hash(
     rows: Sequence[Mapping[str, Any]],
     unique_key_fields: Sequence[str],
 ) -> str:
-    try:
-        return canonical_rows_hash(rows, unique_key_fields)
-    except EvidenceIntegrityError as exc:
-        if not str(exc).startswith("unique_key_fields_missing:"):
-            raise
-        return canonical_rows_hash(rows, ())
+    return canonical_digest(canonical_result_rows(rows, unique_key_fields))
 
 
 def canonical_rows_storage_ref(rows: Sequence[Mapping[str, Any]]) -> str:
@@ -488,10 +504,11 @@ def _write_query_execution(
         raise EvidenceIntegrityError("query_snapshot_refs_mismatch")
     if set(snapshots) != set(contract.dataset_snapshot_refs):
         raise EvidenceIntegrityError("query_snapshot_payloads_mismatch")
-    rows_hash = canonical_result_rows_hash(
+    ordered_rows = canonical_result_rows(
         result.rows,
         contract.result_shape.unique_key,
     )
+    rows_hash = canonical_digest(ordered_rows)
     expected = query_audit_refs(
         result.query_hash,
         contract.contract_signature,
@@ -520,7 +537,7 @@ def _write_query_execution(
             snapshot_record,
         )
         snapshot_records.append(snapshot_record)
-    storage_ref = canonical_rows_storage_ref(result.rows)
+    storage_ref = canonical_rows_storage_ref(ordered_rows)
     rows_metadata = {
         "rows_ref": result.rows_ref,
         "rows_content_hash": rows_hash,
@@ -541,10 +558,14 @@ def _write_query_execution(
         storage_ref=storage_ref,
         metadata_payload=_deep_freeze(_canonical_value(rows_metadata)),
     )
-    store_rows(storage_ref, result.rows)
+    store_rows(storage_ref, ordered_rows)
     put_typed("rows", result.rows_ref, rows_record)
     result_payload = _canonical_value(result.to_dict())
     result_payload.pop("rows", None)
+    if result.execution_status == "succeeded":
+        result_payload["observed_windows"] = list(
+            _ordered_observed_windows(ordered_rows)
+        )
     record_payload = {
         "query_contract": _canonical_value(contract.to_dict()),
         "result": result_payload,
@@ -612,6 +633,14 @@ def _write_completeness(
     ):
         raise EvidenceIntegrityError("completeness_provenance_mismatch")
     payload = _canonical_value(report.to_dict())
+    coverage = payload.get("coverage_summary")
+    if isinstance(coverage, Mapping) and "observed_windows" in coverage:
+        payload["coverage_summary"] = {
+            **coverage,
+            "observed_windows": list(
+                query_record.result_payload.get("observed_windows") or ()
+            ),
+        }
     digest = canonical_digest(payload)
     record = CompletenessRecord(
         record_ref=f"completeness-record:{report.report_ref}:{digest}",
@@ -624,6 +653,18 @@ def _write_completeness(
     put_typed("completeness", record.record_ref, record)
     link_latest(report.report_ref, record)
     return record
+
+
+def _ordered_observed_windows(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            str(row.get("window_id") or "")
+            for row in rows
+            if row.get("window_id") not in (None, "")
+        )
+    )
 
 
 def _record_capability_binding(

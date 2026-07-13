@@ -972,6 +972,121 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             canonical_rows_hash(tuple(reversed(rows)), ("window_id", "channel")),
         )
 
+    def test_query_execution_rows_are_idempotent_across_result_order(self):
+        contract = baseline_contract()
+        contract = replace(
+            contract,
+            contract_signature=query_contract_signature(contract),
+        )
+        snapshot = paid_snapshot()
+        original_rows = complete_rows()
+        reordered_rows = tuple(reversed(original_rows))
+        first_result = successful_result(contract, rows=original_rows)
+        second_result = successful_result(contract, rows=reordered_rows)
+        authority = RuntimeEvidenceAuthority()
+
+        first = _record_query_execution(
+            authority,
+            contract,
+            first_result,
+            {snapshot.snapshot_ref: snapshot},
+        )
+        second = _record_query_execution(
+            authority,
+            contract,
+            second_result,
+            {snapshot.snapshot_ref: snapshot},
+        )
+        first_completeness = _record_completeness(
+            authority,
+            validate_query_result(contract, first_result, snapshot),
+        )
+        second_completeness = _record_completeness(
+            authority,
+            validate_query_result(contract, second_result, snapshot),
+        )
+
+        self.assertNotEqual(first_result.rows, second_result.rows)
+        self.assertNotEqual(
+            first_result.observed_windows,
+            second_result.observed_windows,
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first_completeness, second_completeness)
+        first_rows = authority.resolve_rows(first.rows_ref)
+        second_rows = authority.resolve_rows(second.rows_ref)
+        self.assertEqual(first_rows, second_rows)
+        self.assertEqual(first_rows.storage_ref, second_rows.storage_ref)
+        self.assertEqual(
+            authority.rows_loader.load_rows(first_rows.storage_ref),
+            evidence_authority_module.canonical_result_rows(
+                original_rows,
+                contract.result_shape.unique_key,
+            ),
+        )
+
+    def test_canonical_result_rows_support_empty_and_digest_fallback_ordering(self):
+        self.assertTrue(
+            hasattr(evidence_authority_module, "canonical_result_rows")
+        )
+        cases = (
+            ((), ("id",)),
+            (
+                (
+                    {"value": "B", "amount": 2.0},
+                    {"value": "A", "amount": 1.0},
+                ),
+                (),
+            ),
+            (
+                (
+                    {"id": "B", "amount": 2.0},
+                    {"amount": 1.0},
+                ),
+                ("id",),
+            ),
+        )
+        for rows, unique_key_fields in cases:
+            with self.subTest(unique_key_fields=unique_key_fields):
+                ordered = evidence_authority_module.canonical_result_rows(
+                    rows,
+                    unique_key_fields,
+                )
+                reversed_ordered = evidence_authority_module.canonical_result_rows(
+                    tuple(reversed(rows)),
+                    unique_key_fields,
+                )
+                self.assertEqual(ordered, reversed_ordered)
+                self.assertEqual(
+                    evidence_authority_module.canonical_result_rows_hash(
+                        rows,
+                        unique_key_fields,
+                    ),
+                    canonical_digest(ordered),
+                )
+        missing_key_rows = cases[-1][0]
+        self.assertEqual(
+            evidence_authority_module.canonical_result_rows(
+                missing_key_rows,
+                ("id",),
+            ),
+            evidence_authority_module.canonical_result_rows(
+                missing_key_rows,
+                (),
+            ),
+        )
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "duplicate_unique_key",
+        ):
+            evidence_authority_module.canonical_result_rows(
+                (
+                    {"id": "same", "amount": 1.0},
+                    {"id": "same", "amount": 2.0},
+                ),
+                ("id",),
+            )
+
     def test_rows_hash_rejects_nan_and_non_scalar_unique_keys(self):
         cases = (
             ({"window_id": "target", "channel": "A", "amount": math.nan},),
