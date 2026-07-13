@@ -505,6 +505,43 @@ class LLMWorkflowTest(unittest.TestCase):
                 ):
                     _understand_business_intent(state)
 
+    def test_production_business_intent_does_not_fill_ignored_time_recommendation(self):
+        output = {
+            "question_family": "data_quality_or_evidence_review",
+            "target_metric": "paid_amount",
+            "pattern_family": "none",
+            "scope": "full_sample",
+            "time_window": None,
+            "target_claim": "确认现有证据边界",
+            "baseline_candidates": [],
+            "analysis_requirements": {
+                "context_sources": [],
+                "claim_intents": ["contract_coverage_and_trust_boundary"],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+            "answer_contract": {},
+        }
+        state = {
+            "request": {
+                "question": "请按系统建议的时间口径检查证据。",
+                "run_mode": "production",
+                "analysis_context": {
+                    "as_of": "2026-06-03T12:00:00+01:00",
+                    "target_date": "2026-06-02",
+                },
+            },
+            "llm_client": FakeLLMClient({"business_intent": output}),
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "^business_intent_contract_invalid:time_window$",
+        ):
+            _understand_business_intent(state)
+
     def test_production_business_intent_does_not_infer_weekly_params_from_question_text(self):
         state = {
             "request": {
@@ -784,6 +821,50 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertEqual(payload["allowed_scope_types"], ["full_sample"])
+
+    def test_business_intent_payload_exposes_fixed_target_as_reviewed_time_recommendation(self):
+        payload = workflow_module._business_intent_payload(
+            {
+                "question": "请按系统推荐的时间口径检查经营证据。",
+                "run_mode": "production",
+                "analysis_context": {
+                    "as_of": "2026-06-03T12:00:00+01:00",
+                    "target_date": "2026-06-02",
+                    "previous_day": "2026-06-01",
+                },
+            }
+        )
+
+        self.assertEqual(
+            payload["reviewed_time_window_recommendation"],
+            {
+                "time_window": "2026-06-02",
+                "source": "analysis_context.target_date",
+            },
+        )
+
+    def test_business_intent_payload_rejects_malformed_time_recommendation_source(self):
+        malformed_values = (
+            None,
+            "2026-02-30",
+            "2026-6-2",
+            "2026-06-02T00:00:00+00:00",
+            "20260602",
+            20260602,
+        )
+
+        for target_date in malformed_values:
+            with self.subTest(target_date=target_date), self.assertRaisesRegex(
+                WorkflowFailure,
+                "^business_intent_analysis_context_invalid:target_date$",
+            ):
+                workflow_module._business_intent_payload(
+                    {
+                        "question": "请推荐时间口径。",
+                        "run_mode": "production",
+                        "analysis_context": {"target_date": target_date},
+                    }
+                )
 
     def test_prior_topic_material_projects_only_verified_bound_business_context(self):
         from tests.phase7.test_conversation_runtime import _seed_runtime
@@ -5796,6 +5877,26 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("copy its exact canonical value", text)
         self.assertIn("explicitly replaces that axis", text)
 
+    def test_business_intent_prompt_scopes_null_rule_away_from_required_material(self):
+        messages = build_prompt(
+            "business_intent",
+            {
+                "question": "请按推荐时间口径继续。",
+                "reviewed_time_window_recommendation": {
+                    "time_window": "2026-06-02",
+                    "source": "analysis_context.target_date",
+                },
+            },
+        ).messages
+        text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("reviewed_time_window_recommendation", text)
+        self.assertIn("delegates the time-window choice", text)
+        self.assertIn("copy its time_window value exactly", text)
+        self.assertIn("Required material fields must never use null", text)
+        self.assertIn("evidence-derived facts", text)
+        self.assertNotIn("If evidence is missing, use null", text)
+
     def test_capabilities_select_runtime_rows_by_query_intent(self):
         state = {
             "request": {
@@ -7592,6 +7693,222 @@ class LLMWorkflowTest(unittest.TestCase):
             )
 
         self.assertEqual(attempts["count"], 3)
+
+    def test_llm_client_retries_empty_required_business_material_at_provider_boundary(self):
+        attempts = {"count": 0}
+
+        class RetriedMaterialCompletions:
+            def create(self, **kwargs):
+                attempts["count"] += 1
+                time_window = None if attempts["count"] < 3 else "2026-06-02"
+
+                class ResponseMessage:
+                    content = json.dumps({"time_window": time_window})
+
+                class ResponseChoice:
+                    message = ResponseMessage()
+
+                class Response:
+                    id = "response-retried-business-material"
+                    choices = [ResponseChoice()]
+                    usage = None
+
+                return Response()
+
+        class RetriedMaterialChat:
+            completions = RetriedMaterialCompletions()
+
+        class RetriedMaterialClient:
+            chat = RetriedMaterialChat()
+
+        client = OpenAICompatibleLLMClient(
+            provider="openai_compatible",
+            model="retried-material-model",
+            api_key="test-key",
+        )
+        client._client = RetriedMaterialClient()
+
+        result = client.invoke_json(
+            task="business_intent",
+            prompt_version="test",
+            messages=[{"role": "user", "content": "{}"}],
+            required_keys=["time_window"],
+        )
+
+        self.assertEqual(result.output["time_window"], "2026-06-02")
+        self.assertEqual(attempts["count"], 3)
+        self.assertEqual(result.audit["attempt_count"], 3)
+
+    def test_llm_client_retries_structurally_invalid_business_material(self):
+        invalid_material = {
+            "question_family": {"value": "paid_amount_change_explanation"},
+            "target_metric": ["paid_amount"],
+            "pattern_family": True,
+            "scope": {"type": "full_sample"},
+            "time_window": {"start": ""},
+            "target_claim": ["解释付费金额变化"],
+        }
+
+        for field, invalid_value in invalid_material.items():
+            with self.subTest(field=field):
+                attempts = {"count": 0}
+
+                class InvalidMaterialCompletions:
+                    def create(self, **kwargs):
+                        attempts["count"] += 1
+
+                        class ResponseMessage:
+                            content = json.dumps({field: invalid_value})
+
+                        class ResponseChoice:
+                            message = ResponseMessage()
+
+                        class Response:
+                            id = f"response-invalid-{field}"
+                            choices = [ResponseChoice()]
+                            usage = None
+
+                        return Response()
+
+                class InvalidMaterialChat:
+                    completions = InvalidMaterialCompletions()
+
+                class InvalidMaterialClient:
+                    chat = InvalidMaterialChat()
+
+                client = OpenAICompatibleLLMClient(
+                    provider="openai_compatible",
+                    model="invalid-material-model",
+                    api_key="test-key",
+                )
+                client._client = InvalidMaterialClient()
+
+                with self.assertRaisesRegex(
+                    LLMOutputError,
+                    f"invalid_llm_output_material:{field}",
+                ) as raised:
+                    client.invoke_json(
+                        task="business_intent",
+                        prompt_version="test",
+                        messages=[{"role": "user", "content": "{}"}],
+                        required_keys=[field],
+                    )
+
+                self.assertEqual(attempts["count"], 3)
+                self.assertEqual(raised.exception.audit["attempt_count"], 3)
+                self.assertEqual(
+                    raised.exception.audit["failure_code"],
+                    f"invalid_llm_output_material:{field}",
+                )
+
+    def test_llm_client_accepts_structured_business_time_window(self):
+        class StructuredWindowCompletions:
+            def create(self, **kwargs):
+                class ResponseMessage:
+                    content = json.dumps(
+                        {"time_window": {"start": "2026-06-01", "end": "2026-06-02"}}
+                    )
+
+                class ResponseChoice:
+                    message = ResponseMessage()
+
+                class Response:
+                    id = "response-structured-window"
+                    choices = [ResponseChoice()]
+                    usage = None
+
+                return Response()
+
+        class StructuredWindowChat:
+            completions = StructuredWindowCompletions()
+
+        class StructuredWindowClient:
+            chat = StructuredWindowChat()
+
+        client = OpenAICompatibleLLMClient(
+            provider="openai_compatible",
+            model="structured-window-model",
+            api_key="test-key",
+        )
+        client._client = StructuredWindowClient()
+
+        result = client.invoke_json(
+            task="business_intent",
+            prompt_version="test",
+            messages=[{"role": "user", "content": "{}"}],
+            required_keys=["time_window"],
+        )
+
+        self.assertEqual(result.audit["attempt_count"], 1)
+
+    def test_llm_client_does_not_apply_business_material_policy_to_other_tasks(self):
+        class OtherTaskCompletions:
+            def create(self, **kwargs):
+                class ResponseMessage:
+                    content = json.dumps({"time_window": {"start": ""}})
+
+                class ResponseChoice:
+                    message = ResponseMessage()
+
+                class Response:
+                    id = "response-other-task"
+                    choices = [ResponseChoice()]
+                    usage = None
+
+                return Response()
+
+        class OtherTaskChat:
+            completions = OtherTaskCompletions()
+
+        class OtherTaskClient:
+            chat = OtherTaskChat()
+
+        client = OpenAICompatibleLLMClient(
+            provider="openai_compatible",
+            model="other-task-model",
+            api_key="test-key",
+        )
+        client._client = OtherTaskClient()
+
+        result = client.invoke_json(
+            task="unrelated_task",
+            prompt_version="test",
+            messages=[{"role": "user", "content": "{}"}],
+            required_keys=["time_window"],
+        )
+
+        self.assertEqual(result.audit["attempt_count"], 1)
+
+    def test_invoke_llm_records_provider_retry_exhaustion_audit(self):
+        failure_audit = {
+            "task": "business_intent",
+            "provider": "openai_compatible",
+            "model": "failed-model",
+            "prompt_version": "test",
+            "attempt_count": 3,
+            "failure_code": "invalid_llm_output_material:time_window",
+            "status": "failed",
+        }
+
+        class ExhaustedClient:
+            def invoke_json(self, **kwargs):
+                raise LLMOutputError(
+                    "invalid_llm_output_material:time_window",
+                    audit=failure_audit,
+                )
+
+        state = {
+            "llm_client": ExhaustedClient(),
+            "llm_calls": [],
+        }
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "invalid_llm_output_material:time_window",
+        ):
+            workflow_module._invoke_llm(state, "business_intent", {})
+
+        self.assertEqual(state["llm_calls"], [failure_audit])
 
     def test_llm_client_does_not_cap_json_completion_tokens(self):
         captured = {}

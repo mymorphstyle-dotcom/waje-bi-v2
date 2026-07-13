@@ -1473,6 +1473,17 @@ boundary:
   `NARRATIVE_FALLBACKS` or another local template;
 - production/live material intent cannot silently default or rewrite family,
   metric, pattern family, scope, time window, or target claim;
+- fixed `analysis_context.target_date` is exposed as a reviewed time-window
+  recommendation. When the user delegates that choice without naming a
+  replacement, the provider must copy the exact recommendation into a non-null
+  material intent. The generic missing-evidence null rule is restricted to
+  evidence-derived facts and cannot weaken required planning fields; ignored or
+  malformed recommendations still fail without a local intent fallback;
+- the provider client enforces the six business-intent material structures for
+  every real invocation of that task. Empty or wrong-typed scalar axes and empty
+  recursive time-window structures retry inside the centralized three-attempt
+  loop. Exhaustion raises a typed error carrying a safe failed-call audit, which
+  is persisted in workflow `llm_calls` without raw failed output or secrets;
 - production/live business-intent input and prompt expose the shared baseline
   registry's closed `allowed_baseline_ids` plus business labels and semantics;
   baseline candidates must be an explicit array of exact string ids copied from

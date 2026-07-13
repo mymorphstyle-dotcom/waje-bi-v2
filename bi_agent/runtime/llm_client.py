@@ -19,6 +19,18 @@ from openai import OpenAI
 DEFAULT_TIMEOUT_SECONDS: float | None = None
 DEFAULT_MAX_ATTEMPTS = 3
 _RECEIVER_CLEANUP_JOIN_SECONDS = 1.0
+_TASK_MATERIAL_OUTPUT_KEYS: dict[str, frozenset[str]] = {
+    "business_intent": frozenset(
+        {
+            "question_family",
+            "target_metric",
+            "pattern_family",
+            "scope",
+            "time_window",
+            "target_claim",
+        }
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -32,7 +44,14 @@ class LLMConfigurationError(RuntimeError):
 
 
 class LLMOutputError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        audit: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(message)
+        self.audit = dict(audit or {})
 
 
 class LLMTimeoutError(RuntimeError):
@@ -107,17 +126,70 @@ class OpenAICompatibleLLMClient:
         started = perf_counter()
         started_at = _utc_now()
         messages_payload = [dict(message) for message in messages]
+        attempt_failures: list[dict[str, Any]] = []
+        response_payload: dict[str, Any] = {}
+        content = ""
         for attempt in range(1, self.max_attempts + 1):
             try:
+                response_payload = {}
                 response_payload = self._request_json_once(messages_payload, attempt=attempt)
                 content = response_payload["content"] or "{}"
                 output = _localize_narrative_fields(_parse_json_object(content))
                 missing = [key for key in required_keys if key not in output]
                 if missing:
                     raise LLMOutputError(f"missing_llm_output_keys:{','.join(missing)}")
+                empty_material = [
+                    key
+                    for key in required_keys
+                    if key in _TASK_MATERIAL_OUTPUT_KEYS.get(task, ())
+                    and _empty_required_output_value(output[key])
+                ]
+                if empty_material:
+                    raise LLMOutputError(
+                        "empty_llm_output_keys:" + ",".join(empty_material)
+                    )
+                invalid_material = [
+                    key
+                    for key in required_keys
+                    if key in _TASK_MATERIAL_OUTPUT_KEYS.get(task, ())
+                    and not _valid_task_material_output(key, output[key])
+                ]
+                if invalid_material:
+                    raise LLMOutputError(
+                        "invalid_llm_output_material:" + ",".join(invalid_material)
+                    )
                 break
-            except Exception:
+            except Exception as exc:
+                failure_code = _safe_retry_failure_code(exc)
+                attempt_failures.append(
+                    {
+                        "attempt": attempt,
+                        "failure_code": failure_code,
+                        "response_id": str(response_payload.get("response_id") or ""),
+                    }
+                )
                 if attempt >= self.max_attempts:
+                    audit = _failed_llm_audit(
+                        task=task,
+                        provider=self.provider,
+                        model=self.model,
+                        prompt_version=prompt_version,
+                        required_keys=required_keys,
+                        messages=messages_payload,
+                        base_url=self.base_url,
+                        started_at=started_at,
+                        started=started,
+                        attempt=attempt,
+                        response_payload=response_payload,
+                        failure_code=failure_code,
+                        attempt_failures=attempt_failures,
+                    )
+                    if isinstance(exc, LLMOutputError):
+                        raise LLMOutputError(str(exc), audit=audit) from exc
+                    try:
+                        setattr(exc, "audit", audit)
+                    except Exception:
+                        pass
                     raise
         finished_at = _utc_now()
 
@@ -172,6 +244,89 @@ class OpenAICompatibleLLMClient:
             "content": response.choices[0].message.content or "{}",
             "usage": _usage_dict(getattr(response, "usage", None)),
         }
+
+
+def _empty_required_output_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, Mapping):
+        return not value
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return not value
+    return False
+
+
+def _valid_task_material_output(key: str, value: Any) -> bool:
+    if key != "time_window":
+        return isinstance(value, str) and bool(value.strip())
+    return _valid_json_business_semantics(value)
+
+
+def _valid_json_business_semantics(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, Mapping):
+        return bool(value) and all(
+            isinstance(key, str)
+            and bool(key.strip())
+            and _valid_json_business_semantics(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return bool(value) and all(_valid_json_business_semantics(item) for item in value)
+    return False
+
+
+def _safe_retry_failure_code(exc: Exception) -> str:
+    if isinstance(exc, (LLMOutputError, LLMTimeoutError, LLMConfigurationError)):
+        return str(exc).strip() or type(exc).__name__
+    return type(exc).__name__
+
+
+def _failed_llm_audit(
+    *,
+    task: str,
+    provider: str,
+    model: str,
+    prompt_version: str,
+    required_keys: Sequence[str],
+    messages: Sequence[Mapping[str, str]],
+    base_url: str,
+    started_at: str,
+    started: float,
+    attempt: int,
+    response_payload: Mapping[str, Any],
+    failure_code: str,
+    attempt_failures: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "task": task,
+        "provider": provider,
+        "model": model,
+        "prompt_version": prompt_version,
+        "response_id": str(response_payload.get("response_id") or ""),
+        "required_keys": list(required_keys),
+        "started_at": started_at,
+        "finished_at": _utc_now(),
+        "duration_ms": round((perf_counter() - started) * 1000, 3),
+        "attempt_count": attempt,
+        "input_hash": _hash_json(messages),
+        "base_url_hash": _hash_text(base_url) if base_url else "",
+        "usage": dict(response_payload.get("usage") or {}),
+        "status": "failed",
+        "failure_code": failure_code,
+        "attempt_failures": [dict(item) for item in attempt_failures],
+    }
 
 
 def _request_openai_json_in_subprocess(

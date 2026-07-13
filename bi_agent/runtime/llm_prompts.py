@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 from bi_agent.conversation.models import CLARIFICATION_ESCAPE_OPTION
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v45"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v47"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 CLARIFICATION_PROMPT_TASKS = frozenset(
     {"boundary_decision", "clarification_question", "query_gap_clarification"}
@@ -180,6 +180,16 @@ def _task_prompt(task: str, payload: Mapping[str, Any]) -> str:
         prompt_payload["reviewed_clarification_escape_option"] = (
             CLARIFICATION_ESCAPE_OPTION
         )
+    missing_evidence_rule = (
+        "For missing evidence-derived facts, use null, an empty array, or a "
+        "degraded status instead of inventing facts. Required material fields "
+        "must never use null or an empty value."
+        if task == "business_intent"
+        else (
+            "If evidence is missing, use null, an empty array, or a degraded "
+            "status instead of inventing facts."
+        )
+    )
     return (
         f"Task: {task}\n"
         f"Prompt version: {PROMPT_VERSION}\n"
@@ -187,8 +197,8 @@ def _task_prompt(task: str, payload: Mapping[str, Any]) -> str:
         f"<input_json>\n{_json(prompt_payload)}\n</input_json>\n\n"
         f"{_task_rules(task)}\n\n"
         f"Required JSON keys: {', '.join(_required_keys_for_task(task))}.\n"
-        "Return one JSON object. Keep field names exactly as specified. If evidence is "
-        "missing, use null, an empty array, or a degraded status instead of inventing facts."
+        "Return one JSON object. Keep field names exactly as specified. "
+        f"{missing_evidence_rule}"
     )
 
 
@@ -246,7 +256,15 @@ def _task_rules(task: str) -> str:
             "does not explicitly replace that axis, copy its exact canonical value into "
             "the corresponding output field. When the current question explicitly "
             "replaces that axis, return the new canonical value and keep the output "
-            "complete. Do not choose pattern_explanation solely because pattern_family "
+            "complete. The required material fields are question_family, target_metric, "
+            "pattern_family, scope, time_window, and target_claim. "
+            "reviewed_time_window_recommendation is a reviewed planning input, "
+            "not evidence. When the user delegates the time-window choice to the agent "
+            "and does not name a replacement, copy its time_window value exactly into "
+            "time_window. Required material fields must never use null or an empty value; "
+            "if no reviewed recommendation is supplied, propose a concrete business "
+            "time window for later boundary review. Do not choose pattern_explanation "
+            "solely because pattern_family "
             "or pattern_params "
             "are present. Use the launch recipe vocabulary: paid_amount_change_explanation, "
             "pattern_explanation, business_object_impact_review, revenue_health_review, "

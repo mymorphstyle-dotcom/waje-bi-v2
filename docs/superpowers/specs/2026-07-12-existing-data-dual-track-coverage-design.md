@@ -511,6 +511,23 @@ Those outputs fail with a typed LLM or LLM-contract error before publication.
 Legacy fixture-only narrative helpers remain outside the production/live path
 and cannot be selected by a real provider failure.
 
+The business-intent input projects a fixed `analysis_context.target_date` into
+a reviewed time-window recommendation. When the user delegates the time-window
+choice to the agent and does not name a replacement, the provider copies that
+exact recommendation into its complete material intent. An explicit user
+window still replaces the recommendation. Required material axes never use the
+generic missing-evidence `null` convention: that convention applies only to
+evidence-derived facts. A missing or ignored recommendation remains a typed LLM
+contract failure; local code does not fill the provider's intent output.
+The shared provider client applies this business-intent material contract to
+every real provider invocation of that task, including non-production diagnostic
+runs: the five scalar axes must be non-empty strings and `time_window` must be
+non-empty recursive JSON business semantics. Structural failures remain inside
+the centralized three-attempt loop. If all attempts fail, the typed exception
+carries a safe failure audit with task, provider, model, prompt version, attempt
+count, response ids, and validation codes; workflow failure artifacts persist
+that audit without raw failed response content or secrets.
+
 The reviewed clarification escape `tell the agent to do differently` is a
 machine contract token even though it is displayed inside a user-facing options
 array. Conversation orchestration, boundary decision, general clarification,

@@ -1272,6 +1272,30 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
         "allowed_dimension_ids": registry.dimension_ids,
         "allowed_component_metric_ids": registry.metric_ids,
     }
+    raw_analysis_context = request.get("analysis_context")
+    if raw_analysis_context is not None:
+        if not isinstance(raw_analysis_context, Mapping):
+            raise WorkflowFailure(
+                "business_intent_analysis_context_invalid",
+                failure_type="contract",
+            )
+        if "target_date" in raw_analysis_context:
+            target_date = raw_analysis_context.get("target_date")
+            try:
+                canonical_target_date = datetime.fromisoformat(
+                    target_date if isinstance(target_date, str) else ""
+                ).date().isoformat()
+            except ValueError:
+                canonical_target_date = ""
+            if canonical_target_date != target_date:
+                raise WorkflowFailure(
+                    "business_intent_analysis_context_invalid:target_date",
+                    failure_type="contract",
+                )
+            payload["reviewed_time_window_recommendation"] = {
+                "time_window": canonical_target_date,
+                "source": "analysis_context.target_date",
+            }
     context = {
         key: request[key]
         for key in (
@@ -8334,6 +8358,9 @@ def _invoke_llm(state: WorkflowState, task: str, payload: dict[str, Any]) -> dic
             required_keys=spec.required_keys,
         )
     except Exception as exc:
+        failure_audit = getattr(exc, "audit", None)
+        if isinstance(failure_audit, Mapping) and failure_audit:
+            state["llm_calls"].append(dict(failure_audit))
         raise WorkflowFailure(_exception_reason(exc), failure_type="llm") from exc
     state["llm_calls"].append(result.audit)
     return result.output
