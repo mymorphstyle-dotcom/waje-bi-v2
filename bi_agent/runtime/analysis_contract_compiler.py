@@ -474,8 +474,6 @@ def _build_dependency_index(
     capability_metric_gaps: list[ContractGap] = []
 
     metric_owners: dict[str, list[str]] = {metric_id: [] for metric_id in metric_ids}
-    for metric_id in target_metrics:
-        _append_owner(metric_owners, metric_id, "analysis_contract")
     for capability_id in accepted_capabilities:
         contract = _registry_entry(registry.capability_inputs, capability_id)
         if contract is None:
@@ -2091,9 +2089,20 @@ def _select_sources_per_owner(
     registry: RuntimeContractRegistry,
     affected_claim_types: tuple[str, ...],
 ) -> tuple[tuple[str, ...], tuple[ContractGap, ...]]:
+    owner_ids = _dedupe(owners)
+    requested = tuple(
+        dataset_id
+        for dataset_id in sources
+        if dataset_id in requested_datasets
+    )
+    sibling_coverage_resolved = _requested_sources_resolve_by_capability(
+        requested,
+        owner_ids,
+        registry,
+    )
     selected: list[str] = []
     gaps: list[ContractGap] = []
-    for owner in _dedupe(owners):
+    for owner in owner_ids:
         owner_selected, gap = _select_source_datasets(
             item_kind=item_kind,
             item_id=item_id,
@@ -2103,6 +2112,7 @@ def _select_sources_per_owner(
             owners=[owner],
             registry=registry,
             affected_claim_types=affected_claim_types,
+            sibling_coverage_resolved=sibling_coverage_resolved,
         )
         selected.extend(owner_selected)
         if gap is None:
@@ -2131,6 +2141,7 @@ def _select_source_datasets(
     owners: list[str],
     registry: RuntimeContractRegistry,
     affected_claim_types: tuple[str, ...],
+    sibling_coverage_resolved: bool = False,
 ) -> tuple[tuple[str, ...], ContractGap | None]:
     candidates = tuple(dict.fromkeys(sources))
     affected = tuple(owners) or ("analysis_contract",)
@@ -2215,6 +2226,8 @@ def _select_source_datasets(
                 dataset_id for dataset_id in requested if dataset_id not in selected
             )
             if excluded_requested:
+                if sibling_coverage_resolved:
+                    return selected, None
                 restricted_owners = tuple(
                     owner
                     for owner in affected

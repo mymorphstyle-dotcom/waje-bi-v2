@@ -950,10 +950,10 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             payload = load_contract(
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             )
-            payload["datasets"]["paid_order_success"] = {
-                "date_expression": expression,
-                "required_fields": ["business_date_lagos"],
-            }
+            dataset = payload["datasets"]["paid_order_success"]
+            dataset.pop("date_field", None)
+            dataset["date_expression"] = expression
+            dataset["required_fields"] = ["business_date_lagos"]
             registry = RuntimeContractRegistry(payload)
             with self.subTest(expression=expression), patch(
                 "bi_agent.runtime.clickhouse_query_compiler._runtime_registry",

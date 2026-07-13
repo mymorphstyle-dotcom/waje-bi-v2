@@ -1823,7 +1823,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 )
                 self.assertEqual(
                     gap.affected_capabilities,
-                    ("analysis_contract", "compare_periods"),
+                    ("compare_periods",),
                 )
                 self.assertFalse(outcome.query_contracts)
 

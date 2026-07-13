@@ -1069,10 +1069,10 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             "paid_amount_change_explanation",
             "segment_or_factor_attribution",
         ])
-        self.assertEqual(families.count("custom_baseline_comparison"), 1)
+        self.assertEqual(len(families), 2)
         self.assertEqual(
             [item["label"] for item in payload["business_threads"]],
-            ["付费金额变化解释", "分群或因素归因", "自定义基线对比"],
+            ["付费金额变化解释", "分群或因素归因"],
         )
 
     def test_final_business_summary_allows_negated_attribution_boundary(self):

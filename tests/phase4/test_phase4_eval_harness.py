@@ -71,6 +71,12 @@ class NoAuditLLMClient:
                     "time_window": "2024-01..2026-05",
                     "target_claim": "recurring_pattern_existence",
                     "baseline_candidates": [],
+                    "analysis_requirements": {
+                        "context_sources": [],
+                        "claim_intents": [],
+                        "requested_dimensions": [],
+                        "requested_components": [],
+                    },
                     "status_message": "ok",
                 }
             )
@@ -84,7 +90,20 @@ class NoAuditLLMClient:
                 }
             )
         elif task == "analysis_route":
-            output["requested_nodes"] = ["pattern_scan"]
+            output.update(
+                {
+                    "requested_nodes": ["pattern_scan"],
+                    "analysis_requirements": {
+                        "target_metrics": ["paid_amount"],
+                        "requested_components": [],
+                        "requested_dimensions": [],
+                        "baselines": [],
+                        "context_sources": [],
+                        "claim_intents": ["recurring_pattern_existence"],
+                        "scope": "full_sample",
+                    },
+                }
+            )
         elif task == "data_coverage_interpretation":
             output["coverage_status"] = "sufficient"
         elif task == "next_action":

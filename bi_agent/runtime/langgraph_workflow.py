@@ -912,20 +912,10 @@ def _validate_context_family_axis(
         if dataset_id not in target_sources
     )
     selected_families = _intent_question_family_set(intent)
-    analytical_families = {
-        "business_object_impact_review",
-        "anomaly_or_black_swan_review",
-        "segment_or_factor_attribution",
-        "pattern_explanation",
-    }
     for dataset_id in unrelated:
-        compatible = {
-            family
-            for family in analytical_families
-            if _question_family_supports_context_dataset(
-                family, dataset_id, registry
-            )
-        }
+        compatible = _compatible_context_question_families(
+            dataset_id, registry
+        )
         if compatible and not selected_families.intersection(compatible):
             raise WorkflowFailure(
                 f"context_family_axis_missing:{dataset_id}",
@@ -945,13 +935,9 @@ def _validate_context_family_axis(
                 not in registry.dataset(dataset_id).get("intent_roles", ())
             ):
                 continue
-            compatible = {
-                family
-                for family in analytical_families
-                if _question_family_supports_context_dataset(
-                    family, dataset_id, registry
-                )
-            }
+            compatible = _compatible_context_question_families(
+                dataset_id, registry
+            )
             if compatible and not selected_families.intersection(compatible):
                 raise WorkflowFailure(
                     f"context_family_axis_missing:dimension:{dimension_id}:{dataset_id}",
@@ -959,11 +945,30 @@ def _validate_context_family_axis(
                 )
 
 
+def _compatible_context_question_families(
+    dataset_id: str,
+    registry: RuntimeContractRegistry,
+) -> set[str]:
+    return {
+        family
+        for family in registry.question_family_ids
+        if _question_family_supports_context_dataset(
+            family, dataset_id, registry
+        )
+    }
+
+
 def _question_family_supports_context_dataset(
     question_family: str,
     dataset_id: str,
     registry: RuntimeContractRegistry,
 ) -> bool:
+    try:
+        dataset = registry.dataset(dataset_id)
+    except KeyError:
+        return False
+    if "business_context" not in set(dataset.get("intent_roles") or ()):
+        return False
     try:
         obligation = registry.question_family_obligation(question_family)
     except KeyError:
@@ -4960,6 +4965,9 @@ def _route_capability_cards() -> list[dict[str, Any]]:
         cards.append(
             {
                 **card,
+                "allowed_claim_types": list(
+                    binding.get("supported_claim_types") or ()
+                ),
                 "runtime_input_contract": {
                     key: binding[key]
                     for key in (

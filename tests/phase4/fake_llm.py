@@ -8,14 +8,18 @@ class FakeLLMClient:
 
     def invoke_json(self, *, task, prompt_version, messages, required_keys):
         self.calls.append(task)
-        output = (
-            _default_query_gap_action_render(messages)
-            if task == "query_gap_action_render" and task not in self.overrides
-            else _default_final_business_summary(messages)
-            if task == "final_business_summary" and task not in self.overrides
-            else dict(DEFAULT_OUTPUTS.get(task, {}))
-        )
-        output.update(self.overrides.get(task, {}))
+        override = self.overrides.get(task, {})
+        if task == "analysis_route":
+            output = _default_analysis_route(messages, override)
+        else:
+            output = (
+                _default_query_gap_action_render(messages)
+                if task == "query_gap_action_render" and task not in self.overrides
+                else _default_final_business_summary(messages)
+                if task == "final_business_summary" and task not in self.overrides
+                else dict(DEFAULT_OUTPUTS.get(task, {}))
+            )
+            output.update(override)
         for key in required_keys:
             output.setdefault(key, None)
         return FakeLLMResult(
@@ -61,6 +65,51 @@ def _default_query_gap_action_render(messages):
     }
 
 
+def _default_analysis_route(messages, override):
+    output = dict(DEFAULT_OUTPUTS["analysis_route"])
+    output["analysis_requirements"] = dict(output["analysis_requirements"])
+    output.update(override if isinstance(override, dict) else {})
+    if isinstance(override, dict) and "analysis_requirements" in override:
+        return output
+    payload = _input_payload(messages)
+    cards = {
+        str(card.get("capability_id") or ""): card
+        for card in payload.get("known_capabilities") or ()
+        if isinstance(card, dict) and str(card.get("capability_id") or "")
+    }
+    selected = []
+    for item in output.get("requested_nodes") or ():
+        if isinstance(item, str):
+            selected.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        selected.append(
+            next(
+                (
+                    str(item[key])
+                    for key in (
+                        "capability_id",
+                        "capability",
+                        "node_id",
+                        "node",
+                        "id",
+                    )
+                    if isinstance(item.get(key), str) and item.get(key)
+                ),
+                "",
+            )
+        )
+    claims = []
+    for capability_id in selected:
+        card = cards.get(capability_id) or {}
+        for claim in card.get("allowed_claim_types") or ():
+            if isinstance(claim, str) and claim and claim not in claims:
+                claims.append(claim)
+    output["analysis_requirements"]["claim_intents"] = claims
+    return output
+
+
 DEFAULT_OUTPUTS = {
     "business_intent": {
         "question_family": "pattern_explanation",
@@ -104,7 +153,7 @@ DEFAULT_OUTPUTS = {
             "requested_dimensions": [],
             "baselines": ["previous_day"],
             "context_sources": [],
-            "claim_intents": ["recurring_pattern"],
+            "claim_intents": [],
             "scope": {"type": "full_sample"},
         },
         "decision_summary": "使用 pattern_explanation 路线。",

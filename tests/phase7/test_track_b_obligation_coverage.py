@@ -548,6 +548,72 @@ def test_context_family_compatibility_uses_exact_capability_dataset_allowlist():
     )["allowed_datasets"]
 
 
+def test_context_family_axis_discovers_new_reviewed_family_from_registry():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    class RegistryWithReviewedFamily:
+        def __init__(self, base):
+            self._base = base
+
+        @property
+        def question_family_ids(self):
+            return (*self._base.question_family_ids, "reviewed_event_impact")
+
+        def question_family_obligation(self, question_family):
+            if question_family == "reviewed_event_impact":
+                return {
+                    "required_capabilities": [],
+                    "independent_capabilities": ["event_evidence"],
+                    "conditional_rules": [],
+                }
+            return self._base.question_family_obligation(question_family)
+
+        def __getattr__(self, name):
+            return getattr(self._base, name)
+
+    registry = RegistryWithReviewedFamily(_registry())
+
+    workflow._validate_context_family_axis(
+        {
+            "target_metric": "paid_amount",
+            "question_families": ["reviewed_event_impact"],
+            "context_sources": ["external_event"],
+            "requested_dimensions": [],
+        },
+        registry,
+    )
+
+
+def test_context_family_axis_rejects_incompatible_reviewed_family():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="context_family_axis_missing:gameplay",
+    ):
+        workflow._validate_context_family_axis(
+            {
+                "target_metric": "paid_amount",
+                "question_families": ["pattern_explanation"],
+                "context_sources": ["gameplay"],
+                "requested_dimensions": [],
+            },
+            _registry(),
+        )
+
+
+def test_metric_only_dataset_never_establishes_context_family_compatibility():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    registry = _registry()
+    assert "business_context" not in registry.dataset("paid_order_success")[
+        "intent_roles"
+    ]
+    assert not workflow._question_family_supports_context_dataset(
+        "business_object_impact_review", "paid_order_success", registry
+    )
+
+
 def test_business_intent_context_family_axis_fails_closed_after_retry(monkeypatch):
     from bi_agent.runtime import langgraph_workflow as workflow
 

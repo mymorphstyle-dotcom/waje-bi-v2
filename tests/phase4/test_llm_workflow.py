@@ -667,6 +667,53 @@ class LLMWorkflowTest(unittest.TestCase):
             text,
         )
 
+    def test_fake_route_claims_follow_selected_capability_contract(self):
+        prompt = build_prompt(
+            "analysis_route",
+            {
+                "intent": {
+                    "question_family": "revenue_health_review",
+                    "target_metric": "paid_amount",
+                },
+                "known_capabilities": workflow_module._route_capability_cards(),
+            },
+        )
+        result = FakeLLMClient(
+            {
+                "analysis_route": {
+                    "requested_nodes": ["market_health_compare"],
+                }
+            }
+        ).invoke_json(
+            task="analysis_route",
+            prompt_version=prompt.prompt_version,
+            messages=prompt.messages,
+            required_keys=prompt.required_keys,
+        )
+
+        self.assertEqual(
+            result.output["analysis_requirements"]["claim_intents"],
+            ["comparative_change"],
+        )
+
+    def test_route_card_claim_types_match_runtime_contract(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        cards = {
+            card["capability_id"]: card
+            for card in workflow_module._route_capability_cards()
+        }
+
+        self.assertEqual(
+            cards["joint_attribution"]["allowed_claim_types"],
+            registry.capability_inputs("joint_attribution")[
+                "supported_claim_types"
+            ],
+        )
+
     def test_query_gap_clarification_prompt_has_business_options_and_escape(self):
         prompt = build_prompt(
             "query_gap_clarification",
@@ -1274,6 +1321,7 @@ class LLMWorkflowTest(unittest.TestCase):
                     "analysis_contract": {
                         "question_families": ["anomaly_or_black_swan_review"]
                     },
+                    "material_slots": dict(prior_route["analysis_requirements"]),
                 }
             },
             "intent": {
@@ -1597,7 +1645,7 @@ class LLMWorkflowTest(unittest.TestCase):
                     state["boundary_decision"]["boundary_status"], "needs_question"
                 )
 
-    def test_unknown_diagnostic_tag_becomes_typed_route_conflict(self):
+    def test_unknown_diagnostic_tag_is_rejected_before_obligation_resolution(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
         registry = RuntimeContractRegistry.from_path(
@@ -1616,13 +1664,24 @@ class LLMWorkflowTest(unittest.TestCase):
         state = {"route_material_conflicts": (), "boundary_decision": {}}
         workflow_module._consume_obligation_route_conflict(state, route)
 
-        self.assertEqual(requested, ("data_quality_profile",))
-        self.assertEqual(route["obligation_resolution"]["status"], "conflict")
         self.assertEqual(
-            route["obligation_resolution"]["error"],
-            "'unknown_diagnostic_obligation:model_invented_tag'",
+            requested,
+            (
+                "data_quality_profile",
+                "metric_coverage_profile",
+                "answer_verify",
+            ),
         )
-        self.assertEqual(state["boundary_decision"]["boundary_status"], "needs_question")
+        self.assertEqual(route["obligation_resolution"]["status"], "resolved")
+        self.assertIn(
+            {
+                "action": "rejected",
+                "capability": "model_invented_tag",
+                "reason": "unknown_diagnostic_rejected",
+            },
+            route["obligation_resolution"]["mutations"],
+        )
+        self.assertEqual(state["boundary_decision"], {})
 
     def test_all_diagnostic_tags_reconcile_from_registry_contracts(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
