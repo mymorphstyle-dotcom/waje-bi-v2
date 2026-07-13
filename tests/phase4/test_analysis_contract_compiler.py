@@ -807,7 +807,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 permission_scope="analyst",
             )
 
-    def test_context_only_snapshot_keeps_quality_query_and_blocks_strong_path(self):
+    def test_unreviewed_context_snapshot_blocks_quality_and_strong_paths(self):
         channel = DatasetSnapshot(
             "snapshot:channel:context",
             "market_dashboard_channel",
@@ -848,13 +848,27 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             permission_scope="analyst",
         )
 
-        self.assertEqual(
-            {query.query_intent for query in outcome.query_contracts},
-            {"data_quality_probe"},
+        self.assertFalse(outcome.query_contracts)
+        metric_gap = next(
+            gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_id
+            == (
+                "metric:paid_amount:requested_source_unreviewed:"
+                "market_dashboard_channel"
+            )
         )
-        gap_ids = {gap.gap_id for gap in outcome.analysis_contract.contract_gaps}
-        self.assertTrue(any("evidence_state" in gap_id for gap_id in gap_ids))
-        self.assertFalse(any("source_unbound" in gap_id for gap_id in gap_ids))
+        self.assertEqual(
+            set(metric_gap.affected_capabilities),
+            {"data_quality_check", "segment_contribution"},
+        )
+        self.assertEqual(
+            set(metric_gap.affected_claim_types),
+            {
+                "contract_coverage_and_trust_boundary",
+                "segment_contribution_or_mix_shift",
+            },
+        )
 
     def test_source_reconciliation_capability_plans_both_reviewed_sources(self):
         fields = ("snapshot_id", "load_revision", "business_date", "game", "paid_amount")
@@ -905,7 +919,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         )
         self.assertEqual(len(outcome.query_contracts), 2)
 
-    def test_explicit_metric_dataset_override_binds_dashboard_source_adapter(self):
+    def test_explicit_metric_override_cannot_bypass_capability_dataset_contract(self):
         dashboard_snapshot = DatasetSnapshot(
             "snapshot:market-dashboard:20260602:revision-a",
             "market_dashboard",
@@ -937,17 +951,61 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             permission_scope="analyst",
         )
 
-        self.assertEqual(outcome.analysis_contract.dataset_requirements, ("market_dashboard",))
-        self.assertEqual(len(outcome.analysis_contract.metric_bindings), 1)
-        binding = outcome.analysis_contract.metric_bindings[0]
-        self.assertEqual(binding.dataset_id, "market_dashboard")
-        self.assertEqual(binding.expression, "sum(paid_amount)")
+        self.assertEqual(outcome.analysis_contract.dataset_requirements, ())
+        self.assertFalse(outcome.analysis_contract.metric_bindings)
+        self.assertFalse(outcome.query_contracts)
+        gap = next(
+            gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_id
+            == "metric:paid_amount:requested_source_unreviewed:market_dashboard"
+        )
         self.assertEqual(
-            outcome.query_contracts[0].dataset_snapshot_refs,
-            (dashboard_snapshot.snapshot_ref,),
+            gap.affected_capabilities,
+            ("compare_periods",),
+        )
+        self.assertEqual(gap.affected_claim_types, ("comparative_change",))
+
+    def test_explicit_reviewed_metric_override_remains_bound(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        paid = snapshot("paid_order_success", "paid", "2026-07-04")
+        catalog, resolver, released = canonical_release_catalog(paid)
+        outcome = compile_analysis_contract(
+            run_id="run-reviewed-source-override",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "metric_dataset_overrides": {
+                    "paid_amount": "paid_order_success"
+                },
+                "claim_intents": ["comparative_change"],
+                "target_semantic": "2026-06-02",
+            },
+            accepted_capabilities=("compare_periods",),
+            catalog=catalog,
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+            release_resolver=resolver,
         )
 
-    def test_explicit_dimension_dataset_override_binds_dashboard_channel_adapter(self):
+        self.assertEqual(
+            outcome.analysis_contract.dataset_requirements,
+            ("paid_order_success",),
+        )
+        self.assertEqual(
+            outcome.query_contracts[0].dataset_snapshot_refs,
+            (released[0].snapshot_ref,),
+        )
+        self.assertFalse(
+            any(
+                "requested_source_unreviewed" in gap.gap_id
+                for gap in outcome.analysis_contract.contract_gaps
+            )
+        )
+
+    def test_explicit_dimension_override_cannot_bypass_capability_dataset_contract(self):
         channel_snapshot = DatasetSnapshot(
             "snapshot:market-dashboard-channel:20260602:revision-a",
             "market_dashboard_channel",
@@ -989,14 +1047,22 @@ class AnalysisContractCompilerTest(unittest.TestCase):
 
         self.assertEqual(
             outcome.analysis_contract.dataset_requirements,
-            ("market_dashboard_channel",),
+            (),
         )
-        self.assertEqual(outcome.analysis_contract.metric_bindings[0].dataset_id,
-                         "market_dashboard_channel")
-        self.assertEqual(outcome.analysis_contract.dimension_bindings[0].dataset_id,
-                         "market_dashboard_channel")
-        self.assertEqual(outcome.analysis_contract.dimension_bindings[0].source_field,
-                         "channel")
+        self.assertFalse(outcome.analysis_contract.metric_bindings)
+        self.assertFalse(outcome.analysis_contract.dimension_bindings)
+        self.assertFalse(outcome.query_contracts)
+        gap_ids = {
+            gap.gap_id for gap in outcome.analysis_contract.contract_gaps
+        }
+        self.assertIn(
+            "metric:paid_amount:requested_source_unreviewed:market_dashboard_channel",
+            gap_ids,
+        )
+        self.assertIn(
+            "dimension:channel:requested_source_unreviewed:market_dashboard_channel",
+            gap_ids,
+        )
 
     def test_claim_strength_taxonomy_is_ranked_and_part_of_capability_signature(self):
         payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
@@ -1387,6 +1453,166 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             {gap.gap_id for gap in outcome.analysis_contract.contract_gaps},
         )
 
+    def test_source_selection_gap_claims_are_partitioned_by_capability_owner(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        event_snapshot = replace(
+            snapshot(
+                "external_event",
+                "business_events__fixed_analysis",
+                "2026-06-02",
+            ),
+            schema_fields=tuple(
+                registry.dataset("external_event").get("schema_fields") or ()
+            ),
+            logical_snapshot_id="external-event:fixed-analysis",
+            load_revision="sha256:external-event-fixed-analysis",
+        )
+        catalog, resolver, _ = canonical_release_catalog(event_snapshot)
+        outcome = compile_analysis_contract(
+            run_id="run-source-gap-claim-partition",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "dataset_requirements": [
+                    "market_dashboard",
+                    "market_dashboard_channel",
+                ],
+                "requested_context_sources": ["external_event"],
+                "baselines": ["previous_day"],
+                "claim_intents": [
+                    "comparative_change",
+                    "candidate_mechanism",
+                ],
+            },
+            accepted_capabilities=("market_health_compare", "event_evidence"),
+            catalog=catalog,
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+            release_resolver=resolver,
+        )
+
+        market_gap = next(
+            gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_id
+            == "metric:paid_amount:requested_source_unreviewed:market_dashboard_channel"
+        )
+        self.assertEqual(
+            market_gap.affected_capabilities,
+            ("market_health_compare",),
+        )
+        self.assertEqual(
+            market_gap.affected_claim_types,
+            ("comparative_change",),
+        )
+        self.assertNotIn(
+            "candidate_mechanism", market_gap.affected_claim_types
+        )
+        event_plan = next(
+            plan
+            for plan in outcome.capability_plans
+            if plan.capability_id == "event_evidence"
+        )
+        self.assertTrue(
+            any(
+                slot.query_contract_refs
+                for slot in event_plan.required_input_slots
+            )
+        )
+
+    def test_data_quality_capabilities_review_only_contract_allowed_datasets(self):
+        from bi_agent.runtime.analysis_contract_compiler import (
+            _capability_reviews_dataset,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        for capability_id in ("data_quality_check", "data_quality_profile"):
+            with self.subTest(capability_id=capability_id):
+                self.assertTrue(
+                    _capability_reviews_dataset(
+                        capability_id, "paid_order_success", registry
+                    )
+                )
+                self.assertTrue(
+                    _capability_reviews_dataset(
+                        capability_id, "payment_attempt", registry
+                    )
+                )
+                self.assertFalse(
+                    _capability_reviews_dataset(
+                        capability_id, "market_dashboard", registry
+                    )
+                )
+
+    def test_data_quality_unreviewed_requested_source_produces_exact_gap(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-quality-unreviewed-source",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "dataset_requirements": ["market_dashboard"],
+                "claim_intents": ["contract_coverage_and_trust_boundary"],
+            },
+            accepted_capabilities=("data_quality_check",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        gap = next(
+            gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_id
+            == "metric:paid_amount:requested_source_unreviewed:market_dashboard"
+        )
+        self.assertEqual(gap.affected_capabilities, ("data_quality_check",))
+        self.assertEqual(
+            gap.affected_claim_types,
+            ("contract_coverage_and_trust_boundary",),
+        )
+        self.assertFalse(outcome.query_contracts)
+
+    def test_data_quality_allowed_paid_source_remains_bound(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        paid = snapshot("paid_order_success", "paid", "2026-07-04")
+        catalog, resolver, released = canonical_release_catalog(paid)
+        outcome = compile_analysis_contract(
+            run_id="run-quality-reviewed-source",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "dataset_requirements": ["paid_order_success"],
+                "claim_intents": ["contract_coverage_and_trust_boundary"],
+                "target_semantic": "2026-06-02",
+            },
+            accepted_capabilities=("data_quality_check",),
+            catalog=catalog,
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+            release_resolver=resolver,
+        )
+
+        self.assertTrue(outcome.query_contracts)
+        self.assertEqual(
+            outcome.query_contracts[0].dataset_snapshot_refs,
+            (released[0].snapshot_ref,),
+        )
+        self.assertFalse(
+            any(
+                "requested_source_unreviewed" in gap.gap_id
+                for gap in outcome.analysis_contract.contract_gaps
+            )
+        )
+
     def test_cross_source_quality_owner_does_not_widen_strong_capability_binding(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
@@ -1436,22 +1662,29 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             for slot in plans["data_quality_check"].required_input_slots
             for ref in slot.query_contract_refs
         )
-        self.assertEqual(
-            {
-                queries_by_ref[ref].dataset_snapshot_refs[0]
-                for ref in quality_refs
-            },
-            {
-                released_by_dataset["market_dashboard"].snapshot_ref,
-                released_by_dataset["market_dashboard_channel"].snapshot_ref,
-            },
+        self.assertEqual(quality_refs, ())
+        gaps = outcome.analysis_contract.contract_gaps
+        market_gap = next(
+            gap
+            for gap in gaps
+            if gap.gap_id
+            == "metric:paid_amount:requested_source_unreviewed:market_dashboard_channel"
         )
-        self.assertFalse(
-            any(
-                gap.dataset_id == "market_dashboard_channel"
-                and "market_health_compare" in gap.affected_capabilities
-                for gap in outcome.analysis_contract.contract_gaps
+        self.assertEqual(market_gap.affected_capabilities, ("market_health_compare",))
+        self.assertEqual(market_gap.affected_claim_types, ("comparative_change",))
+        quality_gap = next(
+            gap
+            for gap in gaps
+            if gap.gap_id
+            == (
+                "metric:paid_amount:requested_source_unreviewed:"
+                "market_dashboard,market_dashboard_channel"
             )
+        )
+        self.assertEqual(quality_gap.affected_capabilities, ("data_quality_check",))
+        self.assertEqual(
+            quality_gap.affected_claim_types,
+            ("contract_coverage_and_trust_boundary",),
         )
 
     def test_explicit_unreviewed_source_is_audited_while_strong_query_stays_bound(self):
@@ -2246,7 +2479,10 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             run_id="run-target-claim-link",
             proposal={
                 "target_metrics": ["paid_amount"],
-                "claim_intents": ["comparative_change"],
+                "claim_intents": [
+                    "comparative_change",
+                    "candidate_mechanism",
+                ],
             },
             accepted_capabilities=("answer_verify",),
             catalog=DatasetCatalog(()),
@@ -2260,7 +2496,10 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             for gap in outcome.analysis_contract.contract_gaps
             if gap.gap_id.startswith("metric:paid_amount:source_ambiguous:")
         )
-        self.assertEqual(gap.affected_claim_types, ("comparative_change",))
+        self.assertEqual(
+            gap.affected_claim_types,
+            ("comparative_change", "candidate_mechanism"),
+        )
         self.assertTrue(
             any(
                 "paid-amount.metric.yaml" in ref
@@ -2272,7 +2511,10 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             {
                 "item_kind": "metric",
                 "item_id": "paid_amount",
-                "claim_intents": ["comparative_change"],
+                "claim_intents": [
+                    "comparative_change",
+                    "candidate_mechanism",
+                ],
             },
         )
 

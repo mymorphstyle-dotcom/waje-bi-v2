@@ -574,13 +574,7 @@ def _build_dependency_index(
         source_selection_gaps.extend(selection_gaps)
         for dataset_id in selected:
             for owner in metric_owners[metric_id]:
-                if (
-                    _capability_reviews_dataset(owner, dataset_id, registry)
-                    or not any(
-                        _capability_reviews_dataset(owner, candidate, registry)
-                        for candidate in selected
-                    )
-                ):
+                if _capability_reviews_dataset(owner, dataset_id, registry):
                     _append_owner(dataset_owners, dataset_id, owner)
     for dimension_id in dimension_ids:
         try:
@@ -608,13 +602,7 @@ def _build_dependency_index(
         source_selection_gaps.extend(selection_gaps)
         for dataset_id in selected:
             for owner in dimension_owners[dimension_id]:
-                if (
-                    _capability_reviews_dataset(owner, dataset_id, registry)
-                    or not any(
-                        _capability_reviews_dataset(owner, candidate, registry)
-                        for candidate in selected
-                    )
-                ):
+                if _capability_reviews_dataset(owner, dataset_id, registry):
                     _append_owner(dataset_owners, dataset_id, owner)
     for dataset_id, owners in source_owners.items():
         for owner in owners:
@@ -2103,6 +2091,11 @@ def _select_sources_per_owner(
     selected: list[str] = []
     gaps: list[ContractGap] = []
     for owner in owner_ids:
+        owner_claim_types = _source_selection_claim_types(
+            owner,
+            affected_claim_types,
+            registry,
+        )
         owner_selected, gap = _select_source_datasets(
             item_kind=item_kind,
             item_id=item_id,
@@ -2111,7 +2104,7 @@ def _select_sources_per_owner(
             requested_datasets=requested_datasets,
             owners=[owner],
             registry=registry,
-            affected_claim_types=affected_claim_types,
+            affected_claim_types=owner_claim_types,
             sibling_coverage_resolved=sibling_coverage_resolved,
         )
         selected.extend(owner_selected)
@@ -2131,6 +2124,24 @@ def _select_sources_per_owner(
     return _dedupe(selected), tuple(gaps)
 
 
+def _source_selection_claim_types(
+    owner: str,
+    requested_claim_types: tuple[str, ...],
+    registry: RuntimeContractRegistry,
+) -> tuple[str, ...]:
+    if owner == "analysis_contract":
+        return requested_claim_types
+    contract = _registry_entry(registry.capability_inputs, owner)
+    if contract is None:
+        return ()
+    supported = set(_mapping_values(contract, "supported_claim_types"))
+    return tuple(
+        claim_type
+        for claim_type in requested_claim_types
+        if claim_type in supported
+    )
+
+
 def _select_source_datasets(
     *,
     item_kind: str,
@@ -2145,16 +2156,6 @@ def _select_source_datasets(
 ) -> tuple[tuple[str, ...], ContractGap | None]:
     candidates = tuple(dict.fromkeys(sources))
     affected = tuple(owners) or ("analysis_contract",)
-    if override:
-        if override in candidates:
-            return (override,), None
-        return (), _contract_gap(
-            gap_type="contract_absent",
-            gap_id=f"{item_kind}:{item_id}:source_unavailable:{override}",
-            affected_capabilities=affected,
-            repair_options=("select_registered_source", "register_source_adapter"),
-        )
-
     owner_contracts = tuple(
         contract
         for owner in owners
@@ -2162,6 +2163,30 @@ def _select_source_datasets(
         for contract in (_registry_entry(registry.capability_inputs, owner),)
         if contract is not None
     )
+    allowed = {
+        dataset_id
+        for contract in owner_contracts
+        for dataset_id in _mapping_values(contract, "allowed_datasets")
+    }
+    if override:
+        if override not in candidates:
+            return (), _contract_gap(
+                gap_type="contract_absent",
+                gap_id=f"{item_kind}:{item_id}:source_unavailable:{override}",
+                affected_capabilities=affected,
+                repair_options=("select_registered_source", "register_source_adapter"),
+            )
+        if allowed and override not in allowed:
+            return (), _requested_source_unreviewed_gap(
+                item_kind=item_kind,
+                item_id=item_id,
+                requested=(override,),
+                reviewed=(),
+                affected=affected,
+                affected_claim_types=affected_claim_types,
+            )
+        return (override,), None
+
     reviewed_metric_families = tuple(
         _mapping_values(contract, "allowed_metrics")
         for contract in owner_contracts
@@ -2183,15 +2208,6 @@ def _select_source_datasets(
         str(contract.get("source_selection") or "") == "all_required_datasets"
         for contract in owner_contracts
     )
-    allowed = {
-        dataset_id
-        for contract in owner_contracts
-        for dataset_id in _mapping_values(contract, "allowed_datasets")
-    }
-    requested_source_unrestricted = any(
-        _mapping_values(contract, "query_families") == ("data_quality_probe",)
-        for contract in owner_contracts
-    )
     requested = tuple(
         dataset_id
         for dataset_id in candidates
@@ -2200,6 +2216,15 @@ def _select_source_datasets(
     reviewed_requested = tuple(
         dataset_id for dataset_id in requested if dataset_id in allowed
     )
+    if requested and allowed and not reviewed_requested:
+        return (), _requested_source_unreviewed_gap(
+            item_kind=item_kind,
+            item_id=item_id,
+            requested=requested,
+            reviewed=(),
+            affected=affected,
+            affected_claim_types=affected_claim_types,
+        )
     purpose_resolved = _requested_sources_resolve_by_capability(
         requested,
         affected,
@@ -2209,9 +2234,7 @@ def _select_source_datasets(
         requested
         if (
             purpose_resolved
-            or requested_source_unrestricted
             or not allowed
-            or not reviewed_requested
         )
         else reviewed_requested
     )
@@ -2219,7 +2242,6 @@ def _select_source_datasets(
         if (
             all_required
             or purpose_resolved
-            or requested_source_unrestricted
             or len(selected) == 1
         ):
             excluded_requested = tuple(
@@ -2237,31 +2259,13 @@ def _select_source_datasets(
                         for dataset_id in excluded_requested
                     )
                 ) or affected
-                return selected, _contract_gap(
-                    gap_type="contract_partial",
-                    gap_id=(
-                        f"{item_kind}:{item_id}:requested_source_unreviewed:"
-                        f"{','.join(excluded_requested)}"
-                    ),
-                    dataset_id=(
-                        excluded_requested[0]
-                        if len(excluded_requested) == 1
-                        else ""
-                    ),
-                    affected_capabilities=restricted_owners,
+                return selected, _requested_source_unreviewed_gap(
+                    item_kind=item_kind,
+                    item_id=item_id,
+                    requested=requested,
+                    reviewed=selected,
+                    affected=restricted_owners,
                     affected_claim_types=affected_claim_types,
-                    repair_options=(
-                        "use_capability_reviewed_source",
-                        "bind_independent_context_capability",
-                    ),
-                    diagnostic_context={
-                        "item_kind": item_kind,
-                        "item_id": item_id,
-                        "requested_dataset_ids": list(requested),
-                        "reviewed_dataset_ids": list(selected),
-                        "excluded_dataset_ids": list(excluded_requested),
-                        "claim_intents": list(affected_claim_types),
-                    },
                 )
             return selected, None
         return (), _source_ambiguity_gap(
@@ -2294,6 +2298,42 @@ def _select_source_datasets(
     )
 
 
+def _requested_source_unreviewed_gap(
+    *,
+    item_kind: str,
+    item_id: str,
+    requested: tuple[str, ...],
+    reviewed: tuple[str, ...],
+    affected: tuple[str, ...],
+    affected_claim_types: tuple[str, ...],
+) -> ContractGap:
+    excluded = tuple(
+        dataset_id for dataset_id in requested if dataset_id not in reviewed
+    )
+    return _contract_gap(
+        gap_type="contract_partial",
+        gap_id=(
+            f"{item_kind}:{item_id}:requested_source_unreviewed:"
+            f"{','.join(excluded)}"
+        ),
+        dataset_id=excluded[0] if len(excluded) == 1 else "",
+        affected_capabilities=affected,
+        affected_claim_types=affected_claim_types,
+        repair_options=(
+            "use_capability_reviewed_source",
+            "bind_independent_context_capability",
+        ),
+        diagnostic_context={
+            "item_kind": item_kind,
+            "item_id": item_id,
+            "requested_dataset_ids": list(requested),
+            "reviewed_dataset_ids": list(reviewed),
+            "excluded_dataset_ids": list(excluded),
+            "claim_intents": list(affected_claim_types),
+        },
+    )
+
+
 def _capability_reviews_dataset(
     capability_id: str,
     dataset_id: str,
@@ -2304,8 +2344,6 @@ def _capability_reviews_dataset(
     contract = _registry_entry(registry.capability_inputs, capability_id)
     if contract is None:
         return False
-    if _mapping_values(contract, "query_families") == ("data_quality_probe",):
-        return True
     if str(contract.get("source_mode") or "") == "requested_context_sources":
         return dataset_id in _mapping_values(contract, "allowed_context_datasets")
     allowed = _mapping_values(contract, "allowed_datasets")
@@ -2328,8 +2366,6 @@ def _requested_sources_resolve_by_capability(
         if contract is None:
             continue
         observed_owner = True
-        query_families = _mapping_values(contract, "query_families")
-        quality_only = query_families == ("data_quality_probe",)
         allowed = (
             _mapping_values(contract, "allowed_context_datasets")
             if str(contract.get("source_mode") or "") == "requested_context_sources"
@@ -2337,14 +2373,14 @@ def _requested_sources_resolve_by_capability(
         )
         owned = (
             requested
-            if quality_only or not allowed
+            if not allowed
             else tuple(dataset_id for dataset_id in requested if dataset_id in allowed)
         )
         all_required = (
             str(contract.get("source_selection") or "")
             == "all_required_datasets"
         )
-        if len(owned) > 1 and not quality_only and not all_required:
+        if len(owned) > 1 and not all_required:
             return False
         covered.update(owned)
     return observed_owner and covered == set(requested)
