@@ -897,6 +897,58 @@ def test_postgres_runtime_authority_resolver_rejects_ambiguous_contracts_for_run
         resolver(run_id)
 
 
+def test_real_eval_prefers_persistent_runtime_evidence_resolver_from_store():
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    process_local_query_resolver = object()
+    persistent_runtime_resolver = object()
+
+    class Store:
+        def runtime_evidence_resolver(self):
+            return persistent_runtime_resolver
+
+    assert system_test._runtime_evidence_resolver_for_store(
+        Store(),
+        fallback=process_local_query_resolver,
+    ) is persistent_runtime_resolver
+
+
+def test_dry_eval_uses_process_local_resolver_without_store_factory():
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    process_local_query_resolver = object()
+
+    assert system_test._runtime_evidence_resolver_for_store(
+        object(),
+        fallback=process_local_query_resolver,
+        required=False,
+    ) is process_local_query_resolver
+
+
+@pytest.mark.parametrize("factory_behavior", ["missing", "none", "error"])
+def test_real_eval_fails_closed_without_persistent_runtime_evidence_resolver(
+    factory_behavior,
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    class Store:
+        if factory_behavior != "missing":
+            def runtime_evidence_resolver(self):
+                if factory_behavior == "error":
+                    raise RuntimeError("database unavailable")
+                return None
+
+    with pytest.raises(
+        RuntimeError,
+        match="^eval_runtime_evidence_authority_unavailable$",
+    ):
+        system_test._runtime_evidence_resolver_for_store(
+            Store(),
+            fallback=object(),
+            required=True,
+        )
+
+
 @pytest.mark.parametrize("path_kind", ["absolute_outside", "traversal", "symlink_escape"])
 def test_runtime_audit_package_rejects_artifact_path_escape(
     tmp_path, monkeypatch, path_kind

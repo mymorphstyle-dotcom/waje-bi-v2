@@ -4917,6 +4917,77 @@ class AgentCoreBridgeTest(unittest.TestCase):
             review["issues"],
         )
 
+    def test_live_harness_reports_missing_persisted_claim_resolver_explicitly(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _real_clickhouse_review,
+        )
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-missing-persisted-claim-resolver",
+        )
+        manifest = package["admin_audit"]["context_manifest"]
+        package["verified_claims"] = [
+            package["admin_audit"]["verified_claims"][0]
+        ]
+
+        review = _real_clickhouse_review(
+            self._persisted_runtime_result(package, context_manifest=manifest),
+            real_clickhouse=True,
+            evidence_resolver=context["evidence_resolver"],
+            required_datasets=("paid_order_success",),
+            analysis_context={"target_date": "2026-06-02"},
+            runtime_authority_resolver=(
+                self._run_matched_runtime_authority_resolver(package)
+            ),
+        )
+
+        self.assertFalse(review["runtime_correctness"]["all_claims_traceable"])
+        self.assertIn(
+            "missing_verified_claim_authority_resolver",
+            review["issues"],
+        )
+
+    def test_live_harness_records_persisted_claim_resolver_errors(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _real_clickhouse_review,
+        )
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-persisted-claim-resolver-error",
+        )
+        manifest = package["admin_audit"]["context_manifest"]
+        package["verified_claims"] = [
+            package["admin_audit"]["verified_claims"][0]
+        ]
+        base = context["evidence_resolver"]
+
+        class FailingClaimResolver:
+            def __getattr__(self, name):
+                return getattr(base, name)
+
+            def resolve_verified_claim(self, claim_ref):
+                raise RuntimeError("database unavailable")
+
+            def resolve_claim_provenance(self, record_ref):
+                raise RuntimeError("database unavailable")
+
+        review = _real_clickhouse_review(
+            self._persisted_runtime_result(package, context_manifest=manifest),
+            real_clickhouse=True,
+            evidence_resolver=FailingClaimResolver(),
+            required_datasets=("paid_order_success",),
+            analysis_context={"target_date": "2026-06-02"},
+            runtime_authority_resolver=(
+                self._run_matched_runtime_authority_resolver(package)
+            ),
+        )
+
+        self.assertFalse(review["runtime_correctness"]["all_claims_traceable"])
+        self.assertIn(
+            "verified_claim_authority_error:RuntimeError",
+            review["issues"],
+        )
+
     def test_live_harness_rejects_malformed_verified_claim_as_hard_failure(self):
         from tools.phase7.run_live_conversation_system_test import (
             _real_clickhouse_review,
@@ -5101,7 +5172,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
             review["issues"],
         )
 
-    def test_live_harness_fails_real_clickhouse_case_without_verified_refs(self):
+    def test_live_harness_fails_closed_without_persisted_evidence_authority(self):
         from tempfile import TemporaryDirectory
 
         from tools.phase7.run_live_conversation_system_test import run_case
@@ -5114,16 +5185,16 @@ class AgentCoreBridgeTest(unittest.TestCase):
         }
 
         with TemporaryDirectory() as tmpdir:
-            result = run_case(
-                core,
-                case,
-                Path(tmpdir),
-                real_clickhouse=True,
-            )
-
-        self.assertEqual(result["status"], "failed")
-        self.assertFalse(result["real_clickhouse_review"]["real_clickhouse_verified"])
-        self.assertFalse(result["turns"][0]["real_clickhouse_review"]["real_clickhouse_verified"])
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "^eval_runtime_evidence_authority_unavailable$",
+            ):
+                run_case(
+                    core,
+                    case,
+                    Path(tmpdir),
+                    real_clickhouse=True,
+                )
 
     def test_live_harness_preserves_failure_llm_audits_without_artifact(self):
         from tempfile import TemporaryDirectory
@@ -6372,6 +6443,75 @@ class AgentCoreBridgeTest(unittest.TestCase):
         expected = str((repository_root / "artifacts" / "phase-7").resolve())
         self.assertEqual(captured[0]["artifact_root"], expected)
         self.assertTrue(Path(captured[0]["artifact_root"]).is_absolute())
+
+    def test_real_live_harness_reviews_with_store_persisted_evidence_resolver(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7 import run_live_conversation_system_test as system_test
+
+        execution_only_resolver = object()
+        persisted_evidence_resolver = object()
+
+        class Store:
+            def runtime_evidence_resolver(self):
+                return persisted_evidence_resolver
+
+        class Core:
+            store = Store()
+            evidence_resolver = execution_only_resolver
+
+            def run_message(self, **kwargs):
+                return {
+                    "status": "failed",
+                    "run_id": "run-persisted-evidence-review",
+                    "topic_id": "topic-persisted-evidence-review",
+                    "intent": "analysis",
+                    "topic_relation": "new_topic",
+                    "failure_reason": "contract_partial",
+                    "answer_package": None,
+                    "context_manifest": {
+                        "manifest_id": "context-persisted-evidence-review",
+                        "can_support_claims": False,
+                        "items": [],
+                    },
+                    "accepted_graph": [],
+                    "artifact_path": "",
+                    "llm_calls": [],
+                }
+
+        runtime_review = {
+            "required": True,
+            "real_clickhouse_verified": False,
+            "clickhouse_result_refs": [],
+            "observed_datasets": [],
+            "required_datasets": [],
+            "runtime_correctness": {
+                "all_required_queries_complete": False,
+                "all_capabilities_bound": False,
+                "all_claims_traceable": True,
+            },
+            "issues": ["missing_clickhouse_result_refs"],
+        }
+        with TemporaryDirectory() as tmpdir, patch.object(
+            system_test,
+            "_real_clickhouse_review",
+            return_value=runtime_review,
+        ) as review:
+            system_test.run_case(
+                Core(),
+                {
+                    "id": "persisted-evidence-review",
+                    "turns": [{"user": "检查证据边界。", "expect": {}}],
+                },
+                Path(tmpdir),
+                real_clickhouse=True,
+                run_mode="real_clickhouse",
+            )
+
+        self.assertIs(
+            review.call_args.kwargs["evidence_resolver"],
+            persisted_evidence_resolver,
+        )
 
     def test_live_harness_rejects_initial_quality_artifact_from_sibling_suite(self):
         from tempfile import TemporaryDirectory

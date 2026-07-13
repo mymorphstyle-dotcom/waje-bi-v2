@@ -1385,6 +1385,7 @@ git commit -m "test: define dual-track current data evaluation"
 **Interfaces:**
 - Consumes all Task 1-8 contracts, runtime behavior, and eval suites.
 - Produces the final local coverage audit, two fixed-eight artifacts, one platform artifact, three quality reviews, a baseline comparison, and a durable delivery audit.
+- Resolves real-eval query, binding, verified-claim, and trusted-provenance authority from the conversation store's PostgreSQL runtime-evidence resolver. A process-local query resolver is insufficient for persisted claim review and must fail explicitly when the store resolver is unavailable.
 
 - [x] **Step 1: Run final automated verification**
 

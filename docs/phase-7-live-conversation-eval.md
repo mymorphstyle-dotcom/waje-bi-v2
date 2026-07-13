@@ -39,7 +39,9 @@ the snapshot. The harness does not synthesize source availability.
 ## Runtime correctness
 
 For real ClickHouse runs, the harness reads the runtime authority through the
-Core evidence resolver backed by PostgreSQL. Client validator flags and bare
+conversation store's PostgreSQL evidence resolver. The process-local query
+resolver cannot stand in for persisted verified-claim and provenance authority.
+Client validator flags and bare
 query hashes do not satisfy the review. The AnalysisContract is resolved by the
 exact run owner and its persisted signature. The local Answer Package remains a
 required replay artifact and must carry either an exact embedded contract or an

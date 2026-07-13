@@ -3446,6 +3446,12 @@ def _real_clickhouse_review(
     context_manifest = result.get("context_manifest") or {}
     context_refs = _traceable_refs({}, context_manifest)
     verified_claims = tuple(package.get("verified_claims") or ())
+    claim_authority_available = all(
+        callable(getattr(evidence_resolver, method, None))
+        for method in ("resolve_verified_claim", "resolve_claim_provenance")
+    )
+    if verified_claims and not claim_authority_available:
+        issues.append("missing_verified_claim_authority_resolver")
     claims_traceable = not (_claims(package) and not verified_claims)
     if not claims_traceable:
         issues.append("missing_verified_claim_authority")
@@ -3469,6 +3475,10 @@ def _real_clickhouse_review(
         persisted_claim = None
         trusted_provenance = None
         try:
+            if not claim_authority_available:
+                raise EvidenceIntegrityError(
+                    "verified_claim_authority_resolver_missing"
+                )
             resolve_claim = getattr(evidence_resolver, "resolve_verified_claim")
             resolve_provenance = getattr(
                 evidence_resolver, "resolve_claim_provenance"
@@ -3488,8 +3498,12 @@ def _real_clickhouse_review(
                 evidence_by_ref=evidence_items,
                 trusted_provenance=trusted_provenance,
             )
-        except (AttributeError, EvidenceIntegrityError, TypeError, ValueError):
+        except Exception as exc:
             provenance_complete = False
+            if claim_authority_available:
+                issues.append(
+                    f"verified_claim_authority_error:{type(exc).__name__}"
+                )
         traceable = (
             str(claim.get("context_manifest_ref") or "")
             == str(context_manifest.get("manifest_id") or "")
@@ -3714,6 +3728,27 @@ def _runtime_authority_resolver_for_store(conversation_store: Any):
         }
 
     return resolve
+
+
+def _runtime_evidence_resolver_for_store(
+    conversation_store: Any,
+    *,
+    fallback: Any = None,
+    required: bool = False,
+):
+    """Select persisted runtime evidence authority when the store provides it."""
+    factory = getattr(conversation_store, "runtime_evidence_resolver", None)
+    if not callable(factory):
+        if required:
+            raise RuntimeError("eval_runtime_evidence_authority_unavailable")
+        return fallback
+    try:
+        resolver = factory()
+    except Exception as exc:
+        raise RuntimeError("eval_runtime_evidence_authority_unavailable") from exc
+    if resolver is None:
+        raise RuntimeError("eval_runtime_evidence_authority_unavailable")
+    return resolver
 
 
 def _present_analysis_contract_copies(
@@ -4495,6 +4530,11 @@ def run_case(
     runtime_authority_resolver = _runtime_authority_resolver_for_store(
         getattr(core, "store", None)
     )
+    runtime_evidence_resolver = _runtime_evidence_resolver_for_store(
+        getattr(core, "store", None),
+        fallback=getattr(core, "evidence_resolver", None),
+        required=real_clickhouse,
+    )
     turns: list[dict[str, Any]] = []
     prior_run_lineage: list[dict[str, str]] = []
     prior_topic_id: str | None = None
@@ -4584,7 +4624,7 @@ def run_case(
         turn_record["real_clickhouse_review"] = _real_clickhouse_review(
             effective,
             real_clickhouse=real_clickhouse,
-            evidence_resolver=getattr(core, "evidence_resolver", None),
+            evidence_resolver=runtime_evidence_resolver,
             required_datasets=required_datasets,
             analysis_context=analysis_context,
             runtime_authority_resolver=runtime_authority_resolver,
@@ -4595,7 +4635,7 @@ def run_case(
                 turn_record,
                 RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
                 coverage_authority=coverage_authority,
-                evidence_resolver=getattr(core, "evidence_resolver", None),
+                evidence_resolver=runtime_evidence_resolver,
                 rows_loader=getattr(core, "rows_loader", None),
                 release_resolver=getattr(core, "release_resolver", None),
                 conversation_store=getattr(core, "store", None),
