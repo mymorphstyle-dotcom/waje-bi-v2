@@ -411,14 +411,14 @@ def _canonical_ordered_rows(
             "unique_key_fields_missing:" + ",".join(missing_key_fields)
         )
     for row in rows:
-        canonical_row = _canonical_value(row)
+        canonical_projection = _canonical_value(row)
         if key_fields:
             raw_key = tuple(row[field] for field in key_fields)
             key = canonical_digest(raw_key)
             sort_key = key
         else:
-            sort_key = canonical_digest(canonical_row)
-        normalized.append((sort_key, canonical_row))
+            sort_key = canonical_digest(canonical_projection)
+        normalized.append((sort_key, dict(row)))
     normalized.sort(key=lambda item: item[0])
     return tuple(row for _, row in normalized)
 

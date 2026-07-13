@@ -1,5 +1,7 @@
 import math
 from dataclasses import asdict, replace
+from datetime import date
+from decimal import Decimal
 import unittest
 import bi_agent.runtime.evidence_authority as evidence_authority_module
 
@@ -1071,6 +1073,67 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
                 original_rows,
                 contract.result_shape.unique_key,
             ),
+        )
+
+    def test_canonical_row_order_preserves_typed_values_through_authority_roundtrip(self):
+        contract = baseline_contract(metric=reviewed_metric())
+        contract = replace(
+            contract,
+            contract_signature=query_contract_signature(contract),
+        )
+        snapshot = paid_snapshot()
+        rows = tuple(
+            {
+                **row,
+                "paid_amount": Decimal(str(row["paid_amount"])),
+            }
+            for row in complete_rows()
+        )
+        authority = RuntimeEvidenceAuthority()
+        results = tuple(
+            ClickHouseQueryExecutor(
+                _RowsRuntime(ordered_rows),
+                evidence_authority=authority,
+                release_resolver=_PAID_RELEASE_RESOLVER,
+            ).execute(
+                contract,
+                {snapshot.snapshot_ref: snapshot},
+                execution_attempt_ref="attempt:test:typed-row-roundtrip",
+            )
+            for ordered_rows in (rows, tuple(reversed(rows)))
+        )
+        query_records = tuple(
+            authority.resolve_query_execution(result.result_ref)
+            for result in results
+        )
+        rows_record = authority.resolve_rows(query_records[0].rows_ref)
+        loaded_rows = authority.rows_loader.load_rows(rows_record.storage_ref)
+        roundtrip_report = validate_query_result(
+            contract,
+            replace(results[0], rows=loaded_rows),
+            snapshot,
+            release_resolver=_PAID_RELEASE_RESOLVER,
+        )
+
+        self.assertEqual(
+            tuple(result.execution_status for result in results),
+            ("succeeded", "succeeded"),
+        )
+        self.assertEqual(query_records[0], query_records[1])
+        self.assertTrue(
+            all(isinstance(row["paid_amount"], Decimal) for row in loaded_rows)
+        )
+        self.assertEqual(roundtrip_report.completeness_status, "complete")
+        typed_rows = evidence_authority_module.canonical_result_rows(
+            (
+                {"id": "b", "day": date(2026, 6, 2), "amount": Decimal("2")},
+                {"id": "a", "day": date(2026, 6, 1), "amount": Decimal("1")},
+            ),
+            ("id",),
+        )
+        self.assertTrue(all(isinstance(row["day"], date) for row in typed_rows))
+        self.assertTrue(
+            all(isinstance(row["amount"], Decimal) for row in typed_rows)
         )
 
     def test_unexpected_window_failures_are_idempotent_across_executor_result_order(self):
