@@ -141,6 +141,9 @@ class InMemoryConversationStore:
             "status": status,
             "request": request or {},
             "answer_package": self.runs.get(run_id, {}).get("answer_package"),
+            "checkpoint_events": self.runs.get(run_id, {}).get(
+                "checkpoint_events", []
+            ),
         }
         self.add_audit_event("run_status_changed", thread_id=thread_id, topic_id=topic_id, run_id=run_id)
 

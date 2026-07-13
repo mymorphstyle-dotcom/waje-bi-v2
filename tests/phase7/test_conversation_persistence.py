@@ -707,6 +707,42 @@ class ConversationPersistenceTest(unittest.TestCase):
         self.assertGreaterEqual(executed_sql.count("waje_runtime.audit_events"), 1)
         self.assertEqual(connection.commits, 1)
 
+    def test_postgres_store_preserves_failed_llm_audit_contract(self):
+        audit = {
+            "task": "business_intent",
+            "provider": "contract-test-provider",
+            "model": "contract-test-model",
+            "prompt_version": "contract-test-v1",
+            "response_id": "response-3",
+            "structured_output": {
+                "question_family": "data_quality_or_evidence_review",
+                "analysis_requirements": {
+                    "context_sources": ["gameplay"]
+                },
+            },
+            "raw_response_content": json.dumps(
+                {"question_family": "data_quality_or_evidence_review"},
+                ensure_ascii=False,
+            ),
+        }
+        connection = FakeConnection()
+        store = PostgresConversationStore(connection)
+
+        store.add_audit_event(
+            "workflow_failure_llm_call_recorded",
+            thread_id="thread-failed-audit",
+            topic_id="topic-failed-audit",
+            run_id="run-failed-audit",
+            ref=audit["response_id"],
+            payload=audit,
+        )
+
+        statement, params = connection.statements[-1]
+        self.assertIn("waje_runtime.audit_events", statement)
+        self.assertEqual(params["event_type"], "workflow_failure_llm_call_recorded")
+        self.assertEqual(params["ref"], "response-3")
+        self.assertEqual(json.loads(params["payload"]), audit)
+
 
 class FakeConnection:
     def __init__(self, rows=None, *, fail_execute_at=None, fail_commit=False):

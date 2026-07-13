@@ -659,6 +659,123 @@ def test_business_intent_context_family_axis_fails_closed_after_retry(monkeypatc
     ]
 
 
+def test_failed_business_intent_retries_return_llm_audits_and_checkpoints():
+    from types import SimpleNamespace
+
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    families = [
+        "pattern_explanation",
+        "anomaly_or_black_swan_review",
+        "data_quality_or_evidence_review",
+    ]
+
+    class ContractFailingClient:
+        def invoke_json(self, *, task, prompt_version, messages, required_keys):
+            family = families.pop(0)
+            output = {
+                "question_family": family,
+                "question_families": [family],
+                "primary_question_family": family,
+                "secondary_question_families": [],
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "scope": "full_sample",
+                "time_window": "yesterday",
+                "target_claim": "玩法活动与付费变化的边界判断",
+                "baseline_candidates": [],
+                "status_message": "已识别业务问题。",
+                "answer_contract": {"direct_answer": True},
+                "analysis_requirements": {
+                    "context_sources": ["gameplay"],
+                    "claim_intents": ["comparative_change"],
+                    "requested_dimensions": [],
+                    "requested_components": [],
+                },
+            }
+            attempt = 3 - len(families)
+            return SimpleNamespace(
+                output=output,
+                audit={
+                    "task": task,
+                    "provider": "contract-test-provider",
+                    "model": "contract-test-model",
+                    "prompt_version": prompt_version,
+                    "response_id": f"response-{attempt}",
+                    "structured_output": output,
+                    "raw_response_content": json.dumps(output, ensure_ascii=False),
+                },
+            )
+
+    result = workflow.run_pattern_workflow(
+        {
+            "run_id": "run-failed-intent-audits",
+            "question": "昨天玩法活跃和付费变化能对上吗？",
+            "llm_client": ContractFailingClient(),
+        }
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "context_family_axis_missing:gameplay"
+    assert [
+        call["structured_output"]["question_family"]
+        for call in result.llm_calls
+    ] == [
+        "pattern_explanation",
+        "anomaly_or_black_swan_review",
+        "data_quality_or_evidence_review",
+    ]
+    assert [event["attempt"] for event in result.checkpoint_events] == [1, 2, 3]
+    assert [event["status"] for event in result.checkpoint_events] == [
+        "retrying",
+        "retrying",
+        "failed",
+    ]
+    assert {
+        event["reason"] for event in result.checkpoint_events
+    } == {"context_family_axis_missing:gameplay"}
+
+
+def test_successful_workflow_result_returns_llm_audits(monkeypatch):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    audit = {
+        "task": "business_intent",
+        "provider": "contract-test-provider",
+        "model": "contract-test-model",
+        "prompt_version": "contract-test-v1",
+        "response_id": "response-success",
+        "structured_output": {
+            "question_family": "business_object_impact_review"
+        },
+        "raw_response_content": json.dumps(
+            {"question_family": "business_object_impact_review"},
+            ensure_ascii=False,
+        ),
+    }
+
+    class CompletedGraph:
+        def invoke(self, state, config):
+            state["llm_calls"].append(audit)
+            return {
+                **state,
+                "workflow_status": "draft",
+                "answer_package": {"status": "draft"},
+                "artifact_path": "artifacts/phase-7/run-success-audits.json",
+            }
+
+    monkeypatch.setattr(workflow, "build_pattern_graph", CompletedGraph)
+    result = workflow.run_pattern_workflow(
+        {
+            "run_id": "run-success-audits",
+            "llm_client": object(),
+        }
+    )
+
+    assert result.status == "draft"
+    assert result.llm_calls == (audit,)
+
+
 def test_route_design_resolves_obligations_after_capability_family_inference(
     monkeypatch,
 ):

@@ -335,7 +335,10 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 run_id=result.run_id,
                 answer_package=result.answer_package,
                 artifact_path=result.artifact_path,
-                checkpoint_events=result.checkpoint_events,
+                checkpoint_events=(
+                    {"node": "persist_artifact", "status": "completed"},
+                ),
+                llm_calls=(_failed_llm_audit("runtime-persistence"),),
                 analysis_runtime_records={"analysis_contract": {}},
             )
 
@@ -348,6 +351,14 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["failure_reason"], "analysis_runtime_persistence_failed")
+        self.assertEqual(
+            result["llm_calls"],
+            [_failed_llm_audit("runtime-persistence")],
+        )
+        self.assertEqual(
+            store.runs["run-persistence-failure"]["checkpoint_events"],
+            [{"node": "persist_artifact", "status": "completed"}],
+        )
         self.assertNotIn("run-persistence-failure", store.answer_packages)
         failure_audit = next(
             item
@@ -355,6 +366,13 @@ class AgentCoreBridgeTest(unittest.TestCase):
             if item["event_type"] == "analysis_runtime_persistence_failed"
         )
         self.assertEqual(failure_audit["payload"]["reason"], "postgres unavailable")
+        self.assertTrue(
+            any(
+                event["event_type"]
+                == "workflow_failure_llm_call_recorded"
+                for event in store.audit_events
+            )
+        )
 
     def test_verified_delivery_without_runtime_bundle_blocks_publication(self):
         package, context, _ = _verified_delivery_package(
@@ -915,6 +933,10 @@ class AgentCoreBridgeTest(unittest.TestCase):
                         "recommended_assumption": {"option": "等待业务数据就绪"},
                     },
                 },
+                checkpoint_events=(
+                    {"node": "compile_analysis_contract", "status": "completed"},
+                ),
+                llm_calls=(_failed_llm_audit("waiting-persistence"),),
                 analysis_runtime_records=None,
             )
 
@@ -933,6 +955,21 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(
             result["failure_reason"],
             "analysis_runtime_persistence_failed",
+        )
+        self.assertEqual(
+            result["llm_calls"],
+            [_failed_llm_audit("waiting-persistence")],
+        )
+        self.assertEqual(
+            store.runs[result["run_id"]]["checkpoint_events"],
+            [{"node": "compile_analysis_contract", "status": "completed"}],
+        )
+        self.assertTrue(
+            any(
+                event["event_type"]
+                == "workflow_failure_llm_call_recorded"
+                for event in store.audit_events
+            )
         )
         self.assertNotIn(result["run_id"], store.analysis_runtime_records)
         self.assertEqual(
@@ -1974,7 +2011,10 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 status="draft",
                 run_id=request["run_id"],
                 answer_package=package,
-                checkpoint_events=(),
+                checkpoint_events=(
+                    {"node": "persist_artifact", "status": "completed"},
+                ),
+                llm_calls=(_failed_llm_audit("delivery-verifier"),),
             )
 
         core = ConversationAgentCore(store, workflow_runner=forged_workflow)
@@ -1992,7 +2032,21 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(package["status"], "failed")
         self.assertEqual(package["final_answer"], "")
         self.assertEqual(package["llm_calls"], [])
-        self.assertEqual(result["llm_calls"], [])
+        self.assertEqual(
+            result["llm_calls"],
+            [_failed_llm_audit("delivery-verifier")],
+        )
+        self.assertEqual(
+            store.runs["run-agent-core-forged-pass"]["checkpoint_events"],
+            [{"node": "persist_artifact", "status": "completed"}],
+        )
+        self.assertTrue(
+            any(
+                event["event_type"]
+                == "workflow_failure_llm_call_recorded"
+                for event in store.audit_events
+            )
+        )
         self.assertNotIn(
             "secret",
             str({key: value for key, value in package.items() if key != "internal_audit"}),
@@ -2166,6 +2220,89 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("context_manifest", result)
         self.assertTrue(result["context_manifest"])
+
+    def test_agent_core_persists_failed_workflow_nodes_and_llm_audits(self):
+        audits = tuple(
+            {
+                "task": "business_intent",
+                "provider": "contract-test-provider",
+                "model": "contract-test-model",
+                "prompt_version": "contract-test-v1",
+                "response_id": f"response-{attempt}",
+                "structured_output": {
+                    "question_family": family,
+                    "analysis_requirements": {
+                        "context_sources": ["gameplay"]
+                    },
+                },
+                "raw_response_content": json.dumps(
+                    {"question_family": family}, ensure_ascii=False
+                ),
+            }
+            for attempt, family in enumerate(
+                (
+                    "pattern_explanation",
+                    "anomaly_or_black_swan_review",
+                    "data_quality_or_evidence_review",
+                ),
+                start=1,
+            )
+        )
+        checkpoints = tuple(
+            {
+                "node": "understand_business_intent",
+                "attempt": attempt,
+                "status": status,
+                "reason": "context_family_axis_missing:gameplay",
+            }
+            for attempt, status in enumerate(
+                ("retrying", "retrying", "failed"), start=1
+            )
+        )
+
+        def workflow(request):
+            return WorkflowRunResult(
+                status="failed",
+                run_id=request["run_id"],
+                failure_reason="context_family_axis_missing:gameplay",
+                checkpoint_events=checkpoints,
+                llm_calls=audits,
+            )
+
+        store = InMemoryConversationStore()
+        result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
+            thread_id="thread-failed-workflow-audits",
+            run_id="run-failed-workflow-audits",
+            user_message="昨天玩法活跃和付费变化能对上吗？",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(tuple(result["llm_calls"]), audits)
+        self.assertEqual(
+            store.runs["run-failed-workflow-audits"]["checkpoint_events"],
+            list(checkpoints),
+        )
+        recorded = tuple(
+            event
+            for event in store.audit_events
+            if event["event_type"] == "workflow_failure_llm_call_recorded"
+        )
+        self.assertEqual(len(recorded), 3)
+        self.assertEqual(
+            tuple(event["payload"] for event in recorded), audits
+        )
+        failure = next(
+            event
+            for event in store.audit_events
+            if event["event_type"] == "workflow_failed"
+        )
+        self.assertEqual(
+            failure["payload"],
+            {
+                "failure_reason": "context_family_axis_missing:gameplay",
+                "failure_owner": "workflow_runtime_owner",
+            },
+        )
 
     def test_agent_core_failed_workflow_retains_boundary_package_and_owner(self):
         store = InMemoryConversationStore()
@@ -3612,6 +3749,72 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertFalse(result["real_clickhouse_review"]["real_clickhouse_verified"])
         self.assertFalse(result["turns"][0]["real_clickhouse_review"]["real_clickhouse_verified"])
 
+    def test_live_harness_preserves_failure_llm_audits_without_artifact(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import run_case
+
+        audits = [
+            {
+                "task": "business_intent",
+                "provider": "contract-test-provider",
+                "model": "contract-test-model",
+                "prompt_version": "contract-test-v1",
+                "response_id": f"response-{attempt}",
+                "structured_output": {"question_family": family},
+                "raw_response_content": json.dumps(
+                    {"question_family": family}, ensure_ascii=False
+                ),
+            }
+            for attempt, family in enumerate(
+                (
+                    "pattern_explanation",
+                    "anomaly_or_black_swan_review",
+                    "data_quality_or_evidence_review",
+                ),
+                start=1,
+            )
+        ]
+
+        class Core:
+            evidence_resolver = None
+
+            def run_message(self, **kwargs):
+                return {
+                    "status": "failed",
+                    "run_id": "run-harness-failed-audits",
+                    "topic_id": "topic-harness-failed-audits",
+                    "intent": "new_topic",
+                    "topic_relation": "new_topic",
+                    "failure_reason": "context_family_axis_missing:gameplay",
+                    "answer_package": None,
+                    "context_manifest": {
+                        "manifest_id": "context-harness-failed-audits",
+                        "can_support_claims": False,
+                        "items": [],
+                    },
+                    "accepted_graph": [],
+                    "artifact_path": "",
+                    "llm_calls": audits,
+                }
+
+        case = {
+            "id": "failure-audits-without-artifact",
+            "turns": [
+                {
+                    "user": "昨天玩法活跃和付费变化能对上吗？",
+                    "expect": {},
+                }
+            ],
+        }
+        with TemporaryDirectory() as tmpdir:
+            output = run_case(Core(), case, Path(tmpdir))
+
+        self.assertEqual(output["turns"][0]["status"], "failed")
+        self.assertEqual(output["turns"][0]["artifact_path"], "")
+        self.assertEqual(output["turns"][0]["llm_calls"], audits)
+        self.assertEqual(output["llm_calls"], audits)
+
     def test_live_harness_uses_internal_artifact_only_for_runtime_audit(self):
         from tools.phase7.run_live_conversation_system_test import (
             _runtime_audit_package,
@@ -4492,6 +4695,22 @@ def _run_verified_package_through_core(
         ),
         store,
     )
+
+
+def _failed_llm_audit(response_suffix):
+    output = {
+        "question_family": "data_quality_or_evidence_review",
+        "analysis_requirements": {"context_sources": ["gameplay"]},
+    }
+    return {
+        "task": "business_intent",
+        "provider": "contract-test-provider",
+        "model": "contract-test-model",
+        "prompt_version": "contract-test-v1",
+        "response_id": f"response-{response_suffix}",
+        "structured_output": output,
+        "raw_response_content": json.dumps(output, ensure_ascii=False),
+    }
 
 
 def fake_workflow(request):

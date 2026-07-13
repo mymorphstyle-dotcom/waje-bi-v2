@@ -166,6 +166,7 @@ class WorkflowRunResult:
     artifact_path: str = ""
     failure_reason: str = ""
     checkpoint_events: tuple[dict[str, Any], ...] = ()
+    llm_calls: tuple[dict[str, Any], ...] = ()
     analysis_runtime_records: Optional[Mapping[str, Any]] = None
     analysis_runtime_result: Any = None
 
@@ -221,6 +222,7 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
                 run_id=state["run_id"],
                 failure_reason=f"llm_binding_failed:{_exception_reason(exc)}",
                 checkpoint_events=tuple(state["checkpoint_events"]),
+                llm_calls=tuple(state["llm_calls"]),
             )
 
     try:
@@ -234,6 +236,7 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
             run_id=state["run_id"],
             failure_reason=_exception_reason(exc),
             checkpoint_events=tuple(state["checkpoint_events"]),
+            llm_calls=tuple(state["llm_calls"]),
         )
     except Exception as exc:
         return WorkflowRunResult(
@@ -241,6 +244,7 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
             run_id=state["run_id"],
             failure_reason=f"langgraph_execution_failed:{_exception_reason(exc)}",
             checkpoint_events=tuple(state["checkpoint_events"]),
+            llm_calls=tuple(state["llm_calls"]),
         )
 
     return WorkflowRunResult(
@@ -250,6 +254,7 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
         artifact_path=str(output.get("artifact_path") or ""),
         failure_reason=str(output.get("workflow_failure_reason") or ""),
         checkpoint_events=tuple(output["checkpoint_events"]),
+        llm_calls=tuple(output.get("llm_calls") or ()),
         analysis_runtime_records=(
             output.get("analysis_runtime_result").persistence_records
             if output.get("analysis_runtime_result") is not None

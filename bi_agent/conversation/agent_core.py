@@ -383,6 +383,12 @@ class ConversationAgentCore:
             request=_persistable_request(request),
         )
         result = self.workflow_runner(request)
+        workflow_llm_calls = tuple(
+            dict(call)
+            for call in result.llm_calls
+            if isinstance(call, Mapping)
+        )
+        self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
         if result.status == "waiting_for_clarification" and result.answer_package:
             try:
                 if result.analysis_runtime_records is None:
@@ -400,6 +406,13 @@ class ConversationAgentCore:
                         )
                     self.store.save_analysis_runtime_records(run_id=run_id, **records)
             except Exception as exc:
+                _record_workflow_failure_llm_audits(
+                    self.store,
+                    thread_id=thread_id,
+                    topic_id=turn.topic_id or "",
+                    run_id=run_id,
+                    llm_calls=workflow_llm_calls,
+                )
                 self.store.upsert_run(
                     run_id,
                     thread_id=thread_id,
@@ -428,6 +441,7 @@ class ConversationAgentCore:
                     "turn_id": turn.turn_id,
                     "topic_id": turn.topic_id,
                     "failure_reason": "analysis_runtime_persistence_failed",
+                    "llm_calls": list(workflow_llm_calls),
                 }
             clarification_payload = dict(
                 result.answer_package.get("clarification") or {}
@@ -570,12 +584,20 @@ class ConversationAgentCore:
                     result.answer_package.get("material_slots") or {}
                 ),
                 "artifact_path": result.artifact_path,
+                "llm_calls": list(workflow_llm_calls),
             }
         if result.status != "draft" or not result.answer_package:
             failure_owner = (
                 "evidence_verifier_owner"
                 if str(result.failure_reason).startswith("delivery_reverify_failed")
                 else "workflow_runtime_owner"
+            )
+            _record_workflow_failure_llm_audits(
+                self.store,
+                thread_id=thread_id,
+                topic_id=turn.topic_id or "",
+                run_id=run_id,
+                llm_calls=workflow_llm_calls,
             )
             self.store.upsert_run(
                 run_id,
@@ -611,9 +633,7 @@ class ConversationAgentCore:
                 "failure_owner": failure_owner,
                 "answer_package": result.answer_package,
                 "artifact_path": result.artifact_path,
-                "llm_calls": list(
-                    (result.answer_package or {}).get("llm_calls") or ()
-                ),
+                "llm_calls": list(workflow_llm_calls),
             }
 
         internal_verifier_audit: dict[str, Any] = {}
@@ -645,7 +665,13 @@ class ConversationAgentCore:
             or bool(package.get("quality_gate", {}).get("blocks_display"))
         )
         if delivery_failed:
-            self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
+            _record_workflow_failure_llm_audits(
+                self.store,
+                thread_id=thread_id,
+                topic_id=turn.topic_id or "",
+                run_id=run_id,
+                llm_calls=workflow_llm_calls,
+            )
             self.store.upsert_run(
                 run_id,
                 thread_id=thread_id,
@@ -676,7 +702,7 @@ class ConversationAgentCore:
                 "answer_package": package,
                 "context_manifest": context_manifest,
                 "failure_reason": "delivery_verifier_failed",
-                "llm_calls": [],
+                "llm_calls": list(workflow_llm_calls),
                 "quality_review": package.get("quality_gate")
                 or package.get("admin_audit"),
             }
@@ -757,6 +783,13 @@ class ConversationAgentCore:
                     ],
                 }
         except Exception as exc:
+            _record_workflow_failure_llm_audits(
+                self.store,
+                thread_id=thread_id,
+                topic_id=turn.topic_id or "",
+                run_id=run_id,
+                llm_calls=workflow_llm_calls,
+            )
             self.store.upsert_run(
                 run_id,
                 thread_id=thread_id,
@@ -788,6 +821,7 @@ class ConversationAgentCore:
                 "topic_relation": turn.topic_relation,
                 "context_manifest": context_manifest,
                 "failure_reason": "analysis_runtime_persistence_failed",
+                "llm_calls": list(workflow_llm_calls),
             }
         context_manifest = persisted_context_manifest or _manifest_with_current_run_evidence(
             context_manifest,
@@ -795,7 +829,6 @@ class ConversationAgentCore:
             role,
         )
         self.store.record_context_manifest(context_manifest)
-        self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
         self.store.record_answer_package(run_id, package)
         if turn.topic_id and hasattr(self.store, "save_analysis_assets"):
             self.store.save_analysis_assets(
@@ -828,7 +861,7 @@ class ConversationAgentCore:
             "answer_package": package,
             "context_manifest": context_manifest,
             "accepted_graph": accepted_graph,
-            "llm_calls": package.get("llm_calls", []),
+            "llm_calls": list(workflow_llm_calls),
             "quality_review": package.get("quality_gate") or package.get("admin_audit"),
         }
 
@@ -875,6 +908,26 @@ class ConversationAgentCore:
             workflow_runner=_dry_run_workflow,
             release_resolver=store,
             **authority_kwargs,
+        )
+
+
+def _record_workflow_failure_llm_audits(
+    store: Any,
+    *,
+    thread_id: str,
+    topic_id: str,
+    run_id: str,
+    llm_calls: tuple[dict[str, Any], ...],
+) -> None:
+    for index, audit in enumerate(llm_calls, start=1):
+        response_id = str(audit.get("response_id") or "")
+        store.add_audit_event(
+            "workflow_failure_llm_call_recorded",
+            thread_id=thread_id,
+            topic_id=topic_id,
+            run_id=run_id,
+            ref=response_id or f"{run_id}:llm-call:{index}",
+            payload=audit,
         )
 
 
