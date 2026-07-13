@@ -6,13 +6,10 @@ from typing import Mapping
 from zoneinfo import ZoneInfo
 
 from bi_agent.runtime.analysis_contracts import ContractGap, ResolvedWindow
+from bi_agent.runtime.baseline_semantics import CANONICAL_BASELINE_IDS
 
 
-CURRENT_DATA_BASELINES = (
-    "previous_day",
-    "rolling_7_day_baseline",
-    "same_weekday_last_week",
-)
+CURRENT_DATA_BASELINES = CANONICAL_BASELINE_IDS
 
 
 @dataclass(frozen=True)

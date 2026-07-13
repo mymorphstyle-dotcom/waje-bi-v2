@@ -28,6 +28,7 @@ _REQUIRED_SECTIONS = (
     "contract_version",
     "artifact",
     "business_timezone",
+    "public_scope_types",
     "claim_strength_taxonomy",
     "metric_display_policies",
     "metric_business_labels",
@@ -94,6 +95,7 @@ class RuntimeContractRegistry:
                 if not isinstance(item, Mapping):
                     raise ValueError(f"runtime_contract_entry_must_be_mapping:{section}:{item_id}")
         _validate_claim_strength_taxonomy(payload["claim_strength_taxonomy"])
+        _validate_public_scope_types(payload["public_scope_types"])
         _validate_metric_display_policies(payload["metric_display_policies"])
         _validate_metric_business_labels(
             payload["metric_business_labels"],
@@ -234,6 +236,10 @@ class RuntimeContractRegistry:
     @property
     def business_timezone(self) -> str:
         return str(self._payload["business_timezone"])
+
+    @property
+    def public_scope_types(self) -> tuple[str, ...]:
+        return tuple(str(item) for item in self._payload["public_scope_types"])
 
     @property
     def source_ref(self) -> str:
@@ -422,6 +428,16 @@ def runtime_registry_integrity_error(value: Any) -> str:
     if not value.source_is_current(CANONICAL_RUNTIME_BINDINGS_PATH):
         return "runtime_contract_registry_integrity"
     return ""
+
+
+def _validate_public_scope_types(value: Any) -> None:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(type(item) is not str or not item.strip() for item in value)
+        or len(value) != len(set(value))
+    ):
+        raise ValueError("runtime_contract_public_scope_types_invalid")
 
 
 def _validate_claim_strength_taxonomy(value: Any) -> None:

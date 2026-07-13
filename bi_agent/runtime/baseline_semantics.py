@@ -10,6 +10,21 @@ CANONICAL_BASELINE_IDS = (
     "same_weekday_last_week",
 )
 
+_BASELINE_BUSINESS_SEMANTICS = {
+    "previous_day": {
+        "label": "前一天",
+        "semantics": "目标日之前的一个完整自然日",
+    },
+    "rolling_7_day_baseline": {
+        "label": "近7日均值",
+        "semantics": "目标日之前连续7个完整自然日的日均值",
+    },
+    "same_weekday_last_week": {
+        "label": "上周同日",
+        "semantics": "目标日向前7天对应的完整自然日",
+    },
+}
+
 _PREVIOUS_DAY_ALIASES = ("前日", "前一日", "前一天")
 _CONTROLLED_METRIC_SUFFIXES = frozenset(
     {
@@ -74,6 +89,16 @@ _ALIASES = {
 
 class BaselineSemanticError(ValueError):
     pass
+
+
+def baseline_llm_semantics() -> tuple[dict[str, str], ...]:
+    return tuple(
+        {
+            "id": baseline_id,
+            **_BASELINE_BUSINESS_SEMANTICS[baseline_id],
+        }
+        for baseline_id in CANONICAL_BASELINE_IDS
+    )
 
 
 def canonical_baseline_ids(value: Any) -> tuple[str, ...]:

@@ -398,11 +398,35 @@ question family, target metric, pattern family, scope, time window, and target
 claim. Missing or illegal material cannot silently become
 `pattern_explanation`, `paid_amount`, `intra_period`, `full_sample`, a default
 window, or an empty baseline set. `baseline_candidates` is required as an
-explicit JSON array in production/live runs. The workflow validates the raw
-container before conversion, rejects strings, bytes, mappings, nested sequence
-items, duplicate semantic baselines, unknown aliases, and conflicting typed
-shapes, then canonicalizes each reviewed baseline through the shared baseline
-semantic registry while preserving the provider's candidate priority order. Optional advisory
+explicit JSON array in production/live runs. The business-intent LLM input must
+carry `allowed_baseline_ids` and business-readable labels and semantics derived
+from the shared canonical baseline registry. `baseline_candidates` may contain
+only exact string ids copied from that closed list, in the user's requested
+priority order. The target window is never repeated as a baseline candidate;
+when the user requests no reviewed comparison baseline, the value is `[]`.
+These vocabulary and shape rules belong in both the delimited input and the
+business-intent prompt, so a provider can produce the strict contract without
+guessing internal ids. The workflow still applies the shared semantic
+canonicalizer as a compatibility and hardening boundary for reviewed aliases
+and typed shapes, while rejecting strings, bytes, mapping containers, nested
+sequences, duplicates, unknown forms, and conflicting typed shapes. This keeps
+persisted reviewed material compatible without weakening the LLM's exact-id
+output contract. The registry vocabulary guides the LLM but does not grant
+execution authority; local compiler, permission, release, and evidence
+boundaries still decide what can run and support claims.
+
+The business-intent input also carries the reviewed public `allowed_scope_types`.
+The existing-data public path currently exposes only `full_sample`; a full-sample
+business request must therefore produce that exact machine id. Dimension and
+segment requests belong in requested dimensions and filter contracts, not in a
+free-text scope token. Production/live scope is canonicalized through the
+reviewed generic aliases and then rejected when it is outside the closed public
+scope list. The prompt also requires `ambiguous_slots` to contain only material
+slots that remain unbound and would change the answer. A target metric, scope,
+or time window already explicit in the current canonical output or supplied
+bound context cannot simultaneously be declared ambiguous.
+
+Optional advisory
 `sub_intents` and `ambiguous_slots` may be absent or null, but a supplied value
 must also be an actual sequence; container coercion cannot turn provider text or
 mapping keys into planning input.

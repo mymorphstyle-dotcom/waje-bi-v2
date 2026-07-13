@@ -1,6 +1,7 @@
 contract_version: "1"
 artifact: clickhouse_analysis_runtime_bindings
 business_timezone: Africa/Lagos
+public_scope_types: [full_sample]
 
 claim_strength_taxonomy:
   version: "1"

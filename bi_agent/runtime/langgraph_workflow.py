@@ -65,6 +65,8 @@ from bi_agent.runtime.analysis_runtime import (
 from bi_agent.runtime.artifacts import persist_artifact, to_jsonable
 from bi_agent.runtime.baseline_semantics import (
     BaselineSemanticError,
+    CANONICAL_BASELINE_IDS,
+    baseline_llm_semantics,
     canonical_baseline_ids,
 )
 from bi_agent.runtime.capability_harness import (
@@ -736,6 +738,11 @@ def _material_business_intent_values(
         strict=production_like,
     )
     scope = _normalize_scope(values["scope"], strict=production_like)
+    if production_like and scope not in set(registry.public_scope_types):
+        raise WorkflowFailure(
+            "business_intent_contract_invalid:scope",
+            failure_type="llm_contract",
+        )
     time_window = values["time_window"]
     if production_like:
         time_window = _validated_material_time_window(time_window)
@@ -1179,6 +1186,7 @@ def _ordered_resume_question_families(
 
 def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    baseline_semantics = baseline_llm_semantics()
     allowed_claim_types = tuple(
         dict.fromkeys(
             str(claim_type)
@@ -1192,6 +1200,9 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "question": request.get("question", "Explain the paid amount question."),
         "allowed_target_metric_ids": registry.metric_ids,
+        "allowed_baseline_ids": list(CANONICAL_BASELINE_IDS),
+        "allowed_baseline_semantics": list(baseline_semantics),
+        "allowed_scope_types": list(registry.public_scope_types),
         "allowed_context_source_ids": registry.context_source_ids,
         "allowed_claim_types": allowed_claim_types,
         "allowed_dimension_ids": registry.dimension_ids,

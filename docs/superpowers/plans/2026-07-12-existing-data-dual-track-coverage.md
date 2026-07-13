@@ -1360,11 +1360,23 @@ boundary:
   `NARRATIVE_FALLBACKS` or another local template;
 - production/live material intent cannot silently default or rewrite family,
   metric, pattern family, scope, time window, or target claim;
-- production/live baseline candidates must be an explicit sequence whose items
-  resolve one-by-one through the shared baseline semantic registry, with
-  duplicate, unknown, conflicting, and wrong-container values failing before
-  storing the canonicalized input priority order; advisory intent lists also
-  reject container coercion;
+- production/live business-intent input and prompt expose the shared baseline
+  registry's closed `allowed_baseline_ids` plus business labels and semantics;
+  baseline candidates must be an explicit array of exact string ids copied from
+  that vocabulary in user priority order, must exclude the target window, and
+  use `[]` when no reviewed baseline is requested. The local compatibility
+  boundary continues canonicalizing reviewed aliases and typed shapes, while
+  duplicate, unknown, conflicting, nested, and wrong-container values fail
+  before intent is stored;
+- business-intent input exposes the reviewed `allowed_scope_types` (currently
+  `full_sample` for the existing-data public path), the prompt requires exact
+  machine scope ids, and production/live rejects scope values outside that
+  closed set after generic alias canonicalization. Segment and dimension intent
+  remains in requested dimensions and filters;
+- `ambiguous_slots` lists only still-unbound material decisions; target metric,
+  scope, and time window already fixed by canonical output or bound context
+  cannot be marked ambiguous in the same response. This is an LLM output
+  coherence instruction, while advisory list containers still fail closed;
 - each workflow business node calls the shared LLM client once, while the
   provider retains the sole three-attempt retry loop; and
 - provider subprocess IPC must be received and drained before child join, with

@@ -604,6 +604,26 @@ class LLMWorkflowTest(unittest.TestCase):
             ("duplicate", ["previous_day", "前一天"]),
             ("unknown", ["unreviewed_baseline"]),
             ("nested_sequence", [["previous_day"]]),
+            (
+                "provider_description_objects",
+                [
+                    {
+                        "id": "yesterday",
+                        "display_name": "昨日",
+                        "description": "昨日指标值",
+                    }
+                ],
+            ),
+            (
+                "provider_single_period_object",
+                [
+                    {
+                        "type": "single_period",
+                        "period": "前一天",
+                        "description": "前一天的指标值",
+                    }
+                ],
+            ),
             ("typed_conflict", [{"type": "rolling_average", "window": 8}]),
         )
         for label, raw in invalid:
@@ -631,7 +651,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 ):
                     _understand_business_intent(state)
 
-    def test_production_business_intent_preserves_canonicalized_baseline_priority_order(self):
+    def test_production_business_intent_preserves_exact_baseline_priority_order(self):
         output = {
             "question_family": "custom_baseline_comparison",
             "target_metric": "paid_amount",
@@ -646,9 +666,9 @@ class LLMWorkflowTest(unittest.TestCase):
             "time_window": "2026-05-26..2026-06-02",
             "target_claim": "comparative_change",
             "baseline_candidates": [
-                {"type": "same_weekday", "lag_weeks": 1},
+                "same_weekday_last_week",
                 "previous_day",
-                {"type": "rolling_average", "window": 7},
+                "rolling_7_day_baseline",
             ],
             "analysis_requirements": {
                 "context_sources": [],
@@ -678,6 +698,159 @@ class LLMWorkflowTest(unittest.TestCase):
                 "rolling_7_day_baseline",
             ],
         )
+
+    def test_production_business_intent_keeps_reviewed_baseline_compatibility_shapes(self):
+        self.assertEqual(
+            workflow_module._validated_business_intent_baseline_candidates(
+                [
+                    {"type": "same_weekday", "lag_weeks": 1},
+                    "前一天",
+                    {"type": "rolling_average", "window": 7},
+                ],
+                production_like=True,
+            ),
+            [
+                "same_weekday_last_week",
+                "previous_day",
+                "rolling_7_day_baseline",
+            ],
+        )
+
+    def test_business_intent_payload_uses_registry_authoritative_baseline_vocabulary(self):
+        payload = workflow_module._business_intent_payload(
+            {
+                "question": "将近七日均值和前一天作为对比基线。",
+                "run_mode": "production",
+                "allowed_baseline_ids": ["forged_baseline"],
+                "scenario": {"baselines": ["forged_baseline"]},
+            }
+        )
+
+        self.assertEqual(
+            payload["allowed_baseline_ids"],
+            [
+                "previous_day",
+                "rolling_7_day_baseline",
+                "same_weekday_last_week",
+            ],
+        )
+        vocabulary = payload["allowed_baseline_semantics"]
+        self.assertEqual(
+            [item["id"] for item in vocabulary],
+            payload["allowed_baseline_ids"],
+        )
+        self.assertTrue(all(item["label"] for item in vocabulary))
+        self.assertTrue(all(item["semantics"] for item in vocabulary))
+        self.assertNotIn("forged_baseline", json.dumps(vocabulary, ensure_ascii=False))
+
+    def test_business_intent_payload_uses_reviewed_public_scope_vocabulary(self):
+        payload = workflow_module._business_intent_payload(
+            {
+                "question": "查看当前总体经营情况。",
+                "run_mode": "production",
+                "allowed_scope_types": ["forged_scope"],
+                "scenario": {"scope": "forged_scope"},
+            }
+        )
+
+        self.assertEqual(payload["allowed_scope_types"], ["full_sample"])
+
+    def test_natural_business_baselines_reach_intent_as_exact_registry_ids(self):
+        class CapturingIntentLLM(FakeLLMClient):
+            def __init__(self):
+                super().__init__({
+                    "business_intent": {
+                        "question_family": "custom_baseline_comparison",
+                        "target_metric": "paid_amount",
+                        "pattern_family": "custom_baseline",
+                        "pattern_params": {
+                            "period_key": "period",
+                            "group_key": "group",
+                            "target_group": "target",
+                            "baseline_group": "baseline",
+                        },
+                        "scope": "full_sample",
+                        "time_window": "yesterday",
+                        "target_claim": "comparative_change",
+                        "baseline_candidates": [
+                            "same_weekday_last_week",
+                            "previous_day",
+                        ],
+                        "analysis_requirements": {
+                            "context_sources": [],
+                            "claim_intents": ["comparative_change"],
+                            "requested_dimensions": [],
+                            "requested_components": [],
+                        },
+                        "answer_contract": {},
+                    }
+                })
+                self.messages = []
+
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                self.messages = [dict(message) for message in messages]
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
+
+        llm = CapturingIntentLLM()
+        state = {
+            "request": {
+                "question": "目标仍是昨天，把上周同日排在前一天前面比较。",
+                "run_mode": "production",
+            },
+            "llm_client": llm,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        _understand_business_intent(state)
+
+        prompt_text = "\n".join(message["content"] for message in llm.messages)
+        self.assertIn('"allowed_baseline_ids"', prompt_text)
+        self.assertIn('"allowed_baseline_semantics"', prompt_text)
+        self.assertIn('"same_weekday_last_week"', prompt_text)
+        self.assertEqual(
+            state["intent"]["baseline_candidates"],
+            ["same_weekday_last_week", "previous_day"],
+        )
+
+    def test_production_business_intent_rejects_scope_outside_reviewed_vocabulary(self):
+        output = {
+            "question_family": "revenue_health_review",
+            "target_metric": "paid_amount",
+            "pattern_family": "intra_period",
+            "pattern_params": {"target_phase": "target_day"},
+            "scope": "unreviewed_population_scope",
+            "time_window": "yesterday",
+            "target_claim": "comparative_change",
+            "baseline_candidates": ["previous_day"],
+            "analysis_requirements": {
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+            "answer_contract": {},
+        }
+        state = {
+            "request": {
+                "question": "检查指定总体范围的经营表现。",
+                "run_mode": "production",
+            },
+            "llm_client": FakeLLMClient({"business_intent": output}),
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "business_intent_contract_invalid:scope",
+        ):
+            _understand_business_intent(state)
 
     def test_production_business_intent_preserves_forward_and_reverse_baseline_priority(self):
         for candidates in (
@@ -5124,6 +5297,70 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertIn("answer_contract must be a JSON object", text)
         self.assertIn("omit answer_contract or use {}", text)
+
+    def test_business_intent_prompt_requires_exact_ordered_baseline_ids(self):
+        messages = build_prompt(
+            "business_intent",
+            {
+                "question": "将多个业务基线按优先级比较。",
+                "allowed_baseline_ids": [
+                    "previous_day",
+                    "rolling_7_day_baseline",
+                    "same_weekday_last_week",
+                ],
+                "allowed_baseline_semantics": [
+                    {
+                        "id": "previous_day",
+                        "label": "前一天",
+                        "semantics": "目标日之前的一个完整自然日",
+                    }
+                ],
+            },
+        ).messages
+        text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("allowed_baseline_ids", text)
+        self.assertIn("allowed_baseline_semantics", text)
+        self.assertIn("exact string ids", text)
+        self.assertIn("user's requested priority order", text)
+        self.assertIn("target window", text)
+        self.assertIn("use []", text)
+        self.assertIn("Never return objects", text)
+
+    def test_business_intent_prompt_requires_reviewed_scope_machine_id(self):
+        messages = build_prompt(
+            "business_intent",
+            {
+                "question": "查看全量用户的业务表现。",
+                "allowed_scope_types": ["full_sample"],
+            },
+        ).messages
+        text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("allowed_scope_types", text)
+        self.assertIn("exact machine id", text)
+        self.assertIn("full_sample", text)
+        self.assertIn("requested_dimensions and filter contracts", text)
+        self.assertIn("Do not return a narrative scope description", text)
+
+    def test_business_intent_prompt_keeps_bound_material_out_of_ambiguous_slots(self):
+        messages = build_prompt(
+            "business_intent",
+            {
+                "question": "继续检查当前经营表现。",
+                "bound_business_context": {
+                    "target_metric": "paid_amount",
+                    "scope": "full_sample",
+                    "time_window": "yesterday",
+                },
+            },
+        ).messages
+        text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("ambiguous_slots", text)
+        self.assertIn("still unbound", text)
+        self.assertIn("would change the business answer", text)
+        self.assertIn("must not also appear in ambiguous_slots", text)
 
     def test_capabilities_select_runtime_rows_by_query_intent(self):
         state = {

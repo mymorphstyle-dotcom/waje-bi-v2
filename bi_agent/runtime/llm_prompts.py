@@ -5,7 +5,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v41"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v43"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 
 
@@ -260,9 +260,22 @@ def _task_rules(task: str) -> str:
             "intra_period for phases inside a period, rolling for rolling windows, "
             "custom_baseline for one-off baseline/target comparisons, event_relative "
             "for event windows, and lag_recovery for lag or recovery patterns. "
-            "Write narrative fields such as target_claim, status_message, and baseline "
-            "candidate descriptions in Chinese business wording; use business labels "
-            "such as 付费金额 instead of metric ids such as paid_amount. Keep metric ids "
+            "baseline_candidates must be a JSON array of exact string ids copied from "
+            "allowed_baseline_ids. Use allowed_baseline_semantics only to understand the "
+            "business labels and meanings. Keep baseline candidates in the user's "
+            "requested priority order. Do not put the target window in baseline_candidates. "
+            "When no reviewed comparison baseline is requested, use []. Never return objects, "
+            "aliases, labels, descriptions, dates, or target-window ids in baseline_candidates. "
+            "scope must be one exact machine id copied from allowed_scope_types. For an "
+            "overall or full-sample business request, copy full_sample when it is allowed. "
+            "Express segment or dimension restrictions through requested_dimensions and filter "
+            "contracts, not by inventing a scope token. Do not return a narrative scope description. "
+            "ambiguous_slots may list only a material slot that is still unbound and would change "
+            "the business answer. A target_metric, scope, or time_window already explicit in this "
+            "canonical output or in bound_business_context must not also appear in ambiguous_slots. "
+            "Write narrative fields such as target_claim and status_message in Chinese "
+            "business wording; use business labels such as 付费金额 instead of metric ids "
+            "such as paid_amount. Keep metric ids "
             "only in machine fields such as target_metric. target_metric must be exactly "
             "one id from allowed_target_metric_ids; never add a prefix such as market_, "
             "gameplay_, or payment_ when that prefixed id is absent from the list. "
