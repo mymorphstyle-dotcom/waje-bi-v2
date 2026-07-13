@@ -2397,6 +2397,129 @@ class LLMWorkflowTest(unittest.TestCase):
             [choice],
         )
 
+    def test_resumed_authority_choice_keeps_zero_claim_terminal_delivery_verifiable(self):
+        choice = {
+            "choice_id": "continue-with-reviewed-boundary",
+            "action_kind": "continue_with_boundary_only",
+            "affected_capabilities": ["unavailable_context"],
+            "source_run_id": "run-prior-clarification",
+        }
+        authority_sources = {
+            "state": lambda state: state.update(
+                {"accepted_assumptions": [choice]}
+            ),
+            "resume": lambda state: state["request"].update({
+                "clarification_resume_context": {
+                    "accepted_degradation_choice": choice,
+                }
+            }),
+            "manifest": lambda state: state["request"].update({
+                "context_manifest": {"accepted_assumptions": [choice]},
+            }),
+        }
+
+        for authority_source, attach_choice in authority_sources.items():
+            with self.subTest(authority_source=authority_source):
+                state = {
+                    "run_id": f"run-terminal-{authority_source}",
+                    "request": {},
+                    "checkpoint_events": [],
+                    "validator_results": [
+                        {"ok": False, "code": "required_context_unavailable"}
+                    ],
+                    "draft_claims": [],
+                    "evidence": [],
+                }
+                attach_choice(state)
+                state["final_explanation"] = _sanitize_terminal_explanation(
+                    {
+                        "explanation": "当前边界下没有可发布的业务结论。",
+                        "owner": "业务分析负责人",
+                        "repair_path": "补齐已确认缺口后重新分析。",
+                    },
+                    state,
+                    "degraded",
+                )
+
+                package = _build_answer_package_from_state(state)
+
+                self.assertEqual(
+                    package["admin_audit"]["verifier"]["status"],
+                    "passed",
+                    package["admin_audit"]["verifier"]["errors"],
+                )
+                self.assertEqual(
+                    set(package["final_explanation"]["used_next_action_ids"]),
+                    {choice["choice_id"], choice["action_kind"]},
+                )
+                with patch(
+                    "bi_agent.runtime.langgraph_workflow._invoke_llm"
+                ) as repair_llm:
+                    delivered = _delivery_reverify_with_answer_repair(state)
+
+                repair_llm.assert_not_called()
+                self.assertEqual(delivered["status"], "draft")
+                self.assertEqual(
+                    delivered["admin_audit"]["verifier"]["status"],
+                    "passed",
+                )
+                self.assertEqual(
+                    delivered["final_explanation"],
+                    state["final_explanation"],
+                )
+                self.assertNotIn("workflow_failure_reason", state)
+
+    def test_resumed_authority_choice_uses_closed_source_precedence(self):
+        def choice(source):
+            return {
+                "choice_id": f"choice-{source}",
+                "action_kind": f"action_{source}",
+                "affected_capabilities": [f"capability_{source}"],
+            }
+
+        state_choice = choice("state")
+        state = {
+            "run_id": "run-terminal-authority-precedence",
+            "accepted_assumptions": [state_choice],
+            "request": {
+                "accepted_degradation_choice": choice("request"),
+                "clarification_resume_context": {
+                    "accepted_degradation_choice": choice("resume"),
+                },
+                "context_manifest": {
+                    "accepted_assumptions": [choice("manifest")],
+                },
+            },
+            "checkpoint_events": [],
+            "validator_results": [
+                {"ok": False, "code": "required_context_unavailable"}
+            ],
+            "draft_claims": [],
+            "evidence": [],
+        }
+
+        state["final_explanation"] = _sanitize_terminal_explanation(
+            {
+                "explanation": "当前边界下没有可发布的业务结论。",
+                "owner": "业务分析负责人",
+                "repair_path": "补齐已确认缺口后重新分析。",
+            },
+            state,
+            "degraded",
+        )
+        package = _build_answer_package_from_state(state)
+
+        self.assertEqual(package["accepted_degradation_choice"], state_choice)
+        self.assertEqual(
+            set(state["final_explanation"]["used_next_action_ids"]),
+            {state_choice["choice_id"], state_choice["action_kind"]},
+        )
+        self.assertEqual(
+            package["admin_audit"]["verifier"]["status"],
+            "passed",
+            package["admin_audit"]["verifier"]["errors"],
+        )
+
     def test_workflow_entry_promotes_manifest_only_assumption_into_runtime_request(self):
         choice = {
             "action_kind": "omit_unavailable_context",

@@ -6660,6 +6660,44 @@ def _is_timeout_failure(exc: Exception) -> bool:
     return "timeout" in str(exc).lower()
 
 
+def _authority_accepted_degradation_choice(
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    request = state.get("request")
+    request = request if isinstance(request, Mapping) else {}
+    resume = request.get("clarification_resume_context")
+    resume = resume if isinstance(resume, Mapping) else {}
+    context_manifest = request.get("context_manifest")
+    context_manifest = (
+        context_manifest if isinstance(context_manifest, Mapping) else {}
+    )
+    state_assumption = next(
+        (
+            item
+            for item in state.get("accepted_assumptions") or ()
+            if isinstance(item, Mapping) and item
+        ),
+        {},
+    )
+    manifest_assumption = next(
+        (
+            item
+            for item in context_manifest.get("accepted_assumptions") or ()
+            if isinstance(item, Mapping) and item
+        ),
+        {},
+    )
+    for candidate in (
+        state_assumption,
+        request.get("accepted_degradation_choice"),
+        resume.get("accepted_degradation_choice"),
+        manifest_assumption,
+    ):
+        if isinstance(candidate, Mapping) and candidate:
+            return dict(candidate)
+    return {}
+
+
 def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
     compiled = state.get("compiled_graph")
     proposed_graph = compiled.mutations.proposed_graph if compiled else ()
@@ -6667,35 +6705,12 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
     records = compiled.mutations.records if compiled else ()
     request = state.get("request", {})
     context_manifest = request.get("context_manifest") or {}
-    state_assumption = next(
-        (
-            item
-            for item in state.get("accepted_assumptions") or ()
-            if isinstance(item, Mapping)
-        ),
-        {},
-    )
     artifact_path = str(
         Path(request.get("artifact_root", "artifacts/phase-4"))
         / state["run_id"]
         / "answer_package.json"
     )
-    accepted_degradation_choice = dict(
-        state_assumption
-        or request.get("accepted_degradation_choice")
-        or (request.get("clarification_resume_context") or {}).get(
-            "accepted_degradation_choice"
-        )
-        or next(
-            (
-                item
-                for item in context_manifest.get("accepted_assumptions") or ()
-                if isinstance(item, Mapping)
-            ),
-            {},
-        )
-        or {}
-    )
+    accepted_degradation_choice = _authority_accepted_degradation_choice(state)
     accepted_assumptions = (
         (accepted_degradation_choice,) if accepted_degradation_choice else ()
     )
@@ -8744,7 +8759,7 @@ def _sanitize_terminal_explanation(
         for item in state.get("contract_gap_diagnostics") or ()
         if isinstance(item, Mapping) and item.get("gap_id")
     ]
-    accepted_choice = state.get("request", {}).get("accepted_degradation_choice") or {}
+    accepted_choice = _authority_accepted_degradation_choice(state)
     next_action_ids = [
         str(identifier)
         for identifier in (
