@@ -19,6 +19,7 @@ from bi_agent.conversation.models import (
     ResultRefRecord,
     ThreadState,
     TopicState,
+    validate_result_reuse_candidate,
 )
 from bi_agent.runtime.analysis_assets import asset_dedup_key, merge_analysis_assets
 from bi_agent.runtime.dataset_catalog import (
@@ -1643,39 +1644,75 @@ class PostgresConversationStore:
         contract_version: str,
         permission_scope: str,
         semantic_scope: str,
+        payload: Mapping[str, Any] | None = None,
     ) -> None:
-        self._execute(
-            """
-            INSERT INTO waje_runtime.result_refs(
-              result_ref, topic_id, snapshot_id, contract_version, permission_scope, semantic_scope
-            )
-            VALUES (
-              %(result_ref)s, %(topic_id)s, %(snapshot_id)s, %(contract_version)s,
-              %(permission_scope)s, %(semantic_scope)s
-            )
-            ON CONFLICT (result_ref) DO UPDATE
-            SET snapshot_id = EXCLUDED.snapshot_id,
-                contract_version = EXCLUDED.contract_version,
-                permission_scope = EXCLUDED.permission_scope,
-                semantic_scope = EXCLUDED.semantic_scope
-            """,
-            {
-                "result_ref": result_ref,
-                "topic_id": topic_id,
-                "snapshot_id": snapshot_id,
-                "contract_version": contract_version,
-                "permission_scope": permission_scope,
-                "semantic_scope": semantic_scope,
-            },
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        candidate_payload = (
+            validate_result_reuse_candidate(payload) if payload else {}
         )
-        self._audit("result_ref_recorded", topic_id=topic_id, ref=result_ref)
+        if candidate_payload and (
+            candidate_payload["result_ref"] != result_ref
+            or candidate_payload["runtime_snapshot_id"] != snapshot_id
+            or candidate_payload["runtime_contract_version"] != contract_version
+            or candidate_payload["permission_scope"] != permission_scope
+            or candidate_payload["semantic_scope_signature"] != semantic_scope
+        ):
+            raise EvidenceIntegrityError("result_ref_candidate_projection_mismatch")
+        params = {
+            "result_ref": result_ref,
+            "topic_id": topic_id,
+            "snapshot_id": snapshot_id,
+            "contract_version": contract_version,
+            "permission_scope": permission_scope,
+            "semantic_scope": semantic_scope,
+            "payload": _json(candidate_payload),
+        }
+        try:
+            row = self.connection.execute(
+                """
+                /* result_ref_immutable_write */
+                INSERT INTO waje_runtime.result_refs AS current(
+                  result_ref, topic_id, snapshot_id, contract_version,
+                  permission_scope, semantic_scope, payload
+                )
+                VALUES (
+                  %(result_ref)s, %(topic_id)s, %(snapshot_id)s,
+                  %(contract_version)s, %(permission_scope)s,
+                  %(semantic_scope)s, %(payload)s::jsonb
+                )
+                ON CONFLICT (result_ref) DO UPDATE
+                SET result_ref = current.result_ref
+                WHERE current.topic_id = EXCLUDED.topic_id
+                  AND current.snapshot_id = EXCLUDED.snapshot_id
+                  AND current.contract_version = EXCLUDED.contract_version
+                  AND current.permission_scope = EXCLUDED.permission_scope
+                  AND current.semantic_scope = EXCLUDED.semantic_scope
+                  AND current.payload = EXCLUDED.payload
+                RETURNING result_ref
+                """,
+                params,
+            ).fetchone()
+            if row is None:
+                raise EvidenceIntegrityError("result_ref_payload_conflict")
+            self._audit(
+                "result_ref_recorded",
+                topic_id=topic_id,
+                run_id=str(candidate_payload.get("source_run_id") or ""),
+                ref=result_ref,
+                payload={"candidate_signature": candidate_payload.get("candidate_signature")},
+            )
+        except Exception:
+            self.connection.rollback()
+            raise
 
     def results_for_topic(self, topic_id: Optional[str]) -> tuple[ResultRefRecord, ...]:
         if not topic_id:
             return ()
         rows = self._fetchall(
             """
-            SELECT topic_id, result_ref, snapshot_id, contract_version, permission_scope, semantic_scope
+            SELECT topic_id, result_ref, snapshot_id, contract_version,
+                   permission_scope, semantic_scope, payload
             FROM waje_runtime.result_refs
             WHERE topic_id = %(topic_id)s
             ORDER BY created_at DESC
@@ -1690,8 +1727,87 @@ class PostgresConversationStore:
                 contract_version=_field(row, "contract_version", 3),
                 permission_scope=_field(row, "permission_scope", 4),
                 semantic_scope=_field(row, "semantic_scope", 5),
+                payload=_json_value(_field(row, "payload", 6)) or {},
             )
             for row in rows
+        )
+
+    def resolve_result_candidate_authority(
+        self,
+        *,
+        result_ref: str,
+        topic_id: str,
+    ) -> dict[str, Any]:
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_value
+
+        row = self._fetchone(
+            """
+            /* result_candidate_authority */
+            SELECT rr.topic_id,
+                   rr.result_ref,
+                   rr.snapshot_id,
+                   rr.contract_version,
+                   rr.permission_scope,
+                   rr.semantic_scope,
+                   rr.payload AS result_ref_payload,
+                   r.run_id AS source_run_id,
+                   r.thread_id AS run_thread_id,
+                   r.topic_id AS run_topic_id,
+                   r.status AS run_status,
+                   r.request AS source_run_request,
+                   ac.payload AS analysis_contract,
+                   ac.contract_signature AS stored_analysis_contract_signature
+            FROM waje_runtime.result_refs rr
+            JOIN waje_runtime.analysis_runs r
+              ON r.run_id = rr.payload->>'source_run_id'
+             AND r.topic_id = rr.topic_id
+            JOIN waje_runtime.analysis_contracts ac
+              ON ac.run_id = r.run_id
+             AND ac.analysis_contract_id = rr.payload->>'analysis_contract_ref'
+            WHERE rr.result_ref = %(result_ref)s
+              AND rr.topic_id = %(topic_id)s
+            """,
+            {"result_ref": result_ref, "topic_id": topic_id},
+        )
+        if row is None:
+            raise EvidenceIntegrityError("result_candidate_authority_missing")
+        payload = validate_result_reuse_candidate(
+            _json_value(_field(row, "result_ref_payload", 6)) or {}
+        )
+        contract = _json_value(_field(row, "analysis_contract", 12)) or {}
+        stored_signature = str(
+            _field(row, "stored_analysis_contract_signature", 13) or ""
+        )
+        if (
+            payload["source_run_id"] != str(_field(row, "source_run_id", 7) or "")
+            or payload["analysis_contract_signature"] != stored_signature
+            or analysis_contract_signature(contract) != stored_signature
+        ):
+            raise EvidenceIntegrityError("result_candidate_analysis_contract_mismatch")
+        record = ResultRefRecord(
+            topic_id=str(_field(row, "topic_id", 0) or ""),
+            result_ref=str(_field(row, "result_ref", 1) or ""),
+            snapshot_id=str(_field(row, "snapshot_id", 2) or ""),
+            contract_version=str(_field(row, "contract_version", 3) or ""),
+            permission_scope=str(_field(row, "permission_scope", 4) or ""),
+            semantic_scope=str(_field(row, "semantic_scope", 5) or ""),
+            payload=payload,
+        )
+        return canonical_value(
+            {
+                "result_ref_record": record.to_dict(),
+                "source_run_id": payload["source_run_id"],
+                "run_thread_id": str(_field(row, "run_thread_id", 8) or ""),
+                "run_topic_id": str(_field(row, "run_topic_id", 9) or ""),
+                "run_status": str(_field(row, "run_status", 10) or ""),
+                "source_run_request": _json_value(
+                    _field(row, "source_run_request", 11)
+                )
+                or {},
+                "analysis_contract": contract,
+                "stored_analysis_contract_signature": stored_signature,
+            }
         )
 
     def add_artifact(

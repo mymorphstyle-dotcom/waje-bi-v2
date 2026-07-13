@@ -631,6 +631,385 @@ class AgentCoreBridgeTest(unittest.TestCase):
             canonical["manifest_id"],
         )
 
+    def test_completed_verified_runtime_indexes_claim_linked_ready_results(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+        from bi_agent.conversation.models import (
+            RESULT_REUSE_CANDIDATE_FIELDS,
+            validate_result_reuse_candidate,
+        )
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-result-candidate-publication",
+        )
+
+        result, store = _run_verified_package_through_core(
+            package,
+            context,
+            thread_id="thread-result-candidate-publication",
+            run_id="run-result-candidate-publication",
+        )
+
+        persisted = store.analysis_runtime_records[
+            "run-result-candidate-publication"
+        ]["payload"]
+        expected_refs = tuple(
+            dict.fromkeys(
+                ref
+                for claim in persisted["verified_claims"]
+                for ref in claim["result_refs"]
+            )
+        )
+        candidates = store.results_for_topic(result["topic_id"])
+
+        self.assertEqual(
+            tuple(candidate.result_ref for candidate in candidates),
+            tuple(reversed(expected_refs)),
+        )
+        self.assertTrue(candidates)
+        self.assertEqual(
+            {candidate.snapshot_id for candidate in candidates},
+            {"2026H1"},
+        )
+        self.assertEqual(
+            {candidate.contract_version for candidate in candidates},
+            {"contracts-v1"},
+        )
+        self.assertEqual(
+            {candidate.permission_scope for candidate in candidates},
+            {"analyst"},
+        )
+        self.assertEqual(
+            {candidate.semantic_scope for candidate in candidates},
+            {
+                "analysis-contract:sha256:"
+                + analysis_contract_signature(persisted["analysis_contract"])
+            },
+        )
+        for candidate in candidates:
+            with self.subTest(result_ref=candidate.result_ref):
+                self.assertEqual(
+                    set(candidate.payload),
+                    set(RESULT_REUSE_CANDIDATE_FIELDS),
+                )
+                self.assertEqual(
+                    validate_result_reuse_candidate(candidate.payload),
+                    candidate.payload,
+                )
+                self.assertEqual(
+                    candidate.payload["source_run_id"],
+                    "run-result-candidate-publication",
+                )
+                self.assertEqual(
+                    len(candidate.payload["source_snapshot_refs"]),
+                    len(candidate.payload["source_snapshot_record_refs"]),
+                )
+                authority = store.resolve_result_candidate_authority(
+                    result_ref=candidate.result_ref,
+                    topic_id=result["topic_id"],
+                )
+                self.assertEqual(authority["run_status"], "completed")
+
+    def test_missing_claimed_artifact_fails_before_result_candidate_publication(self):
+        package, context, _ = _verified_delivery_package(
+            run_id="run-missing-claimed-artifact",
+        )
+        missing_path = Path(
+            "artifacts/phase7/test-runtime-audit/"
+            "run-missing-claimed-artifact/answer_package.json"
+        )
+        missing_path.unlink(missing_ok=True)
+
+        result, store = _run_verified_package_through_core(
+            package,
+            context,
+            thread_id="thread-missing-claimed-artifact",
+            run_id="run-missing-claimed-artifact",
+            artifact_path=str(missing_path),
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["failure_reason"],
+            "analysis_runtime_persistence_failed",
+        )
+        self.assertFalse(store.results_for_topic(result["topic_id"]))
+        self.assertNotIn("run-missing-claimed-artifact", store.answer_packages)
+        failure = next(
+            event
+            for event in store.audit_events
+            if event["event_type"] == "analysis_runtime_persistence_failed"
+        )
+        self.assertEqual(
+            failure["payload"]["reason"],
+            "analysis_runtime_artifact_sync_failed",
+        )
+
+    def test_next_agent_core_turn_receives_all_published_candidates(self):
+        package, context, _ = _verified_delivery_package(
+            run_id="run-candidate-source",
+        )
+        captured = {}
+
+        def source_workflow(request):
+            from tests.phase7.test_analysis_runtime_persistence import _authority_bundle
+
+            return WorkflowRunResult(
+                status="draft",
+                run_id=request["run_id"],
+                answer_package=package,
+                analysis_runtime_records=_authority_bundle(
+                    run_id=request["run_id"],
+                    thread_id=request["thread_id"],
+                    topic_id=request["topic_id"],
+                ),
+            )
+
+        store = InMemoryConversationStore()
+        core = ConversationAgentCore(
+            store,
+            workflow_runner=source_workflow,
+            evidence_resolver=context["evidence_resolver"],
+            rows_loader=context["rows_loader"],
+            evidence_writer=context["evidence_resolver"]._runtime_writer(),
+            runtime_registry=context["runtime_registry"],
+            release_resolver=context["release_resolver"],
+        )
+        first = core.run_message(
+            thread_id="thread-candidate-handoff",
+            run_id="run-candidate-source",
+            user_message="Q2 比 Q1 付费金额为什么变了？",
+        )
+
+        def follow_up_workflow(request):
+            captured["request"] = request
+            return WorkflowRunResult(
+                status="failed",
+                run_id=request["run_id"],
+                failure_reason="capture_only",
+            )
+
+        core.workflow_runner = follow_up_workflow
+        core.run_message(
+            thread_id="thread-candidate-handoff",
+            run_id="run-candidate-consumer",
+            user_message="继续看刚才的渠道贡献。",
+        )
+
+        self.assertEqual(first["status"], "completed")
+        self.assertEqual(store.runs["run-candidate-source"]["status"], "completed")
+        self.assertEqual(
+            [
+                candidate["result_ref"]
+                for candidate in captured["request"]["reuse_candidates"]
+            ],
+            [
+                candidate.result_ref
+                for candidate in store.results_for_topic(first["topic_id"])
+            ],
+        )
+
+    def test_completed_runtime_does_not_index_unverified_results(self):
+        from tests.phase7.test_analysis_runtime_persistence import (
+            _authority_bundle,
+            _without_claim_authority,
+        )
+
+        def workflow(request):
+            package = fake_workflow(request).answer_package
+            records = _without_claim_authority(
+                _authority_bundle(
+                    run_id=request["run_id"],
+                    thread_id=request["thread_id"],
+                    topic_id=request["topic_id"],
+                )
+            )
+            return WorkflowRunResult(
+                status="draft",
+                run_id=request["run_id"],
+                answer_package=package,
+                analysis_runtime_records=records,
+            )
+
+        store = InMemoryConversationStore()
+        result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
+            thread_id="thread-unverified-result-candidate",
+            run_id="run-unverified-result-candidate",
+            user_message="昨天付费金额为什么变化？",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(store.results_for_topic(result["topic_id"]), ())
+
+    def test_completed_runtime_does_not_index_incomplete_claim_results(self):
+        from tests.phase7.test_analysis_runtime_persistence import _authority_bundle
+
+        class PersistedAuthorityStore(InMemoryConversationStore):
+            def save_analysis_runtime_records(self, **kwargs):
+                self.persisted_runtime_records = kwargs
+                return "inserted"
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-incomplete-result-candidate",
+        )
+
+        def workflow(request):
+            records = _authority_bundle(
+                run_id=request["run_id"],
+                thread_id=request["thread_id"],
+                topic_id=request["topic_id"],
+            )
+            records["completeness_records"] = tuple(
+                replace(
+                    record,
+                    report_payload={
+                        **record.report_payload,
+                        "completeness_status": "partial",
+                        "analysis_readiness": "degraded",
+                    },
+                )
+                for record in records["completeness_records"]
+            )
+            return WorkflowRunResult(
+                status="draft",
+                run_id=request["run_id"],
+                answer_package=package,
+                analysis_runtime_records=records,
+            )
+
+        store = PersistedAuthorityStore()
+        core = ConversationAgentCore(
+            store,
+            workflow_runner=workflow,
+            evidence_resolver=context["evidence_resolver"],
+            rows_loader=context["rows_loader"],
+            evidence_writer=context["evidence_resolver"]._runtime_writer(),
+            runtime_registry=context["runtime_registry"],
+            release_resolver=context["release_resolver"],
+        )
+        result = core.run_message(
+            thread_id="thread-incomplete-result-candidate",
+            run_id="run-incomplete-result-candidate",
+            user_message="Q2 比 Q1 付费金额为什么变了？",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(store.results_for_topic(result["topic_id"]), ())
+
+    def test_completed_runtime_requires_succeeded_query_and_ready_binding(self):
+        from tests.phase7.test_analysis_runtime_persistence import _authority_bundle
+
+        class PersistedAuthorityStore(InMemoryConversationStore):
+            def save_analysis_runtime_records(self, **kwargs):
+                return "inserted"
+
+        for boundary in ("query_failed", "binding_not_ready"):
+            with self.subTest(boundary=boundary):
+                package, context, _ = _verified_delivery_package(
+                    run_id=f"run-candidate-{boundary}",
+                )
+
+                def workflow(request, boundary=boundary):
+                    records = _authority_bundle(
+                        run_id=request["run_id"],
+                        thread_id=request["thread_id"],
+                        topic_id=request["topic_id"],
+                    )
+                    if boundary == "query_failed":
+                        records["query_execution_records"] = tuple(
+                            replace(record, execution_status="failed")
+                            for record in records["query_execution_records"]
+                        )
+                    else:
+                        records["capability_binding_records"] = tuple(
+                            replace(record, status="waiting_for_evidence")
+                            for record in records["capability_binding_records"]
+                        )
+                    return WorkflowRunResult(
+                        status="draft",
+                        run_id=request["run_id"],
+                        answer_package=package,
+                        analysis_runtime_records=records,
+                    )
+
+                store = PersistedAuthorityStore()
+                core = ConversationAgentCore(
+                    store,
+                    workflow_runner=workflow,
+                    evidence_resolver=context["evidence_resolver"],
+                    rows_loader=context["rows_loader"],
+                    evidence_writer=context["evidence_resolver"]._runtime_writer(),
+                    runtime_registry=context["runtime_registry"],
+                    release_resolver=context["release_resolver"],
+                )
+                result = core.run_message(
+                    thread_id=f"thread-candidate-{boundary}",
+                    run_id=f"run-candidate-{boundary}",
+                    user_message="Q2 比 Q1 付费金额为什么变了？",
+                )
+
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(store.results_for_topic(result["topic_id"]), ())
+
+    def test_final_persisted_answer_package_replaces_existing_artifact(self):
+        from tempfile import TemporaryDirectory
+        from tests.phase7.test_analysis_runtime_persistence import _authority_bundle
+
+        package, context, _ = _verified_delivery_package(
+            run_id="run-final-artifact-sync",
+        )
+        artifact_dir = Path(self.enterContext(TemporaryDirectory()))
+        artifact_path = artifact_dir / "answer_package.json"
+        artifact_path.write_text(
+            json.dumps(package, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        def workflow(request):
+            records = _authority_bundle(
+                run_id=request["run_id"],
+                thread_id=request["thread_id"],
+                topic_id=request["topic_id"],
+            )
+            return WorkflowRunResult(
+                status="draft",
+                run_id=request["run_id"],
+                answer_package=package,
+                artifact_path=str(artifact_path),
+                analysis_runtime_records=records,
+            )
+
+        store = InMemoryConversationStore()
+        core = ConversationAgentCore(
+            store,
+            workflow_runner=workflow,
+            evidence_resolver=context["evidence_resolver"],
+            rows_loader=context["rows_loader"],
+            evidence_writer=context["evidence_resolver"]._runtime_writer(),
+            runtime_registry=context["runtime_registry"],
+            release_resolver=context["release_resolver"],
+        )
+        result = core.run_message(
+            thread_id="thread-final-artifact-sync",
+            run_id="run-final-artifact-sync",
+            user_message="Q2 比 Q1 付费金额为什么变了？",
+        )
+
+        persisted_artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            persisted_artifact["verified_claims"],
+            result["answer_package"]["verified_claims"],
+        )
+        self.assertEqual(
+            persisted_artifact["admin_audit"]["analysis_runtime_persistence"],
+            result["answer_package"]["admin_audit"][
+                "analysis_runtime_persistence"
+            ],
+        )
+        self.assertEqual(
+            list(artifact_dir.glob(".*.tmp")),
+            [],
+        )
+
     def test_waiting_query_gap_persists_partial_runtime_closure_and_internal_audit(self):
         from bi_agent.runtime.analysis_runtime import AnalysisRuntime
         from tests.phase7.test_analysis_runtime_persistence import (
@@ -5892,6 +6271,7 @@ def _run_verified_package_through_core(
     thread_id,
     run_id,
     with_runtime_records=True,
+    artifact_path="",
 ):
     def workflow(request):
         records = None
@@ -5909,6 +6289,7 @@ def _run_verified_package_through_core(
             status="draft",
             run_id=request["run_id"],
             answer_package=package,
+            artifact_path=artifact_path,
             checkpoint_events=(),
             analysis_runtime_records=records,
         )

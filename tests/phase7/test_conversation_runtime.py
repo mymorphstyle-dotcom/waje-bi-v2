@@ -7,6 +7,7 @@ import yaml
 
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
+from bi_agent.runtime.evidence_authority import canonical_digest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -56,8 +57,13 @@ class ConversationRuntimeTest(unittest.TestCase):
                 self.assertEqual(result.topic_relation, case["expected_topic_relation"])
                 self.assertTrue(result.context_manifest.items)
                 self.assertTrue(result.audit_events)
+                expected_reuse = (
+                    "candidate"
+                    if case["expected_reuse"] == "reuse"
+                    else case["expected_reuse"]
+                )
                 self.assertIn(
-                    case["expected_reuse"],
+                    expected_reuse,
                     [decision.decision for decision in result.reuse_decisions],
                 )
                 if case["expected_intent"] in {
@@ -86,10 +92,16 @@ class ConversationRuntimeTest(unittest.TestCase):
         ]
         self.assertEqual(len(result_items), 1)
         self.assertEqual(result_items[0].source_ref, "result:q2-q1:paid_amount")
-        self.assertTrue(result_items[0].can_support_claims)
-        self.assertEqual(result_items[0].claim_use, "reuse")
+        self.assertFalse(result_items[0].can_support_claims)
+        self.assertEqual(result_items[0].claim_use, "context_only")
         self.assertEqual(result_items[0].source_version, "contracts-v1:2026H1")
-        self.assertTrue(reusable.context_manifest.can_support_claims)
+        self.assertFalse(reusable.context_manifest.can_support_claims)
+        self.assertEqual(reusable.reuse_decisions[0].decision, "candidate")
+        self.assertFalse(reusable.reuse_decisions[0].can_support_claim)
+        self.assertEqual(
+            reusable.run_request.to_dict()["reuse_candidates"],
+            [_result_candidate_payload("result:q2-q1:paid_amount")],
+        )
 
         blocked = runtime.handle_message(
             "thread-phase7",
@@ -118,6 +130,78 @@ class ConversationRuntimeTest(unittest.TestCase):
         ]
         self.assertTrue(stale_result_items[0].expired)
         self.assertEqual(stale_result_items[0].claim_use, "context_only")
+
+    def test_in_memory_result_candidates_are_newest_first(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-result-order", owner_id="analyst-1")
+        topic = store.create_topic(
+            "thread-result-order",
+            title="付费金额变化",
+        )
+        for result_ref in ("result:older", "result:newer"):
+            store.add_result_ref(
+                topic.topic_id,
+                result_ref=result_ref,
+                snapshot_id="2026H1",
+                contract_version="contracts-v1",
+                permission_scope="analyst",
+                semantic_scope="analysis-contract:sha256:analysis-signature",
+                payload=_result_candidate_payload(result_ref),
+            )
+
+        self.assertEqual(
+            tuple(
+                item.result_ref
+                for item in store.results_for_topic(topic.topic_id)
+            ),
+            ("result:newer", "result:older"),
+        )
+
+    def test_runtime_mismatch_never_forwards_reuse_candidate(self):
+        runtime = _seed_runtime()
+
+        mismatch = runtime.handle_message(
+            "thread-phase7",
+            "继续看刚才的渠道贡献。",
+            contract_version="contracts-v2",
+        )
+
+        self.assertEqual(mismatch.reuse_decisions[0].decision, "context_only")
+        self.assertEqual(mismatch.run_request.to_dict()["reuse_candidates"], [])
+
+    def test_runtime_forwards_all_exact_topic_candidates_newest_first(self):
+        runtime = _seed_runtime()
+        topic = runtime.store.current_topic("thread-phase7")
+        newer = _result_candidate_payload(
+            "result:newer-query",
+            source_run_id="run-newer-query",
+        )
+        runtime.store.add_result_ref(
+            topic.topic_id,
+            result_ref=newer["result_ref"],
+            snapshot_id=newer["runtime_snapshot_id"],
+            contract_version=newer["runtime_contract_version"],
+            permission_scope=newer["permission_scope"],
+            semantic_scope=newer["semantic_scope_signature"],
+            payload=newer,
+        )
+
+        result = runtime.handle_message(
+            "thread-phase7",
+            "继续看刚才的渠道贡献。",
+        )
+
+        self.assertEqual(
+            [item["result_ref"] for item in result.run_request.to_dict()["reuse_candidates"]],
+            ["result:newer-query", "result:q2-q1:paid_amount"],
+        )
+        self.assertTrue(
+            all(
+                decision.decision == "candidate"
+                and not decision.can_support_claim
+                for decision in result.reuse_decisions
+            )
+        )
 
     def test_runtime_records_turn_before_context_manifest(self):
         store = StrictTurnStore()
@@ -607,7 +691,8 @@ def _seed_runtime() -> ConversationRuntime:
         snapshot_id="2026H1",
         contract_version="contracts-v1",
         permission_scope="analyst",
-        semantic_scope="q2_vs_q1_paid_amount",
+        semantic_scope="analysis-contract:sha256:analysis-signature",
+        payload=_result_candidate_payload("result:q2-q1:paid_amount"),
     )
     store.add_result_ref(
         month_topic.topic_id,
@@ -615,7 +700,11 @@ def _seed_runtime() -> ConversationRuntime:
         snapshot_id="2026H1",
         contract_version="contracts-v1",
         permission_scope="analyst",
-        semantic_scope="jan_month_start_pattern",
+        semantic_scope="analysis-contract:sha256:analysis-signature",
+        payload=_result_candidate_payload(
+            "result:jan-month-start",
+            source_run_id="run-jan-month-start",
+        ),
     )
     store.add_artifact(
         artifact_id="artifact:q2-q1",
@@ -633,6 +722,45 @@ def _seed_runtime() -> ConversationRuntime:
     )
     store.set_pending_clarification("thread-phase7", q2_topic.topic_id, "metric_choice")
     return runtime
+
+
+def _result_candidate_payload(
+    result_ref: str,
+    *,
+    source_run_id: str = "run-candidate",
+) -> dict:
+    payload = {
+        "schema_version": "result-reuse-candidate.v1",
+        "source_run_id": source_run_id,
+        "result_ref": result_ref,
+        "query_contract_ref": "query-contract:candidate",
+        "query_contract_signature": "query-signature",
+        "query_execution_record_ref": "query-execution-record:candidate",
+        "query_execution_record_digest": "query-execution-digest",
+        "analysis_contract_ref": f"analysis:{source_run_id}:1",
+        "analysis_contract_signature": "analysis-signature",
+        "runtime_snapshot_id": "2026H1",
+        "runtime_contract_version": "contracts-v1",
+        "source_snapshot_refs": ["snapshot:paid-success"],
+        "source_snapshot_record_refs": ["snapshot-record:paid-success"],
+        "source_snapshot_record_digests": ["snapshot-record-digest"],
+        "source_release_refs": ["release:paid-success"],
+        "source_release_authority_refs": ["release-authority:paid-success"],
+        "source_schema_fingerprints": ["schema:paid-success"],
+        "permission_scope": "analyst",
+        "semantic_scope_signature": "analysis-contract:sha256:analysis-signature",
+        "rows_ref": "rows:candidate",
+        "rows_record_ref": "rows-record:candidate",
+        "rows_record_digest": "rows-record-digest",
+        "rows_content_hash": "rows-content-hash",
+        "completeness_report_ref": "completeness:candidate",
+        "completeness_record_refs": ["completeness-record:candidate"],
+        "completeness_record_digests": ["completeness-record-digest"],
+        "binding_record_refs": ["binding-record:candidate"],
+        "binding_record_digests": ["binding-record-digest"],
+    }
+    payload["candidate_signature"] = canonical_digest(payload)
+    return payload
 
 
 def build_test_runtime() -> ConversationRuntime:

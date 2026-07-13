@@ -18,6 +18,7 @@ from bi_agent.conversation.models import (
     ReuseDecision,
     TopicState,
     TurnIntent,
+    validate_result_reuse_candidate,
 )
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.analysis_assets import merge_analysis_assets
@@ -158,6 +159,7 @@ class ConversationRuntime:
             current_snapshot,
             contract_version,
         )
+        reuse_candidates = self._reuse_candidate_payloads(topic, reuse_decisions)
         topic_assets = self._topic_analysis_assets(thread_id, topic)
         combined_prior_assets = merge_analysis_assets(topic_assets, prior_analysis_assets)
         manifest = self._context_manifest(
@@ -251,6 +253,7 @@ class ConversationRuntime:
                 analysis_context=dict(analysis_context or {}),
                 clarification_resume_context=clarification_resume_context,
                 prior_analysis_assets=combined_prior_assets,
+                reuse_candidates=reuse_candidates,
                 requested_nodes=_requested_nodes(user_message, intent_name),
             )
         audit_events = (
@@ -431,22 +434,88 @@ class ConversationRuntime:
             return (ReuseDecision("none", "", "no_bi_claim_requested"),)
         if intent == "unsupported_request":
             return (ReuseDecision("blocked", "", "permission_or_safety_boundary"),)
-        result = self.store.results_for_topic(topic.topic_id if topic else None)
-        if not result:
+        results = self.store.results_for_topic(topic.topic_id if topic else None)
+        candidates = []
+        for result in results:
+            if not result.payload:
+                continue
+            try:
+                validate_result_reuse_candidate(result.payload)
+            except ValueError:
+                continue
+            candidates.append(result)
+        if not candidates:
+            if results:
+                legacy = results[0]
+                if contract_version != legacy.contract_version:
+                    return (
+                        ReuseDecision(
+                            "context_only",
+                            legacy.result_ref,
+                            "contract_version_mismatch",
+                        ),
+                    )
+                legacy_decision = evaluate_reuse_candidate(
+                    source_snapshot=legacy.snapshot_id,
+                    current_snapshot=current_snapshot,
+                    permission_match=_can_read_scope(role, legacy.permission_scope),
+                    semantic_scope_match=not _must_rerun(message, intent, relation),
+                    source_ref=legacy.result_ref,
+                )
+                if legacy_decision.decision == "candidate":
+                    return (
+                        ReuseDecision(
+                            "none",
+                            legacy.result_ref,
+                            "legacy_result_context_only",
+                            can_support_claim=False,
+                            requires_rerun=False,
+                        ),
+                    )
+                return (legacy_decision,)
             return (ReuseDecision("rerun", "", "no_prior_result_ref"),)
-        first = result[0]
-        decision = evaluate_reuse_candidate(
-            source_snapshot=first.snapshot_id,
-            current_snapshot=current_snapshot,
-            permission_match=_can_read_scope(role, first.permission_scope),
-            semantic_scope_match=not _must_rerun(message, intent, relation),
-            source_ref=first.result_ref,
+        decisions: list[ReuseDecision] = []
+        rejected: list[ReuseDecision] = []
+        for candidate in candidates:
+            if contract_version != candidate.contract_version:
+                rejected.append(
+                    ReuseDecision(
+                        "context_only",
+                        candidate.result_ref,
+                        "contract_version_mismatch",
+                    )
+                )
+                continue
+            decision = evaluate_reuse_candidate(
+                source_snapshot=candidate.snapshot_id,
+                current_snapshot=current_snapshot,
+                permission_match=_can_read_scope(role, candidate.permission_scope),
+                semantic_scope_match=not _must_rerun(message, intent, relation),
+                source_ref=candidate.result_ref,
+            )
+            if decision.decision == "candidate":
+                decisions.append(decision)
+            else:
+                rejected.append(decision)
+        return tuple(decisions or rejected[:1])
+
+    def _reuse_candidate_payloads(
+        self,
+        topic: Optional[TopicState],
+        reuse_decisions: tuple[ReuseDecision, ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        candidate_refs = {
+            decision.result_ref
+            for decision in reuse_decisions
+            if decision.decision == "candidate" and decision.result_ref
+        }
+        if not topic or not candidate_refs:
+            return ()
+        return tuple(
+            dict(record.payload)
+            for record in self.store.results_for_topic(topic.topic_id)
+            if record.result_ref in candidate_refs and record.payload
         )
-        if decision.decision != "reuse":
-            return (decision,)
-        if contract_version != first.contract_version:
-            return (ReuseDecision("context_only", first.result_ref, "contract_version_mismatch"),)
-        return (decision,)
 
     def _context_manifest(
         self,
@@ -503,7 +572,11 @@ class ConversationRuntime:
                     permission_scope=role,
                     source_version=f"{contract_version}:{current_snapshot}",
                     expired=decision.decision in {"rerun", "context_only", "blocked"},
-                    claim_use=decision.decision,
+                    claim_use=(
+                        "context_only"
+                        if decision.decision == "candidate"
+                        else decision.decision
+                    ),
                 )
             )
         artifact = self.store.latest_artifact_for_topic(topic.topic_id if topic else None)
@@ -648,10 +721,10 @@ def evaluate_reuse_candidate(
             requires_rerun=True,
         )
     return ReuseDecision(
-        "reuse",
+        "candidate",
         source_ref,
-        "validated_same_thread_scope",
-        can_support_claim=True,
+        "candidate_same_thread_scope",
+        can_support_claim=False,
         requires_rerun=False,
     )
 def _local_orchestration(intent: str, topic_relation: str, message: str) -> dict[str, Any]:

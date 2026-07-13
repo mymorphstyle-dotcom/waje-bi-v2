@@ -1,7 +1,9 @@
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 import json
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 
@@ -27,6 +29,44 @@ def persist_artifact(
         json.dump(to_jsonable(artifact), handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     return str(output_path)
+
+
+def synchronize_existing_artifact(
+    artifact: Mapping[str, Any],
+    artifact_path: str | Path | None,
+) -> bool:
+    if not artifact_path:
+        return False
+    output_path = Path(artifact_path)
+    if not output_path.is_file():
+        return False
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(
+                to_jsonable(artifact),
+                handle,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, output_path)
+        temp_path = None
+        return True
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def filter_artifact_for_role(artifact: Mapping[str, Any], role: str) -> dict[str, Any]:

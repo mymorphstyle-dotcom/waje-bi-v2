@@ -49,6 +49,31 @@ _TERMINAL_GAP_AUTHORITY_KEYS = frozenset(
     }
 )
 
+_CANONICAL_FIXED_WINDOW_ORDER = (
+    "target_day",
+    "previous_day",
+    "rolling_7_day_baseline",
+    "same_weekday_last_week",
+    "pattern_history",
+    "anomaly_history",
+)
+
+_FULL_SAMPLE_SCOPE_ALIASES = frozenset(
+    {
+        "full_sample",
+        "full-sample",
+        "all_platform",
+        "all-platform",
+        "all_sample",
+        "overall",
+        "global",
+        "全平台",
+        "全量",
+        "全样本",
+        "整体",
+    }
+)
+
 
 @dataclass(frozen=True)
 class AnalysisCompileOutcome:
@@ -1440,7 +1465,8 @@ def _build_query_contracts(
     snapshot_by_dataset = {item.dataset_id: item for item in snapshots}
     metric_ids_available = {item.metric_id for item in metric_bindings}
     filters = _filters(proposal)
-    window_refs = tuple(item.window_id for item in windows)
+    query_windows = _canonical_query_windows(windows)
+    window_refs = tuple(item.window_id for item in query_windows)
     logical_queries: list[dict[str, Any]] = []
     query_owners: list[set[str]] = []
     seen: dict[str, int] = {}
@@ -1588,7 +1614,7 @@ def _build_query_contracts(
                         "metric_bindings": normalized_metrics,
                         "dimension_bindings": query_dimensions,
                         "window_refs": window_refs,
-                        "resolved_windows": windows,
+                        "resolved_windows": query_windows,
                         "filters": filters,
                         "result_shape": result_shape,
                         "completeness_assertions": (
@@ -2111,6 +2137,8 @@ def _scope(
         scope = {"type": str(value)}
     else:
         scope = {"type": "full_sample"}
+    if "type" in scope:
+        scope["type"] = _canonical_scope_type(scope["type"])
     scope["requested_metric_ids"] = (
         requested_metric_ids
         if requested_metric_ids is not None
@@ -2122,6 +2150,39 @@ def _scope(
         else _values(proposal, "requested_dimensions")
     )
     return scope
+
+
+def _canonical_query_windows(
+    windows: tuple[ResolvedWindow, ...],
+) -> tuple[ResolvedWindow, ...]:
+    fixed_rank = {
+        window_id: index
+        for index, window_id in enumerate(_CANONICAL_FIXED_WINDOW_ORDER)
+    }
+    fallback_rank = len(fixed_rank)
+    role_rank = {"target": 0, "baseline": 1, "reference": 2}
+    return tuple(
+        sorted(
+            windows,
+            key=lambda item: (
+                fixed_rank.get(item.window_id, fallback_rank),
+                role_rank.get(item.role, 3),
+                item.start_inclusive,
+                item.end_exclusive,
+                item.window_id,
+            ),
+        )
+    )
+
+
+def _canonical_scope_type(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    normalized = value.strip()
+    alias_key = normalized.casefold().replace(" ", "_")
+    if alias_key in _FULL_SAMPLE_SCOPE_ALIASES or normalized in _FULL_SAMPLE_SCOPE_ALIASES:
+        return "full_sample"
+    return normalized
 
 
 def _filters(proposal: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:

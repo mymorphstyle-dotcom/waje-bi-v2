@@ -448,6 +448,607 @@ def test_claim_ceiling_uses_only_claim_producing_binding_provenance():
     assert missing["hard_acceptance_passed"] is False
 
 
+def _claim_binding_authority(
+    registry,
+):
+    from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
+
+    _, context = verified_dimension_scan_asset(
+        rows=(
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "paid_amount": 100.0,
+                "amount": 100.0,
+                "channel": "A",
+            },
+        ),
+        required_fields=("window_id", "amount", "channel"),
+        resolved_windows={
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            }
+        },
+    )
+    resolver = context["evidence_resolver"]
+    record = resolver.resolve_capability_binding(context["binding_manifest_ref"])
+    assert record is not None
+    assert record.status == "ready"
+    assert record.validation_result_refs
+    return SimpleNamespace(
+        resolver=resolver,
+        rows_loader=context["rows_loader"],
+        release_resolver=context["release_resolver"],
+        record=record,
+        primary_result_ref=record.result_refs[0],
+        validation_result_ref=record.validation_result_refs[0],
+    )
+
+
+class _ClaimAuthorityResolver:
+    def __init__(
+        self,
+        delegate,
+        *,
+        binding=...,
+        missing_query_record_ref="",
+    ):
+        self.delegate = delegate
+        self.binding = binding
+        self.missing_query_record_ref = missing_query_record_ref
+
+    def resolve_query_execution(self, result_ref):
+        return self.delegate.resolve_query_execution(result_ref)
+
+    def resolve_query_execution_record(self, record_ref):
+        if record_ref == self.missing_query_record_ref:
+            return None
+        return self.delegate.resolve_query_execution_record(record_ref)
+
+    def resolve_rows(self, rows_ref):
+        return self.delegate.resolve_rows(rows_ref)
+
+    def resolve_rows_record(self, record_ref):
+        return self.delegate.resolve_rows_record(record_ref)
+
+    def resolve_snapshot(self, snapshot_ref):
+        return self.delegate.resolve_snapshot(snapshot_ref)
+
+    def resolve_completeness(self, record_ref):
+        return self.delegate.resolve_completeness(record_ref)
+
+    def resolve_capability_binding(self, binding_ref):
+        if self.binding is ...:
+            return self.delegate.resolve_capability_binding(binding_ref)
+        return self.binding
+
+
+def _resigned_claim_binding(record, **changes):
+    from tests.phase4.test_authoritative_query_chain import _resign_binding
+
+    binding_payload = dict(record.binding_payload)
+    for key in (
+        "status",
+        "input_completeness_statuses",
+        "supported_claim_types",
+        "supported_evidence_types",
+        "maximum_claim_strength",
+        "maximum_claim_strength_rank",
+    ):
+        if key in changes:
+            binding_payload[key] = changes[key]
+    return _resign_binding(record, binding_payload=binding_payload, **changes)
+
+
+def _resolver_claim_authority(
+    record,
+    *,
+    claim=None,
+    evidence=None,
+    claim_result_refs=None,
+    evidence_result_refs=None,
+    claim_type=None,
+    evidence_type=None,
+):
+    producing_refs = list(
+        record.result_refs if claim_result_refs is None else claim_result_refs
+    )
+    manifest_refs = list(
+        record.result_refs if evidence_result_refs is None else evidence_result_refs
+    )
+    claim_payload = claim or {
+        "claim_ref": "claim:resolver-authority",
+        "claim_strength": "observed",
+        "claim_type": claim_type or record.supported_claim_types[0],
+        "provenance_record_ref": "claim-provenance:resolver-authority",
+        "evidence_refs": ["evidence:resolver-authority"],
+        "result_refs": producing_refs,
+    }
+    evidence_payload = evidence or {
+        "evidence_ref": "evidence:resolver-authority",
+        "evidence_type": evidence_type or record.supported_evidence_types[0],
+        "binding_manifest_ref": record.record_ref,
+        "binding_manifest_digest": record.binding_digest,
+        "result_refs": manifest_refs,
+    }
+    return {
+        "sections": [{"payload": {"evidence": [evidence_payload]}}],
+        "admin_audit": {
+            "verified_claims": [claim_payload],
+            "trusted_claim_provenance_records": [{
+                "record_ref": "claim-provenance:resolver-authority",
+                "evidence_refs": ["evidence:resolver-authority"],
+                "result_refs": producing_refs,
+            }],
+        },
+        "available_evidence_brief": {"verified_claims": [claim_payload]},
+    }
+
+
+def test_claim_ceiling_resolves_real_binding_authority_and_deduplicates_claims():
+    from tools.phase7.run_live_conversation_system_test import (
+        review_case_obligations,
+    )
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    fixture = _claim_binding_authority(registry)
+    record = fixture.record
+    authority = _resolver_claim_authority(record)
+    claim = authority["admin_audit"]["verified_claims"][0]
+    claim.pop("evidence_refs")
+    claim.pop("result_refs")
+    authority["sections"][0]["payload"]["evidence"][0][
+        "capability_id"
+    ] = "forged_evidence_capability"
+    authority["admin_audit"]["capability_execution_plans"] = [{
+        "capability_id": "forged_plan_capability",
+        "maximum_claim_strength": "candidate_mechanism",
+    }]
+    authority["sections"].append({
+        "payload": {
+            "verified_claims": list(
+                authority["admin_audit"]["verified_claims"]
+            )
+        }
+    })
+
+    review = review_case_obligations(
+        {
+            "status": "completed",
+            "accepted_graph": [],
+            "scenario": {
+                "question_family": "custom_baseline_comparison",
+                "allowed_claim_ceiling": "directional",
+                "terminal_boundary": "verified_answer",
+            },
+            "runtime_authority": authority,
+        },
+        registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+    )
+
+    assert review["claim_ceiling_passed"] is True
+    assert review["actual_authority_ceiling"] == "quantified_contribution"
+    assert review["missing_claim_capability_provenance"] == []
+    assert review["claim_authority_reviews"] == [{
+        "claim_ref": "claim:resolver-authority",
+        "claim_strength": "observed",
+        "producing_capabilities": ["segment_contribution"],
+        "authority_ceiling": "quantified_contribution",
+        "passed": True,
+        "error_code": "",
+        "authority_errors": [],
+    }]
+
+
+def test_claim_ceiling_allows_claim_relevant_primary_refs_with_validation_binding():
+    from tools.phase7.run_live_conversation_system_test import _review_claim_ceiling
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    fixture = _claim_binding_authority(registry)
+    record = fixture.record
+
+    review = _review_claim_ceiling(
+        _resolver_claim_authority(record),
+        {"allowed_claim_ceiling": "quantified_contribution"},
+        registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+    )
+
+    assert review["passed"] is True
+    assert review["claim_authority_reviews"][0]["producing_capabilities"] == [
+        "segment_contribution"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("non_ready", "capability_binding_not_ready"),
+        (
+            "input_incomplete",
+            "capability_binding_input_completeness_not_complete",
+        ),
+    ],
+)
+def test_claim_ceiling_fails_closed_on_non_ready_or_incomplete_binding(
+    mutation, expected_error
+):
+    from tools.phase7.run_live_conversation_system_test import _review_claim_ceiling
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    fixture = _claim_binding_authority(registry)
+    if mutation == "non_ready":
+        record = _resigned_claim_binding(fixture.record, status="degraded")
+    else:
+        record = _resigned_claim_binding(
+            fixture.record,
+            input_completeness_statuses=("partial", "complete"),
+        )
+    resolver = _ClaimAuthorityResolver(fixture.resolver, binding=record)
+
+    review = _review_claim_ceiling(
+        _resolver_claim_authority(record),
+        {"allowed_claim_ceiling": "quantified_contribution"},
+        registry,
+        evidence_resolver=resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+    )
+
+    assert review["passed"] is False
+    assert expected_error in review["claim_authority_reviews"][0][
+        "authority_errors"
+    ]
+
+
+def test_claim_ceiling_fails_closed_on_dangling_authoritative_query_chain():
+    from tools.phase7.run_live_conversation_system_test import _review_claim_ceiling
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    fixture = _claim_binding_authority(registry)
+    resolver = _ClaimAuthorityResolver(
+        fixture.resolver,
+        missing_query_record_ref=fixture.record.query_execution_record_refs[0],
+    )
+
+    review = _review_claim_ceiling(
+        _resolver_claim_authority(fixture.record),
+        {"allowed_claim_ceiling": "quantified_contribution"},
+        registry,
+        evidence_resolver=resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+    )
+
+    assert review["passed"] is False
+    assert "authoritative_query_chain_invalid:query_execution_record_missing" in (
+        review["claim_authority_reviews"][0]["authority_errors"]
+    )
+
+
+def test_claim_ceiling_rejects_validation_only_claim_producing_result_refs():
+    from tools.phase7.run_live_conversation_system_test import _review_claim_ceiling
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    fixture = _claim_binding_authority(registry)
+
+    review = _review_claim_ceiling(
+        _resolver_claim_authority(
+            fixture.record,
+            claim_result_refs=(fixture.validation_result_ref,),
+            evidence_result_refs=(fixture.validation_result_ref,),
+        ),
+        {"allowed_claim_ceiling": "quantified_contribution"},
+        registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+    )
+
+    assert review["passed"] is False
+    assert "claim_result_refs_not_primary" in review[
+        "claim_authority_reviews"
+    ][0]["authority_errors"]
+
+
+def test_claim_ceiling_requires_nonempty_claim_producing_result_refs():
+    from tools.phase7.run_live_conversation_system_test import _review_claim_ceiling
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    fixture = _claim_binding_authority(registry)
+
+    review = _review_claim_ceiling(
+        _resolver_claim_authority(fixture.record, claim_result_refs=()),
+        {"allowed_claim_ceiling": "quantified_contribution"},
+        registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+    )
+
+    assert review["passed"] is False
+    assert "claim_result_refs_missing" in review["claim_authority_reviews"][0][
+        "authority_errors"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_error"),
+    [
+        ("claim_type", "causal_effect", "claim_type_not_supported"),
+        ("evidence_type", "external_event", "evidence_type_not_supported"),
+    ],
+)
+def test_claim_ceiling_enforces_binding_and_registry_claim_evidence_types(
+    field, value, expected_error
+):
+    from tools.phase7.run_live_conversation_system_test import _review_claim_ceiling
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    fixture = _claim_binding_authority(registry)
+
+    review = _review_claim_ceiling(
+        _resolver_claim_authority(fixture.record, **{field: value}),
+        {"allowed_claim_ceiling": "quantified_contribution"},
+        registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+    )
+
+    assert review["passed"] is False
+    assert expected_error in review["claim_authority_reviews"][0][
+        "authority_errors"
+    ]
+
+
+def test_claim_ceiling_fails_closed_with_typed_error_for_malformed_record():
+    from tools.phase7.run_live_conversation_system_test import _review_claim_ceiling
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    fixture = _claim_binding_authority(registry)
+    resolver = _ClaimAuthorityResolver(
+        fixture.resolver,
+        binding={"record_ref": fixture.record.record_ref},
+    )
+
+    review = _review_claim_ceiling(
+        _resolver_claim_authority(fixture.record),
+        {"allowed_claim_ceiling": "quantified_contribution"},
+        registry,
+        evidence_resolver=resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+    )
+
+    assert review["passed"] is False
+    assert review["claim_authority_reviews"][0]["authority_errors"] == [
+        "capability_binding_record_type_invalid"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("unresolved", "capability_binding_record_missing"),
+        ("binding_ref", "capability_binding_record_ref_mismatch"),
+        ("binding_digest", "binding_manifest_digest_mismatch"),
+        ("result_refs", "capability_binding_result_refs_mismatch"),
+        ("record_integrity", "capability_binding_record_integrity"),
+        ("contract_signature", "capability_contract_signature_mismatch"),
+        ("contract_version", "capability_contract_version_mismatch"),
+        ("claim_ceiling", "capability_claim_ceiling_mismatch"),
+    ],
+)
+def test_claim_ceiling_fails_closed_on_resolved_binding_authority_drift(
+    mutation, expected_error
+):
+    from tools.phase7.run_live_conversation_system_test import _review_claim_ceiling
+    from tests.phase4.test_authoritative_query_chain import _resign_binding
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    fixture = _claim_binding_authority(registry)
+    record = fixture.record
+    resolved_record = record
+    if mutation == "contract_signature":
+        plan_payload = dict(record.plan_payload)
+        plan_payload["capability_contract_signature"] = "0" * 64
+        resolved_record = _resign_binding(
+            record,
+            capability_contract_signature="0" * 64,
+            plan_payload=plan_payload,
+        )
+    elif mutation == "contract_version":
+        plan_payload = dict(record.plan_payload)
+        plan_payload["capability_contract_version"] = "drifted-runtime-contract"
+        resolved_record = _resign_binding(
+            record,
+            capability_contract_version="drifted-runtime-contract",
+            plan_payload=plan_payload,
+        )
+    elif mutation == "claim_ceiling":
+        plan_payload = dict(record.plan_payload)
+        binding_payload = dict(record.binding_payload)
+        plan_payload["maximum_claim_strength"] = "candidate_driver"
+        binding_payload["maximum_claim_strength"] = "candidate_driver"
+        resolved_record = _resign_binding(
+            record,
+            maximum_claim_strength="candidate_driver",
+            plan_payload=plan_payload,
+            binding_payload=binding_payload,
+        )
+    evidence = None
+    if mutation == "unresolved":
+        resolved_record = None
+    elif mutation == "binding_ref":
+        evidence = {
+            "evidence_ref": "evidence:resolver-authority",
+            "evidence_type": record.supported_evidence_types[0],
+            "binding_manifest_ref": "capability-binding:forged-ref",
+            "binding_manifest_digest": record.binding_digest,
+            "result_refs": list(record.result_refs),
+        }
+    elif mutation == "binding_digest":
+        evidence = {
+            "evidence_ref": "evidence:resolver-authority",
+            "evidence_type": record.supported_evidence_types[0],
+            "binding_manifest_ref": record.record_ref,
+            "binding_manifest_digest": "f" * 64,
+            "result_refs": list(record.result_refs),
+        }
+    elif mutation == "result_refs":
+        evidence = {
+            "evidence_ref": "evidence:resolver-authority",
+            "evidence_type": record.supported_evidence_types[0],
+            "binding_manifest_ref": record.record_ref,
+            "binding_manifest_digest": record.binding_digest,
+            "result_refs": ["result:forged"],
+        }
+    elif mutation == "record_integrity":
+        resolved_record = replace(record, binding_digest="f" * 64)
+
+    resolver = _ClaimAuthorityResolver(
+        fixture.resolver,
+        binding=resolved_record,
+    )
+
+    review = _review_claim_ceiling(
+        _resolver_claim_authority(resolved_record or record, evidence=evidence),
+        {"allowed_claim_ceiling": "quantified_contribution"},
+        registry,
+        evidence_resolver=resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+    )
+
+    assert review["passed"] is False
+    assert review["claim_authority_reviews"][0]["error_code"] == (
+        "claim_capability_authority_invalid"
+    )
+    assert expected_error in review["claim_authority_reviews"][0][
+        "authority_errors"
+    ]
+
+
+def test_claim_ceiling_fails_closed_on_conflicting_same_ref_claim_payloads():
+    from tools.phase7.run_live_conversation_system_test import _review_claim_ceiling
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    fixture = _claim_binding_authority(registry)
+    record = fixture.record
+    authority = _resolver_claim_authority(record)
+    conflicting = {
+        **authority["admin_audit"]["verified_claims"][0],
+        "claim_strength": "strong",
+    }
+    authority["sections"].append({"payload": {"verified_claims": [conflicting]}})
+
+    review = _review_claim_ceiling(
+        authority,
+        {"allowed_claim_ceiling": "quantified_contribution"},
+        registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+    )
+
+    assert review["passed"] is False
+    assert len(review["claim_authority_reviews"]) == 1
+    conflicting_review = review["claim_authority_reviews"][0]
+    assert conflicting_review["claim_ref"] == "claim:resolver-authority"
+    assert conflicting_review["producing_capabilities"] == []
+    assert conflicting_review["authority_ceiling"] == ""
+    assert conflicting_review["passed"] is False
+    assert conflicting_review["error_code"] == "conflicting_claim_ref_payload"
+    assert conflicting_review["authority_errors"] == [
+        "conflicting_claim_ref_payload"
+    ]
+
+
+def test_run_case_passes_core_authority_chain_resolvers_to_obligation_review(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    resolver = object()
+    rows_loader = object()
+    release_resolver = object()
+    captured = {}
+
+    class Core:
+        def run_message(self, **kwargs):
+            return {
+                "status": "completed",
+                "run_id": "run:resolver-forwarding",
+                "topic_id": "topic:resolver-forwarding",
+                "answer_package": {},
+                "context_manifest": {},
+                "accepted_graph": [],
+                "llm_calls": [],
+            }
+
+    monkeypatch.setattr(system_test, "_runtime_quality_review", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        system_test,
+        "_review_expectations",
+        lambda *args, **kwargs: {"passed": True},
+    )
+    monkeypatch.setattr(system_test, "_runtime_audit_package", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        system_test,
+        "_real_clickhouse_review",
+        lambda *args, **kwargs: {
+            "runtime_correctness": {
+                "all_required_queries_complete": True,
+                "all_capabilities_bound": True,
+                "all_claims_traceable": True,
+            },
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(system_test, "_write_case_artifact", lambda *args, **kwargs: None)
+
+    def review(*args, **kwargs):
+        captured["evidence_resolver"] = kwargs.get("evidence_resolver")
+        captured["rows_loader"] = kwargs.get("rows_loader")
+        captured["release_resolver"] = kwargs.get("release_resolver")
+        return {
+            "hard_acceptance_passed": True,
+            "reuse_passed": True,
+            "clarification_resume_passed": True,
+        }
+
+    monkeypatch.setattr(system_test, "review_case_obligations", review)
+
+    core = Core()
+    core.evidence_resolver = resolver
+    core.rows_loader = rows_loader
+    core.release_resolver = release_resolver
+    system_test.run_case(
+        core,
+        {
+            "id": "resolver-forwarding",
+            "turns": [{
+                "user": "检查证据链",
+                "scenario": {"question_family": "custom_baseline_comparison"},
+            }],
+        },
+        tmp_path,
+    )
+
+    assert captured["evidence_resolver"] is resolver
+    assert captured["rows_loader"] is rows_loader
+    assert captured["release_resolver"] is release_resolver
+
+
 def test_runtime_review_serializes_same_hard_acceptance_summary(tmp_path):
     from tools.phase7.run_live_conversation_system_test import _write_case_artifact
 

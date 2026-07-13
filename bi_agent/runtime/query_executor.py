@@ -100,36 +100,7 @@ class ClickHouseQueryExecutor:
         release_resolver: DatasetReleaseResolver | None = None,
     ) -> QueryResultEnvelope:
         def finish(envelope: QueryResultEnvelope) -> QueryResultEnvelope:
-            if (
-                envelope.execution_status != "succeeded"
-                and query_contract_signature(contract)
-                != contract.contract_signature
-            ):
-                return envelope
-            record = _record_query_execution(
-                self.evidence_writer,
-                contract,
-                envelope,
-                snapshots,
-            )
-            expected_result_payload = envelope.to_dict()
-            expected_result_payload.pop("rows", None)
-            if (
-                runtime_evidence_record_integrity_errors(record)
-                or record.query_contract_ref != contract.query_contract_id
-                or record.result_ref != envelope.result_ref
-                or record.rows_ref != envelope.rows_ref
-                or record.completeness_report_ref
-                != envelope.completeness_report_ref
-                or canonical_digest(record.query_contract)
-                != canonical_digest(contract.to_dict())
-                or canonical_digest(record.result_payload)
-                != canonical_digest(expected_result_payload)
-            ):
-                raise EvidenceIntegrityError(
-                    "query_execution_writer_record_invalid"
-                )
-            return envelope
+            return self._record_current_execution(contract, envelope, snapshots)
 
         attempt_ref = execution_attempt_ref or (
             "attempt:" + secrets.token_urlsafe(18)
@@ -303,6 +274,131 @@ class ClickHouseQueryExecutor:
             provider_stats=provider_stats,
             execution_attempt_ref=attempt_ref,
         ))
+
+    def materialize_reuse(
+        self,
+        contract: QueryContract,
+        snapshots: Mapping[str, DatasetSnapshot],
+        *,
+        source_result: QueryResultEnvelope,
+        source_rows: Sequence[Mapping[str, Any]],
+        source_result_ref: str,
+        candidate_signature: str,
+        execution_attempt_ref: str = "",
+        release_resolver: DatasetReleaseResolver | None = None,
+    ) -> QueryResultEnvelope:
+        if source_result.execution_status != "succeeded":
+            raise EvidenceIntegrityError("reuse_source_execution_not_succeeded")
+        if source_result.result_ref != source_result_ref:
+            raise EvidenceIntegrityError("reuse_source_result_ref_mismatch")
+        compiled = compile_clickhouse_query(
+            contract,
+            snapshots,
+            release_resolver=release_resolver or self.release_resolver,
+        )
+        query_hash = audit_query_hash(compiled.sql_text, compiled.parameters)
+        if query_hash != source_result.query_hash:
+            raise EvidenceIntegrityError("reuse_query_hash_mismatch")
+        bounded_context = (
+            contract.result_shape.result_semantics == "complete_context_rows"
+        )
+        validation = validate_select_only(
+            compiled.sql_text,
+            aggregate=not bounded_context,
+        )
+        if not validation.ok:
+            raise EvidenceIntegrityError(
+                f"reuse_query_safety_invalid:{validation.reason}"
+            )
+        rows, join_audit_stats, failure_reason = _aggregate_rows(
+            source_rows,
+            contract,
+        )
+        if failure_reason:
+            raise EvidenceIntegrityError(
+                f"reuse_rows_contract_mismatch:{failure_reason}"
+            )
+        rows_content_hash = canonical_result_rows_hash(
+            rows,
+            contract.result_shape.unique_key,
+        )
+        attempt_ref = execution_attempt_ref or (
+            "attempt:" + secrets.token_urlsafe(18)
+        )
+        audit_refs = query_audit_refs(
+            query_hash,
+            contract.contract_signature,
+            contract.dataset_snapshot_refs,
+            query_contract_ref=contract.query_contract_id,
+            execution_attempt_ref=attempt_ref,
+            rows_content_hash=rows_content_hash,
+        )
+        rows_ref = self.rows_store.persist(
+            query_hash,
+            contract.contract_signature,
+            contract.dataset_snapshot_refs,
+            rows,
+            contract.result_shape.unique_key,
+        )
+        provider_stats = {
+            **dict(source_result.provider_stats),
+            **dict(join_audit_stats),
+            "cache_hit": True,
+            "cache_source": "validated_authoritative_query_chain",
+            "source_result_ref": source_result_ref,
+            "candidate_signature": candidate_signature,
+        }
+        envelope = QueryResultEnvelope(
+            query_contract_ref=contract.query_contract_id,
+            query_id=f"cache-hit:{contract.query_contract_id}:{query_hash[:12]}",
+            query_hash=query_hash,
+            result_ref=audit_refs.result_ref,
+            execution_status="succeeded",
+            rows_ref=rows_ref,
+            row_count=len(rows),
+            completeness_report_ref=audit_refs.completeness_report_ref,
+            rows=rows,
+            observed_schema=_observed_schema(rows),
+            observed_windows=_observed_windows(rows, contract),
+            observed_grain=_observed_grain(rows, contract.result_shape.grain),
+            source_snapshot_refs=contract.dataset_snapshot_refs,
+            provider_stats=provider_stats,
+            execution_attempt_ref=attempt_ref,
+        )
+        return self._record_current_execution(contract, envelope, snapshots)
+
+    def _record_current_execution(
+        self,
+        contract: QueryContract,
+        envelope: QueryResultEnvelope,
+        snapshots: Mapping[str, DatasetSnapshot],
+    ) -> QueryResultEnvelope:
+        if (
+            envelope.execution_status != "succeeded"
+            and query_contract_signature(contract) != contract.contract_signature
+        ):
+            return envelope
+        record = _record_query_execution(
+            self.evidence_writer,
+            contract,
+            envelope,
+            snapshots,
+        )
+        expected_result_payload = envelope.to_dict()
+        expected_result_payload.pop("rows", None)
+        if (
+            runtime_evidence_record_integrity_errors(record)
+            or record.query_contract_ref != contract.query_contract_id
+            or record.result_ref != envelope.result_ref
+            or record.rows_ref != envelope.rows_ref
+            or record.completeness_report_ref != envelope.completeness_report_ref
+            or canonical_digest(record.query_contract)
+            != canonical_digest(contract.to_dict())
+            or canonical_digest(record.result_payload)
+            != canonical_digest(expected_result_payload)
+        ):
+            raise EvidenceIntegrityError("query_execution_writer_record_invalid")
+        return envelope
 
 
 def _failed_envelope(

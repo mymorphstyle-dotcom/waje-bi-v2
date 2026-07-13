@@ -5,6 +5,7 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
+from bi_agent.conversation.models import RESULT_REUSE_CANDIDATE_FIELDS
 from bi_agent.runtime.analysis_contract_compiler import (
     AnalysisCompileOutcome,
     compile_analysis_contract,
@@ -16,6 +17,11 @@ from bi_agent.runtime.analysis_contracts import (
     QueryContract,
     QueryResultEnvelope,
     analysis_contract_signature,
+    query_contract_signature,
+)
+from bi_agent.runtime.authoritative_query_chain import (
+    AuthoritativeQueryChainError,
+    validate_authoritative_query_chain,
 )
 from bi_agent.runtime.capability_execution import (
     BoundCapabilityInput,
@@ -33,11 +39,14 @@ from bi_agent.runtime.dataset_catalog import DatasetCatalog, DatasetSnapshot
 from bi_agent.runtime.evidence_authority import (
     CapabilityBindingRecord,
     CompletenessRecord,
+    EvidenceIntegrityError,
     QueryExecutionRecord,
     RowsRecord,
     RuntimeEvidenceAuthority,
     SnapshotRecord,
     canonical_value,
+    canonical_digest,
+    runtime_evidence_record_integrity_errors,
     snapshot_authority_record,
 )
 from bi_agent.runtime.query_completeness import validate_query_result, validate_query_set
@@ -50,6 +59,29 @@ from bi_agent.runtime.runtime_contract_registry import (
 )
 
 
+_REUSE_CANDIDATE_V1_FIELDS = frozenset(RESULT_REUSE_CANDIDATE_FIELDS)
+
+_REUSE_CANDIDATE_SEQUENCE_FIELDS = (
+    "source_snapshot_refs",
+    "source_snapshot_record_refs",
+    "source_snapshot_record_digests",
+    "source_release_refs",
+    "source_release_authority_refs",
+    "source_schema_fingerprints",
+    "completeness_record_refs",
+    "completeness_record_digests",
+    "binding_record_refs",
+    "binding_record_digests",
+)
+
+
+@dataclass(frozen=True)
+class _ValidatedReuseCandidate:
+    payload: Mapping[str, Any]
+    source_result: QueryResultEnvelope
+    source_rows: tuple[Mapping[str, Any], ...]
+
+
 @dataclass(frozen=True)
 class AnalysisRuntimeRequest:
     run_id: str
@@ -57,6 +89,8 @@ class AnalysisRuntimeRequest:
     accepted_graph: tuple[str, ...]
     as_of: datetime
     permission_scope: str
+    topic_id: str = ""
+    reuse_candidates: tuple[Mapping[str, Any], ...] = ()
     attempted_signatures: tuple[str, ...] = ()
     run_mode: str = "production"
 
@@ -69,6 +103,8 @@ class AnalysisRuntimeRequest:
         accepted_graph: Sequence[str],
         as_of: str | datetime,
         permission_scope: str,
+        topic_id: str = "",
+        reuse_candidates: Sequence[Mapping[str, Any]] = (),
         attempted_signatures: Sequence[str] = (),
         run_mode: str = "production",
     ) -> "AnalysisRuntimeRequest":
@@ -87,6 +123,13 @@ class AnalysisRuntimeRequest:
             accepted_graph=tuple(dict.fromkeys(str(item) for item in accepted_graph if item)),
             as_of=parsed,
             permission_scope=permission_scope,
+            topic_id=str(topic_id or ""),
+            reuse_candidates=tuple(
+                MappingProxyType(dict(item))
+                if isinstance(item, Mapping)
+                else MappingProxyType({})
+                for item in reuse_candidates
+            ),
             attempted_signatures=tuple(
                 dict.fromkeys(str(item) for item in attempted_signatures if item)
             ),
@@ -163,6 +206,7 @@ class AnalysisRuntimeResult:
     repair_decisions: tuple[QueryRepairDecision, ...]
     typed_gaps: tuple[Mapping[str, Any], ...]
     persistence_records: Mapping[str, Any]
+    reuse_decisions: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def status(self) -> str:
@@ -202,6 +246,7 @@ class AnalysisRuntimeResult:
             "result_refs_by_intent": refs_by_intent,
             "repair_decisions": [asdict(item) for item in self.repair_decisions],
             "typed_gaps": [dict(item) for item in self.typed_gaps],
+            "reuse_decisions": [dict(item) for item in self.reuse_decisions],
             "analysis_runtime_status": self.status,
         }
 
@@ -363,6 +408,8 @@ class AnalysisRuntime:
                 or request.get("as_of")
                 or "",
                 permission_scope=str(request.get("role") or "analyst"),
+                topic_id=str(request.get("topic_id") or ""),
+                reuse_candidates=request.get("reuse_candidates") or (),
                 attempted_signatures=request.get("attempted_signatures") or (),
                 run_mode=str(request.get("run_mode") or "production"),
             )
@@ -391,6 +438,7 @@ class AnalysisRuntime:
         results: list[QueryResultEnvelope] = []
         reports: list[CompletenessReport] = []
         decisions: list[QueryRepairDecision] = []
+        reuse_decisions: list[Mapping[str, Any]] = []
         executed_contracts: list[QueryContract] = []
         for contract in compiled.query_contracts:
             contract_snapshots = {
@@ -409,11 +457,62 @@ class AnalysisRuntime:
                 registry=self.registry,
                 release_resolver=self.release_resolver,
             )
-            result = self.executor.execute(
-                contract,
-                contract_snapshots,
-                release_resolver=self.release_resolver,
+            validated_reuse, candidate, rerun_reason = (
+                self._validated_reuse_candidate(
+                    typed,
+                    contract,
+                    contract_snapshots,
+                )
             )
+            result: QueryResultEnvelope | None = None
+            if validated_reuse is not None:
+                try:
+                    result = self.executor.materialize_reuse(
+                        contract,
+                        contract_snapshots,
+                        source_result=validated_reuse.source_result,
+                        source_rows=validated_reuse.source_rows,
+                        source_result_ref=str(
+                            validated_reuse.payload["result_ref"]
+                        ),
+                        candidate_signature=str(
+                            validated_reuse.payload["candidate_signature"]
+                        ),
+                        release_resolver=self.release_resolver,
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    rerun_reason = (
+                        "cache_materialization_invalid:"
+                        + _exception_reason(exc)
+                    )
+            if result is None:
+                result = self.executor.execute(
+                    contract,
+                    contract_snapshots,
+                    release_resolver=self.release_resolver,
+                )
+            if candidate is not None:
+                reused = validated_reuse is not None and not rerun_reason
+                reuse_decisions.append(
+                    MappingProxyType(
+                        {
+                            "source_ref": str(candidate.get("result_ref") or ""),
+                            "result_ref": result.result_ref,
+                            "decision": "reuse" if reused else "rerun",
+                            "reason": (
+                                "validated_authoritative_query_chain"
+                                if reused
+                                else str(rerun_reason or "reuse_candidate_mismatch")
+                            ),
+                            "can_support_claim": reused,
+                            "requires_rerun": not reused,
+                            "query_contract_ref": contract.query_contract_id,
+                            "candidate_signature": str(
+                                candidate.get("candidate_signature") or ""
+                            ),
+                        }
+                    )
+                )
             report = validate_query_result(
                 contract,
                 result,
@@ -467,6 +566,389 @@ class AnalysisRuntime:
             repair_decisions=tuple(decisions),
             typed_gaps=gaps,
             persistence_records=MappingProxyType(persistence),
+            reuse_decisions=tuple(reuse_decisions),
+        )
+
+    def _validated_reuse_candidate(
+        self,
+        request: AnalysisRuntimeRequest,
+        contract: QueryContract,
+        snapshots: Mapping[str, DatasetSnapshot],
+    ) -> tuple[
+        _ValidatedReuseCandidate | None,
+        Mapping[str, Any] | None,
+        str,
+    ]:
+        if not request.reuse_candidates:
+            return None, None, ""
+        first_candidate: Mapping[str, Any] | None = None
+        reasons: list[str] = []
+        for raw_candidate in request.reuse_candidates:
+            candidate = dict(raw_candidate)
+            if first_candidate is None:
+                first_candidate = candidate
+            try:
+                validated = self._validate_reuse_candidate(
+                    candidate,
+                    request=request,
+                    contract=contract,
+                    snapshots=snapshots,
+                )
+            except (
+                AttributeError,
+                AuthoritativeQueryChainError,
+                EvidenceIntegrityError,
+                KeyError,
+                PermissionError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                reasons.append(_exception_reason(exc))
+                continue
+            return validated, candidate, ""
+        return (
+            None,
+            first_candidate,
+            reasons[0] if reasons else "reuse_candidate_mismatch",
+        )
+
+    def _validate_reuse_candidate(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        request: AnalysisRuntimeRequest,
+        contract: QueryContract,
+        snapshots: Mapping[str, DatasetSnapshot],
+    ) -> _ValidatedReuseCandidate:
+        if set(candidate) != _REUSE_CANDIDATE_V1_FIELDS:
+            raise EvidenceIntegrityError("reuse_candidate_shape_invalid")
+        if str(candidate.get("schema_version") or "") != (
+            "result-reuse-candidate.v1"
+        ):
+            raise EvidenceIntegrityError("reuse_candidate_schema_version_invalid")
+        for field in _REUSE_CANDIDATE_V1_FIELDS.difference(
+            _REUSE_CANDIDATE_SEQUENCE_FIELDS
+        ):
+            if not isinstance(candidate.get(field), str) or not candidate[field]:
+                raise EvidenceIntegrityError(
+                    f"reuse_candidate_scalar_invalid:{field}"
+                )
+        for field in _REUSE_CANDIDATE_SEQUENCE_FIELDS:
+            value = candidate.get(field)
+            if (
+                not isinstance(value, (list, tuple))
+                or isinstance(value, (str, bytes))
+                or any(not isinstance(item, str) or not item for item in value)
+            ):
+                raise EvidenceIntegrityError(
+                    f"reuse_candidate_sequence_invalid:{field}"
+                )
+        unsigned = dict(candidate)
+        candidate_signature = str(unsigned.pop("candidate_signature") or "")
+        if candidate_signature != canonical_digest(unsigned):
+            raise EvidenceIntegrityError("reuse_candidate_signature_invalid")
+
+        snapshot_fields = (
+            "source_snapshot_refs",
+            "source_snapshot_record_refs",
+            "source_snapshot_record_digests",
+            "source_release_refs",
+            "source_release_authority_refs",
+            "source_schema_fingerprints",
+        )
+        snapshot_lengths = {len(candidate[field]) for field in snapshot_fields}
+        if len(snapshot_lengths) != 1 or snapshot_lengths == {0}:
+            raise EvidenceIntegrityError("reuse_candidate_snapshot_cardinality")
+        for left, right, reason in (
+            (
+                "completeness_record_refs",
+                "completeness_record_digests",
+                "reuse_candidate_completeness_cardinality",
+            ),
+            (
+                "binding_record_refs",
+                "binding_record_digests",
+                "reuse_candidate_binding_cardinality",
+            ),
+        ):
+            if not candidate[left] or len(candidate[left]) != len(candidate[right]):
+                raise EvidenceIntegrityError(reason)
+
+        if not request.topic_id:
+            raise EvidenceIntegrityError("reuse_candidate_topic_missing")
+        resolver_method = getattr(
+            self.store,
+            "resolve_result_candidate_authority",
+            None,
+        )
+        if not callable(resolver_method):
+            raise EvidenceIntegrityError(
+                "reuse_candidate_authority_resolver_unavailable"
+            )
+        source_authority = resolver_method(
+            result_ref=str(candidate["result_ref"]),
+            topic_id=request.topic_id,
+        )
+        if not isinstance(source_authority, Mapping):
+            raise EvidenceIntegrityError("reuse_candidate_source_authority_invalid")
+        if str(source_authority.get("source_run_id") or "") != str(
+            candidate["source_run_id"]
+        ):
+            raise EvidenceIntegrityError("reuse_candidate_source_run_mismatch")
+        if str(source_authority.get("run_topic_id") or "") != request.topic_id:
+            raise EvidenceIntegrityError("reuse_candidate_topic_owner_mismatch")
+        if str(source_authority.get("run_status") or "") not in {
+            "completed",
+            "succeeded",
+        }:
+            raise EvidenceIntegrityError("reuse_candidate_source_run_not_complete")
+
+        result_ref_record = _mapping_value(
+            source_authority.get("result_ref_record")
+        )
+        result_record_expected = {
+            "result_ref": str(candidate["result_ref"]),
+            "topic_id": request.topic_id,
+            "snapshot_id": str(candidate["runtime_snapshot_id"]),
+            "contract_version": str(candidate["runtime_contract_version"]),
+            "permission_scope": str(candidate["permission_scope"]),
+            "semantic_scope": str(candidate["semantic_scope_signature"]),
+        }
+        if any(
+            str(result_ref_record.get(key) or "") != expected
+            for key, expected in result_record_expected.items()
+        ):
+            raise EvidenceIntegrityError("reuse_candidate_result_index_mismatch")
+
+        source_request = _mapping_value(
+            source_authority.get("source_run_request")
+        )
+        context_manifest = _mapping_value(source_request.get("context_manifest"))
+        contract_versions = _mapping_value(
+            context_manifest.get("contract_versions")
+        )
+        if str(context_manifest.get("snapshot_version") or "") != str(
+            candidate["runtime_snapshot_id"]
+        ):
+            raise EvidenceIntegrityError("reuse_candidate_runtime_snapshot_mismatch")
+        if str(contract_versions.get("runtime") or "") != str(
+            candidate["runtime_contract_version"]
+        ):
+            raise EvidenceIntegrityError("reuse_candidate_runtime_contract_mismatch")
+
+        source_analysis = _mapping_value(source_authority.get("analysis_contract"))
+        stored_analysis_signature = str(
+            source_authority.get("stored_analysis_contract_signature") or ""
+        )
+        computed_analysis_signature = analysis_contract_signature(source_analysis)
+        if (
+            str(source_analysis.get("analysis_contract_id") or "")
+            != str(candidate["analysis_contract_ref"])
+            or stored_analysis_signature != computed_analysis_signature
+            or str(candidate["analysis_contract_signature"])
+            != computed_analysis_signature
+            or str(candidate["semantic_scope_signature"])
+            != f"analysis-contract:sha256:{computed_analysis_signature}"
+        ):
+            raise EvidenceIntegrityError("reuse_candidate_analysis_authority_mismatch")
+
+        query = self.evidence_resolver.resolve_query_execution_record(
+            str(candidate["query_execution_record_ref"])
+        )
+        query_by_result = self.evidence_resolver.resolve_query_execution(
+            str(candidate["result_ref"])
+        )
+        if query is None or query_by_result is None:
+            raise EvidenceIntegrityError("reuse_candidate_query_record_missing")
+        if query.record_ref != query_by_result.record_ref:
+            raise EvidenceIntegrityError("reuse_candidate_query_record_conflict")
+        if runtime_evidence_record_integrity_errors(query):
+            raise EvidenceIntegrityError("reuse_candidate_query_record_invalid")
+        if (
+            query.record_digest != str(candidate["query_execution_record_digest"])
+            or query.query_contract_ref != str(candidate["query_contract_ref"])
+            or query.contract_signature
+            != str(candidate["query_contract_signature"])
+            or query.contract.analysis_contract_ref
+            != str(candidate["analysis_contract_ref"])
+            or query.result_ref != str(candidate["result_ref"])
+            or query.rows_ref != str(candidate["rows_ref"])
+            or query.completeness_report_ref
+            != str(candidate["completeness_report_ref"])
+        ):
+            raise EvidenceIntegrityError("reuse_candidate_query_authority_mismatch")
+
+        rows_record = self.evidence_resolver.resolve_rows_record(
+            str(candidate["rows_record_ref"])
+        )
+        rows_by_ref = self.evidence_resolver.resolve_rows(str(candidate["rows_ref"]))
+        if rows_record is None or rows_by_ref is None:
+            raise EvidenceIntegrityError("reuse_candidate_rows_record_missing")
+        if rows_record.record_ref != rows_by_ref.record_ref:
+            raise EvidenceIntegrityError("reuse_candidate_rows_record_conflict")
+        if (
+            runtime_evidence_record_integrity_errors(rows_record)
+            or rows_record.record_digest != str(candidate["rows_record_digest"])
+            or rows_record.rows_ref != str(candidate["rows_ref"])
+            or rows_record.rows_content_hash != str(candidate["rows_content_hash"])
+            or rows_record.row_count != query.row_count
+        ):
+            raise EvidenceIntegrityError("reuse_candidate_rows_authority_mismatch")
+
+        candidate_snapshot_refs = tuple(candidate["source_snapshot_refs"])
+        if (
+            candidate_snapshot_refs != query.source_snapshot_refs
+            or tuple(candidate["source_snapshot_record_refs"])
+            != query.source_snapshot_record_refs
+            or tuple(candidate["source_snapshot_record_digests"])
+            != query.source_snapshot_record_digests
+        ):
+            raise EvidenceIntegrityError("reuse_candidate_snapshot_binding_mismatch")
+        for index, snapshot_ref in enumerate(candidate_snapshot_refs):
+            snapshot_record = self.evidence_resolver.resolve_snapshot(snapshot_ref)
+            if snapshot_record is None:
+                raise EvidenceIntegrityError("reuse_candidate_snapshot_record_missing")
+            if (
+                runtime_evidence_record_integrity_errors(snapshot_record)
+                or snapshot_record.record_ref
+                != candidate["source_snapshot_record_refs"][index]
+                or snapshot_record.record_digest
+                != candidate["source_snapshot_record_digests"][index]
+                or snapshot_record.snapshot.release_ref
+                != candidate["source_release_refs"][index]
+                or snapshot_record.snapshot.authority_record_ref
+                != candidate["source_release_authority_refs"][index]
+                or snapshot_record.snapshot.schema_fingerprint
+                != candidate["source_schema_fingerprints"][index]
+            ):
+                raise EvidenceIntegrityError(
+                    "reuse_candidate_snapshot_authority_mismatch"
+                )
+            release = self.release_resolver.resolve_dataset_release(
+                snapshot_record.snapshot.release_ref
+            )
+            if (
+                release.authority_record_ref
+                != candidate["source_release_authority_refs"][index]
+                or release.integrity_errors
+                or snapshot_ref not in release.snapshot_refs
+            ):
+                raise EvidenceIntegrityError("reuse_candidate_release_authority_mismatch")
+
+        completeness_records = []
+        for record_ref, record_digest in zip(
+            candidate["completeness_record_refs"],
+            candidate["completeness_record_digests"],
+        ):
+            record = self.evidence_resolver.resolve_completeness(record_ref)
+            if record is None:
+                raise EvidenceIntegrityError(
+                    "reuse_candidate_completeness_record_missing"
+                )
+            if (
+                runtime_evidence_record_integrity_errors(record)
+                or record.report_digest != record_digest
+            ):
+                raise EvidenceIntegrityError(
+                    "reuse_candidate_completeness_authority_mismatch"
+                )
+            completeness_records.append(record)
+
+        matching_result: QueryResultEnvelope | None = None
+        matching_rows: tuple[Mapping[str, Any], ...] | None = None
+        matching_report: CompletenessReport | None = None
+        binding_records = []
+        for record_ref, binding_digest in zip(
+            candidate["binding_record_refs"],
+            candidate["binding_record_digests"],
+        ):
+            binding = self.evidence_resolver.resolve_capability_binding(record_ref)
+            if binding is None:
+                raise EvidenceIntegrityError("reuse_candidate_binding_record_missing")
+            if (
+                runtime_evidence_record_integrity_errors(binding)
+                or binding.binding_digest != binding_digest
+            ):
+                raise EvidenceIntegrityError(
+                    "reuse_candidate_binding_authority_mismatch"
+                )
+            if binding.analysis_contract_ref != str(
+                candidate["analysis_contract_ref"]
+            ):
+                raise EvidenceIntegrityError(
+                    "reuse_candidate_binding_owner_mismatch"
+                )
+            chain = validate_authoritative_query_chain(
+                binding,
+                resolver=self.evidence_resolver,
+                rows_loader=self.rows_loader,
+                runtime_registry=self.registry,
+                release_resolver=self.release_resolver,
+            )
+            binding_records.append(binding)
+            chain_results = (*chain.primary_results, *chain.validation_results)
+            chain_reports = (*chain.primary_reports, *chain.validation_reports)
+            for source_result, source_report in zip(chain_results, chain_reports):
+                if source_result.result_ref != str(candidate["result_ref"]):
+                    continue
+                matching_result = source_result
+                matching_report = source_report
+                matching_rows = chain.rows_by_ref.get(source_result.rows_ref)
+        if matching_result is None or matching_rows is None or matching_report is None:
+            raise EvidenceIntegrityError("reuse_candidate_binding_result_missing")
+        if not any(
+            item.status == "ready"
+            and str(candidate["result_ref"])
+            in (*item.result_refs, *item.validation_result_refs)
+            for item in binding_records
+        ):
+            raise EvidenceIntegrityError("reuse_candidate_binding_not_ready")
+        if (
+            matching_result.execution_status != "succeeded"
+            or matching_report.completeness_status != "complete"
+            or matching_report.analysis_readiness != "ready"
+            or not any(
+                item.result_ref == matching_result.result_ref
+                and item.report_ref == matching_report.report_ref
+                for item in completeness_records
+            )
+        ):
+            raise EvidenceIntegrityError("reuse_candidate_completeness_not_ready")
+        indexed_payload = _mapping_value(result_ref_record.get("payload"))
+        if canonical_digest(indexed_payload) != canonical_digest(candidate):
+            raise EvidenceIntegrityError("reuse_candidate_result_index_payload_mismatch")
+
+        if request.permission_scope != str(candidate["permission_scope"]):
+            raise PermissionError("reuse_permission_scope_mismatch")
+        if tuple(contract.dataset_snapshot_refs) != candidate_snapshot_refs:
+            raise EvidenceIntegrityError("reuse_snapshot_ref_mismatch")
+        current_snapshots = tuple(snapshots[ref] for ref in contract.dataset_snapshot_refs)
+        if tuple(item.release_ref for item in current_snapshots) != tuple(
+            candidate["source_release_refs"]
+        ) or tuple(item.authority_record_ref for item in current_snapshots) != tuple(
+            candidate["source_release_authority_refs"]
+        ):
+            raise EvidenceIntegrityError("reuse_release_mismatch")
+        if tuple(item.schema_fingerprint for item in current_snapshots) != tuple(
+            candidate["source_schema_fingerprints"]
+        ):
+            raise EvidenceIntegrityError("reuse_schema_fingerprint_mismatch")
+        if _window_payloads(contract) != _window_payloads(query.contract):
+            raise EvidenceIntegrityError("reuse_fixed_window_mismatch")
+        if canonical_digest(contract.result_shape) != canonical_digest(
+            query.contract.result_shape
+        ):
+            raise EvidenceIntegrityError("reuse_result_schema_mismatch")
+        if (
+            query_contract_signature(contract) != contract.contract_signature
+            or contract.contract_signature
+            != str(candidate["query_contract_signature"])
+        ):
+            raise EvidenceIntegrityError("reuse_query_signature_mismatch")
+        return _ValidatedReuseCandidate(
+            payload=MappingProxyType(dict(candidate)),
+            source_result=matching_result,
+            source_rows=tuple(dict(row) for row in matching_rows),
         )
 
     def _authority_records(
@@ -751,6 +1233,27 @@ class AnalysisRuntime:
                 for index, item in enumerate(result.repair_decisions, start=1)
             ),
         }
+
+
+def _mapping_value(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        payload = value.to_dict()
+        return dict(payload) if isinstance(payload, Mapping) else {}
+    return {}
+
+
+def _exception_reason(exc: BaseException) -> str:
+    reason = str(exc).strip()
+    return reason or type(exc).__name__
+
+
+def _window_payloads(contract: QueryContract) -> tuple[Mapping[str, Any], ...]:
+    return tuple(
+        canonical_value(item.to_dict())
+        for item in contract.resolved_windows
+    )
 
 
 def _project_waiting_persistence_records(

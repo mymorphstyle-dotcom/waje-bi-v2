@@ -4,6 +4,58 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
+from bi_agent.runtime.evidence_authority import (
+    EvidenceIntegrityError,
+    canonical_digest,
+    canonical_value,
+)
+
+
+RESULT_REUSE_CANDIDATE_SCHEMA_VERSION = "result-reuse-candidate.v1"
+RESULT_REUSE_CANDIDATE_FIELDS = (
+    "schema_version",
+    "source_run_id",
+    "result_ref",
+    "query_contract_ref",
+    "query_contract_signature",
+    "query_execution_record_ref",
+    "query_execution_record_digest",
+    "analysis_contract_ref",
+    "analysis_contract_signature",
+    "runtime_snapshot_id",
+    "runtime_contract_version",
+    "source_snapshot_refs",
+    "source_snapshot_record_refs",
+    "source_snapshot_record_digests",
+    "source_release_refs",
+    "source_release_authority_refs",
+    "source_schema_fingerprints",
+    "permission_scope",
+    "semantic_scope_signature",
+    "rows_ref",
+    "rows_record_ref",
+    "rows_record_digest",
+    "rows_content_hash",
+    "completeness_report_ref",
+    "completeness_record_refs",
+    "completeness_record_digests",
+    "binding_record_refs",
+    "binding_record_digests",
+    "candidate_signature",
+)
+_RESULT_REUSE_CANDIDATE_SEQUENCE_FIELDS = (
+    "source_snapshot_refs",
+    "source_snapshot_record_refs",
+    "source_snapshot_record_digests",
+    "source_release_refs",
+    "source_release_authority_refs",
+    "source_schema_fingerprints",
+    "completeness_record_refs",
+    "completeness_record_digests",
+    "binding_record_refs",
+    "binding_record_digests",
+)
+
 
 @dataclass(frozen=True)
 class TurnIntent:
@@ -164,7 +216,14 @@ class ReuseDecision:
         *,
         source_ref: str | None = None,
     ) -> None:
-        known_decisions = {"reuse", "rerun", "context_only", "blocked", "none"}
+        known_decisions = {
+            "reuse",
+            "candidate",
+            "rerun",
+            "context_only",
+            "blocked",
+            "none",
+        }
         if decision not in known_decisions and result_ref in known_decisions:
             source_ref = decision
             decision = result_ref
@@ -306,10 +365,15 @@ class ConversationRunRequest:
     analysis_context: Mapping[str, Any] = field(default_factory=dict)
     clarification_resume_context: Mapping[str, Any] = field(default_factory=dict)
     prior_analysis_assets: tuple[Mapping[str, Any], ...] = ()
+    reuse_candidates: tuple[Mapping[str, Any], ...] = ()
     requested_nodes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["reuse_candidates"] = [
+            canonical_value(candidate) for candidate in self.reuse_candidates
+        ]
+        return data
 
 
 @dataclass(frozen=True)
@@ -379,6 +443,71 @@ class ResultRefRecord:
     contract_version: str
     permission_scope: str
     semantic_scope: str
+    payload: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["payload"] = canonical_value(self.payload)
+        return data
+
+
+def sign_result_reuse_candidate(payload: Mapping[str, Any]) -> dict[str, Any]:
+    unsigned = canonical_value(dict(payload))
+    unsigned.pop("candidate_signature", None)
+    signed = {**unsigned, "candidate_signature": canonical_digest(unsigned)}
+    return validate_result_reuse_candidate(signed)
+
+
+def validate_result_reuse_candidate(payload: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = canonical_value(dict(payload))
+    if set(normalized) != set(RESULT_REUSE_CANDIDATE_FIELDS):
+        raise EvidenceIntegrityError("result_candidate_payload_shape_invalid")
+    if normalized.get("schema_version") != RESULT_REUSE_CANDIDATE_SCHEMA_VERSION:
+        raise EvidenceIntegrityError("result_candidate_schema_version_invalid")
+    scalar_fields = set(RESULT_REUSE_CANDIDATE_FIELDS) - set(
+        _RESULT_REUSE_CANDIDATE_SEQUENCE_FIELDS
+    )
+    for field_name in scalar_fields:
+        if not isinstance(normalized.get(field_name), str) or not normalized[field_name]:
+            raise EvidenceIntegrityError(
+                f"result_candidate_field_invalid:{field_name}"
+            )
+    for field_name in _RESULT_REUSE_CANDIDATE_SEQUENCE_FIELDS:
+        values = normalized.get(field_name)
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(not isinstance(value, str) or not value for value in values)
+        ):
+            raise EvidenceIntegrityError(
+                f"result_candidate_field_invalid:{field_name}"
+            )
+    snapshot_lengths = {
+        len(normalized[field_name])
+        for field_name in (
+            "source_snapshot_refs",
+            "source_snapshot_record_refs",
+            "source_snapshot_record_digests",
+            "source_release_refs",
+            "source_release_authority_refs",
+            "source_schema_fingerprints",
+        )
+    }
+    if len(snapshot_lengths) != 1:
+        raise EvidenceIntegrityError("result_candidate_snapshot_alignment_invalid")
+    if len(normalized["completeness_record_refs"]) != len(
+        normalized["completeness_record_digests"]
+    ):
+        raise EvidenceIntegrityError("result_candidate_completeness_alignment_invalid")
+    if len(normalized["binding_record_refs"]) != len(
+        normalized["binding_record_digests"]
+    ):
+        raise EvidenceIntegrityError("result_candidate_binding_alignment_invalid")
+    unsigned = dict(normalized)
+    actual_signature = unsigned.pop("candidate_signature")
+    if actual_signature != canonical_digest(unsigned):
+        raise EvidenceIntegrityError("result_candidate_signature_invalid")
+    return normalized
 
 
 @dataclass(frozen=True)

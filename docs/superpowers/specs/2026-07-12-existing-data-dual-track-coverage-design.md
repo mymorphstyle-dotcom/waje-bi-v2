@@ -166,6 +166,29 @@ may be reused only through a validated ReuseDecision. Reuse requires matching
 contract signatures, fixed windows, permission scope, schema fingerprint,
 source releases, and completeness state.
 
+The conversation store publishes verified result refs as reuse candidates only.
+Candidate routing metadata cannot grant claim authority. After the current
+AnalysisContract and QueryContracts are compiled, AnalysisRuntime resolves the
+candidate's persisted query, rows, snapshot, completeness, and binding authority.
+It validates the exact semantic query signature, current source releases,
+permission scope, fixed-window membership, schema and row-content fingerprints,
+and ready completeness state before materializing an authority-linked cache hit
+for the current run. Only that successful validation produces a final
+`ReuseDecision=\"reuse\"`; any mismatch produces an explicit rerun decision and
+executes the current query.
+
+A request that changes a material axis never reuses the earlier claim,
+AnalysisContract, or answer. It may reuse an underlying query result when the
+newly compiled QueryContract has the same exact semantic signature and the
+persisted result already contains every required window and field. Fixed-window
+sets are ordered canonically before query signing, so changing which already
+covered baseline is primary does not create a physical-query cache miss; the
+current run still creates its own AnalysisContract, evidence binding, verified
+claim, and answer. Separate negative tests cover a changed required-window set,
+signature, release, permission, schema, and completeness drift. Business
+synonyms for full-sample scope are normalized before signature comparison; this
+normalization applies to the whole intent class rather than an eval sentence.
+
 Known source gaps should not trigger repeated clarification. Once the user
 accepts the reviewed degraded route, the run resumes the original topic and
 executes every remaining valid capability.

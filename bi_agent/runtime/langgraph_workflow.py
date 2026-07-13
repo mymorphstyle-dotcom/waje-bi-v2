@@ -3279,10 +3279,12 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
         as_of = datetime.now(timezone.utc)
     return AnalysisRuntimeRequest.create(
         run_id=str(state.get("run_id") or request.get("run_id") or ""),
+        topic_id=str(request.get("topic_id") or ""),
         proposal=proposal,
         accepted_graph=tuple(state.get("analysis_route", {}).get("requested_nodes") or ()),
         as_of=as_of,
         permission_scope=str(request.get("role") or "analyst"),
+        reuse_candidates=tuple(request.get("reuse_candidates") or ()),
         attempted_signatures=tuple(request.get("attempted_query_signatures") or ()),
         run_mode=str(request.get("run_mode") or "production"),
     )
@@ -3468,6 +3470,9 @@ def _fetch_runtime_rows(state: WorkflowState) -> WorkflowState:
         state["analysis_runtime_result"] = result
         payload = result.to_workflow_payload()
         state["request"].update(payload)
+        state["request"]["reuse_decisions"] = list(
+            payload.get("reuse_decisions") or ()
+        )
         state["request"]["runtime_rows_source"] = "analysis_runtime"
         state["request"]["rows"] = tuple(
             row

@@ -1,5 +1,6 @@
 import json
 import hashlib
+from copy import deepcopy
 from pathlib import Path
 import unittest
 
@@ -8,12 +9,155 @@ from bi_agent.conversation.postgres_store import CONVERSATION_SCHEMA_SQL, Postgr
 from bi_agent.conversation.runtime import evaluate_reuse_candidate
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.dataset_catalog import build_dataset_release_authority_record
+from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_digest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 class ConversationPersistenceTest(unittest.TestCase):
+    def test_in_memory_result_candidate_payload_is_immutable_and_newest_first(self):
+        store = InMemoryConversationStore()
+        older = _result_candidate_payload("result:older", source_run_id="run-older")
+        newer = _result_candidate_payload("result:newer", source_run_id="run-newer")
+
+        _add_result_candidate(store, older)
+        _add_result_candidate(store, older)
+        _add_result_candidate(store, newer)
+
+        candidates = store.results_for_topic("topic-candidate")
+        self.assertEqual(
+            tuple(candidate.result_ref for candidate in candidates),
+            ("result:newer", "result:older"),
+        )
+        self.assertEqual(candidates[0].payload, newer)
+        self.assertEqual(len(candidates), 2)
+
+        candidates[0].payload["source_snapshot_refs"].append("snapshot:mutated")
+        self.assertEqual(
+            store.results_for_topic("topic-candidate")[0].payload,
+            newer,
+        )
+
+        changed = _result_candidate_payload(
+            "result:newer",
+            source_run_id="run-collision",
+        )
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "result_ref_payload_conflict",
+        ):
+            _add_result_candidate(store, changed)
+
+    def test_result_candidate_payload_rejects_unknown_or_forged_shape(self):
+        store = InMemoryConversationStore()
+        payload = _result_candidate_payload("result:shape")
+
+        unknown = {**payload, "unexpected": "value"}
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "result_candidate_payload_shape_invalid",
+        ):
+            _add_result_candidate(store, unknown)
+
+        forged = {**payload, "source_run_id": "run-forged"}
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "result_candidate_signature_invalid",
+        ):
+            _add_result_candidate(store, forged)
+
+    def test_postgres_result_candidates_round_trip_exact_payload(self):
+        payload = _result_candidate_payload("result:pg")
+        row = {
+            "topic_id": "topic-candidate",
+            "result_ref": "result:pg",
+            "snapshot_id": "2026H1",
+            "contract_version": "contracts-v1",
+            "permission_scope": "analyst",
+            "semantic_scope": payload["semantic_scope_signature"],
+            "payload": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        }
+        store = PostgresConversationStore(FakeConnection(rows=[row]))
+
+        candidates = store.results_for_topic("topic-candidate")
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].payload, payload)
+
+    def test_postgres_result_candidate_write_is_exact_replay_only(self):
+        payload = _result_candidate_payload("result:pg-write")
+        connection = FakeConnection()
+        store = PostgresConversationStore(connection)
+
+        _add_result_candidate(store, payload)
+
+        statement, params = next(
+            (statement, params)
+            for statement, params in connection.statements
+            if "result_ref_immutable_write" in statement
+        )
+        self.assertIn("current.payload = EXCLUDED.payload", statement)
+        self.assertEqual(json.loads(params["payload"]), payload)
+
+        collision = PostgresConversationStore(
+            FakeConnection(result_ref_collision=True)
+        )
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "result_ref_payload_conflict",
+        ):
+            _add_result_candidate(collision, payload)
+
+    def test_result_candidate_authority_resolves_source_run_and_contract(self):
+        payload = _result_candidate_payload("result:resolve")
+        contract = {
+            "analysis_contract_id": payload["analysis_contract_ref"],
+            "metric": "paid_amount",
+        }
+        contract["contract_signature"] = analysis_contract_signature(contract)
+        payload["analysis_contract_signature"] = contract["contract_signature"]
+        payload["semantic_scope_signature"] = (
+            "analysis-contract:sha256:" + contract["contract_signature"]
+        )
+        payload.pop("candidate_signature")
+        payload["candidate_signature"] = canonical_digest(payload)
+        store = InMemoryConversationStore()
+        store.upsert_run(
+            payload["source_run_id"],
+            thread_id="thread-candidate",
+            topic_id="topic-candidate",
+            status="completed",
+            request={
+                "context_manifest": {
+                    "snapshot_version": "2026H1",
+                    "contract_versions": {"runtime": "contracts-v1"},
+                }
+            },
+        )
+        store.analysis_runtime_authority["analysis_contract"][
+            contract["analysis_contract_id"]
+        ] = contract
+        store.analysis_runtime_records[payload["source_run_id"]] = {
+            "digest": "test-owned-publication",
+            "payload": {"analysis_contract": contract},
+        }
+        _add_result_candidate(store, payload)
+
+        authority = store.resolve_result_candidate_authority(
+            result_ref=payload["result_ref"],
+            topic_id="topic-candidate",
+        )
+
+        self.assertEqual(authority["source_run_id"], payload["source_run_id"])
+        self.assertEqual(authority["run_topic_id"], "topic-candidate")
+        self.assertEqual(authority["analysis_contract"], contract)
+        self.assertEqual(
+            authority["stored_analysis_contract_signature"],
+            payload["analysis_contract_signature"],
+        )
+
     def test_run_request_owner_comes_from_authoritative_run_columns(self):
         spoofed = {"thread_id": "thread-spoofed", "topic_id": "topic-spoofed"}
         memory = InMemoryConversationStore()
@@ -333,7 +477,9 @@ class ConversationPersistenceTest(unittest.TestCase):
         self.assertEqual(stale.reason, "snapshot_mismatch")
         self.assertEqual(blocked.reason, "permission_scope_mismatch")
         self.assertEqual(scoped.reason, "semantic_scope_mismatch")
-        self.assertEqual(reusable.reason, "validated_same_thread_scope")
+        self.assertEqual(reusable.decision, "candidate")
+        self.assertIs(reusable.can_support_claim, False)
+        self.assertEqual(reusable.reason, "candidate_same_thread_scope")
 
     def test_schema_declares_required_runtime_tables(self):
         required_tables = {
@@ -745,13 +891,21 @@ class ConversationPersistenceTest(unittest.TestCase):
 
 
 class FakeConnection:
-    def __init__(self, rows=None, *, fail_execute_at=None, fail_commit=False):
+    def __init__(
+        self,
+        rows=None,
+        *,
+        fail_execute_at=None,
+        fail_commit=False,
+        result_ref_collision=False,
+    ):
         self.statements = []
         self.commits = 0
         self.rollbacks = 0
         self.rows = rows
         self.fail_execute_at = fail_execute_at
         self.fail_commit = fail_commit
+        self.result_ref_collision = result_ref_collision
         self.runtime_publications = {}
         self.pending_runtime_publications = {}
 
@@ -760,6 +914,12 @@ class FakeConnection:
         if len(self.statements) == self.fail_execute_at:
             raise RuntimeError("execute failed")
         rows = self.rows
+        if "result_ref_immutable_write" in statement and rows is None:
+            rows = (
+                []
+                if self.result_ref_collision
+                else [{"result_ref": (params or {})["result_ref"]}]
+            )
         if "runtime_publication_preflight" in statement and rows is None:
             run_id = (params or {})["run_id"]
             rows = [{
@@ -825,6 +985,57 @@ def _dataset_snapshot_payload(snapshot_ref, dataset_id):
         "loaded_at": "2026-07-05T00:00:00+00:00",
         "status": "active",
     }
+
+
+def _result_candidate_payload(
+    result_ref: str,
+    *,
+    source_run_id: str = "run-candidate",
+) -> dict:
+    payload = {
+        "schema_version": "result-reuse-candidate.v1",
+        "source_run_id": source_run_id,
+        "result_ref": result_ref,
+        "query_contract_ref": "query-contract:candidate",
+        "query_contract_signature": "query-signature",
+        "query_execution_record_ref": "query-execution-record:candidate",
+        "query_execution_record_digest": "query-execution-digest",
+        "analysis_contract_ref": f"analysis:{source_run_id}:1",
+        "analysis_contract_signature": "analysis-signature",
+        "runtime_snapshot_id": "2026H1",
+        "runtime_contract_version": "contracts-v1",
+        "source_snapshot_refs": ["snapshot:paid-success"],
+        "source_snapshot_record_refs": ["snapshot-record:paid-success"],
+        "source_snapshot_record_digests": ["snapshot-record-digest"],
+        "source_release_refs": ["release:paid-success"],
+        "source_release_authority_refs": ["release-authority:paid-success"],
+        "source_schema_fingerprints": ["schema:paid-success"],
+        "permission_scope": "analyst",
+        "semantic_scope_signature": "analysis-contract:sha256:analysis-signature",
+        "rows_ref": "rows:candidate",
+        "rows_record_ref": "rows-record:candidate",
+        "rows_record_digest": "rows-record-digest",
+        "rows_content_hash": "rows-content-hash",
+        "completeness_report_ref": "completeness:candidate",
+        "completeness_record_refs": ["completeness-record:candidate"],
+        "completeness_record_digests": ["completeness-record-digest"],
+        "binding_record_refs": ["binding-record:candidate"],
+        "binding_record_digests": ["binding-record-digest"],
+    }
+    payload["candidate_signature"] = canonical_digest(payload)
+    return payload
+
+
+def _add_result_candidate(store, payload: dict) -> None:
+    store.add_result_ref(
+        "topic-candidate",
+        result_ref=payload["result_ref"],
+        snapshot_id=payload["runtime_snapshot_id"],
+        contract_version=payload["runtime_contract_version"],
+        permission_scope=payload["permission_scope"],
+        semantic_scope=payload["semantic_scope_signature"],
+        payload=deepcopy(payload),
+    )
 
 
 def _release_snapshot_payload(snapshot_ref, dataset_id, *, revision="dashboard-load:sha256:v2"):

@@ -821,6 +821,12 @@ git commit -m "feat: close current data query coverage"
 - Preserves verified claim provenance and exact ReuseDecision refs through final delivery.
 - Persists an accepted degraded-route decision so the same source gap does not reopen clarification in the resumed topic.
 - Persists a signed source-material authority envelope in the source run request and resolves it with the immutable AnalysisContract and clarification outcome. The envelope preserves ordered families and targets plus explicit components, dimensions, baselines, context sources, claim intents, and scope without reverse-engineering compiler dependency closure.
+- Publishes successful verified result refs as non-authoritative conversation
+  candidates, then lets AnalysisRuntime validate the persisted query, rows,
+  snapshots/releases, permission, windows, schema fingerprint, completeness,
+  and binding chain against the current compiled contract. Only a validated
+  current-run cache materialization becomes `ReuseDecision=reuse`; mismatches
+  are recorded as rerun decisions and execute normally.
 
 - [x] **Step 1: Write failing partial-value and resume tests**
 
@@ -850,6 +856,15 @@ def test_accepted_degraded_route_resumes_once_and_does_not_reask_same_gap(self):
 
 Add tests that reject reuse when any contract signature, source release, window,
 permission scope, schema fingerprint, or completeness state differs.
+
+The positive platform reuse case may change the requested primary baseline only
+when the newly compiled physical QueryContract still has the same exact semantic
+signature and the prior result covers every required fixed window and field.
+Canonicalize fixed-window set ordering before query signing, regenerate the
+current AnalysisContract, binding, claim, and answer, and never reuse the prior
+claim itself. A changed required-window set is a negative rerun case. Normalize
+stable full-sample business aliases before compiling the signature, without
+adding case-id or sentence-specific rules.
 
 - [x] **Step 2: Run tests and confirm red**
 

@@ -4193,6 +4193,91 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         self.assertIn("payment_success_scan", intents)
         self.assertFalse(outcome.analysis_contract.contract_gaps)
 
+    def test_physical_query_signature_uses_canonical_fixed_window_set_order(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        catalog = DatasetCatalog((
+            snapshot("paid_order_success", "paid_success", "2026-07-04"),
+        ))
+
+        def compile_with(baselines):
+            return compile_analysis_contract(
+                run_id=f"run-window-order-{'-'.join(baselines)}",
+                proposal={
+                    "question_families": ["custom_baseline_comparison"],
+                    "target_metrics": ["paid_amount"],
+                    "claim_intents": ["comparative_change"],
+                    "scope": {"type": "full_sample"},
+                    "target_semantic": "yesterday",
+                    "baselines": list(baselines),
+                },
+                accepted_capabilities=("compare_periods",),
+                catalog=catalog,
+                registry=registry,
+                as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+                permission_scope="analyst",
+            )
+
+        previous_first = compile_with(
+            ("previous_day", "rolling_7_day_baseline")
+        )
+        rolling_first = compile_with(
+            ("rolling_7_day_baseline", "previous_day")
+        )
+        previous_query = next(
+            item
+            for item in previous_first.query_contracts
+            if item.query_intent == "daily_metric_baselines"
+        )
+        rolling_query = next(
+            item
+            for item in rolling_first.query_contracts
+            if item.query_intent == "daily_metric_baselines"
+        )
+
+        self.assertEqual(previous_query.contract_signature, rolling_query.contract_signature)
+        self.assertEqual(previous_query.window_refs, rolling_query.window_refs)
+        self.assertEqual(
+            tuple(item.window_id for item in previous_query.resolved_windows),
+            tuple(item.window_id for item in rolling_query.resolved_windows),
+        )
+
+    def test_full_sample_business_aliases_compile_to_one_scope_class(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        catalog = DatasetCatalog((
+            snapshot("paid_order_success", "paid_success", "2026-07-04"),
+        ))
+
+        def compile_with(scope):
+            return compile_analysis_contract(
+                run_id=f"run-scope-{scope}",
+                proposal={
+                    "question_families": ["custom_baseline_comparison"],
+                    "target_metrics": ["paid_amount"],
+                    "claim_intents": ["comparative_change"],
+                    "scope": {"type": scope},
+                    "target_semantic": "yesterday",
+                    "baselines": ["previous_day"],
+                },
+                accepted_capabilities=("compare_periods",),
+                catalog=catalog,
+                registry=registry,
+                as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+                permission_scope="analyst",
+            )
+
+        canonical = compile_with("full_sample")
+        business_alias = compile_with("全平台")
+
+        self.assertEqual(canonical.analysis_contract.scope, business_alias.analysis_contract.scope)
+        self.assertEqual(
+            analysis_contract_signature(canonical.analysis_contract),
+            analysis_contract_signature(business_alias.analysis_contract),
+        )
+
     def test_distinguishes_source_absent_from_contract_absent(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         outcome = compile_analysis_contract(

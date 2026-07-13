@@ -10,18 +10,26 @@ from uuid import uuid4
 
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.clarification_authority import build_material_authority
-from bi_agent.conversation.models import ClarificationOption, ClarificationState
+from bi_agent.conversation.models import (
+    ClarificationOption,
+    ClarificationState,
+    sign_result_reuse_candidate,
+)
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.analysis_assets import build_analysis_assets
 from bi_agent.runtime.answer_package import reverify_answer_package_for_delivery
-from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
+from bi_agent.runtime.analysis_contracts import (
+    analysis_contract_from_dict,
+    analysis_contract_signature,
+)
 from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
     resolve_analysis_obligations,
 )
 from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
+from bi_agent.runtime.artifacts import synchronize_existing_artifact
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult, run_pattern_workflow
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
@@ -818,6 +826,18 @@ class ConversationAgentCore:
                         for item in records.get("verified_claims") or ()
                     ],
                 }
+                if result.artifact_path and not synchronize_existing_artifact(
+                    package,
+                    result.artifact_path,
+                ):
+                    raise ValueError("analysis_runtime_artifact_sync_failed")
+                _publish_result_reuse_candidates(
+                    self.store,
+                    topic_id=turn.topic_id or "",
+                    run_id=run_id,
+                    request=request,
+                    records=records,
+                )
         except Exception as exc:
             _record_workflow_failure_llm_audits(
                 self.store,
@@ -1018,6 +1038,346 @@ def _validated_analysis_context(
         except ValueError as exc:
             raise ValueError(f"analysis_context_{key}_invalid") from exc
     return normalized
+
+
+def _publish_result_reuse_candidates(
+    store: Any,
+    *,
+    topic_id: str,
+    run_id: str,
+    request: Mapping[str, Any],
+    records: Mapping[str, Any],
+) -> tuple[str, ...]:
+    if not topic_id:
+        return ()
+    analysis = _authority_mapping(records.get("analysis_contract"))
+    analysis_ref = str(analysis.get("analysis_contract_id") or "")
+    analysis_signature = analysis_contract_signature(analysis) if analysis else ""
+    if (
+        not analysis_ref
+        or not analysis_signature
+        or str(analysis.get("contract_signature") or "") != analysis_signature
+    ):
+        return ()
+    context_manifest = _authority_mapping(request.get("context_manifest"))
+    runtime_snapshot_id = str(context_manifest.get("snapshot_version") or "")
+    runtime_contract_version = str(
+        _authority_mapping(context_manifest.get("contract_versions")).get("runtime")
+        or ""
+    )
+    permission_scope = str(analysis.get("permission_scope") or "")
+    if not runtime_snapshot_id or not runtime_contract_version or not permission_scope:
+        return ()
+
+    query_records = {
+        str(_authority_value(record, "result_ref") or ""): record
+        for record in records.get("query_execution_records") or ()
+    }
+    rows_records = {
+        str(_authority_value(record, "rows_ref") or ""): record
+        for record in records.get("rows_records") or ()
+    }
+    snapshot_records = {
+        str(_authority_value(record, "snapshot_ref") or ""): record
+        for record in records.get("snapshot_records") or ()
+    }
+    completeness_by_result: dict[str, list[Any]] = {}
+    for record in records.get("completeness_records") or ():
+        completeness_by_result.setdefault(
+            str(_authority_value(record, "result_ref") or ""), []
+        ).append(record)
+    bindings = tuple(records.get("capability_binding_records") or ())
+    verified_claims = tuple(
+        _authority_mapping(claim) for claim in records.get("verified_claims") or ()
+    )
+    claim_result_refs = tuple(
+        dict.fromkeys(
+            str(result_ref)
+            for claim in verified_claims
+            for result_ref in claim.get("result_refs") or ()
+            if result_ref
+        )
+    )
+    published: list[str] = []
+    semantic_scope_signature = f"analysis-contract:sha256:{analysis_signature}"
+    for result_ref in claim_result_refs:
+        query = query_records.get(result_ref)
+        if query is None or str(_authority_value(query, "execution_status") or "") != "succeeded":
+            continue
+        rows_ref = str(_authority_value(query, "rows_ref") or "")
+        rows = rows_records.get(rows_ref)
+        if (
+            rows is None
+            or str(_authority_value(rows, "rows_content_hash") or "")
+            != str(_authority_value(query, "rows_content_hash") or "")
+        ):
+            continue
+        claim_completeness_refs = {
+            str(ref)
+            for claim in verified_claims
+            if result_ref in tuple(str(item) for item in claim.get("result_refs") or ())
+            for ref in claim.get("completeness_record_refs") or ()
+        }
+        completeness = tuple(
+            sorted(
+                (
+                    record
+                    for record in completeness_by_result.get(result_ref, ())
+                    if str(_authority_value(record, "record_ref") or "")
+                    in claim_completeness_refs
+                    and str(
+                        _authority_mapping(
+                            _authority_value(record, "report_payload")
+                        ).get("completeness_status")
+                        or ""
+                    )
+                    == "complete"
+                    and str(
+                        _authority_mapping(
+                            _authority_value(record, "report_payload")
+                        ).get("analysis_readiness")
+                        or ""
+                    )
+                    == "ready"
+                ),
+                key=lambda record: str(
+                    _authority_value(record, "record_ref") or ""
+                ),
+            )
+        )
+        if not completeness:
+            continue
+        ready_bindings = tuple(
+            sorted(
+                (
+                    binding
+                    for binding in bindings
+                    if str(_authority_value(binding, "status") or "") == "ready"
+                    and str(
+                        _authority_value(binding, "analysis_contract_ref") or ""
+                    )
+                    == analysis_ref
+                    and _binding_supports_candidate(
+                        binding, query, rows, completeness
+                    )
+                ),
+                key=lambda binding: str(
+                    _authority_value(binding, "record_ref") or ""
+                ),
+            )
+        )
+        if not ready_bindings:
+            continue
+        source_snapshot_refs = tuple(
+            str(ref)
+            for ref in _authority_value(query, "source_snapshot_refs") or ()
+        )
+        source_snapshot_record_refs = tuple(
+            str(ref)
+            for ref in _authority_value(query, "source_snapshot_record_refs") or ()
+        )
+        source_snapshot_record_digests = tuple(
+            str(ref)
+            for ref in _authority_value(query, "source_snapshot_record_digests") or ()
+        )
+        if not source_snapshot_refs or not (
+            len(source_snapshot_refs)
+            == len(source_snapshot_record_refs)
+            == len(source_snapshot_record_digests)
+        ):
+            continue
+        snapshots: list[Mapping[str, Any]] = []
+        valid_snapshots = True
+        for index, snapshot_ref in enumerate(source_snapshot_refs):
+            snapshot_record = snapshot_records.get(snapshot_ref)
+            if (
+                snapshot_record is None
+                or str(_authority_value(snapshot_record, "record_ref") or "")
+                != source_snapshot_record_refs[index]
+                or str(_authority_value(snapshot_record, "record_digest") or "")
+                != source_snapshot_record_digests[index]
+            ):
+                valid_snapshots = False
+                break
+            snapshot_payload = _authority_mapping(
+                _authority_value(snapshot_record, "payload")
+            )
+            if not all(
+                str(snapshot_payload.get(field_name) or "")
+                for field_name in (
+                    "release_ref",
+                    "authority_record_ref",
+                    "schema_fingerprint",
+                )
+            ):
+                valid_snapshots = False
+                break
+            if permission_scope not in tuple(
+                str(scope)
+                for scope in snapshot_payload.get("permission_scopes") or ()
+            ):
+                valid_snapshots = False
+                break
+            snapshots.append(snapshot_payload)
+        if not valid_snapshots:
+            continue
+        candidate = sign_result_reuse_candidate(
+            {
+                "schema_version": "result-reuse-candidate.v1",
+                "source_run_id": run_id,
+                "result_ref": result_ref,
+                "query_contract_ref": str(
+                    _authority_value(query, "query_contract_ref") or ""
+                ),
+                "query_contract_signature": str(
+                    _authority_value(query, "contract_signature") or ""
+                ),
+                "query_execution_record_ref": str(
+                    _authority_value(query, "record_ref") or ""
+                ),
+                "query_execution_record_digest": str(
+                    _authority_value(query, "record_digest") or ""
+                ),
+                "analysis_contract_ref": analysis_ref,
+                "analysis_contract_signature": analysis_signature,
+                "runtime_snapshot_id": runtime_snapshot_id,
+                "runtime_contract_version": runtime_contract_version,
+                "source_snapshot_refs": list(source_snapshot_refs),
+                "source_snapshot_record_refs": list(source_snapshot_record_refs),
+                "source_snapshot_record_digests": list(
+                    source_snapshot_record_digests
+                ),
+                "source_release_refs": [
+                    str(snapshot["release_ref"]) for snapshot in snapshots
+                ],
+                "source_release_authority_refs": [
+                    str(snapshot["authority_record_ref"]) for snapshot in snapshots
+                ],
+                "source_schema_fingerprints": [
+                    str(snapshot["schema_fingerprint"]) for snapshot in snapshots
+                ],
+                "permission_scope": permission_scope,
+                "semantic_scope_signature": semantic_scope_signature,
+                "rows_ref": rows_ref,
+                "rows_record_ref": str(
+                    _authority_value(rows, "record_ref") or ""
+                ),
+                "rows_record_digest": str(
+                    _authority_value(rows, "record_digest") or ""
+                ),
+                "rows_content_hash": str(
+                    _authority_value(rows, "rows_content_hash") or ""
+                ),
+                "completeness_report_ref": str(
+                    _authority_value(query, "completeness_report_ref") or ""
+                ),
+                "completeness_record_refs": [
+                    str(_authority_value(record, "record_ref") or "")
+                    for record in completeness
+                ],
+                "completeness_record_digests": [
+                    str(_authority_value(record, "report_digest") or "")
+                    for record in completeness
+                ],
+                "binding_record_refs": [
+                    str(_authority_value(binding, "record_ref") or "")
+                    for binding in ready_bindings
+                ],
+                "binding_record_digests": [
+                    str(_authority_value(binding, "binding_digest") or "")
+                    for binding in ready_bindings
+                ],
+            }
+        )
+        store.add_result_ref(
+            topic_id,
+            result_ref=result_ref,
+            snapshot_id=runtime_snapshot_id,
+            contract_version=runtime_contract_version,
+            permission_scope=permission_scope,
+            semantic_scope=semantic_scope_signature,
+            payload=candidate,
+        )
+        published.append(result_ref)
+    return tuple(published)
+
+
+def _binding_supports_candidate(
+    binding: Any,
+    query: Any,
+    rows: Any,
+    completeness: tuple[Any, ...],
+) -> bool:
+    result_ref = str(_authority_value(query, "result_ref") or "")
+    groups = (
+        (
+            "result_refs",
+            "query_execution_record_refs",
+            "query_execution_record_digests",
+            "rows_refs",
+            "rows_metadata_record_refs",
+            "rows_metadata_record_digests",
+            "rows_content_hashes",
+            "completeness_report_refs",
+            "completeness_record_refs",
+            "completeness_record_digests",
+        ),
+        (
+            "validation_result_refs",
+            "validation_query_execution_record_refs",
+            "validation_query_execution_record_digests",
+            "validation_rows_refs",
+            "validation_rows_metadata_record_refs",
+            "validation_rows_metadata_record_digests",
+            "validation_rows_content_hashes",
+            "validation_completeness_report_refs",
+            "validation_completeness_record_refs",
+            "validation_completeness_record_digests",
+        ),
+    )
+    expected_completeness = {
+        (
+            str(_authority_value(record, "record_ref") or ""),
+            str(_authority_value(record, "report_digest") or ""),
+        )
+        for record in completeness
+    }
+    for fields in groups:
+        result_refs = tuple(
+            str(ref) for ref in _authority_value(binding, fields[0]) or ()
+        )
+        if result_ref not in result_refs:
+            continue
+        index = result_refs.index(result_ref)
+        aligned = [tuple(_authority_value(binding, field_name) or ()) for field_name in fields[1:]]
+        if any(index >= len(values) for values in aligned):
+            continue
+        actual = tuple(str(values[index]) for values in aligned)
+        if actual[:7] != (
+            str(_authority_value(query, "record_ref") or ""),
+            str(_authority_value(query, "record_digest") or ""),
+            str(_authority_value(rows, "rows_ref") or ""),
+            str(_authority_value(rows, "record_ref") or ""),
+            str(_authority_value(rows, "record_digest") or ""),
+            str(_authority_value(rows, "rows_content_hash") or ""),
+            str(_authority_value(query, "completeness_report_ref") or ""),
+        ):
+            continue
+        if (actual[7], actual[8]) in expected_completeness:
+            return True
+    return False
+
+
+def _authority_value(record: Any, field_name: str) -> Any:
+    if isinstance(record, Mapping):
+        return record.get(field_name)
+    return getattr(record, field_name, None)
+
+
+def _authority_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
 
 
 def _persistable_request(request: dict[str, Any]) -> dict[str, Any]:

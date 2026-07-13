@@ -40,6 +40,7 @@ from bi_agent.runtime.analysis_contracts import (
 )
 from bi_agent.runtime.authoritative_query_chain import (
     AuthoritativeQueryChainError,
+    validate_authoritative_query_chain,
     validate_capability_plan_semantics,
 )
 from bi_agent.runtime.claim_provenance import (
@@ -47,7 +48,14 @@ from bi_agent.runtime.claim_provenance import (
     validate_verified_claim_record,
 )
 from bi_agent.runtime.coverage_audit import audit_existing_data_coverage
-from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_value
+from bi_agent.runtime.evidence_authority import (
+    CapabilityBindingRecord,
+    EvidenceIntegrityError,
+    RowsPayloadLoader,
+    RuntimeEvidenceResolver,
+    canonical_value,
+    runtime_evidence_record_integrity_errors,
+)
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
@@ -246,6 +254,9 @@ def review_case_obligations(
     registry: RuntimeContractRegistry,
     *,
     coverage_authority: Mapping[str, Any] | None = None,
+    evidence_resolver: Any = None,
+    rows_loader: Any = None,
+    release_resolver: Any = None,
 ) -> dict[str, Any]:
     """Review executable obligations without constraining answer wording."""
     scenario = turn_record.get("scenario") or {}
@@ -391,7 +402,14 @@ def review_case_obligations(
             str(gap_type), observed_gaps.get(str(dataset_id), ())
         )
     ]
-    claim_review = _review_claim_ceiling(authority, scenario, registry)
+    claim_review = _review_claim_ceiling(
+        authority,
+        scenario,
+        registry,
+        evidence_resolver=evidence_resolver,
+        rows_loader=rows_loader,
+        release_resolver=release_resolver,
+    )
     authored_terminal_boundary = str(scenario.get("terminal_boundary") or "")
     resolved_terminal_boundary = (
         _authority_resolved_terminal_boundary(
@@ -1752,12 +1770,21 @@ def _review_claim_ceiling(
     authority: Mapping[str, Any],
     scenario: Mapping[str, Any],
     registry: RuntimeContractRegistry,
+    *,
+    evidence_resolver: Any = None,
+    rows_loader: Any = None,
+    release_resolver: Any = None,
 ) -> dict[str, Any]:
-    claims = _mapping_items_for_keys(authority, {"verified_claims"})
+    claims, conflicting_claim_refs = _deduplicated_verified_claims(authority)
     bindings = _mapping_items_for_keys(authority, {"capability_bindings"})
     evidence = _mapping_items_for_keys(authority, {"evidence_manifests", "evidence"})
     provenance = _mapping_items_for_keys(
-        authority, {"trusted_provenance_records", "claim_provenance_records"}
+        authority,
+        {
+            "trusted_claim_provenance_records",
+            "trusted_provenance_records",
+            "claim_provenance_records",
+        },
     )
     binding_by_ref = {
         ref: item
@@ -1791,10 +1818,23 @@ def _review_claim_ceiling(
             claim.get("claim_strength") or claim.get("strength") or "insufficient"
         )
         strengths.append(strength)
+        if claim_ref in conflicting_claim_refs:
+            claim_reviews.append(
+                {
+                    "claim_ref": claim_ref,
+                    "claim_strength": strength,
+                    "producing_capabilities": [],
+                    "authority_ceiling": "",
+                    "passed": False,
+                    "error_code": "conflicting_claim_ref_payload",
+                    "authority_errors": ["conflicting_claim_ref_payload"],
+                }
+            )
+            continue
         support_evidence = {
             str(ref) for ref in claim.get("evidence_refs") or () if ref
         }
-        support_results = {
+        claim_producing_results = {
             str(ref) for ref in claim.get("result_refs") or () if ref
         }
         provenance_record = provenance_by_ref.get(
@@ -1804,30 +1844,81 @@ def _review_claim_ceiling(
             support_evidence.update(
                 str(ref) for ref in provenance_record.get("evidence_refs") or () if ref
             )
-            support_results.update(
+            claim_producing_results.update(
                 str(ref) for ref in provenance_record.get("result_refs") or () if ref
             )
+        support_results = set(claim_producing_results)
         related: dict[str, Mapping[str, Any]] = {}
+        authority_errors: list[str] = []
+        authorized_claim_results: set[str] = set()
+        if evidence_resolver is not None and not claim_producing_results:
+            authority_errors.append("claim_result_refs_missing")
         for evidence_ref in support_evidence:
             manifest = evidence_by_ref.get(evidence_ref)
             if not manifest:
+                if evidence_resolver is not None:
+                    authority_errors.append("claim_evidence_manifest_missing")
                 continue
             binding_ref = str(manifest.get("binding_manifest_ref") or "")
-            if binding_ref in binding_by_ref:
-                related[binding_ref] = binding_by_ref[binding_ref]
             support_results.update(
                 str(ref) for ref in manifest.get("result_refs") or () if ref
             )
-        for binding_ref, binding in binding_by_ref.items():
-            binding_results = {
-                str(ref) for ref in binding.get("result_refs") or () if ref
-            }
-            if support_results & binding_results:
-                related[binding_ref] = binding
+            if evidence_resolver is not None:
+                binding, authorized_results, errors = _resolve_claim_capability_binding(
+                    manifest,
+                    claim_type=str(claim.get("claim_type") or ""),
+                    claim_producing_result_refs=claim_producing_results,
+                    evidence_resolver=evidence_resolver,
+                    rows_loader=rows_loader,
+                    release_resolver=release_resolver,
+                    registry=registry,
+                )
+                authorized_claim_results.update(authorized_results)
+                authority_errors.extend(errors)
+                if binding is not None and not errors:
+                    related[str(binding.record_ref)] = binding
+            elif binding_ref in binding_by_ref:
+                related[binding_ref] = binding_by_ref[binding_ref]
+        if evidence_resolver is None:
+            for binding_ref, binding in binding_by_ref.items():
+                binding_results = {
+                    str(ref) for ref in binding.get("result_refs") or () if ref
+                }
+                if support_results & binding_results:
+                    related[binding_ref] = binding
+        elif (
+            not authority_errors
+            and claim_producing_results
+            and not claim_producing_results.issubset(authorized_claim_results)
+        ):
+            authority_errors.append("claim_result_refs_not_bound")
+        authority_errors = list(dict.fromkeys(authority_errors))
+        if authority_errors:
+            missing.append(claim_ref)
+            claim_reviews.append(
+                {
+                    "claim_ref": claim_ref,
+                    "claim_strength": strength,
+                    "producing_capabilities": [],
+                    "authority_ceiling": "",
+                    "passed": False,
+                    "error_code": "claim_capability_authority_invalid",
+                    "authority_errors": authority_errors,
+                }
+            )
+            continue
         ceilings = tuple(
-            str(binding.get("maximum_claim_strength") or "")
+            str(
+                binding.maximum_claim_strength
+                if evidence_resolver is not None
+                else binding.get("maximum_claim_strength") or ""
+            )
             for binding in related.values()
-            if str(binding.get("maximum_claim_strength") or "")
+            if str(
+                binding.maximum_claim_strength
+                if evidence_resolver is not None
+                else binding.get("maximum_claim_strength") or ""
+            )
         )
         if not ceilings:
             missing.append(claim_ref)
@@ -1839,6 +1930,7 @@ def _review_claim_ceiling(
                     "authority_ceiling": "",
                     "passed": False,
                     "error_code": "missing_claim_capability_provenance",
+                    "authority_errors": [],
                 }
             )
             continue
@@ -1855,14 +1947,23 @@ def _review_claim_ceiling(
                 "claim_strength": strength,
                 "producing_capabilities": sorted(
                     {
-                        str(binding.get("capability_id") or "")
+                        str(
+                            binding.capability_id
+                            if evidence_resolver is not None
+                            else binding.get("capability_id") or ""
+                        )
                         for binding in related.values()
-                        if binding.get("capability_id")
+                        if (
+                            binding.capability_id
+                            if evidence_resolver is not None
+                            else binding.get("capability_id")
+                        )
                     }
                 ),
                 "authority_ceiling": ceiling,
                 "passed": passed,
                 "error_code": "" if passed else "claim_strength_exceeds_authority",
+                "authority_errors": [],
             }
         )
     actual_strength = (
@@ -1880,6 +1981,193 @@ def _review_claim_ceiling(
         "missing_claim_capability_provenance": missing,
         "passed": not missing and all(item["passed"] for item in claim_reviews),
     }
+
+
+def _deduplicated_verified_claims(
+    authority: Mapping[str, Any],
+) -> tuple[list[Mapping[str, Any]], set[str]]:
+    claims: list[Mapping[str, Any]] = []
+    canonical_by_ref: dict[str, Any] = {}
+    conflicting_refs: set[str] = set()
+    for claim in _mapping_items_for_keys(authority, {"verified_claims"}):
+        claim_ref = str(claim.get("claim_ref") or "")
+        if not claim_ref:
+            claims.append(claim)
+            continue
+        try:
+            payload = canonical_value(claim)
+        except (EvidenceIntegrityError, TypeError, ValueError):
+            payload = None
+            conflicting_refs.add(claim_ref)
+        if claim_ref not in canonical_by_ref:
+            canonical_by_ref[claim_ref] = payload
+            claims.append(claim)
+        elif canonical_by_ref[claim_ref] != payload:
+            conflicting_refs.add(claim_ref)
+    return claims, conflicting_refs
+
+
+def _resolve_claim_capability_binding(
+    evidence: Mapping[str, Any],
+    *,
+    claim_type: str,
+    claim_producing_result_refs: set[str],
+    evidence_resolver: Any,
+    rows_loader: Any,
+    release_resolver: Any,
+    registry: RuntimeContractRegistry,
+) -> tuple[Any, frozenset[str], tuple[str, ...]]:
+    binding_ref = str(evidence.get("binding_manifest_ref") or "")
+    if not binding_ref:
+        return None, frozenset(), ("capability_binding_record_ref_missing",)
+    if not isinstance(evidence_resolver, RuntimeEvidenceResolver):
+        return None, frozenset(), ("runtime_evidence_resolver_invalid",)
+    if not isinstance(rows_loader, RowsPayloadLoader):
+        return None, frozenset(), ("rows_payload_loader_invalid",)
+    try:
+        binding = evidence_resolver.resolve_capability_binding(binding_ref)
+    except Exception:
+        return None, frozenset(), ("capability_binding_resolution_failed",)
+    if binding is None:
+        return None, frozenset(), ("capability_binding_record_missing",)
+    if type(binding) is not CapabilityBindingRecord:
+        return None, frozenset(), ("capability_binding_record_type_invalid",)
+    if runtime_evidence_record_integrity_errors(binding):
+        return None, frozenset(), ("capability_binding_record_integrity",)
+
+    errors: list[str] = []
+    if str(binding.record_ref) != binding_ref:
+        errors.append("capability_binding_record_ref_mismatch")
+    if str(binding.binding_digest) != str(
+        evidence.get("binding_manifest_digest") or ""
+    ):
+        errors.append("binding_manifest_digest_mismatch")
+    binding_result_closure = {
+        str(ref)
+        for ref in (*binding.result_refs, *binding.validation_result_refs)
+        if ref
+    }
+    observed_results = {
+        str(ref) for ref in evidence.get("result_refs") or () if ref
+    }
+    if not observed_results or not observed_results.issubset(
+        binding_result_closure
+    ):
+        errors.append("capability_binding_result_refs_mismatch")
+    primary_results = {
+        str(ref) for ref in binding.result_refs if str(ref)
+    }
+    manifest_claim_results = claim_producing_result_refs.intersection(
+        observed_results
+    )
+    authorized_claim_results: frozenset[str] = frozenset()
+    if claim_producing_result_refs and not manifest_claim_results:
+        errors.append("claim_evidence_result_refs_missing")
+    elif manifest_claim_results and not manifest_claim_results.issubset(
+        primary_results
+    ):
+        errors.append("claim_result_refs_not_primary")
+    else:
+        authorized_claim_results = frozenset(manifest_claim_results)
+    if binding.status != "ready":
+        errors.append("capability_binding_not_ready")
+    if (
+        not binding.input_completeness_statuses
+        or any(
+            status != "complete"
+            for status in binding.input_completeness_statuses
+        )
+    ):
+        errors.append("capability_binding_input_completeness_not_complete")
+
+    capability_id = str(binding.capability_id or "")
+    try:
+        policy = registry.capability_inputs(capability_id)
+        expected_signature = registry.capability_contract_signature(capability_id)
+        expected_ref = registry.capability_contract_ref(capability_id)
+        expected_ceiling = str(policy.get("maximum_claim_strength") or "")
+        expected_ceiling_rank = registry.maximum_claim_strength_rank(
+            expected_ceiling
+        )
+        expected_claim_types = tuple(policy.get("supported_claim_types") or ())
+        expected_evidence_types = tuple(
+            policy.get("supported_evidence_types") or ()
+        )
+    except (KeyError, TypeError, ValueError):
+        errors.append("capability_contract_registry_missing")
+    else:
+        if binding.capability_contract_signature != expected_signature:
+            errors.append("capability_contract_signature_mismatch")
+        if binding.capability_contract_version != registry.contract_version:
+            errors.append("capability_contract_version_mismatch")
+        if str(binding.plan_payload.get("capability_contract_ref") or "") != expected_ref:
+            errors.append("capability_contract_ref_mismatch")
+        if (
+            binding.maximum_claim_strength != expected_ceiling
+            or str(binding.plan_payload.get("maximum_claim_strength") or "")
+            != expected_ceiling
+            or binding.maximum_claim_strength_rank != expected_ceiling_rank
+            or binding.plan_payload.get("maximum_claim_strength_rank")
+            != expected_ceiling_rank
+        ):
+            errors.append("capability_claim_ceiling_mismatch")
+        if (
+            binding.claim_strength_taxonomy_version
+            != registry.claim_strength_taxonomy_version
+            or binding.plan_payload.get("claim_strength_taxonomy_version")
+            != registry.claim_strength_taxonomy_version
+        ):
+            errors.append("claim_strength_taxonomy_version_mismatch")
+        if tuple(binding.supported_claim_types) != expected_claim_types:
+            errors.append("capability_supported_claim_types_mismatch")
+        if tuple(binding.supported_evidence_types) != expected_evidence_types:
+            errors.append("capability_supported_evidence_types_mismatch")
+        if not claim_type or (
+            claim_type not in binding.supported_claim_types
+            or claim_type not in expected_claim_types
+        ):
+            errors.append(
+                "claim_type_missing" if not claim_type else "claim_type_not_supported"
+            )
+        evidence_type = str(evidence.get("evidence_type") or "")
+        if not evidence_type or (
+            evidence_type not in binding.supported_evidence_types
+            or evidence_type not in expected_evidence_types
+        ):
+            errors.append(
+                "evidence_type_missing"
+                if not evidence_type
+                else "evidence_type_not_supported"
+            )
+
+    try:
+        chain = validate_authoritative_query_chain(
+            binding,
+            resolver=evidence_resolver,
+            rows_loader=rows_loader,
+            runtime_registry=registry,
+            release_resolver=release_resolver,
+        )
+    except AuthoritativeQueryChainError as exc:
+        errors.append(f"authoritative_query_chain_invalid:{exc}")
+    except Exception:
+        errors.append("authoritative_query_chain_resolution_failed")
+    else:
+        reports = (*chain.primary_reports, *chain.validation_reports)
+        if (
+            not reports
+            or any(
+                report.completeness_status != "complete"
+                or report.analysis_readiness != "ready"
+                for report in reports
+            )
+        ):
+            errors.append("authoritative_query_chain_not_claim_ready")
+    return (
+        binding,
+        authorized_claim_results,
+        tuple(dict.fromkeys(errors)),
+    )
 
 
 def _review_terminal_boundary(
@@ -3382,6 +3670,9 @@ def run_case(
                 turn_record,
                 RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
                 coverage_authority=coverage_authority,
+                evidence_resolver=getattr(core, "evidence_resolver", None),
+                rows_loader=getattr(core, "rows_loader", None),
+                release_resolver=getattr(core, "release_resolver", None),
             )
         turn_record["strict_quality_failed"] = bool(
             strict_quality and _strict_quality_failed(turn_record)

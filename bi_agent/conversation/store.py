@@ -17,6 +17,7 @@ from bi_agent.conversation.models import (
     ResultRefRecord,
     ThreadState,
     TopicState,
+    validate_result_reuse_candidate,
 )
 from bi_agent.runtime.analysis_assets import merge_analysis_assets
 from bi_agent.runtime.dataset_catalog import (
@@ -640,22 +641,118 @@ class InMemoryConversationStore:
         contract_version: str,
         permission_scope: str,
         semantic_scope: str,
+        payload: Mapping[str, Any] | None = None,
     ) -> None:
-        self.result_refs[topic_id].append(
-            ResultRefRecord(
-                topic_id=topic_id,
-                result_ref=result_ref,
-                snapshot_id=snapshot_id,
-                contract_version=contract_version,
-                permission_scope=permission_scope,
-                semantic_scope=semantic_scope,
-            )
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        candidate_payload = (
+            validate_result_reuse_candidate(payload) if payload else {}
         )
+        if candidate_payload and (
+            candidate_payload["result_ref"] != result_ref
+            or candidate_payload["runtime_snapshot_id"] != snapshot_id
+            or candidate_payload["runtime_contract_version"] != contract_version
+            or candidate_payload["permission_scope"] != permission_scope
+            or candidate_payload["semantic_scope_signature"] != semantic_scope
+        ):
+            raise EvidenceIntegrityError("result_ref_candidate_projection_mismatch")
+        record = ResultRefRecord(
+            topic_id=topic_id,
+            result_ref=result_ref,
+            snapshot_id=snapshot_id,
+            contract_version=contract_version,
+            permission_scope=permission_scope,
+            semantic_scope=semantic_scope,
+            payload=deepcopy(candidate_payload),
+        )
+        existing = next(
+            (
+                item
+                for records in self.result_refs.values()
+                for item in records
+                if item.result_ref == result_ref
+            ),
+            None,
+        )
+        if existing is not None:
+            if existing.to_dict() != record.to_dict():
+                raise EvidenceIntegrityError("result_ref_payload_conflict")
+            return
+        self.result_refs[topic_id].insert(0, record)
 
     def results_for_topic(self, topic_id: Optional[str]) -> tuple[ResultRefRecord, ...]:
         if not topic_id:
             return ()
-        return tuple(self.result_refs.get(topic_id, ()))
+        return tuple(deepcopy(self.result_refs.get(topic_id, ())))
+
+    def resolve_result_candidate_authority(
+        self,
+        *,
+        result_ref: str,
+        topic_id: str,
+    ) -> dict[str, Any]:
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        matches = tuple(
+            item
+            for item in self.result_refs.get(topic_id, ())
+            if item.result_ref == result_ref and item.payload
+        )
+        if len(matches) != 1:
+            raise EvidenceIntegrityError("result_candidate_authority_missing")
+        record = matches[0]
+        payload = validate_result_reuse_candidate(record.payload)
+        source_run_id = payload["source_run_id"]
+        run = self.runs.get(source_run_id)
+        if not run or str(run.get("topic_id") or "") != topic_id:
+            raise EvidenceIntegrityError("result_candidate_source_run_missing")
+        publication = self.analysis_runtime_records.get(source_run_id)
+        publication_payload = (
+            publication.get("payload")
+            if isinstance(publication, Mapping)
+            else None
+        )
+        contract = (
+            publication_payload.get("analysis_contract")
+            if isinstance(publication_payload, Mapping)
+            else None
+        )
+        if (
+            not isinstance(contract, Mapping)
+            or str(contract.get("analysis_contract_id") or "")
+            != payload["analysis_contract_ref"]
+        ):
+            raise EvidenceIntegrityError("result_candidate_analysis_contract_missing")
+        authority_contract = self.analysis_runtime_authority[
+            "analysis_contract"
+        ].get(payload["analysis_contract_ref"])
+        if (
+            not isinstance(authority_contract, Mapping)
+            or canonical_value(authority_contract) != canonical_value(contract)
+        ):
+            raise EvidenceIntegrityError("result_candidate_analysis_contract_mismatch")
+        stored_signature = str(contract.get("contract_signature") or "")
+        if (
+            stored_signature != payload["analysis_contract_signature"]
+            or analysis_contract_signature(contract) != stored_signature
+        ):
+            raise EvidenceIntegrityError("result_candidate_analysis_contract_mismatch")
+        return canonical_value(
+            {
+                "result_ref_record": record.to_dict(),
+                "source_run_id": source_run_id,
+                "run_thread_id": str(run.get("thread_id") or ""),
+                "run_topic_id": str(run.get("topic_id") or ""),
+                "run_status": str(run.get("status") or ""),
+                "source_run_request": dict(run.get("request") or {}),
+                "analysis_contract": dict(contract),
+                "stored_analysis_contract_signature": stored_signature,
+            }
+        )
 
     def add_artifact(
         self,
