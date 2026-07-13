@@ -5,7 +5,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-13.v37"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-13.v38"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 
 
@@ -374,9 +374,11 @@ def _task_rules(task: str) -> str:
             "cards; never write a Chinese sentence or invent an id there. target_metrics "
             "must preserve intent.target_metric. requested_components may include only "
             "metrics explicitly needed by the question and selected capability contracts; "
-            "do not add paid_amount to a market active-user question. baselines must be a "
-            "list of supported symbolic ids such as previous_day, rolling_7_day_baseline, "
-            "or same_weekday_last_week, never objects, dates, or descriptions. context_sources "
+            "do not add paid_amount to a market active-user question. Treat "
+            "allowed_baseline_ids as a closed reviewed list. Every baselines item must be "
+            "copied exactly from allowed_baseline_ids; use an empty array when no reviewed "
+            "baseline applies. Never invent, translate, or alias a baseline id. baselines "
+            "are never objects, dates, or descriptions. context_sources "
             "must use only allowed_context_source_ids. An empty context_sources array is valid "
             "and required when no business-context source is requested. Metric-only datasets "
             "must never appear in context_sources; keep them in target_metrics, "

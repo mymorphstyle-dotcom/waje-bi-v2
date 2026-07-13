@@ -901,6 +901,69 @@ def test_route_design_retries_metric_only_context_and_persists_repaired_context(
     assert requested <= planned | terminal
 
 
+def test_route_baseline_proposals_are_bounded_by_the_reviewed_runtime_vocabulary(
+    monkeypatch,
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+    from bi_agent.runtime.window_resolver import CURRENT_DATA_BASELINES
+
+    proposed_baselines = ["unreviewed_baseline_alias", "previous_day"]
+    payloads = []
+
+    def invoke(state, node, payload):
+        payloads.append(payload)
+        return {
+            "requested_nodes": ["data_quality_profile"],
+            "analysis_requirements": {
+                "target_metrics": ["paid_amount"],
+                "baselines": [proposed_baselines.pop(0)],
+            },
+        }
+
+    monkeypatch.setattr(workflow, "_invoke_llm", invoke)
+    state = {
+        "run_id": "run-route-baseline-vocabulary-repair",
+        "intent": {
+            "question_family": "data_quality_or_evidence_review",
+            "question_families": ["data_quality_or_evidence_review"],
+            "primary_question_family": "data_quality_or_evidence_review",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+        },
+        "confirmed_understanding": {},
+        "request": {},
+        "checkpoint_events": [],
+    }
+
+    workflow._retrying_node(
+        "design_analysis_route", workflow._design_analysis_route
+    )(state)
+
+    allowed = list(CURRENT_DATA_BASELINES)
+    assert [payload["allowed_baseline_ids"] for payload in payloads] == [
+        allowed,
+        allowed,
+    ]
+    assert payloads[1]["node_retry_feedback"]["allowed_baseline_ids"] == allowed
+    assert payloads[1]["node_retry_feedback"]["reason"].endswith(":baselines")
+    assert state["analysis_route"]["analysis_requirements"]["baselines"] == [
+        "previous_day"
+    ]
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="analysis_route_contract_invalid:analysis_requirements:baselines",
+    ):
+        workflow._validate_route_analysis_requirements(
+            {
+                "analysis_requirements": {
+                    "baselines": ["unreviewed_baseline_alias"]
+                }
+            },
+            _registry(),
+        )
+
+
 def test_route_requirements_keep_metric_dataset_outside_context_sources():
     from bi_agent.runtime import langgraph_workflow as workflow
 

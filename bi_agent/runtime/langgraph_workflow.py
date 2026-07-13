@@ -1920,6 +1920,7 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         state["intent"]["requested_nodes"] = requested
         return state
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    allowed_baseline_ids = list(CURRENT_DATA_BASELINES)
     route_payload = {
         "intent": state["intent"],
         "confirmed_understanding": state["confirmed_understanding"],
@@ -1927,17 +1928,21 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         "allowed_dataset_ids": registry.dataset_ids,
         "allowed_context_source_ids": registry.context_source_ids,
         "allowed_diagnostic_ids": registry.diagnostic_obligation_ids,
+        "allowed_baseline_ids": allowed_baseline_ids,
         "budget_state": budget.to_llm_summary(),
     }
     feedback = state.get("request", {}).get("node_retry_feedback") or {}
     if isinstance(feedback, Mapping) and feedback.get("node") == "design_analysis_route":
         route_payload["node_retry_feedback"] = {
             "reason": str(feedback.get("reason") or ""),
+            "allowed_baseline_ids": allowed_baseline_ids,
             "correction": (
                 "Return registered unique typed ids. context_sources must use only "
                 "allowed_context_source_ids. An empty context_sources array is valid "
                 "when no business-context source is requested. Metric-only datasets "
                 "belong in dataset_requirements, target_metrics, or source selection. "
+                "Every baselines item must be copied exactly from allowed_baseline_ids. "
+                "Do not invent, translate, or alias baseline ids. "
                 "Preserve confirmed material axes."
             ),
         }

@@ -625,7 +625,16 @@ class LLMWorkflowTest(unittest.TestCase):
     def test_analysis_route_prompt_requires_typed_analysis_requirements(self):
         text = "\n".join(
             message["content"]
-            for message in build_prompt("analysis_route", {"intent": {}}).messages
+            for message in build_prompt(
+                "analysis_route",
+                {
+                    "intent": {},
+                    "allowed_baseline_ids": [
+                        "previous_day",
+                        "same_weekday_last_week",
+                    ],
+                },
+            ).messages
         )
 
         self.assertIn("analysis_requirements", text)
@@ -640,6 +649,9 @@ class LLMWorkflowTest(unittest.TestCase):
         ):
             self.assertIn(key, text)
         self.assertIn("allowed_claim_types", text)
+        self.assertIn("allowed_baseline_ids", text)
+        self.assertIn("copied exactly", text)
+        self.assertIn("closed reviewed list", text)
         self.assertIn("never objects, dates, or descriptions", text)
         self.assertIn("Do not select compare_periods", text)
 
