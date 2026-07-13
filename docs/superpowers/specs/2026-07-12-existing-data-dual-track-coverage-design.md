@@ -88,6 +88,14 @@ capabilities, and records every mutation. If more than one materially different
 valid route remains, clarification can be opened. Low-risk omissions use the
 reviewed recommended route and persist the assumption.
 
+For an ordered composite question-family set, diagnostic applicability is
+resolved per family before the capability union is formed. A diagnostic tag
+may contribute obligations only to the families that list it as supported; it
+cannot erase the base obligations of another valid family. A tag unsupported
+by every persisted family is rejected with an explicit mutation. Clarification
+is reserved for cases where two or more materially different contract-valid
+routes remain after that deterministic partition.
+
 The existing hard-coded family enablement and revenue diagnostic bundles move
 behind this contract boundary. Stable business-language intent extraction may
 remain, but evaluation sentences and case ids cannot become routing inputs.

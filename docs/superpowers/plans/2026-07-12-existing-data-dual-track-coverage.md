@@ -546,6 +546,16 @@ Hard-bound question family, metric, scope, permission, and fixed clock remain
 local compiler inputs. Ambiguous materially different routes go through the
 existing clarification contract.
 
+For composite question-family intents, resolve each diagnostic tag against
+each family's reviewed support set, then union the base and applicable
+diagnostic obligations in registry order. A diagnostic that applies to one
+family must not invalidate another family's base obligations. Reject a tag
+that applies to none of the persisted families with an explicit mutation;
+open clarification only when deterministic partitioning still leaves multiple
+materially different contract-valid routes. Add regressions proving that an
+incompatible diagnostic cannot suppress required, conditional, or independent
+family obligations.
+
 - [x] **Step 5: Run targeted and full compiler regressions**
 
 ```bash
