@@ -119,9 +119,11 @@ def compile_analysis_contract(
         dependencies.dimension_owners,
         dependencies.dimension_dataset_ids,
     )
-    accepted_terminal_gaps, clarification_outcome_ref = (
-        _accepted_terminal_gap_authority(proposal)
-    )
+    (
+        accepted_terminal_gaps,
+        clarification_outcome_ref,
+        authority_claim_intents,
+    ) = _accepted_terminal_gap_authority(proposal)
     contract_capabilities = _dedupe(
         (
             *capabilities,
@@ -140,6 +142,7 @@ def compile_analysis_contract(
         registry,
         ready_capabilities=capabilities,
         accepted_terminal_gaps=accepted_terminal_gaps,
+        authority_claim_intents=authority_claim_intents,
     )
     affected_capabilities = capabilities or ("analysis_contract",)
     contract_dataset_ids = _dedupe(
@@ -274,15 +277,15 @@ def compile_analysis_contract(
 
 def _accepted_terminal_gap_authority(
     proposal: Mapping[str, Any],
-) -> tuple[tuple[ContractGap, ...], str]:
+) -> tuple[tuple[ContractGap, ...], str, tuple[str, ...]]:
     choice = proposal.get("accepted_degradation_choice")
     if not isinstance(choice, Mapping):
-        return (), ""
+        return (), "", ()
     if str(choice.get("action_kind") or "") not in {
         "omit_unavailable_context",
         "continue_with_boundary_only",
     }:
-        return (), ""
+        return (), "", ()
     choice_id = str(choice.get("choice_id") or "")
     source_run_id = str(choice.get("source_run_id") or "")
     raw_affected = choice.get("affected_capabilities")
@@ -295,7 +298,7 @@ def _accepted_terminal_gap_authority(
         raise ValueError("accepted_terminal_gap_affected_capabilities_invalid")
     affected = set(raw_affected)
     if not affected:
-        return (), ""
+        return (), "", ()
     if not choice_id or not source_run_id:
         raise ValueError("accepted_terminal_gap_choice_authority_invalid")
     authority = proposal.get("accepted_terminal_gap_authority")
@@ -385,7 +388,7 @@ def _accepted_terminal_gap_authority(
     )
     if not carried:
         raise ValueError("accepted_terminal_gap_scope_mismatch")
-    return carried, outcome_ref
+    return carried, outcome_ref, prior.claim_intents
 
 
 def _required_metric_ids(
@@ -1171,6 +1174,7 @@ def _bind_claim_intents(
     *,
     ready_capabilities: tuple[str, ...],
     accepted_terminal_gaps: tuple[ContractGap, ...],
+    authority_claim_intents: tuple[str, ...],
 ) -> tuple[tuple[str, ...], tuple[ContractGap, ...]]:
     explicit = _values(proposal, "claim_intents")
 
@@ -1220,14 +1224,28 @@ def _bind_claim_intents(
         return supported or ("unbound_claim_intent",), gaps
 
     if accepted_terminal_gaps:
+        terminal_gap_claims = {
+            claim_type
+            for gap in accepted_terminal_gaps
+            for claim_type in gap.affected_claim_types
+        }
+        carried_claims = _dedupe(
+            claim_type
+            for claim_type in authority_claim_intents
+            if claim_type in terminal_gap_claims
+        )
+        if (
+            "unbound_claim_intent" in authority_claim_intents
+            and any(
+                _is_canonical_unsupported_claim_gap(gap)
+                for gap in accepted_terminal_gaps
+            )
+        ):
+            carried_claims = _dedupe((*carried_claims, "unbound_claim_intent"))
         accepted = _dedupe(
             (
                 *reviewed_claims(ready_capabilities),
-                *(
-                    claim_type
-                    for gap in accepted_terminal_gaps
-                    for claim_type in gap.affected_claim_types
-                ),
+                *carried_claims,
             )
         )
         if accepted:
@@ -1258,6 +1276,24 @@ def _bind_claim_intents(
             ),
             requires_clarification=True,
         ),
+    )
+
+
+def _is_canonical_unsupported_claim_gap(gap: ContractGap) -> bool:
+    if len(gap.affected_claim_types) != 1:
+        return False
+    claim_type = gap.affected_claim_types[0]
+    return (
+        claim_type != "unbound_claim_intent"
+        and gap.gap_type == "contract_partial"
+        and gap.gap_id == f"claim_intent:{claim_type}:unsupported"
+        and gap.dataset_id == ""
+        and bool(gap.affected_capabilities)
+        and gap.owner == "contract_owner"
+        and gap.repair_options
+        == ("choose_supported_claim_intent", "clarify_claim_intent")
+        and gap.requires_clarification is True
+        and canonical_value(gap.diagnostic_context) == {}
     )
 
 

@@ -2757,6 +2757,149 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 claims,
             )
 
+    def test_resumed_degradation_does_not_promote_prior_unsupported_gap_claim(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
+        prior = _compile_analysis_contract(
+            run_id="run-unsupported-gap-claim-source",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["causal_effect"],
+            },
+            accepted_capabilities=("pattern_scan", "outlier_contribution"),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=as_of,
+            permission_scope="analyst",
+        )
+        self.assertEqual(
+            prior.analysis_contract.claim_intents,
+            ("unbound_claim_intent",),
+        )
+        prior_unsupported_gap = next(
+            gap
+            for gap in prior.analysis_contract.contract_gaps
+            if gap.gap_id == "claim_intent:causal_effect:unsupported"
+        )
+        self.assertEqual(
+            prior_unsupported_gap.affected_claim_types,
+            ("causal_effect",),
+        )
+
+        choice = {
+            "choice_id": "omit-unavailable-outlier-claim-path",
+            "action_kind": "omit_unavailable_context",
+            "source_run_id": "run-unsupported-gap-claim-source",
+            "affected_capabilities": ["outlier_contribution"],
+        }
+        outcome_body = {
+            "source_run_id": "run-unsupported-gap-claim-source",
+            "thread_id": "thread-unsupported-gap-claim",
+            "topic_id": "topic-unsupported-gap-claim",
+            "choice": choice,
+        }
+        clarification_outcome = {
+            "outcome_ref": "clarification-outcome:"
+            + stable_contract_signature(outcome_body),
+            **outcome_body,
+        }
+        clarification_outcome["outcome_signature"] = stable_contract_signature(
+            clarification_outcome
+        )
+        authority = {
+            "source_run_id": "run-unsupported-gap-claim-source",
+            "thread_id": "thread-unsupported-gap-claim",
+            "topic_id": "topic-unsupported-gap-claim",
+            "analysis_contract": prior.analysis_contract.to_dict(),
+            "analysis_contract_signature": analysis_contract_signature(
+                prior.analysis_contract
+            ),
+            "clarification_outcome": clarification_outcome,
+        }
+        resumed = _compile_analysis_contract(
+            run_id="run-unsupported-gap-claim-resumed",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "accepted_degradation_choice": choice,
+                "accepted_terminal_gap_authority": authority,
+                "resume_thread_id": "thread-unsupported-gap-claim",
+                "resume_topic_id": "topic-unsupported-gap-claim",
+            },
+            accepted_capabilities=("pattern_scan",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=as_of,
+            permission_scope="analyst",
+        )
+
+        self.assertEqual(
+            resumed.analysis_contract.claim_intents,
+            ("recurring_pattern_existence", "unbound_claim_intent"),
+        )
+        resumed_unsupported_gap = next(
+            gap
+            for gap in resumed.analysis_contract.contract_gaps
+            if gap.gap_id == "claim_intent:causal_effect:unsupported"
+        )
+        self.assertEqual(
+            resumed_unsupported_gap.affected_claim_types,
+            ("causal_effect",),
+        )
+        self.assertNotIn(
+            "claim_intents:unbound",
+            {gap.gap_id for gap in resumed.analysis_contract.contract_gaps},
+        )
+
+        noncanonical_witnesses = {
+            "dataset_id": {"dataset_id": "forged_dataset"},
+            "owner": {"owner": "forged_owner"},
+            "repair_options": {"repair_options": ("forged_repair",)},
+            "requires_clarification": {"requires_clarification": False},
+            "diagnostic_context": {
+                "diagnostic_context": {"forged": True},
+            },
+        }
+        for drift, changes in noncanonical_witnesses.items():
+            with self.subTest(noncanonical_unsupported_gap_field=drift):
+                forged_contract = replace(
+                    prior.analysis_contract,
+                    contract_gaps=tuple(
+                        replace(gap, **changes)
+                        if gap.gap_id
+                        == "claim_intent:causal_effect:unsupported"
+                        else gap
+                        for gap in prior.analysis_contract.contract_gaps
+                    ),
+                )
+                forged_authority = {
+                    **authority,
+                    "analysis_contract": forged_contract.to_dict(),
+                    "analysis_contract_signature": analysis_contract_signature(
+                        forged_contract
+                    ),
+                }
+                forged_resume = _compile_analysis_contract(
+                    run_id=f"run-unsupported-gap-claim-forged-{drift}",
+                    proposal={
+                        "target_metrics": ["paid_amount"],
+                        "accepted_degradation_choice": choice,
+                        "accepted_terminal_gap_authority": forged_authority,
+                        "resume_thread_id": "thread-unsupported-gap-claim",
+                        "resume_topic_id": "topic-unsupported-gap-claim",
+                    },
+                    accepted_capabilities=("pattern_scan",),
+                    catalog=DatasetCatalog(()),
+                    registry=registry,
+                    as_of=as_of,
+                    permission_scope="analyst",
+                )
+                self.assertEqual(
+                    forged_resume.analysis_contract.claim_intents,
+                    ("recurring_pattern_existence",),
+                )
+
     def test_resumed_degradation_carries_exact_terminal_gaps_for_omitted_capabilities(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
