@@ -1508,6 +1508,85 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
                         authority.resolve_query_execution(results[1].result_ref),
                     )
 
+    def test_mixed_canonical_row_errors_fail_idempotently_across_executor_order(self):
+        contract = baseline_contract(metric=reviewed_metric())
+        contract = replace(
+            contract,
+            contract_signature=query_contract_signature(contract),
+        )
+        snapshot = paid_snapshot()
+        rows = (
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "paid_amount": math.nan,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "paid_amount": {"unsupported"},
+            },
+        )
+        authority = RuntimeEvidenceAuthority()
+        results = tuple(
+            ClickHouseQueryExecutor(
+                _RowsRuntime(ordered_rows),
+                evidence_authority=authority,
+                release_resolver=_PAID_RELEASE_RESOLVER,
+            ).execute(
+                contract,
+                {snapshot.snapshot_ref: snapshot},
+                execution_attempt_ref="attempt:test:mixed-canonical-row-errors",
+            )
+            for ordered_rows in (rows, tuple(reversed(rows)))
+        )
+        expected_error = (
+            "canonical_row_errors:canonical_number_not_finite,"
+            "canonical_set_not_supported"
+        )
+
+        self.assertEqual(
+            tuple(result.execution_status for result in results),
+            ("failed", "failed"),
+        )
+        self.assertEqual(results[0].result_ref, results[1].result_ref)
+        self.assertEqual(results[0].rows_ref, results[1].rows_ref)
+        self.assertEqual(results[0].failure_reason, results[1].failure_reason)
+        self.assertEqual(
+            results[0].failure_reason,
+            f"invalid_result_rows:{expected_error}",
+        )
+        self.assertEqual(
+            authority.resolve_query_execution(results[0].result_ref),
+            authority.resolve_query_execution(results[1].result_ref),
+        )
+        for key_fields in ((), contract.result_shape.unique_key, ("missing",)):
+            observed_errors = []
+            for ordered_rows in (rows, tuple(reversed(rows))):
+                with self.assertRaises(EvidenceIntegrityError) as raised:
+                    evidence_authority_module.canonical_result_rows(
+                        ordered_rows,
+                        key_fields,
+                    )
+                observed_errors.append(str(raised.exception))
+            self.assertEqual(
+                tuple(observed_errors),
+                (expected_error, expected_error),
+            )
+        for single_rows, expected_single_error in (
+            ((rows[0],), "canonical_number_not_finite"),
+            ((rows[1],), "canonical_set_not_supported"),
+        ):
+            for key_fields in ((), ("missing",)):
+                with self.assertRaises(EvidenceIntegrityError) as raised:
+                    evidence_authority_module.canonical_result_rows(
+                        single_rows,
+                        key_fields,
+                    )
+                self.assertEqual(str(raised.exception), expected_single_error)
+
     def test_canonical_projection_collision_fails_closed_across_executor_order(self):
         contract = baseline_contract(metric=reviewed_metric())
         contract = replace(

@@ -498,6 +498,18 @@ def _preflight_result_row_keys(
         raise EvidenceIntegrityError(
             "row_not_mapping:" + ",".join(invalid_row_types)
         )
+    canonical_errors = set()
+    for row in rows:
+        try:
+            _canonical_value(row)
+        except EvidenceIntegrityError as exc:
+            canonical_errors.add(str(exc))
+    if len(canonical_errors) == 1:
+        raise EvidenceIntegrityError(next(iter(canonical_errors)))
+    if canonical_errors:
+        raise EvidenceIntegrityError(
+            "canonical_row_errors:" + ",".join(sorted(canonical_errors))
+        )
     if not key_fields:
         return ()
     missing_key_fields = set()
@@ -505,7 +517,6 @@ def _preflight_result_row_keys(
     duplicate_keys = set()
     keys_seen = set()
     for row in rows:
-        _canonical_value(row)
         missing = tuple(field for field in key_fields if field not in row)
         if missing:
             missing_key_fields.update(missing)
