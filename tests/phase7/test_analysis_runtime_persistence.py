@@ -250,6 +250,72 @@ def _evidence_for_binding(binding, *, evidence_ref="evidence:task9:segment"):
     }
 
 
+def _without_claim_authority(bundle):
+    bundle["context_manifests"] = ()
+    bundle["trusted_provenance_records"] = ()
+    bundle["verified_claims"] = ()
+    bundle["claim_links"] = ()
+    bundle["evidence_manifests"] = tuple(
+        {**item, "context_manifest_ref": ""}
+        for item in bundle["evidence_manifests"]
+    )
+    return bundle
+
+
+def _unsupported_claim_gap_bundle(
+    *,
+    capability_requirements=("segment_contribution", "formula_decompose"),
+    affected_capabilities=("formula_decompose", "analysis_contract"),
+    clarification_outcome_ref="clarification-outcome:" + "a" * 64,
+    gap_changes=None,
+    contract_gaps=None,
+    clear_runtime=False,
+):
+    from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+    canonical_gap = {
+        "gap_type": "contract_partial",
+        "gap_id": "claim_intent:causal_effect:unsupported",
+        "dataset_id": "",
+        "affected_capabilities": list(affected_capabilities),
+        "affected_claim_types": ["causal_effect"],
+        "owner": "contract_owner",
+        "repair_options": [
+            "choose_supported_claim_intent",
+            "clarify_claim_intent",
+        ],
+        "requires_clarification": True,
+        "diagnostic_context": {},
+    }
+    if gap_changes:
+        canonical_gap.update(gap_changes)
+    bundle = _authority_bundle()
+    analysis = {
+        **bundle["analysis_contract"],
+        "claim_intents": ["unbound_claim_intent"],
+        "capability_requirements": list(capability_requirements),
+        "clarification_outcome_ref": clarification_outcome_ref,
+        "contract_gaps": list(contract_gaps or (canonical_gap,)),
+    }
+    analysis["contract_signature"] = analysis_contract_signature(analysis)
+    bundle["analysis_contract"] = analysis
+    _without_claim_authority(bundle)
+    if clear_runtime:
+        bundle.update(
+            {
+                "query_contracts": (),
+                "query_execution_records": (),
+                "rows_records": (),
+                "snapshot_records": (),
+                "completeness_records": (),
+                "capability_binding_records": (),
+                "evidence_manifests": (),
+                "repair_attempts": (),
+            }
+        )
+    return bundle
+
+
 def _waiting_runtime_records_with_unbound_results(*, keep_binding=True):
     from bi_agent.runtime.analysis_contracts import (
         analysis_contract_from_dict,
@@ -2144,6 +2210,365 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             ),
             "published",
         )
+
+    def test_unsupported_claim_gap_initial_scope_uses_set_semantics(self):
+        bundle = _unsupported_claim_gap_bundle(
+            affected_capabilities=("formula_decompose", "segment_contribution"),
+            clarification_outcome_ref="",
+        )
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            ),
+            "published",
+        )
+
+    def test_authority_carried_unsupported_claim_gap_allows_control_scoped_subset(self):
+        bundle = _unsupported_claim_gap_bundle(
+            affected_capabilities=("analysis_contract", "formula_decompose"),
+        )
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            ),
+            "published",
+        )
+
+    def test_authority_carried_control_only_gap_allows_empty_required_scope(self):
+        bundle = _unsupported_claim_gap_bundle(
+            capability_requirements=(),
+            affected_capabilities=("analysis_contract",),
+            clear_runtime=True,
+        )
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            ),
+            "published",
+        )
+
+    def test_compiler_authority_carried_unsupported_gap_persists(self):
+        from datetime import datetime
+
+        from bi_agent.conversation.clarification_authority import (
+            build_clarification_outcome,
+        )
+        from bi_agent.runtime.analysis_contract_compiler import (
+            compile_analysis_contract,
+        )
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+        from bi_agent.runtime.dataset_catalog import DatasetCatalog
+        from bi_agent.runtime.runtime_contract_registry import (
+            RuntimeContractRegistry,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
+        prior = compile_analysis_contract(
+            run_id="run-persistence-authority-source",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["causal_effect"],
+            },
+            accepted_capabilities=("pattern_scan",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=as_of,
+            permission_scope="analyst",
+        )
+        choice = {
+            "choice_id": "omit-unavailable-pattern",
+            "action_kind": "omit_unavailable_context",
+            "source_run_id": "run-persistence-authority-source",
+            "affected_capabilities": ["pattern_scan"],
+        }
+        thread_id = "thread-persistence-authority"
+        topic_id = "topic-persistence-authority"
+        clarification_outcome = build_clarification_outcome(
+            source_run_id=choice["source_run_id"],
+            thread_id=thread_id,
+            topic_id=topic_id,
+            choice=choice,
+        )
+        resumed = compile_analysis_contract(
+            run_id="run-persistence-authority-resumed",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "accepted_degradation_choice": choice,
+                "accepted_terminal_gap_authority": {
+                    "source_run_id": choice["source_run_id"],
+                    "thread_id": thread_id,
+                    "topic_id": topic_id,
+                    "analysis_contract": prior.analysis_contract.to_dict(),
+                    "analysis_contract_signature": analysis_contract_signature(
+                        prior.analysis_contract
+                    ),
+                    "clarification_outcome": clarification_outcome,
+                },
+                "resume_thread_id": thread_id,
+                "resume_topic_id": topic_id,
+            },
+            accepted_capabilities=(),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=as_of,
+            permission_scope="analyst",
+        )
+        analysis = resumed.analysis_contract.to_dict()
+        analysis["contract_signature"] = analysis_contract_signature(
+            resumed.analysis_contract
+        )
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-persistence-authority-resumed",
+                analysis_contract=analysis,
+                query_contracts=resumed.query_contracts,
+                query_execution_records=(),
+                rows_records=(),
+                snapshot_records=(),
+                completeness_records=(),
+                capability_binding_records=(),
+                evidence_manifests=(),
+                context_manifests=(),
+                trusted_provenance_records=(),
+                verified_claims=(),
+                claim_links=(),
+                repair_attempts=(),
+            ),
+            "published",
+        )
+        unsupported_gap = next(
+            gap
+            for gap in resumed.analysis_contract.contract_gaps
+            if gap.gap_id == "claim_intent:causal_effect:unsupported"
+        )
+        self.assertEqual(
+            set(unsupported_gap.affected_capabilities),
+            {"pattern_scan", "analysis_contract"},
+        )
+
+    def test_unsupported_claim_gap_rejects_scope_or_authority_drift(self):
+        canonical_gap = {
+            "gap_type": "contract_partial",
+            "gap_id": "claim_intent:causal_effect:unsupported",
+            "dataset_id": "",
+            "affected_capabilities": [
+                "formula_decompose",
+                "analysis_contract",
+            ],
+            "affected_claim_types": ["causal_effect"],
+            "owner": "contract_owner",
+            "repair_options": [
+                "choose_supported_claim_intent",
+                "clarify_claim_intent",
+            ],
+            "requires_clarification": True,
+            "diagnostic_context": {},
+        }
+        invalid_cases = (
+            ("subset_without_authority", "", {
+                **canonical_gap,
+                "affected_capabilities": ["formula_decompose"],
+            }),
+            ("control_without_authority", "", canonical_gap),
+            (
+                "malformed_authority",
+                "clarification-outcome:not-a-digest",
+                canonical_gap,
+            ),
+            (
+                "valid_authority_without_control_scope",
+                "clarification-outcome:" + "a" * 64,
+                {
+                    **canonical_gap,
+                    "affected_capabilities": ["formula_decompose"],
+                },
+            ),
+            (
+                "unknown_capability",
+                "clarification-outcome:" + "a" * 64,
+                {
+                    **canonical_gap,
+                    "affected_capabilities": [
+                        "formula_decompose",
+                        "unknown_capability",
+                        "analysis_contract",
+                    ],
+                },
+            ),
+            (
+                "duplicate_capability",
+                "clarification-outcome:" + "a" * 64,
+                {
+                    **canonical_gap,
+                    "affected_capabilities": [
+                        "formula_decompose",
+                        "analysis_contract",
+                        "formula_decompose",
+                    ],
+                },
+            ),
+            (
+                "fake_gap_id",
+                "clarification-outcome:" + "a" * 64,
+                {**canonical_gap, "gap_id": "claim_intent:causal_effect:carried"},
+            ),
+            (
+                "owner_drift",
+                "clarification-outcome:" + "a" * 64,
+                {**canonical_gap, "owner": "runtime_owner"},
+            ),
+            (
+                "repair_drift",
+                "clarification-outcome:" + "a" * 64,
+                {**canonical_gap, "repair_options": ["accept_claim"]},
+            ),
+        )
+        for label, clarification_ref, gap in invalid_cases:
+            with self.subTest(label=label):
+                bundle = _unsupported_claim_gap_bundle(
+                    clarification_outcome_ref=clarification_ref,
+                    contract_gaps=(gap,),
+                )
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_unbound_claim_intent_gap_invalid",
+                ):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-task9", **bundle
+                    )
+
+    def test_valid_unsupported_gap_cannot_mask_sibling_grammar_drift(self):
+        canonical_gap = {
+            "gap_type": "contract_partial",
+            "gap_id": "claim_intent:causal_effect:unsupported",
+            "dataset_id": "",
+            "affected_capabilities": [
+                "formula_decompose",
+                "analysis_contract",
+            ],
+            "affected_claim_types": ["causal_effect"],
+            "owner": "contract_owner",
+            "repair_options": [
+                "choose_supported_claim_intent",
+                "clarify_claim_intent",
+            ],
+            "requires_clarification": True,
+            "diagnostic_context": {},
+        }
+        sibling_drifts = (
+            {**canonical_gap, "gap_id": "claim_intent:forged:carried"},
+            {**canonical_gap, "gap_id": "claim_intents:unbound:forged"},
+            {**canonical_gap, "gap_id": "claim_intents:forged"},
+            {**canonical_gap, "owner": "runtime_owner"},
+        )
+        for sibling_drift in sibling_drifts:
+            with self.subTest(sibling_drift=sibling_drift):
+                bundle = _unsupported_claim_gap_bundle(
+                    contract_gaps=(canonical_gap, sibling_drift),
+                )
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_unbound_claim_intent_gap_invalid",
+                ):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-task9", **bundle
+                    )
+
+    def test_direct_unbound_gap_cannot_mask_invalid_unsupported_sibling(self):
+        bundle = _unsupported_claim_gap_bundle(
+            clarification_outcome_ref="",
+            contract_gaps=(
+                {
+                    "gap_type": "contract_partial",
+                    "gap_id": "claim_intents:unbound",
+                    "dataset_id": "",
+                    "affected_capabilities": [
+                        "segment_contribution",
+                        "formula_decompose",
+                    ],
+                    "affected_claim_types": ["unbound_claim_intent"],
+                    "owner": "contract_owner",
+                    "repair_options": [
+                        "bind_capability_claim_types",
+                        "bind_metric_claim_types",
+                        "clarify_claim_intent",
+                    ],
+                    "requires_clarification": True,
+                    "diagnostic_context": {},
+                },
+                {
+                    "gap_type": "contract_partial",
+                    "gap_id": "claim_intent:causal_effect:carried",
+                    "dataset_id": "",
+                    "affected_capabilities": ["formula_decompose"],
+                    "affected_claim_types": ["causal_effect"],
+                    "owner": "contract_owner",
+                    "repair_options": [
+                        "choose_supported_claim_intent",
+                        "clarify_claim_intent",
+                    ],
+                    "requires_clarification": True,
+                    "diagnostic_context": {},
+                },
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_unbound_claim_intent_gap_invalid",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            )
+
+    def test_forged_plural_direct_gap_ids_fail_closed(self):
+        canonical_direct_gap = {
+            "gap_type": "contract_partial",
+            "gap_id": "claim_intents:unbound",
+            "dataset_id": "",
+            "affected_capabilities": [
+                "segment_contribution",
+                "formula_decompose",
+            ],
+            "affected_claim_types": ["unbound_claim_intent"],
+            "owner": "contract_owner",
+            "repair_options": [
+                "bind_capability_claim_types",
+                "bind_metric_claim_types",
+                "clarify_claim_intent",
+            ],
+            "requires_clarification": True,
+            "diagnostic_context": {},
+        }
+        for forged_gap_id in (
+            "claim_intents:forged",
+            "claim_intents:unbound:forged",
+        ):
+            with self.subTest(forged_gap_id=forged_gap_id):
+                bundle = _unsupported_claim_gap_bundle(
+                    clarification_outcome_ref="",
+                    contract_gaps=({
+                        **canonical_direct_gap,
+                        "gap_id": forged_gap_id,
+                    },),
+                )
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_unbound_claim_intent_gap_invalid",
+                ):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-task9", **bundle
+                    )
 
     def test_ordinary_contract_gap_does_not_force_zero_claims(self):
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature

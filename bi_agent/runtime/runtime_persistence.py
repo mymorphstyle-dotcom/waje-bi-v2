@@ -51,6 +51,7 @@ _CONTENT_STORAGE_RE = re.compile(rf"^rows-storage:sha256:({_HEX64})$")
 _CLICKHOUSE_STORAGE_RE = re.compile(
     rf"^clickhouse-rows:([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*):({_HEX64}):({_HEX64})$"
 )
+_CLARIFICATION_OUTCOME_RE = re.compile(rf"^clarification-outcome:{_HEX64}$")
 
 
 def authority_record_payload(kind: str, record: Any) -> dict[str, Any]:
@@ -666,9 +667,14 @@ def _validated_unbound_claim_intents(
     expected_capabilities = (
         analysis.capability_requirements or ("analysis_contract",)
     )
-    direct_gaps = tuple(
+    direct_gap_candidates = tuple(
         gap
         for gap in analysis.contract_gaps
+        if gap.gap_id.startswith("claim_intents:")
+    )
+    direct_gaps = tuple(
+        gap
+        for gap in direct_gap_candidates
         if gap.gap_type == "contract_partial"
         and gap.gap_id == "claim_intents:unbound"
         and gap.dataset_id == ""
@@ -685,27 +691,72 @@ def _validated_unbound_claim_intents(
         and gap.requires_clarification is True
         and canonical_value(gap.diagnostic_context) == {}
     )
-    unsupported_gaps = tuple(
+    unsupported_gap_candidates = tuple(
         gap
         for gap in analysis.contract_gaps
+        if gap.gap_id.startswith("claim_intent:")
+    )
+    unsupported_gaps = tuple(
+        gap
+        for gap in unsupported_gap_candidates
         if gap.gap_type == "contract_partial"
         and len(gap.affected_claim_types) == 1
         and gap.affected_claim_types != (sentinel,)
         and gap.gap_id
         == f"claim_intent:{gap.affected_claim_types[0]}:unsupported"
         and gap.dataset_id == ""
-        and gap.affected_capabilities == expected_capabilities
+        and _unsupported_claim_gap_scope_is_valid(
+            analysis,
+            gap.affected_capabilities,
+        )
         and gap.owner == "contract_owner"
         and gap.repair_options
         == ("choose_supported_claim_intent", "clarify_claim_intent")
         and gap.requires_clarification is True
         and canonical_value(gap.diagnostic_context) == {}
     )
-    if (len(direct_gaps) != 1) == (not unsupported_gaps):
+    unsupported_gap_contract_valid = (
+        bool(unsupported_gaps)
+        and len(unsupported_gaps) == len(unsupported_gap_candidates)
+        and len({gap.gap_id for gap in unsupported_gaps}) == len(unsupported_gaps)
+    )
+    direct_gap_contract_valid = (
+        len(direct_gaps) == 1
+        and len(direct_gaps) == len(direct_gap_candidates)
+    )
+    if (
+        (direct_gap_candidates and not direct_gap_contract_valid)
+        or (unsupported_gap_candidates and not unsupported_gap_contract_valid)
+        or direct_gap_contract_valid == unsupported_gap_contract_valid
+    ):
         raise EvidenceIntegrityError(
             "runtime_persistence_unbound_claim_intent_gap_invalid"
         )
     return {sentinel, *unsupported}
+
+
+def _unsupported_claim_gap_scope_is_valid(
+    analysis: AnalysisContract,
+    affected_capabilities: tuple[str, ...],
+) -> bool:
+    if (
+        not affected_capabilities
+        or len(affected_capabilities) != len(set(affected_capabilities))
+    ):
+        return False
+    affected = set(affected_capabilities)
+    required = set(analysis.capability_requirements)
+    outcome_ref = analysis.clarification_outcome_ref
+    if outcome_ref:
+        if (
+            _CLARIFICATION_OUTCOME_RE.fullmatch(outcome_ref) is None
+            or "analysis_contract" not in affected
+        ):
+            return False
+        concrete = affected - {"analysis_contract"}
+        return concrete.issubset(required) and (bool(concrete) or not required)
+    expected = required or {"analysis_contract"}
+    return affected == expected
 
 
 def _boundary_gap_authorizes_claim_intents(
