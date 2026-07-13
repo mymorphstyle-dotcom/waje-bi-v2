@@ -1902,13 +1902,27 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             registry,
         )
         _consume_obligation_route_conflict(state, output)
+        selected_action = dict(resume.get("selected_query_gap_action") or {})
+        accepted_choice = dict(
+            state.get("request", {}).get("accepted_degradation_choice")
+            or resume.get("accepted_degradation_choice")
+            or {}
+        )
+        effective_action_kind = str(
+            accepted_choice.get("action_kind") or ""
+        )
+        route_action = (
+            accepted_choice
+            if effective_action_kind
+            in {"omit_unavailable_context", "continue_with_boundary_only"}
+            else selected_action or accepted_choice
+        )
         requested, output = _apply_query_gap_action_to_route(
             requested,
             output,
-            resume.get("selected_query_gap_action") or {},
+            route_action,
             registry,
         )
-        accepted_choice = dict(resume.get("accepted_degradation_choice") or {})
         if accepted_choice:
             output["accepted_degradation_choice"] = accepted_choice
             state["intent"]["accepted_degradation_choice"] = accepted_choice
@@ -2523,7 +2537,10 @@ def _apply_query_gap_action_to_route(
         output["analysis_requirements"] = requirements
         output["decision_summary"] = "已采用合同支持的声明强度继续。"
         return requested, output
-    if action_kind != "omit_unavailable_context":
+    if action_kind not in {
+        "omit_unavailable_context",
+        "continue_with_boundary_only",
+    }:
         return requested, dict(route)
     affected = {
         str(capability)
@@ -2533,7 +2550,7 @@ def _apply_query_gap_action_to_route(
     remaining = tuple(
         capability for capability in requested if capability not in affected
     )
-    if not affected or not remaining:
+    if not affected:
         return requested, dict(route)
     output = dict(route)
     requirements = dict(output.get("analysis_requirements") or {})
@@ -2625,7 +2642,15 @@ def _typed_clarification_compiled_graph(
     accepted_graph = tuple(
         dict.fromkeys(str(item) for item in intent.get("requested_nodes", ()) if item)
     )
-    if not accepted_graph:
+    clarification_outcome_ref = str(
+        getattr(
+            outcome.analysis_contract,
+            "clarification_outcome_ref",
+            "",
+        )
+        or ""
+    )
+    if not accepted_graph and not clarification_outcome_ref:
         return None
     if not needs_clarification:
         plans = {plan.capability_id: plan for plan in outcome.capability_plans}

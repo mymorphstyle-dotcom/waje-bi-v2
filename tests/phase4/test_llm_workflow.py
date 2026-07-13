@@ -1363,6 +1363,114 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertNotIn("analysis_route", fake.calls)
 
+    def test_query_gap_resume_applies_authority_closed_degradation_scope(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        requirements = {
+            "target_metrics": ["paid_amount"],
+            "context_sources": ["external_event"],
+            "claim_intents": [
+                "recurring_pattern_existence",
+                "candidate_mechanism",
+                "external_shock_candidate_or_anomaly",
+            ],
+            "baselines": ["rolling_7_day_baseline"],
+            "scope": {"type": "full_sample"},
+        }
+
+        def resumed_state(*, accepted_graph, selected, effective):
+            prior_route = {
+                "requested_nodes": list(accepted_graph),
+                "analysis_requirements": deepcopy(requirements),
+            }
+            return {
+                "run_id": "run-authority-closed-route",
+                "request": {
+                    "accepted_degradation_choice": effective,
+                    "clarification_resume_context": {
+                        "accepted_graph": accepted_graph,
+                        "analysis_route": prior_route,
+                        "analysis_contract": {
+                            "question_families": [
+                                "pattern_explanation",
+                                "anomaly_or_black_swan_review",
+                            ]
+                        },
+                        "material_slots": deepcopy(requirements),
+                        "selected_query_gap_action": selected,
+                        "accepted_degradation_choice": selected,
+                    },
+                },
+                "intent": {
+                    "question_family": "pattern_explanation",
+                    "question_families": ["pattern_explanation"],
+                    "target_metric": "paid_amount",
+                    "pattern_family": "rolling",
+                },
+                "confirmed_understanding": {},
+                "clarification_outcome": {},
+            }
+
+        selected = {
+            "choice_id": "omit-selected-subset",
+            "action_kind": "omit_unavailable_context",
+            "affected_capabilities": ["outlier_scan"],
+        }
+        effective = {
+            **selected,
+            "affected_capabilities": ["outlier_scan", "event_evidence"],
+        }
+        state = resumed_state(
+            accepted_graph=("pattern_scan", "event_evidence", "outlier_scan"),
+            selected=selected,
+            effective=effective,
+        )
+
+        _design_analysis_route(state)
+
+        active = tuple(state["analysis_route"]["requested_nodes"])
+        with self.subTest(boundary="effective_closure_removes_every_omitted_path"):
+            self.assertNotIn("event_evidence", active)
+            self.assertNotIn("outlier_scan", active)
+        with self.subTest(boundary="ready_sibling_is_preserved"):
+            self.assertIn("pattern_scan", active)
+        with self.subTest(boundary="effective_choice_is_attached"):
+            self.assertEqual(
+                state["analysis_route"]["accepted_degradation_choice"],
+                effective,
+            )
+        with self.subTest(boundary="multi_family_authority_is_preserved"):
+            self.assertEqual(
+                state["intent"]["question_families"],
+                ["pattern_explanation", "anomaly_or_black_swan_review"],
+            )
+
+        all_omitted_selected = {
+            "choice_id": "continue-selected-subset",
+            "action_kind": "continue_with_boundary_only",
+            "affected_capabilities": ["outlier_scan"],
+        }
+        all_omitted_effective = {
+            **all_omitted_selected,
+            "affected_capabilities": list(registry.capability_ids),
+        }
+        all_omitted = resumed_state(
+            accepted_graph=("event_evidence", "outlier_scan"),
+            selected=all_omitted_selected,
+            effective=all_omitted_effective,
+        )
+
+        _design_analysis_route(all_omitted)
+
+        with self.subTest(boundary="all_omitted_has_no_active_graph"):
+            self.assertEqual(
+                tuple(all_omitted["analysis_route"]["requested_nodes"]),
+                (),
+            )
+
     def test_route_reconciliation_adds_unique_metric_query_capability(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 

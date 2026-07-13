@@ -2956,6 +2956,47 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "segment_contribution_or_mix_shift",
             omitted_all_affected.analysis_contract.claim_intents,
         )
+        from bi_agent.runtime.langgraph_workflow import (
+            _typed_clarification_compiled_graph,
+        )
+
+        typed_empty_graph = _typed_clarification_compiled_graph(
+            omitted_all_affected,
+            {"requested_nodes": (), "target_claim": "保留已接受的证据边界"},
+        )
+        self.assertIsNotNone(typed_empty_graph)
+        self.assertEqual(typed_empty_graph.mutations.accepted_graph, ())
+        self.assertEqual(typed_empty_graph.accepted_nodes, ())
+        self.assertEqual(
+            set(
+                typed_empty_graph.runtime_plan["analysis_contract"]
+                ["capability_requirements"]
+            ),
+            {"formula_decompose", "data_quality_profile"},
+        )
+        self.assertEqual(
+            set(
+                typed_empty_graph.runtime_plan["analysis_contract"]
+                ["claim_intents"]
+            ),
+            {
+                "formula_component_contribution",
+                "contract_coverage_and_trust_boundary",
+            },
+        )
+        unverified_empty_outcome = replace(
+            omitted_all_affected,
+            analysis_contract=replace(
+                omitted_all_affected.analysis_contract,
+                clarification_outcome_ref="",
+            ),
+        )
+        self.assertIsNone(
+            _typed_clarification_compiled_graph(
+                unverified_empty_outcome,
+                {"requested_nodes": (), "target_claim": "无权威空图"},
+            )
+        )
 
         carried_ids = {gap.gap_id for gap in carried}
 
