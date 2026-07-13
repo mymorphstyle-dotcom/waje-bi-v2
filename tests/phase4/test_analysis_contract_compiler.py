@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import datetime
 import unittest
 
+from bi_agent.conversation.clarification_authority import build_material_authority
 from bi_agent.runtime.analysis_contract_compiler import (
     compile_analysis_contract as _compile_analysis_contract,
 )
@@ -21,6 +22,51 @@ from bi_agent.runtime.dataset_catalog import (
     dataset_snapshot_release_ref,
 )
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+
+def clarification_material_authority(
+    *,
+    source_run_id,
+    thread_id,
+    topic_id,
+    question_family="revenue_health_review",
+    target_metric="paid_amount",
+    requested_components=(),
+    requested_dimensions=(),
+    baselines=(),
+    context_sources=(),
+    claim_intents=(),
+    scope=None,
+    diagnostic_tags=(),
+):
+    return build_material_authority(
+        source_run_id=source_run_id,
+        thread_id=thread_id,
+        topic_id=topic_id,
+        original_intent={
+            "question_family": question_family,
+            "question_families": [question_family],
+            "primary_question_family": question_family,
+            "secondary_question_families": [],
+            "target_metric": target_metric,
+            "baseline_candidates": list(baselines),
+            "context_sources": list(context_sources),
+            "claim_intents": list(claim_intents),
+            "requested_dimensions": list(requested_dimensions),
+            "requested_components": list(requested_components),
+            "scope": scope,
+        },
+        material_slots={
+            "target_metrics": [target_metric],
+            "requested_components": list(requested_components),
+            "requested_dimensions": list(requested_dimensions),
+            "baselines": list(baselines),
+            "context_sources": list(context_sources),
+            "claim_intents": list(claim_intents),
+            "diagnostic_tags": list(diagnostic_tags),
+            "scope": scope,
+        },
+    )
 
 
 def snapshot(dataset_id, table, watermark):
@@ -2619,6 +2665,360 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     list(outcome.analysis_contract.claim_intents),
                 )
 
+    def test_compiled_target_metric_refs_follow_requested_bound_target_order(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
+        for target_metrics in (
+            ("paid_amount", "paid_users"),
+            ("paid_users", "paid_amount"),
+        ):
+            with self.subTest(target_metrics=target_metrics):
+                contract = _compile_analysis_contract(
+                    run_id="run-ordered-target-refs",
+                    proposal={
+                        "question_families": ["revenue_health_review"],
+                        "target_metrics": list(target_metrics),
+                        "metric_dataset_overrides": {
+                            "paid_amount": "paid_order_success",
+                            "paid_users": "paid_order_success",
+                        },
+                    },
+                    accepted_capabilities=("compare_periods",),
+                    catalog=DatasetCatalog(()),
+                    registry=registry,
+                    as_of=as_of,
+                    permission_scope="analyst",
+                ).analysis_contract
+                ids_by_ref = {
+                    binding.contract_ref: binding.metric_id
+                    for binding in contract.metric_bindings
+                }
+                self.assertEqual(
+                    tuple(ids_by_ref[ref] for ref in contract.target_metric_refs),
+                    target_metrics,
+                )
+
+    def test_compiler_rejects_reordered_signed_multi_target_authority(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
+        prior = _compile_analysis_contract(
+            run_id="run-reordered-target-source",
+            proposal={
+                "question_families": ["revenue_health_review"],
+                "target_metrics": ["paid_amount", "paid_users"],
+                "metric_dataset_overrides": {
+                    "paid_amount": "paid_order_success",
+                    "paid_users": "paid_order_success",
+                },
+            },
+            accepted_capabilities=("outlier_contribution",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=as_of,
+            permission_scope="analyst",
+        )
+        choice = {
+            "choice_id": "omit-reordered-target-path",
+            "action_kind": "omit_unavailable_context",
+            "source_run_id": "run-reordered-target-source",
+            "affected_capabilities": ["outlier_contribution"],
+        }
+        outcome_body = {
+            "source_run_id": "run-reordered-target-source",
+            "thread_id": "thread-reordered-target",
+            "topic_id": "topic-reordered-target",
+            "choice": choice,
+        }
+        outcome = {
+            "outcome_ref": "clarification-outcome:"
+            + stable_contract_signature(outcome_body),
+            **outcome_body,
+        }
+        outcome["outcome_signature"] = stable_contract_signature(outcome)
+        authority = {
+            "source_run_id": "run-reordered-target-source",
+            "thread_id": "thread-reordered-target",
+            "topic_id": "topic-reordered-target",
+            "analysis_contract": prior.analysis_contract.to_dict(),
+            "analysis_contract_signature": analysis_contract_signature(
+                prior.analysis_contract
+            ),
+            "material_authority": clarification_material_authority(
+                source_run_id="run-reordered-target-source",
+                thread_id="thread-reordered-target",
+                topic_id="topic-reordered-target",
+                target_metric="paid_users",
+            ),
+            "clarification_outcome": outcome,
+        }
+        reordered_material = authority["material_authority"]
+        reordered_material["intent_material"]["target_metrics"] = [
+            "paid_users",
+            "paid_amount",
+        ]
+        reordered_material["route_material_slots"]["target_metrics"] = [
+            "paid_users",
+            "paid_amount",
+        ]
+        body = {
+            key: value
+            for key, value in reordered_material.items()
+            if key != "material_authority_signature"
+        }
+        reordered_material["material_authority_signature"] = (
+            stable_contract_signature(body)
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "material_authority_contract_target_metrics_mismatch",
+        ):
+            _compile_analysis_contract(
+                run_id="run-reordered-target-resumed",
+                proposal={
+                    "question_families": ["revenue_health_review"],
+                    "target_metrics": ["paid_amount", "paid_users"],
+                    "accepted_degradation_choice": choice,
+                    "accepted_terminal_gap_authority": authority,
+                    "resume_thread_id": "thread-reordered-target",
+                    "resume_topic_id": "topic-reordered-target",
+                },
+                accepted_capabilities=("pattern_scan",),
+                catalog=DatasetCatalog(()),
+                registry=registry,
+                as_of=as_of,
+                permission_scope="analyst",
+            )
+
+    def test_compiler_rejects_independently_signed_resume_overlap_mismatch(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
+        prior = _compile_analysis_contract(
+            run_id="run-overlap-mismatch-source",
+            proposal={
+                "question_families": ["revenue_health_review"],
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["comparative_change"],
+                "scope": "full_sample",
+            },
+            accepted_capabilities=("outlier_contribution",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=as_of,
+            permission_scope="analyst",
+        )
+        choice = {
+            "choice_id": "omit-overlap-mismatch-path",
+            "action_kind": "omit_unavailable_context",
+            "source_run_id": "run-overlap-mismatch-source",
+            "affected_capabilities": ["outlier_contribution"],
+        }
+        outcome_body = {
+            "source_run_id": "run-overlap-mismatch-source",
+            "thread_id": "thread-overlap-mismatch",
+            "topic_id": "topic-overlap-mismatch",
+            "choice": choice,
+        }
+        outcome = {
+            "outcome_ref": "clarification-outcome:"
+            + stable_contract_signature(outcome_body),
+            **outcome_body,
+        }
+        outcome["outcome_signature"] = stable_contract_signature(outcome)
+        cases = {
+            "question_families": {
+                "question_family": "segment_or_factor_attribution",
+                "expected": "material_authority_contract_question_families_mismatch",
+            },
+            "target_metrics": {
+                "target_metric": "active_users",
+                "expected": "material_authority_contract_target_metrics_mismatch",
+            },
+            "route_target_metrics": {
+                "expected": "material_authority_contract_target_metrics_mismatch",
+            },
+            "scope": {
+                "scope": "custom_segment",
+                "expected": "material_authority_contract_scope_mismatch",
+            },
+        }
+
+        for axis, changes in cases.items():
+            with self.subTest(axis=axis):
+                material_authority = clarification_material_authority(
+                    source_run_id="run-overlap-mismatch-source",
+                    thread_id="thread-overlap-mismatch",
+                    topic_id="topic-overlap-mismatch",
+                    question_family=changes.get(
+                        "question_family", "revenue_health_review"
+                    ),
+                    target_metric=changes.get(
+                        "target_metric", "paid_amount"
+                    ),
+                    claim_intents=("comparative_change",),
+                    scope=changes.get("scope", "full_sample"),
+                )
+                if axis == "route_target_metrics":
+                    material_authority["route_material_slots"][
+                        "target_metrics"
+                    ] = ["active_users"]
+                    body = {
+                        key: value
+                        for key, value in material_authority.items()
+                        if key != "material_authority_signature"
+                    }
+                    material_authority["material_authority_signature"] = (
+                        stable_contract_signature(body)
+                    )
+                authority = {
+                    "source_run_id": "run-overlap-mismatch-source",
+                    "thread_id": "thread-overlap-mismatch",
+                    "topic_id": "topic-overlap-mismatch",
+                    "analysis_contract": prior.analysis_contract.to_dict(),
+                    "analysis_contract_signature": analysis_contract_signature(
+                        prior.analysis_contract
+                    ),
+                    "material_authority": material_authority,
+                    "clarification_outcome": outcome,
+                }
+                with self.assertRaisesRegex(ValueError, changes["expected"]):
+                    _compile_analysis_contract(
+                        run_id=f"run-overlap-mismatch-resumed-{axis}",
+                        proposal={
+                            "question_families": ["revenue_health_review"],
+                            "target_metrics": ["paid_amount"],
+                            "accepted_degradation_choice": choice,
+                            "accepted_terminal_gap_authority": authority,
+                            "resume_thread_id": "thread-overlap-mismatch",
+                            "resume_topic_id": "topic-overlap-mismatch",
+                        },
+                        accepted_capabilities=("pattern_scan",),
+                        catalog=DatasetCatalog(()),
+                        registry=registry,
+                        as_of=as_of,
+                        permission_scope="analyst",
+                    )
+
+    def test_compiler_rejects_current_terminal_resume_proposal_drift(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
+        prior = _compile_analysis_contract(
+            run_id="run-current-proposal-source",
+            proposal={
+                "question_families": ["revenue_health_review"],
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["comparative_change"],
+                "scope": "full_sample",
+            },
+            accepted_capabilities=("outlier_contribution",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=as_of,
+            permission_scope="analyst",
+        )
+        choice = {
+            "choice_id": "omit-current-proposal-path",
+            "action_kind": "omit_unavailable_context",
+            "source_run_id": "run-current-proposal-source",
+            "affected_capabilities": ["outlier_contribution"],
+        }
+        outcome_body = {
+            "source_run_id": "run-current-proposal-source",
+            "thread_id": "thread-current-proposal",
+            "topic_id": "topic-current-proposal",
+            "choice": choice,
+        }
+        outcome = {
+            "outcome_ref": "clarification-outcome:"
+            + stable_contract_signature(outcome_body),
+            **outcome_body,
+        }
+        outcome["outcome_signature"] = stable_contract_signature(outcome)
+        authority = {
+            "source_run_id": "run-current-proposal-source",
+            "thread_id": "thread-current-proposal",
+            "topic_id": "topic-current-proposal",
+            "analysis_contract": prior.analysis_contract.to_dict(),
+            "analysis_contract_signature": analysis_contract_signature(
+                prior.analysis_contract
+            ),
+            "material_authority": clarification_material_authority(
+                source_run_id="run-current-proposal-source",
+                thread_id="thread-current-proposal",
+                topic_id="topic-current-proposal",
+                question_family="revenue_health_review",
+                target_metric="paid_amount",
+                claim_intents=("comparative_change",),
+                scope="full_sample",
+            ),
+            "clarification_outcome": outcome,
+        }
+        cases = {
+            "question_families": {
+                "question_families": ["segment_or_factor_attribution"]
+            },
+            "target_metrics": {"target_metrics": ["active_users"]},
+            "scope": {"scope": "custom_segment"},
+        }
+
+        for axis, drift in cases.items():
+            with self.subTest(axis=axis):
+                proposal = {
+                    "question_families": ["revenue_health_review"],
+                    "target_metrics": ["paid_amount"],
+                    "scope": "full_sample",
+                    "accepted_degradation_choice": choice,
+                    "accepted_terminal_gap_authority": authority,
+                    "resume_thread_id": "thread-current-proposal",
+                    "resume_topic_id": "topic-current-proposal",
+                    **drift,
+                }
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"terminal_resume_proposal_{axis}_mismatch",
+                ):
+                    _compile_analysis_contract(
+                        run_id=f"run-current-proposal-resumed-{axis}",
+                        proposal=proposal,
+                        accepted_capabilities=("pattern_scan",),
+                        catalog=DatasetCatalog(()),
+                        registry=registry,
+                        as_of=as_of,
+                        permission_scope="analyst",
+                    )
+
+        for sequence_kind, question_families, target_metrics in (
+            ("string", "revenue_health_review", "paid_amount"),
+            ("list", ["revenue_health_review"], ["paid_amount"]),
+            ("tuple", ("revenue_health_review",), ("paid_amount",)),
+        ):
+            with self.subTest(sequence_kind=sequence_kind):
+                _compile_analysis_contract(
+                    run_id=f"run-current-proposal-resumed-{sequence_kind}",
+                    proposal={
+                        "question_families": question_families,
+                        "target_metrics": target_metrics,
+                        "scope": "full_sample",
+                        "accepted_degradation_choice": choice,
+                        "accepted_terminal_gap_authority": authority,
+                        "resume_thread_id": "thread-current-proposal",
+                        "resume_topic_id": "topic-current-proposal",
+                    },
+                    accepted_capabilities=("pattern_scan",),
+                    catalog=DatasetCatalog(()),
+                    registry=registry,
+                    as_of=as_of,
+                    permission_scope="analyst",
+                )
+
     def test_resumed_degradation_partitions_implicit_claims_before_persistence(self):
         from bi_agent.runtime.runtime_persistence import (
             validate_analysis_runtime_records,
@@ -2631,6 +3031,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         prior = _compile_analysis_contract(
             run_id="run-implicit-claim-partition-source",
             proposal={
+                "question_families": ["revenue_health_review"],
                 "target_metrics": ["paid_amount"],
                 "claim_intents": ["comparative_change"],
             },
@@ -2668,9 +3069,16 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "analysis_contract_signature": analysis_contract_signature(
                 prior.analysis_contract
             ),
+            "material_authority": clarification_material_authority(
+                source_run_id="run-implicit-claim-partition-source",
+                thread_id="thread-implicit-claim-partition",
+                topic_id="topic-implicit-claim-partition",
+                claim_intents=("comparative_change",),
+            ),
             "clarification_outcome": clarification_outcome,
         }
         resume_proposal = {
+            "question_families": ["revenue_health_review"],
             "target_metrics": ["paid_amount"],
             "accepted_degradation_choice": choice,
             "accepted_terminal_gap_authority": authority,
@@ -2765,6 +3173,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         prior = _compile_analysis_contract(
             run_id="run-unsupported-gap-claim-source",
             proposal={
+                "question_families": ["revenue_health_review"],
                 "target_metrics": ["paid_amount"],
                 "claim_intents": ["causal_effect"],
             },
@@ -2816,11 +3225,18 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "analysis_contract_signature": analysis_contract_signature(
                 prior.analysis_contract
             ),
+            "material_authority": clarification_material_authority(
+                source_run_id="run-unsupported-gap-claim-source",
+                thread_id="thread-unsupported-gap-claim",
+                topic_id="topic-unsupported-gap-claim",
+                claim_intents=("causal_effect",),
+            ),
             "clarification_outcome": clarification_outcome,
         }
         resumed = _compile_analysis_contract(
             run_id="run-unsupported-gap-claim-resumed",
             proposal={
+                "question_families": ["revenue_health_review"],
                 "target_metrics": ["paid_amount"],
                 "accepted_degradation_choice": choice,
                 "accepted_terminal_gap_authority": authority,
@@ -2883,6 +3299,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 forged_resume = _compile_analysis_contract(
                     run_id=f"run-unsupported-gap-claim-forged-{drift}",
                     proposal={
+                        "question_families": ["revenue_health_review"],
                         "target_metrics": ["paid_amount"],
                         "accepted_degradation_choice": choice,
                         "accepted_terminal_gap_authority": forged_authority,
@@ -2907,6 +3324,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         prior = compile_analysis_contract(
             run_id="run-terminal-gap-source",
             proposal={
+                "question_families": ["revenue_health_review"],
                 "target_metrics": ["paid_amount"],
                 "requested_components": ["paid_users", "payer_arppu"],
                 "claim_intents": [
@@ -2974,12 +3392,23 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "analysis_contract_signature": analysis_contract_signature(
                 source_contract
             ),
+            "material_authority": clarification_material_authority(
+                source_run_id="run-terminal-gap-source",
+                thread_id="thread-terminal-gap",
+                topic_id="topic-terminal-gap",
+                requested_components=("paid_users", "payer_arppu"),
+                claim_intents=(
+                    "formula_component_contribution",
+                    "contract_coverage_and_trust_boundary",
+                ),
+            ),
             "clarification_outcome": outcome_payload,
         }
 
         resumed = compile_analysis_contract(
             run_id="run-terminal-gap-resumed",
             proposal={
+                "question_families": ["revenue_health_review"],
                 "target_metrics": ["paid_amount"],
                 "accepted_degradation_choice": choice,
                 "accepted_terminal_gap_authority": authority,
@@ -3056,7 +3485,8 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         boundary_only = compile_analysis_contract(
             run_id="run-terminal-gap-boundary-only",
             proposal={
-                "target_metrics": [],
+                "question_families": ["revenue_health_review"],
+                "target_metrics": ["paid_amount"],
                 "accepted_degradation_choice": choice,
                 "accepted_terminal_gap_authority": authority,
                 "resume_thread_id": "thread-terminal-gap",
@@ -3076,6 +3506,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         omitted_all_affected = compile_analysis_contract(
             run_id="run-terminal-gap-no-ready-capability",
             proposal={
+                "question_families": ["revenue_health_review"],
                 "target_metrics": ["paid_amount"],
                 "accepted_degradation_choice": choice,
                 "accepted_terminal_gap_authority": authority,
@@ -3197,6 +3628,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 compile_analysis_contract(
                     run_id="run-terminal-gap-invalid-authority",
                     proposal={
+                        "question_families": ["revenue_health_review"],
                         "target_metrics": ["paid_amount"],
                         "accepted_degradation_choice": choice,
                         "accepted_terminal_gap_authority": invalid_authority,

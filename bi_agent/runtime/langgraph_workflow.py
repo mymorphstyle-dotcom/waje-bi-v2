@@ -22,6 +22,12 @@ warnings.filterwarnings(
 )
 from langgraph.graph import END, StateGraph
 
+from bi_agent.conversation.clarification_authority import (
+    build_material_authority,
+    validate_material_authority,
+    validate_terminal_clarification_choice_overlap,
+    validate_terminal_resume_proposal_overlap,
+)
 from bi_agent.capabilities.data_quality_check import data_quality_check
 from bi_agent.capabilities.driver_decomposition import driver_decomposition
 from bi_agent.capabilities.formula_decompose import formula_decompose
@@ -38,7 +44,15 @@ from bi_agent.runtime.answer_package import (
     reverify_answer_package_for_delivery,
 )
 from bi_agent.runtime.analysis_assets import material_assumption_digest
-from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
+from bi_agent.runtime.analysis_contracts import (
+    analysis_contract_from_dict,
+    analysis_contract_signature,
+)
+from bi_agent.runtime.analysis_contract_compiler import (
+    _TERMINAL_GAP_AUTHORITY_KEYS,
+    _accepted_terminal_gap_authority,
+    _is_canonical_unsupported_claim_gap,
+)
 from bi_agent.runtime.analysis_runtime import (
     AnswerPackageBuildContext,
     AnalysisRuntimeRequest,
@@ -60,7 +74,7 @@ from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
     capability_dataset_requirements,
-    resolve_analysis_obligations,
+    resolve_partitioned_analysis_obligations,
 )
 from bi_agent.runtime.data_contract_diagnostics import (
     contract_fields_from_records,
@@ -69,7 +83,12 @@ from bi_agent.runtime.data_contract_diagnostics import (
 from bi_agent.runtime.exploration_budget import default_budget, record_capability_call
 from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
 from bi_agent.runtime.llm_prompts import build_prompt
-from bi_agent.runtime.models import CompiledGraph, GraphNode, MutationLedger
+from bi_agent.runtime.models import (
+    CompiledGraph,
+    GraphNode,
+    MutationLedger,
+    MutationRecord,
+)
 from bi_agent.runtime.sql_safety import validate_select_only
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
@@ -113,6 +132,12 @@ MATERIAL_AUTHORITY_LIST_AXES = (
     "context_sources",
     "claim_intents",
 )
+_LOCAL_OBLIGATION_REJECTION_REASONS = frozenset(
+    {
+        "diagnostic_question_family_incompatible",
+        "unknown_diagnostic_rejected",
+    }
+)
 
 
 class WorkflowState(TypedDict, total=False):
@@ -126,6 +151,8 @@ class WorkflowState(TypedDict, total=False):
     budget_state: Any
     intent: dict[str, Any]
     boundary_decision: dict[str, Any]
+    route_material_conflicts: tuple[str, ...]
+    obligation_rejection_history: tuple[dict[str, str], ...]
     clarification_outcome: dict[str, Any]
     confirmed_understanding: dict[str, Any]
     analysis_route: dict[str, Any]
@@ -513,7 +540,7 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         }
     )
     output = _invoke_llm(state, "business_intent", intent_payload)
-    answer_contract = output.get("answer_contract") or {}
+    answer_contract = output.get("answer_contract", {})
     if not isinstance(answer_contract, Mapping):
         raise WorkflowFailure(
             "business_intent_contract_invalid:answer_contract",
@@ -564,6 +591,9 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         _intent_question_family_set(intent)
     )
     intent = _bind_clarification_resume_intent(intent, request, registry)
+    state["obligation_rejection_history"] = tuple(
+        intent.pop("_validated_obligation_rejection_history", ())
+    )
     _validate_context_family_axis(intent, registry)
     state["intent"] = intent
     return state
@@ -643,10 +673,11 @@ def _bind_clarification_resume_intent(
     persisted_material = _validated_resume_material_slots(
         resume.get("material_slots"), registry
     )
-    _validate_resume_material_consistency(
-        original, persisted_material, resume, registry
+    authority_binding = _validate_resume_material_consistency(
+        original, persisted_material, request, registry
     )
     bound.update(validated_material)
+    bound.update(authority_binding)
     return _normalize_question_families(bound)
 
 
@@ -702,131 +733,282 @@ def _validated_resume_material_slots(
 def _validate_resume_material_consistency(
     original: Mapping[str, Any],
     persisted: Mapping[str, Any],
-    resume: Mapping[str, Any],
+    request: Mapping[str, Any],
     registry: RuntimeContractRegistry,
-) -> None:
-    original_target = original.get("target_metric")
-    original_values = {
-        "target_metrics": (
-            [original_target]
-            if isinstance(original_target, str) and original_target
-            else []
-        ),
-        "requested_components": list(original.get("requested_components") or ()),
-        "requested_dimensions": list(original.get("requested_dimensions") or ()),
-        "context_sources": list(original.get("context_sources") or ()),
-        "claim_intents": list(original.get("claim_intents") or ()),
-    }
-    persisted_values = {
-        axis: list(persisted.get(axis) or ()) for axis in original_values
-    }
-    extras: dict[str, set[str]] = {}
-    for axis, source_values in original_values.items():
-        material_values = persisted_values[axis]
-        if any(item not in material_values for item in source_values):
-            raise WorkflowFailure(
-                f"clarification_resume_material_slots_conflict:{axis}",
-                failure_type="contract",
-            )
-        extras[axis] = set(material_values) - set(source_values)
-    original_baselines = _canonical_baseline_ids(
-        original.get("baseline_candidates")
+) -> dict[str, Any]:
+    accepted_choice = request.get("accepted_degradation_choice")
+    terminal_choice = (
+        isinstance(accepted_choice, Mapping)
+        and str(accepted_choice.get("action_kind") or "")
+        in {"omit_unavailable_context", "continue_with_boundary_only"}
     )
-    persisted_baselines = list(persisted.get("baselines") or ())
-    if any(item not in persisted_baselines for item in original_baselines):
+    raw_authority = request.get("accepted_terminal_gap_authority")
+    if raw_authority is None and not terminal_choice:
+        _validate_nonterminal_resume_material(original, persisted)
+        return {}
+    resume = request.get("clarification_resume_context") or {}
+    proposal = {
+        "question_families": _ordered_resume_question_families(original),
+        "target_metrics": tuple(persisted.get("target_metrics") or ()),
+        "scope": persisted.get("scope"),
+        "accepted_degradation_choice": accepted_choice,
+        "accepted_terminal_gap_authority": raw_authority,
+        "resume_thread_id": request.get("thread_id"),
+        "resume_topic_id": request.get("topic_id"),
+    }
+    try:
+        carried_gaps, outcome_ref, prior_claim_intents = (
+            _accepted_terminal_gap_authority(proposal)
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        reason = _exception_reason(exc) or "terminal_gap_authority"
+        prefix = "terminal_resume_proposal_"
+        suffix = "_mismatch"
+        if reason.startswith(prefix) and reason.endswith(suffix):
+            axis = reason[len(prefix) : -len(suffix)]
+            if axis in {"question_families", "target_metrics", "scope"}:
+                raise WorkflowFailure(
+                    f"clarification_resume_material_slots_conflict:{axis}",
+                    failure_type="contract",
+                ) from exc
         raise WorkflowFailure(
-            "clarification_resume_material_slots_conflict:baselines",
+            "clarification_resume_authority_invalid:"
+            + reason,
+            failure_type="contract",
+        ) from exc
+    authority = raw_authority
+    source_contract = (
+        authority.get("analysis_contract")
+        if isinstance(authority, Mapping)
+        else None
+    )
+    if not carried_gaps or not isinstance(source_contract, Mapping):
+        raise WorkflowFailure(
+            "clarification_resume_authority_invalid:terminal_gap_authority",
             failure_type="contract",
         )
-    extras["baselines"] = set(persisted_baselines) - set(original_baselines)
-    if "scope" in persisted or "scope" in original:
-        if persisted.get("scope") != original.get("scope"):
-            raise WorkflowFailure(
-                "clarification_resume_material_slots_conflict:scope",
-                failure_type="contract",
-            )
-    authorization_axis = next(
-        (axis for axis, axis_extras in extras.items() if axis_extras),
-        "",
-    )
-    if not authorization_axis:
-        return
-    source_contract = resume.get("analysis_contract")
-    if not isinstance(source_contract, Mapping):
+    if (
+        not isinstance(resume, Mapping)
+        or str(resume.get("resume_run_id") or "")
+        != str(authority.get("source_run_id") or "")
+    ):
         raise WorkflowFailure(
-            f"clarification_resume_material_slots_conflict:{authorization_axis}",
+            "clarification_resume_authority_invalid:source_run_id",
+            failure_type="contract",
+        )
+    if str(request.get("clarification_outcome_ref") or "") != outcome_ref:
+        raise WorkflowFailure(
+            "clarification_resume_authority_invalid:outcome_ref",
             failure_type="contract",
         )
     try:
         accepted_source_contract = analysis_contract_from_dict(source_contract)
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError) as exc:
         raise WorkflowFailure(
-            f"clarification_resume_material_slots_conflict:{authorization_axis}",
+            "clarification_resume_authority_invalid:analysis_contract",
+            failure_type="contract",
+        ) from exc
+    mutable_contract = resume.get("analysis_contract")
+    if not isinstance(mutable_contract, Mapping):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_conflict:prior_contract",
             failure_type="contract",
         )
-    expected_ref = f"analysis:{resume.get('resume_run_id')}:1"
-    if accepted_source_contract.analysis_contract_id != expected_ref:
+    try:
+        mutable_prior = analysis_contract_from_dict(mutable_contract)
+    except (KeyError, TypeError, ValueError) as exc:
         raise WorkflowFailure(
-            f"clarification_resume_material_slots_conflict:{authorization_axis}",
+            "clarification_resume_material_slots_conflict:prior_contract",
+            failure_type="contract",
+        ) from exc
+    if analysis_contract_signature(mutable_prior) != analysis_contract_signature(
+        accepted_source_contract
+    ):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_conflict:prior_contract",
             failure_type="contract",
         )
-    scope_metric_ids = _resume_contract_scope_ids(
-        accepted_source_contract.scope, "requested_metric_ids"
+    raw_material_authority = (
+        authority.get("material_authority")
+        if isinstance(authority, Mapping)
+        else None
     )
-    authorized_metric_ids = {
-        *accepted_source_contract.target_metric_refs,
-        *(binding.metric_id for binding in accepted_source_contract.metric_bindings),
-        *scope_metric_ids,
-    }
-    scope_dimension_ids = _resume_contract_scope_ids(
-        accepted_source_contract.scope, "requested_dimension_ids"
+    try:
+        material_authority = validate_material_authority(
+            raw_material_authority,
+            source_run_id=str(authority.get("source_run_id") or ""),
+            thread_id=str(authority.get("thread_id") or ""),
+            topic_id=str(authority.get("topic_id") or ""),
+        )
+        candidate_authority = build_material_authority(
+            source_run_id=str(authority.get("source_run_id") or ""),
+            thread_id=str(authority.get("thread_id") or ""),
+            topic_id=str(authority.get("topic_id") or ""),
+            original_intent=original,
+            material_slots=persisted,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        axis = _material_authority_failure_axis(exc)
+        raise WorkflowFailure(
+            f"clarification_resume_material_slots_conflict:{axis}",
+            failure_type="contract",
+        ) from exc
+    conflict_axis = _material_authority_conflict_axis(
+        candidate_authority,
+        material_authority,
     )
-    authorized_dimension_ids = {
-        *(binding.dimension_id for binding in accepted_source_contract.dimension_bindings),
-        *scope_dimension_ids,
+    if conflict_axis:
+        raise WorkflowFailure(
+            f"clarification_resume_material_slots_conflict:{conflict_axis}",
+            failure_type="contract",
+        )
+    intent_material = material_authority["intent_material"]
+    canonical_families = tuple(intent_material["question_families"])
+    if any(
+        family not in set(registry.question_family_ids)
+        for family in canonical_families
+    ):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_conflict:question_families",
+            failure_type="contract",
+        )
+    allowed_claim_intents = tuple(
+        dict.fromkeys(
+            (
+                *prior_claim_intents,
+                *(
+                    claim_type
+                    for gap in carried_gaps
+                    if _is_canonical_unsupported_claim_gap(gap)
+                    for claim_type in gap.affected_claim_types
+                ),
+            ),
+        )
+    )
+    if any(
+        claim_intent not in set(allowed_claim_intents)
+        for claim_intent in material_authority["route_material_slots"][
+            "claim_intents"
+        ]
+    ):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_conflict:claim_intents",
+            failure_type="contract",
+        )
+    return {
+        "question_family": canonical_families[0],
+        "question_families": list(canonical_families),
+        "primary_question_family": canonical_families[0],
+        "secondary_question_families": list(canonical_families[1:]),
+        "target_metric": intent_material["primary_target_metric"],
+        "scope": intent_material["scope"],
+        "_validated_obligation_rejection_history": list(
+            material_authority["route_control"][
+                "obligation_rejection_history"
+            ]
+        ),
     }
-    contract_dataset_ids = {
-        *accepted_source_contract.dataset_requirements,
-        *(binding.dataset_id for binding in accepted_source_contract.metric_bindings),
-        *(binding.dataset_id for binding in accepted_source_contract.dimension_bindings),
+
+
+def _validate_nonterminal_resume_material(
+    original: Mapping[str, Any], persisted: Mapping[str, Any]
+) -> None:
+    original_values = {
+        "target_metrics": [str(original.get("target_metric") or "")],
+        "requested_components": list(original.get("requested_components") or ()),
+        "requested_dimensions": list(original.get("requested_dimensions") or ()),
+        "context_sources": list(original.get("context_sources") or ()),
+        "claim_intents": list(original.get("claim_intents") or ()),
+        "baselines": _canonical_baseline_ids(
+            original.get("baseline_candidates")
+        ),
     }
-    authorized_context_sources = set()
-    for dataset_id in contract_dataset_ids:
-        try:
-            dataset_contract = registry.dataset(dataset_id)
-        except KeyError:
-            continue
-        if "business_context" in dataset_contract.get("intent_roles", ()):
-            authorized_context_sources.add(dataset_id)
-    authorized_values = {
-        "target_metrics": authorized_metric_ids,
-        "requested_components": authorized_metric_ids,
-        "requested_dimensions": authorized_dimension_ids,
-        "context_sources": authorized_context_sources,
-        "claim_intents": set(accepted_source_contract.claim_intents),
-        "baselines": {
-            window.window_id
-            for window in accepted_source_contract.resolved_windows
-            if window.role == "baseline"
-        },
-    }
-    for axis, axis_extras in extras.items():
-        if not axis_extras.issubset(authorized_values[axis]):
+    for axis, source_values in original_values.items():
+        expected = [value for value in source_values if value]
+        material_values = list(persisted.get(axis) or ())
+        if set(material_values) != set(expected):
             raise WorkflowFailure(
                 f"clarification_resume_material_slots_conflict:{axis}",
                 failure_type="contract",
             )
+    if "scope" in persisted or "scope" in original:
+        if _material_scope_signature(persisted.get("scope")) != (
+            _material_scope_signature(original.get("scope"))
+        ):
+            raise WorkflowFailure(
+                "clarification_resume_material_slots_conflict:scope",
+                failure_type="contract",
+            )
 
 
-def _resume_contract_scope_ids(
-    scope: Mapping[str, Any], key: str
-) -> set[str]:
-    raw_values = scope.get(key)
-    if not isinstance(raw_values, (list, tuple)) or any(
-        not isinstance(value, str) or not value for value in raw_values
+def _material_authority_failure_axis(exc: BaseException) -> str:
+    reason = _exception_reason(exc)
+    for axis in (
+        "question_families",
+        "target_metrics",
+        "requested_components",
+        "requested_dimensions",
+        "baselines",
+        "context_sources",
+        "claim_intents",
+        "scope",
+        "diagnostic_tags",
     ):
-        return set()
-    return set(raw_values)
+        if axis in reason:
+            return axis
+    return "material_authority"
+
+
+def _material_authority_conflict_axis(
+    candidate: Mapping[str, Any], authority: Mapping[str, Any]
+) -> str:
+    candidate_intent = candidate["intent_material"]
+    authority_intent = authority["intent_material"]
+    if any(
+        candidate_intent[key] != authority_intent[key]
+        for key in ("primary_question_family", "question_families")
+    ):
+        return "question_families"
+    if any(
+        candidate_intent[key] != authority_intent[key]
+        for key in ("primary_target_metric", "target_metrics")
+    ):
+        return "target_metrics"
+    for axis in (
+        "requested_components",
+        "requested_dimensions",
+        "baselines",
+        "context_sources",
+        "claim_intents",
+    ):
+        if candidate_intent[axis] != authority_intent[axis]:
+            return axis
+    if candidate_intent["scope"] != authority_intent["scope"]:
+        return "scope"
+    candidate_route = candidate["route_material_slots"]
+    authority_route = authority["route_material_slots"]
+    for axis in (*MATERIAL_AUTHORITY_LIST_AXES, "diagnostic_tags"):
+        if candidate_route[axis] != authority_route[axis]:
+            return axis
+    if candidate_route["scope"] != authority_route["scope"]:
+        return "scope"
+    return ""
+
+
+def _ordered_resume_question_families(
+    intent: Mapping[str, Any],
+) -> tuple[str, ...]:
+    family_fields = {
+        key: intent.get(key)
+        for key in (
+            "question_family",
+            "primary_question_family",
+            "question_families",
+            "secondary_question_families",
+        )
+        if key in intent
+    }
+    return tuple(_question_family_values(family_fields))
 
 
 def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
@@ -897,6 +1079,11 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
                 "Return the exact typed analysis_requirements schema, copy ids only "
                 "from the supplied allowed lists, and use only "
                 "allowed_context_source_ids for context_sources."
+            )
+        elif reason == "business_intent_contract_invalid:answer_contract":
+            correction = (
+                "answer_contract must be a JSON object when present. Omit "
+                "answer_contract or use {} when no answer contract is needed."
             )
         if correction:
             payload["node_retry_feedback"] = {
@@ -1241,6 +1428,8 @@ def _normalize_scope(scope: Any) -> str:
     value = str(scope or "").strip()
     aliases = {
         "all",
+        "all users",
+        "all_users",
         "all_sample",
         "entire_sample",
         "full",
@@ -1254,10 +1443,45 @@ def _normalize_scope(scope: Any) -> str:
         "整体",
         "整体样本",
         "全体",
+        "全体用户",
+        "全部用户",
+        "所有用户",
     }
     if value.lower() in aliases:
         return "full_sample"
     return value or "full_sample"
+
+
+def _material_scope_signature(scope: Any) -> tuple[str, str] | None:
+    if scope in (None, "", {}, []):
+        return None
+    if not isinstance(scope, Mapping):
+        return ("token", _normalize_scope(scope))
+    meaningful = {
+        str(key): value
+        for key, value in scope.items()
+        if value not in (None, "", {}, [])
+    }
+    if not meaningful:
+        return None
+    token_keys = {"value", "type", "label", "scope"}
+    token_values = [
+        _normalize_scope(value)
+        for key, value in meaningful.items()
+        if key in token_keys
+    ]
+    extras = set(meaningful) - token_keys
+    if token_values and not extras and len(set(token_values)) == 1:
+        return ("token", token_values[0])
+    return (
+        "mapping",
+        json.dumps(
+            to_jsonable(meaningful),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
 
 
 def _normalize_target_claim(value: Any) -> str:
@@ -1878,21 +2102,14 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
                 + ",".join(material_conflicts),
                 failure_type="contract",
             )
-        prior_contract = resume.get("analysis_contract") or {}
-        prior_families = tuple(
-            str(family)
-            for family in (
-                prior_contract.get("question_families")
-                if isinstance(prior_contract, Mapping)
-                else ()
-            ) or ()
-            if str(family)
-        )
-        if prior_families:
-            state["intent"]["question_family"] = prior_families[0]
-            state["intent"]["question_families"] = list(prior_families)
-            state["intent"]["primary_question_family"] = prior_families[0]
-            state["intent"]["secondary_question_families"] = list(prior_families[1:])
+        bound_families = _ordered_resume_question_families(state["intent"])
+        if bound_families:
+            state["intent"]["question_family"] = bound_families[0]
+            state["intent"]["question_families"] = list(bound_families)
+            state["intent"]["primary_question_family"] = bound_families[0]
+            state["intent"]["secondary_question_families"] = list(
+                bound_families[1:]
+            )
         else:
             _infer_question_families_from_requested_nodes(state["intent"], requested)
         requested, output = reconcile_analysis_route(
@@ -1900,6 +2117,7 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             output,
             state["intent"],
             registry,
+            trusted_prior_route=_trusted_obligation_rejection_route(state),
         )
         _consume_obligation_route_conflict(state, output)
         selected_action = dict(resume.get("selected_query_gap_action") or {})
@@ -1931,6 +2149,9 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
                 "accepted_degradation_choice": accepted_choice,
             }
         state["analysis_route"] = {**output, "requested_nodes": requested}
+        _record_obligation_rejection_authority(
+            state, state["analysis_route"]
+        )
         state["intent"]["requested_nodes"] = requested
         return state
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
@@ -1991,10 +2212,12 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         output,
         state["intent"],
         RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+        trusted_prior_route=_trusted_obligation_rejection_route(state),
     )
     _consume_obligation_route_conflict(state, output)
     output = _align_route_output_to_requested(output, requested)
     state["analysis_route"] = {**output, "requested_nodes": requested}
+    _record_obligation_rejection_authority(state, state["analysis_route"])
     state["intent"]["requested_nodes"] = requested
     return state
 
@@ -2107,7 +2330,8 @@ def _merge_confirmed_material_requirements(
     if (
         confirmed_scope not in (None, "", {}, [])
         and proposed.get("scope") not in (None, "", {}, [])
-        and proposed.get("scope") != confirmed_scope
+        and _material_scope_signature(proposed.get("scope"))
+        != _material_scope_signature(confirmed_scope)
     ):
         conflicts.append("scope")
     for key in MATERIAL_AUTHORITY_LIST_AXES:
@@ -2319,12 +2543,173 @@ def _reconcile_route_metric_capabilities(
     return _reconcile_route_input_capabilities(requested, route, intent, registry)
 
 
+def _validated_obligation_rejection_history(
+    route: Mapping[str, Any],
+) -> tuple[MutationRecord, ...]:
+    resolution = route.get("obligation_resolution")
+    if resolution in (None, {}):
+        return ()
+    if not isinstance(resolution, Mapping):
+        raise WorkflowFailure(
+            "analysis_route_contract_invalid:obligation_mutation_history",
+            failure_type="contract",
+        )
+    has_history = "mutation_history" in resolution
+    if not has_history and resolution.get("status") != "resolved":
+        return ()
+    raw_mutations = resolution.get(
+        "mutation_history" if has_history else "mutations", ()
+    )
+    if not isinstance(raw_mutations, (list, tuple)):
+        raise WorkflowFailure(
+            "analysis_route_contract_invalid:obligation_mutation_history",
+            failure_type="contract",
+        )
+    records: list[MutationRecord] = []
+    for raw in raw_mutations:
+        if not isinstance(raw, Mapping):
+            raise WorkflowFailure(
+                "analysis_route_contract_invalid:obligation_mutation_history",
+                failure_type="contract",
+            )
+        action = raw.get("action")
+        if not has_history and action != "rejected":
+            continue
+        capability = raw.get("capability")
+        reason = raw.get("reason")
+        if not all(
+            isinstance(item, str)
+            and item
+            and item == item.strip()
+            for item in (action, capability, reason)
+        ):
+            raise WorkflowFailure(
+                "analysis_route_contract_invalid:obligation_mutation_history",
+                failure_type="contract",
+            )
+        if (
+            set(raw) != {"action", "capability", "reason"}
+            or action != "rejected"
+            or reason not in _LOCAL_OBLIGATION_REJECTION_REASONS
+        ):
+            raise WorkflowFailure(
+                "analysis_route_contract_invalid:obligation_mutation_history",
+                failure_type="contract",
+            )
+        record = MutationRecord(
+            action=action,
+            capability=capability,
+            reason=reason,
+        )
+        if record not in records:
+            records.append(record)
+    return tuple(records)
+
+
+def _merge_obligation_rejection_history(
+    carried: Sequence[MutationRecord],
+    mutations: Sequence[Mapping[str, Any]],
+) -> tuple[MutationRecord, ...]:
+    rejected: list[dict[str, Any]] = []
+    for mutation in mutations:
+        if not isinstance(mutation, Mapping):
+            raise WorkflowFailure(
+                "analysis_route_contract_invalid:obligation_mutation_history",
+                failure_type="contract",
+            )
+        if mutation.get("action") == "rejected":
+            rejected.append(dict(mutation))
+    candidate_route = {
+        "obligation_resolution": {
+            "mutation_history": rejected
+        }
+    }
+    merged = list(carried)
+    for record in _validated_obligation_rejection_history(candidate_route):
+        if record not in merged:
+            merged.append(record)
+    return tuple(merged)
+
+
+def _obligation_rejection_payload(
+    records: Sequence[MutationRecord],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "action": record.action,
+            "capability": record.capability,
+            "reason": record.reason,
+        }
+        for record in records
+    ]
+
+
+def _trusted_obligation_rejection_route(
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    history = state.get("obligation_rejection_history") or ()
+    if not history:
+        return {}
+    return {
+        "obligation_resolution": {
+            "mutation_history": list(history),
+        }
+    }
+
+
+def _record_obligation_rejection_authority(
+    state: WorkflowState,
+    route: Mapping[str, Any],
+) -> None:
+    state["obligation_rejection_history"] = tuple(
+        _obligation_rejection_payload(
+            _validated_obligation_rejection_history(route)
+        )
+    )
+
+
+def _merge_compiled_obligation_rejections(
+    compiled: CompiledGraph,
+    route_records: Sequence[MutationRecord],
+) -> CompiledGraph:
+    if not route_records:
+        return compiled
+    records = list(compiled.mutations.records)
+    for record in route_records:
+        if record not in records:
+            records.append(record)
+    rejected_or_degraded = tuple(
+        dict.fromkeys(
+            (
+                *compiled.mutations.rejected_or_degraded,
+                *(record.capability for record in route_records),
+            )
+        )
+    )
+    status = "degraded" if compiled.status == "accepted" else compiled.status
+    return replace(
+        compiled,
+        status=status,
+        mutations=MutationLedger(
+            proposed_graph=compiled.mutations.proposed_graph,
+            accepted_graph=compiled.mutations.accepted_graph,
+            rejected_or_degraded=rejected_or_degraded,
+            records=tuple(records),
+        ),
+    )
+
+
 def reconcile_analysis_route(
     requested: tuple[str, ...],
     route: Mapping[str, Any],
     intent: Mapping[str, Any],
     registry: RuntimeContractRegistry,
+    *,
+    trusted_prior_route: Mapping[str, Any] | None = None,
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
+    carried_rejections = _validated_obligation_rejection_history(
+        trusted_prior_route or {}
+    )
     original_requested = tuple(requested)
     requested, output = _reconcile_route_input_capabilities(
         requested, route, intent, registry
@@ -2361,7 +2746,17 @@ def reconcile_analysis_route(
             "analysis_route_contract_invalid:diagnostic_tags",
             failure_type="llm_contract",
         )
-    raw_diagnostics = tuple(raw_diagnostic_value)
+    historically_rejected = {
+        record.capability for record in carried_rejections
+    }
+    raw_diagnostics = tuple(
+        tag
+        for tag in raw_diagnostic_value
+        if tag not in historically_rejected
+    )
+    if len(raw_diagnostics) != len(raw_diagnostic_value):
+        requirements["diagnostic_tags"] = list(raw_diagnostics)
+        output["analysis_requirements"] = requirements
     allowed_diagnostics = set(registry.diagnostic_obligation_ids)
     unknown_diagnostics = tuple(
         tag for tag in raw_diagnostics if tag not in allowed_diagnostics
@@ -2388,10 +2783,10 @@ def reconcile_analysis_route(
         bound_context=bound_context,
     )
     try:
-        resolution = resolve_analysis_obligations(request, registry)
+        resolution = resolve_partitioned_analysis_obligations(request, registry)
     except (KeyError, ValueError) as exc:
         error = str(exc)
-        output["obligation_resolution"] = {
+        conflict_resolution = {
             "status": "conflict",
             "error": error,
             "mutations": [
@@ -2407,7 +2802,29 @@ def reconcile_analysis_route(
                 ],
             ],
         }
+        if carried_rejections:
+            conflict_resolution["mutation_history"] = (
+                _obligation_rejection_payload(carried_rejections)
+            )
+            conflict_resolution["rejected_diagnostic_tags"] = list(
+                dict.fromkeys(
+                    record.capability for record in carried_rejections
+                )
+            )
+        output["obligation_resolution"] = conflict_resolution
         return requested, output
+
+    rejected_diagnostic_mutations = [
+        dict(mutation)
+        for mutation in resolution.mutations
+        if mutation.get("action") == "rejected"
+    ]
+    if rejected_diagnostic_mutations:
+        requirements["diagnostic_tags"] = list(
+            resolution.applicable_diagnostic_tags
+        )
+        output["analysis_requirements"] = requirements
+        input_mutations.extend(rejected_diagnostic_mutations)
 
     obligations = (
         *resolution.required_capabilities,
@@ -2455,7 +2872,11 @@ def reconcile_analysis_route(
             dict.fromkeys(str(item) for item in carried_datasets if item)
         )
         output["analysis_requirements"] = requirements
-    output["obligation_resolution"] = {
+    rejection_history = _merge_obligation_rejection_history(
+        carried_rejections,
+        input_mutations,
+    )
+    obligation_resolution = {
         "status": "resolved",
         "required_capabilities": list(resolution.required_capabilities),
         "conditional_capabilities": list(resolution.conditional_capabilities),
@@ -2463,12 +2884,28 @@ def reconcile_analysis_route(
         "minimum_publishable_evidence": list(
             resolution.minimum_publishable_evidence
         ),
+        "applicable_diagnostic_tags": list(
+            resolution.applicable_diagnostic_tags
+        ),
+        "rejected_diagnostic_tags": list(
+            dict.fromkeys(
+                (
+                    *resolution.rejected_diagnostic_tags,
+                    *(record.capability for record in rejection_history),
+                )
+            )
+        ),
         "capability_dataset_requirements": {
             capability_id: list(dataset_ids)
             for capability_id, dataset_ids in capability_datasets.items()
         },
         "mutations": [*input_mutations, *obligation_mutations],
     }
+    if rejection_history:
+        obligation_resolution["mutation_history"] = (
+            _obligation_rejection_payload(rejection_history)
+        )
+    output["obligation_resolution"] = obligation_resolution
     return reconciled, output
 
 
@@ -2610,6 +3047,12 @@ def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
             bound_context=_compiler_bound_context(state),
             prior_analysis_assets=tuple(state["request"].get("prior_analysis_assets") or ()),
         )
+    compiled = _merge_compiled_obligation_rejections(
+        compiled,
+        _validated_obligation_rejection_history(
+            _trusted_obligation_rejection_route(state)
+        ),
+    )
     state["compiled_graph"] = compiled
     accepted_choice = dict(request.get("accepted_degradation_choice") or {})
     if accepted_choice:
@@ -2744,13 +3187,53 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
     proposal.setdefault("scope", intent.get("scope") or {"type": "full_sample"})
     proposal.setdefault("target_semantic", intent.get("target_semantic") or "yesterday")
     accepted_choice = request.get("accepted_degradation_choice") or {}
+    terminal_material_authority: Mapping[str, Any] | None = None
+    terminal_action = (
+        isinstance(accepted_choice, Mapping)
+        and str(accepted_choice.get("action_kind") or "")
+        in {"omit_unavailable_context", "continue_with_boundary_only"}
+    )
     if isinstance(accepted_choice, Mapping) and accepted_choice:
         proposal["accepted_degradation_choice"] = dict(accepted_choice)
         authority = request.get("accepted_terminal_gap_authority")
+        if terminal_action and authority is None:
+            raise WorkflowFailure(
+                "accepted_terminal_gap_authority_missing",
+                failure_type="contract",
+            )
+        if terminal_action and not isinstance(authority, Mapping):
+            raise WorkflowFailure(
+                "accepted_terminal_gap_authority_shape_invalid",
+                failure_type="contract",
+            )
+        if terminal_action and not authority:
+            raise WorkflowFailure(
+                "accepted_terminal_gap_authority_shape_invalid",
+                failure_type="contract",
+            )
+        if terminal_action and set(authority) != _TERMINAL_GAP_AUTHORITY_KEYS:
+            raise WorkflowFailure(
+                "accepted_terminal_gap_authority_shape_invalid",
+                failure_type="contract",
+            )
         if isinstance(authority, Mapping) and authority:
             proposal["accepted_terminal_gap_authority"] = dict(authority)
             proposal["resume_thread_id"] = str(request.get("thread_id") or "")
             proposal["resume_topic_id"] = str(request.get("topic_id") or "")
+            raw_material_authority = authority.get("material_authority")
+            if terminal_action:
+                try:
+                    terminal_material_authority = validate_material_authority(
+                        raw_material_authority,
+                        source_run_id=str(authority.get("source_run_id") or ""),
+                        thread_id=str(request.get("thread_id") or ""),
+                        topic_id=str(request.get("topic_id") or ""),
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise WorkflowFailure(
+                        _exception_reason(exc),
+                        failure_type="contract",
+                    ) from exc
     choice = request.get("clarification_choice") or {}
     if isinstance(choice, Mapping):
         for key in (
@@ -2764,6 +3247,22 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
                 proposal[key] = choice[key]
         if choice.get("target_window"):
             proposal["target_semantic"] = str(choice["target_window"])
+    if terminal_material_authority is not None:
+        try:
+            if isinstance(choice, Mapping):
+                validate_terminal_clarification_choice_overlap(
+                    terminal_material_authority,
+                    choice,
+                )
+            validate_terminal_resume_proposal_overlap(
+                terminal_material_authority,
+                proposal,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise WorkflowFailure(
+                _exception_reason(exc),
+                failure_type="contract",
+            ) from exc
     proposal["baselines"] = _canonical_baselines(
         proposal.get("baselines") or ()
     )
@@ -2886,11 +3385,13 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
         output,
         state["intent"],
         RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+        trusted_prior_route=_trusted_obligation_rejection_route(state),
     )
     _consume_obligation_route_conflict(state, output)
     output = _align_route_output_to_requested(output, requested)
     _infer_question_families_from_requested_nodes(state["intent"], requested)
     state["analysis_route"] = {**state["analysis_route"], **output, "requested_nodes": requested}
+    _record_obligation_rejection_authority(state, state["analysis_route"])
     state["intent"]["requested_nodes"] = requested
     return state
 
@@ -4463,6 +4964,8 @@ def _capability_authority_inputs(
     return {
         "bound_input": bound_input,
         "evidence_resolver": request.get("evidence_resolver"),
+        "rows_loader": request.get("rows_loader"),
+        "runtime_registry": request.get("runtime_registry"),
         "release_resolver": request.get("release_resolver"),
     }
 

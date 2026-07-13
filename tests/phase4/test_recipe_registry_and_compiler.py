@@ -78,7 +78,7 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
                 )
                 self.assertTrue(expected.issubset(compiled.mutations.accepted_graph))
 
-    def test_all_public_families_fail_closed_for_incompatible_diagnostics(self):
+    def test_all_public_families_reject_inapplicable_diagnostics_without_losing_base(self):
         runtime_registry = RuntimeContractRegistry.from_path(
             CANONICAL_RUNTIME_BINDINGS_PATH
         )
@@ -106,18 +106,98 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
                     },
                     runtime_registry=runtime_registry,
                 )
-                self.assertEqual(compiled.status, "degraded")
-                self.assertTrue(
-                    set(compiled.mutations.accepted_graph).isdisjoint(
-                        compiled.mutations.rejected_or_degraded
-                    )
+                expected = set(
+                    runtime_registry.question_family_obligation(family)[
+                        "required_capabilities"
+                    ]
                 )
+                self.assertTrue(expected.issubset(compiled.mutations.accepted_graph))
+                self.assertIn(tag, compiled.mutations.rejected_or_degraded)
                 self.assertTrue(
                     any(
-                        record.reason == "obligation_conflict"
+                        record.capability == tag
+                        and record.reason == "diagnostic_question_family_incompatible"
                         for record in compiled.mutations.records
                     )
                 )
+                diagnostic_capabilities = set(
+                    runtime_registry.diagnostic_obligation(tag)[
+                        "required_capabilities"
+                    ]
+                )
+                base_capabilities = {
+                    *runtime_registry.question_family_obligation(family)[
+                        "required_capabilities"
+                    ],
+                    *runtime_registry.question_family_obligation(family)[
+                        "independent_capabilities"
+                    ],
+                }
+                self.assertTrue(
+                    (diagnostic_capabilities - base_capabilities).isdisjoint(
+                        compiled.mutations.accepted_graph
+                    )
+                )
+
+    def test_composite_partition_compiles_base_and_applicable_diagnostics_independent_of_text(self):
+        kwargs = {
+            "question_family": "revenue_health_review",
+            "question_families": (
+                "revenue_health_review",
+                "segment_or_factor_attribution",
+                "anomaly_or_black_swan_review",
+                "paid_amount_change_explanation",
+            ),
+            "target_metric": "paid_amount",
+            "requested_nodes": ("data_quality_profile",),
+            "bound_context": {
+                "analysis_requirements": {
+                    "requested_dimensions": ["channel"],
+                    "context_sources": ["internal_operation_event"],
+                    "claim_intents": [
+                        "formula_component_contribution",
+                        "external_shock_candidate_or_anomaly",
+                        "contract_coverage_and_trust_boundary",
+                    ],
+                    "diagnostic_tags": [
+                        "revenue_health",
+                        "change_explanation",
+                        "driver_focus",
+                        "event_impact",
+                        "anomaly",
+                        "evidence_quality",
+                    ],
+                }
+            },
+        }
+
+        first = compile_graph(question_text="first wording", **kwargs)
+        second = compile_graph(question_text="unrelated paraphrase", **kwargs)
+
+        self.assertEqual(first.mutations.accepted_graph, second.mutations.accepted_graph)
+        self.assertTrue(
+            {
+                "formula_decompose",
+                "segment_breakdown",
+                "segment_shift_compare",
+                "outlier_scan",
+                "change_point_scan",
+                "driver_decomposition",
+                "metric_timeseries",
+                "source_reconciliation",
+                "answer_verify",
+            }.issubset(first.mutations.accepted_graph)
+        )
+        self.assertTrue(
+            any(
+                record.capability == "event_impact"
+                and record.reason == "diagnostic_question_family_incompatible"
+                for record in first.mutations.records
+            )
+        )
+        self.assertFalse(
+            any(record.reason == "obligation_conflict" for record in first.mutations.records)
+        )
 
     def test_paraphrases_with_identical_typed_intent_compile_to_same_graph(self):
         kwargs = {

@@ -38,6 +38,7 @@ from bi_agent.runtime.claim_provenance import (
     validated_context_manifest_record,
 )
 from bi_agent.runtime.analysis_assets import canonical_material_assumption
+from bi_agent.runtime.window_metric_evidence import aggregate_window_metric_comparison
 
 
 def _verified_sources_from_claims(
@@ -719,6 +720,13 @@ def reverify_answer_package_for_delivery(
                         evidence_by_ref=evidence_by_ref,
                         trusted_provenance=provenance,
                     )
+                    source_claim = claims[len(rebuilt_claims)]
+                    if any(
+                        str(source_claim.get(field) or "")
+                        != str(rebuilt.get(field) or "")
+                        for field in ("claim_ref", "claim_digest")
+                    ):
+                        raise ValueError("verified_claim_identity_mismatch")
                     rebuilt_claims.append(rebuilt)
                 projected_claims = tuple(rebuilt_claims)
             except (TypeError, ValueError) as exc:
@@ -953,6 +961,19 @@ class AuthorityFact:
     grain: tuple[str, ...]
     value_semantics: str
     display_format: str
+    aggregation: str = "raw_observation"
+    required_complete_days: int = 1
+    observation_keys: tuple[str, ...] = ()
+    source_fact_refs: tuple[str, ...] = ()
+    comparison_ordinal: int = -1
+
+    @property
+    def has_window_aggregate_identity(self) -> bool:
+        return (
+            self.required_complete_days > 1
+            or len(self.observation_keys) > 1
+            or len(self.source_fact_refs) > 1
+        )
 
     @classmethod
     def create(
@@ -969,8 +990,13 @@ class AuthorityFact:
         grain: tuple[str, ...],
         value_semantics: str = "raw_scalar",
         display_format: str = "number",
+        aggregation: str = "raw_observation",
+        required_complete_days: int = 1,
+        observation_keys: tuple[str, ...] = (),
+        source_fact_refs: tuple[str, ...] = (),
+        comparison_ordinal: int = -1,
     ) -> "AuthorityFact":
-        payload = {
+        identity_payload = {
             "query_contract_ref": query_contract_ref,
             "result_ref": result_ref,
             "metric_id": metric_id,
@@ -983,8 +1009,29 @@ class AuthorityFact:
             "value_semantics": value_semantics,
             "display_format": display_format,
         }
+        final_observation_keys = tuple(observation_keys)
+        final_source_fact_refs = tuple(source_fact_refs)
+        has_window_aggregate_identity = (
+            required_complete_days > 1
+            or len(final_observation_keys) > 1
+            or len(final_source_fact_refs) > 1
+        )
+        if has_window_aggregate_identity:
+            identity_payload = {
+                **identity_payload,
+                "fact_schema_version": "window_metric_aggregate_v1",
+                "aggregation": aggregation,
+                "required_complete_days": required_complete_days,
+                "observation_keys": final_observation_keys,
+                "source_fact_refs": final_source_fact_refs,
+                "comparison_ordinal": comparison_ordinal,
+            }
+        fact_ref = (
+            "authority-fact:sha256:"
+            f"{canonical_digest(identity_payload)}"
+        )
         return cls(
-            fact_ref=f"authority-fact:sha256:{canonical_digest(payload)}",
+            fact_ref=fact_ref,
             query_contract_ref=query_contract_ref,
             result_ref=result_ref,
             metric_id=metric_id,
@@ -996,6 +1043,11 @@ class AuthorityFact:
             grain=grain,
             value_semantics=value_semantics,
             display_format=display_format,
+            aggregation=aggregation,
+            required_complete_days=required_complete_days,
+            observation_keys=final_observation_keys,
+            source_fact_refs=final_source_fact_refs,
+            comparison_ordinal=comparison_ordinal,
         )
 
 
@@ -1044,7 +1096,6 @@ def _claim_authority_facts(
                 metric.metric_id: metric for metric in contract.metric_bindings
             }
             contract_metrics = tuple(metric_bindings)
-            metric_ids.update(contract_metrics)
             grains.add(tuple(contract.result_shape.grain))
             for window in contract.resolved_windows:
                 window_projection = {
@@ -1059,6 +1110,123 @@ def _claim_authority_facts(
                     target_windows[window.window_id] = window_projection
                 elif window.role == "baseline":
                     baseline_windows[window.window_id] = window_projection
+            if (
+                str(evidence_item.get("capability_id") or "")
+                == "market_health_compare"
+                and any(window.role == "baseline" for window in contract.resolved_windows)
+            ):
+                metric_id = str(
+                    (evidence_item.get("typed_payload") or {}).get("metric") or ""
+                )
+                if not metric_id and len(contract_metrics) == 1:
+                    metric_id = contract_metrics[0]
+                comparison = aggregate_window_metric_comparison(
+                    contract,
+                    result.rows,
+                    metric_id=metric_id,
+                )
+                metric_binding = metric_bindings[metric_id]
+                metric_ids.add(metric_id)
+                aggregates = (
+                    (comparison.target, -1),
+                    (comparison.primary_baseline, 0),
+                    *tuple(
+                        (aggregate, index)
+                        for index, aggregate in enumerate(
+                            comparison.comparisons,
+                            start=1,
+                        )
+                    ),
+                )
+                for aggregate, comparison_ordinal in aggregates:
+                    raw_facts = tuple(
+                        AuthorityFact.create(
+                            query_contract_ref=contract.query_contract_id,
+                            result_ref=result.result_ref,
+                            metric_id=metric_id,
+                            value=observation.value,
+                            window_id=aggregate.window_id,
+                            window_role=aggregate.role,
+                            observation_key=observation.observation_key,
+                            dimensions=(),
+                            grain=tuple(contract.result_shape.grain),
+                            value_semantics=metric_binding.value_semantics,
+                            display_format=metric_binding.display_format,
+                        )
+                        for observation in aggregate.observations
+                    )
+                    if (
+                        aggregate.aggregation == "daily_total"
+                        and len(raw_facts) == 1
+                    ):
+                        raw_fact = raw_facts[0]
+                        authority_facts.append(
+                            AuthorityFact.create(
+                                query_contract_ref=raw_fact.query_contract_ref,
+                                result_ref=raw_fact.result_ref,
+                                metric_id=raw_fact.metric_id,
+                                value=raw_fact.value,
+                                window_id=raw_fact.window_id,
+                                window_role=raw_fact.window_role,
+                                observation_key=raw_fact.observation_key,
+                                dimensions=raw_fact.dimensions,
+                                grain=raw_fact.grain,
+                                value_semantics=raw_fact.value_semantics,
+                                display_format=raw_fact.display_format,
+                                aggregation=aggregate.aggregation,
+                                required_complete_days=(
+                                    aggregate.required_complete_days
+                                ),
+                                observation_keys=aggregate.observation_keys,
+                                source_fact_refs=(raw_fact.fact_ref,),
+                                comparison_ordinal=comparison_ordinal,
+                            )
+                        )
+                        continue
+                    projected_windows = (
+                        target_windows
+                        if aggregate.role == "target"
+                        else baseline_windows
+                    )
+                    if aggregate.window_id in projected_windows:
+                        projected_windows[aggregate.window_id] = {
+                            **projected_windows[aggregate.window_id],
+                            "aggregation": aggregate.aggregation,
+                            "required_complete_days": (
+                                aggregate.required_complete_days
+                            ),
+                        }
+                    authority_facts.append(
+                        AuthorityFact.create(
+                            query_contract_ref=contract.query_contract_id,
+                            result_ref=result.result_ref,
+                            metric_id=metric_id,
+                            value=aggregate.value,
+                            window_id=aggregate.window_id,
+                            window_role=aggregate.role,
+                            observation_key=(
+                                aggregate.observation_keys[0]
+                                if len(aggregate.observation_keys) == 1
+                                else (
+                                    f"{aggregate.observation_keys[0]}.."
+                                    f"{aggregate.observation_keys[-1]}"
+                                )
+                            ),
+                            dimensions=(),
+                            grain=tuple(contract.result_shape.grain),
+                            value_semantics=metric_binding.value_semantics,
+                            display_format=metric_binding.display_format,
+                            aggregation=aggregate.aggregation,
+                            required_complete_days=aggregate.required_complete_days,
+                            observation_keys=aggregate.observation_keys,
+                            source_fact_refs=tuple(
+                                fact.fact_ref for fact in raw_facts
+                            ),
+                            comparison_ordinal=comparison_ordinal,
+                        )
+                    )
+                continue
+            metric_ids.update(contract_metrics)
             for row in result.rows:
                 role = str(row.get("window_role") or "")
                 window_id = str(row.get("window_id") or "")
@@ -1142,10 +1310,8 @@ def _claim_authority_facts(
         "authority_facts": tuple(authority_facts),
         "authority_context_facts": tuple(authority_context_facts),
         "grains": tuple(sorted(grains)),
-        "target_windows": tuple(target_windows[key] for key in sorted(target_windows)),
-        "baseline_windows": tuple(
-            baseline_windows[key] for key in sorted(baseline_windows)
-        ),
+        "target_windows": tuple(target_windows.values()),
+        "baseline_windows": tuple(baseline_windows.values()),
     }
 
 
@@ -1334,6 +1500,12 @@ def _map_claim_numbers_to_authority(
                 or _fact_dimensions_match(fact, dimensions)
             )
         )
+        if not _selector_binds_comparison(raw_selector):
+            candidates = tuple(
+                fact
+                for fact in candidates
+                if fact.comparison_ordinal in {-1, 0}
+            )
         if kind == "delta":
             mapping = _map_delta_number(
                 field=str(field),
@@ -1368,7 +1540,7 @@ def _map_claim_numbers_to_authority(
                 "kind": "fact",
                 "metric_id": metric_id,
                 "value": fact.value,
-                "fact_refs": (fact.fact_ref,),
+                "fact_refs": fact.source_fact_refs or (fact.fact_ref,),
                 "window_id": fact.window_id,
                 "window_role": fact.window_role,
                 "observation_key": fact.observation_key,
@@ -1380,6 +1552,24 @@ def _map_claim_numbers_to_authority(
             }
         mappings.append(mapping)
     return tuple(mappings)
+
+
+def _selector_binds_comparison(selector: Mapping[str, Any]) -> bool:
+    if any(
+        key in selector
+        for key in (
+            "window_id",
+            "observation_key",
+            "observation_keys",
+            "aggregation",
+            "required_complete_days",
+        )
+    ):
+        return True
+    return any(
+        isinstance(selector.get(role), Mapping) and bool(selector.get(role))
+        for role in ("target", "baseline")
+    )
 
 
 def _number_field_semantics(
@@ -1599,6 +1789,9 @@ _FACT_SELECTOR_FIELDS = (
     "observation_key",
     "dimensions",
     "grain",
+    "aggregation",
+    "required_complete_days",
+    "observation_keys",
 )
 
 
@@ -1653,11 +1846,28 @@ def _fact_matches_selector(
             return False
         if tuple(str(item) for item in grain) != fact.grain:
             return False
+    if "aggregation" in selector and str(selector["aggregation"]) != fact.aggregation:
+        return False
+    if "required_complete_days" in selector:
+        if (
+            type(selector["required_complete_days"]) is not int
+            or selector["required_complete_days"] != fact.required_complete_days
+        ):
+            return False
+    if "observation_keys" in selector:
+        observation_keys = selector["observation_keys"]
+        if not isinstance(observation_keys, Sequence) or isinstance(
+            observation_keys,
+            (str, bytes, bytearray),
+        ):
+            return False
+        if tuple(str(item) for item in observation_keys) != fact.observation_keys:
+            return False
     return True
 
 
 def _authority_fact_selector(fact: AuthorityFact) -> dict[str, Any]:
-    return {
+    selector = {
         "query_contract_ref": fact.query_contract_ref,
         "result_ref": fact.result_ref,
         "metric_id": fact.metric_id,
@@ -1670,6 +1880,15 @@ def _authority_fact_selector(fact: AuthorityFact) -> dict[str, Any]:
         },
         "grain": list(fact.grain),
     }
+    if fact.has_window_aggregate_identity:
+        selector.update(
+            {
+                "aggregation": fact.aggregation,
+                "required_complete_days": fact.required_complete_days,
+                "observation_keys": list(fact.observation_keys),
+            }
+        )
+    return selector
 
 
 def _map_delta_number(
@@ -1732,7 +1951,7 @@ def _map_delta_number(
         "kind": "delta",
         "metric_id": metric_id,
         "value": delta,
-        "fact_refs": (target.fact_ref, baseline.fact_ref),
+        "fact_refs": _dedupe_fact_refs(target, baseline),
         "window_id": target.window_id,
         "window_role": "comparison",
         "target_window_id": target.window_id,
@@ -1748,6 +1967,16 @@ def _map_delta_number(
             "baseline": _authority_fact_selector(baseline),
         },
     }
+
+
+def _dedupe_fact_refs(*facts: AuthorityFact) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            ref
+            for fact in facts
+            for ref in (fact.source_fact_refs or (fact.fact_ref,))
+        )
+    )
 
 
 def _map_ratio_number(
@@ -1802,7 +2031,7 @@ def _map_ratio_number(
         "kind": "ratio",
         "metric_id": metric_id,
         "value": ratio,
-        "fact_refs": (target.fact_ref, baseline.fact_ref),
+        "fact_refs": _dedupe_fact_refs(target, baseline),
         "window_id": target.window_id,
         "window_role": "comparison",
         "target_window_id": target.window_id,

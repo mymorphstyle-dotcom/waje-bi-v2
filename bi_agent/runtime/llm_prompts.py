@@ -5,7 +5,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-13.v38"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-13.v39"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 
 
@@ -215,7 +215,9 @@ def _task_rules(task: str) -> str:
             "pattern_family, scope, time_window, target_claim, and plausible baseline "
             "candidates. Also return optional sub_intents, ambiguous_slots, and "
             "answer_contract when the question contains multiple business asks, side "
-            "checks, or unclear business slots. Decide question_family from the user's wording and bound "
+            "checks, or unclear business slots. answer_contract must be a JSON object "
+            "when present; omit answer_contract or use {} when no answer contract is "
+            "needed. Decide question_family from the user's wording and bound "
             "business context; no question_family input is authoritative at this step. "
             "If the question combines change explanation, segment attribution, anomaly "
             "review, pattern judgment, business-object review, custom baseline comparison, "

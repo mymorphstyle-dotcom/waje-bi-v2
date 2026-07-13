@@ -184,6 +184,50 @@ capabilities outside that choice are removed. Malformed
 capability mappings, stale records, owner drift, signature drift, and choices
 without a resolvable outcome ref fail closed.
 
+The source run also persists a versioned, exact-shape, signed
+material-authority envelope in its PostgreSQL `analysis_runs.request` payload.
+The envelope separately records the source intent's primary and ordered
+question-family set, primary and ordered target metrics, explicit components,
+dimensions, baselines, context sources, claim intents, and scope; it also
+records the exact route material slots, including diagnostic requirement tags,
+that opened clarification. It also records the locally validated diagnostic
+rejection history as exact typed route-control records. The signature binds all
+of those fields to the source run, thread, and topic owner. The resume authority
+resolver reads and validates that stored envelope and returns it beside the
+AnalysisContract and clarification outcome. Mutable `original_intent`,
+`material_slots`, prior-contract copies, and prior-route mutation history must
+match or be ignored in favor of the envelope; they cannot replace it.
+
+The AnalysisContract remains the authority for compiled capabilities, query
+dependencies, gaps, and claim ceilings. It is not used to reconstruct explicit
+user intent: `scope.requested_metric_ids` may include compiler dependency
+closure, and dataset requirements may combine metric-source and requested
+context roles. Inferring original components or context sources from those
+compiled fields would reject valid resumes and is prohibited. The signed
+material envelope is contract metadata derived from the already persisted
+source run; it introduces no new business data.
+
+The resolver and compiler validate the reversible overlap between the two
+authorities: ordered question families, ordered target metrics, and material
+scope must agree exactly between the signed material envelope and the immutable
+AnalysisContract. Two independently valid signatures cannot authorize
+contradictory business axes. This cross-check does not extend to explicit
+components, dimensions, or context roles whose compiled representation may
+contain dependency closure or lose the original request role.
+
+The same reversible-axis check applies to the current terminal-resume proposal
+before compilation. A clarification payload may repeat the signed family,
+target, or scope, but it cannot replace any of them while carrying the prior
+gap decision or clarification outcome. A changed family, target, or scope starts
+a new analysis without the prior terminal authority.
+
+Only local obligation rejection records may enter the signed route-control
+history. Each record has the exact `action`, `capability`, and `reason` fields,
+uses `action=rejected`, and carries a reviewed local rejection reason. Order is
+stable and duplicates, unknown fields, provider-supplied reasons, and malformed
+records fail closed. Resume restores this history into internal workflow state;
+the mutable prior analysis route cannot authorize or extend it.
+
 ## Coverage Audit
 
 Add a local coverage-audit tool that combines the reviewed runtime registry

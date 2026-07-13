@@ -718,12 +718,12 @@ def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
 def test_coverage_summary_reads_run_matched_internal_audit_for_zero_claim_terminal(
     tmp_path, monkeypatch
 ):
-    from tools.phase7.run_live_conversation_system_test import _coverage_summary
+    from tools.phase7 import run_live_conversation_system_test as system_test
 
     artifact_root = tmp_path / "artifacts"
     internal_path = artifact_root / "phase-7" / "run-boundary-only" / "answer_package.json"
     internal_path.parent.mkdir(parents=True)
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
     internal_path.write_text(
         json.dumps(
             {
@@ -765,20 +765,20 @@ def test_coverage_summary_reads_run_matched_internal_audit_for_zero_claim_termin
         }
     ]
 
-    summary = _coverage_summary(turns)
+    summary = system_test._coverage_summary(turns)
 
     assert summary["final_answer_audit_coverage"] == {"reviewed": 1, "total": 1}
 
     turns[0]["resumed_quality_review"] = {"display_status": "ready"}
     turns[0]["resumed_run_id"] = "run-different"
-    mismatched = _coverage_summary(turns)
+    mismatched = system_test._coverage_summary(turns)
     assert mismatched["final_answer_audit_coverage"] == {"reviewed": 0, "total": 1}
 
 
 def test_coverage_summary_rejects_internal_audit_path_outside_artifact_root(
     tmp_path, monkeypatch
 ):
-    from tools.phase7.run_live_conversation_system_test import _coverage_summary
+    from tools.phase7 import run_live_conversation_system_test as system_test
 
     (tmp_path / "artifacts").mkdir()
     outside_path = tmp_path / "outside-answer-package.json"
@@ -796,7 +796,7 @@ def test_coverage_summary_rejects_internal_audit_path_outside_artifact_root(
         ),
         encoding="utf-8",
     )
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
     turns = [
         {
             "status": "completed",
@@ -806,7 +806,50 @@ def test_coverage_summary_rejects_internal_audit_path_outside_artifact_root(
         }
     ]
 
-    summary = _coverage_summary(turns)
+    summary = system_test._coverage_summary(turns)
+
+    assert summary["final_answer_audit_coverage"] == {"reviewed": 0, "total": 1}
+
+
+def test_coverage_summary_rejects_internal_audit_from_sibling_suite(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    sibling_path = (
+        tmp_path
+        / "artifacts"
+        / "other-suite"
+        / "run-sibling-audit"
+        / "answer_package.json"
+    )
+    sibling_path.parent.mkdir(parents=True)
+    sibling_path.write_text(
+        json.dumps(
+            {
+                "run_id": "run-sibling-audit",
+                "llm_calls": [
+                    {
+                        "task": "final_answer_audit",
+                        "structured_output": {"display_status": "ready"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+
+    summary = system_test._coverage_summary(
+        [
+            {
+                "status": "completed",
+                "run_id": "run-sibling-audit",
+                "artifact_path": str(sibling_path),
+                "quality_review": {"display_status": "ready"},
+            }
+        ]
+    )
 
     assert summary["final_answer_audit_coverage"] == {"reviewed": 0, "total": 1}
 

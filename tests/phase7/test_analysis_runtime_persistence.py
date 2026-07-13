@@ -2255,6 +2255,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
 
         from bi_agent.conversation.clarification_authority import (
             build_clarification_outcome,
+            build_material_authority,
         )
         from bi_agent.runtime.analysis_contract_compiler import (
             compile_analysis_contract,
@@ -2272,6 +2273,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
         prior = compile_analysis_contract(
             run_id="run-persistence-authority-source",
             proposal={
+                "question_families": ["pattern_explanation"],
                 "target_metrics": ["paid_amount"],
                 "claim_intents": ["causal_effect"],
             },
@@ -2295,9 +2297,38 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             topic_id=topic_id,
             choice=choice,
         )
+        material_authority = build_material_authority(
+            source_run_id=choice["source_run_id"],
+            thread_id=thread_id,
+            topic_id=topic_id,
+            original_intent={
+                "question_family": "pattern_explanation",
+                "question_families": ["pattern_explanation"],
+                "primary_question_family": "pattern_explanation",
+                "secondary_question_families": [],
+                "target_metric": "paid_amount",
+                "requested_components": [],
+                "requested_dimensions": [],
+                "baseline_candidates": [],
+                "context_sources": [],
+                "claim_intents": ["causal_effect"],
+                "scope": None,
+            },
+            material_slots={
+                "target_metrics": ["paid_amount"],
+                "requested_components": [],
+                "requested_dimensions": [],
+                "baselines": [],
+                "context_sources": [],
+                "claim_intents": ["causal_effect"],
+                "diagnostic_tags": [],
+                "scope": None,
+            },
+        )
         resumed = compile_analysis_contract(
             run_id="run-persistence-authority-resumed",
             proposal={
+                "question_families": ["pattern_explanation"],
                 "target_metrics": ["paid_amount"],
                 "accepted_degradation_choice": choice,
                 "accepted_terminal_gap_authority": {
@@ -2308,6 +2339,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                     "analysis_contract_signature": analysis_contract_signature(
                         prior.analysis_contract
                     ),
+                    "material_authority": material_authority,
                     "clarification_outcome": clarification_outcome,
                 },
                 "resume_thread_id": thread_id,

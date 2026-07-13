@@ -3,6 +3,7 @@ import unittest
 
 from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
+    resolve_partitioned_analysis_obligations,
     resolve_analysis_obligations,
 )
 from bi_agent.runtime.capability_registry import (
@@ -333,6 +334,142 @@ class AnalysisObligationsTest(unittest.TestCase):
                 request,
                 RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
             )
+
+    def test_partitioned_resolver_applies_diagnostic_only_to_supported_composite_family(self):
+        result = resolve_partitioned_analysis_obligations(
+            ObligationRequest(
+                question_families=(
+                    "business_object_impact_review",
+                    "paid_amount_change_explanation",
+                ),
+                diagnostic_tags=("event_impact",),
+                target_metrics=("paid_amount",),
+                requested_dimensions=(),
+                baselines=("previous_day",),
+                context_sources=("external_event",),
+                claim_intents=(),
+            ),
+            RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+        )
+
+        self.assertTrue(
+            {
+                "data_quality_profile",
+                "driver_decomposition",
+                "compare_periods",
+                "event_evidence",
+                "answer_verify",
+            }.issubset(
+                {
+                    *result.required_capabilities,
+                    *result.conditional_capabilities,
+                }
+            )
+        )
+        self.assertTrue(
+            {"gameplay_activity_context", "event_window_compare", "metric_timeseries"}
+            .issubset(result.independent_capabilities)
+        )
+        self.assertEqual(result.applicable_diagnostic_tags, ("event_impact",))
+        self.assertEqual(result.rejected_diagnostic_tags, ())
+
+    def test_partitioned_resolver_rejects_zero_family_tag_without_suppressing_base(self):
+        result = resolve_partitioned_analysis_obligations(
+            ObligationRequest(
+                question_families=(
+                    "revenue_health_review",
+                    "data_quality_or_evidence_review",
+                ),
+                diagnostic_tags=("factor_topk",),
+                target_metrics=("paid_amount",),
+                requested_dimensions=("channel",),
+                baselines=(),
+                context_sources=(),
+                claim_intents=("contract_coverage_and_trust_boundary",),
+            ),
+            RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+        )
+
+        all_capabilities = {
+            *result.required_capabilities,
+            *result.conditional_capabilities,
+            *result.independent_capabilities,
+        }
+        self.assertTrue(
+            {
+                "data_quality_profile",
+                "formula_decompose",
+                "metric_coverage_profile",
+                "source_reconciliation",
+                "market_channel_context",
+                "market_health_compare",
+                "answer_verify",
+            }.issubset(all_capabilities)
+        )
+        self.assertTrue(
+            {"segment_contribution", "joint_attribution"}.isdisjoint(all_capabilities)
+        )
+        self.assertEqual(result.applicable_diagnostic_tags, ())
+        self.assertEqual(result.rejected_diagnostic_tags, ("factor_topk",))
+        self.assertIn(
+            {
+                "action": "rejected",
+                "capability": "factor_topk",
+                "reason": "diagnostic_question_family_incompatible",
+            },
+            result.mutations,
+        )
+
+    def test_partitioned_resolver_preserves_fixed_clock_composite_typed_obligations(self):
+        result = resolve_partitioned_analysis_obligations(
+            ObligationRequest(
+                question_families=(
+                    "revenue_health_review",
+                    "segment_or_factor_attribution",
+                    "anomaly_or_black_swan_review",
+                    "paid_amount_change_explanation",
+                ),
+                diagnostic_tags=(
+                    "revenue_health",
+                    "change_explanation",
+                    "driver_focus",
+                    "event_impact",
+                    "anomaly",
+                    "evidence_quality",
+                ),
+                target_metrics=("paid_amount",),
+                requested_dimensions=("channel",),
+                baselines=(),
+                context_sources=("internal_operation_event",),
+                claim_intents=(
+                    "formula_component_contribution",
+                    "external_shock_candidate_or_anomaly",
+                    "contract_coverage_and_trust_boundary",
+                ),
+            ),
+            RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+        )
+
+        all_capabilities = {
+            *result.required_capabilities,
+            *result.conditional_capabilities,
+            *result.independent_capabilities,
+        }
+        self.assertTrue(
+            {
+                "formula_decompose",
+                "segment_breakdown",
+                "segment_shift_compare",
+                "outlier_scan",
+                "change_point_scan",
+                "driver_decomposition",
+                "metric_timeseries",
+                "source_reconciliation",
+                "answer_verify",
+            }.issubset(all_capabilities)
+        )
+        self.assertEqual(result.rejected_diagnostic_tags, ("event_impact",))
+        self.assertNotIn("event_impact", result.applicable_diagnostic_tags)
 
     def test_capability_list_errors_distinguish_type_blank_and_empty(self):
         payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)

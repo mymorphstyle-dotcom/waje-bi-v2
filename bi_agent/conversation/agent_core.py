@@ -9,6 +9,7 @@ from typing import Any, Callable, Optional
 from uuid import uuid4
 
 from bi_agent.conversation.postgres_store import PostgresConversationStore
+from bi_agent.conversation.clarification_authority import build_material_authority
 from bi_agent.conversation.models import ClarificationOption, ClarificationState
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
@@ -391,6 +392,28 @@ class ConversationAgentCore:
         self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
         if result.status == "waiting_for_clarification" and result.answer_package:
             try:
+                source_route = result.answer_package.get("analysis_route") or {}
+                if not isinstance(source_route, Mapping):
+                    raise ValueError("analysis_route_invalid")
+                obligation_resolution = (
+                    source_route.get("obligation_resolution") or {}
+                )
+                if not isinstance(obligation_resolution, Mapping):
+                    raise ValueError("obligation_resolution_invalid")
+                material_authority = build_material_authority(
+                    source_run_id=run_id,
+                    thread_id=thread_id,
+                    topic_id=turn.topic_id or "",
+                    original_intent=(
+                        result.answer_package.get("original_intent") or {}
+                    ),
+                    material_slots=(
+                        result.answer_package.get("material_slots") or {}
+                    ),
+                    obligation_rejection_history=(
+                        obligation_resolution.get("mutation_history") or ()
+                    ),
+                )
                 if result.analysis_runtime_records is None:
                     if result.answer_package.get("analysis_contract"):
                         raise ValueError("analysis_runtime_records_missing")
@@ -568,6 +591,7 @@ class ConversationAgentCore:
                     "material_slots": dict(
                         result.answer_package.get("material_slots") or {}
                     ),
+                    "material_authority": material_authority,
                     "clarification": clarification_payload,
                 },
             )

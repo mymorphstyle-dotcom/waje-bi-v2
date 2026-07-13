@@ -47,10 +47,16 @@ class ObligationResolution:
     mutations: tuple[Mapping[str, str], ...]
 
 
-def resolve_analysis_obligations(
+@dataclass(frozen=True)
+class PartitionedObligationResolution(ObligationResolution):
+    applicable_diagnostic_tags: tuple[str, ...]
+    rejected_diagnostic_tags: tuple[str, ...]
+
+
+def _validate_obligation_target_metrics(
     request: ObligationRequest,
     registry: RuntimeContractRegistry,
-) -> ObligationResolution:
+) -> None:
     unknown_metrics = tuple(
         metric for metric in request.target_metrics if metric not in registry.metric_ids
     )
@@ -58,6 +64,13 @@ def resolve_analysis_obligations(
         raise ValueError(
             f"unknown_obligation_target_metric:{','.join(dict.fromkeys(unknown_metrics))}"
         )
+
+
+def resolve_analysis_obligations(
+    request: ObligationRequest,
+    registry: RuntimeContractRegistry,
+) -> ObligationResolution:
+    _validate_obligation_target_metrics(request, registry)
     required: list[str] = []
     conditional: list[str] = []
     independent: list[str] = []
@@ -102,6 +115,112 @@ def resolve_analysis_obligations(
         independent_capabilities=ordered_independent,
         minimum_publishable_evidence=tuple(dict.fromkeys(evidence)),
         mutations=mutations,
+    )
+
+
+def resolve_partitioned_analysis_obligations(
+    request: ObligationRequest,
+    registry: RuntimeContractRegistry,
+) -> PartitionedObligationResolution:
+    """Resolve composite-family routes without weakening the strict resolver.
+
+    Diagnostic applicability is partitioned by persisted question family. A tag
+    contributes capabilities when at least one family supports it; tags that
+    match no family are recorded as rejected mutations while every family's
+    base obligations remain in the merged result.
+    """
+    _validate_obligation_target_metrics(request, registry)
+    known_diagnostics = set(registry.diagnostic_obligation_ids)
+    diagnostic_tags_by_family = {
+        family: [] for family in request.question_families
+    }
+    applicable_tags: list[str] = []
+    rejected_tags: list[str] = []
+    rejected_mutations: list[Mapping[str, str]] = []
+    for tag in dict.fromkeys(request.diagnostic_tags):
+        if tag not in known_diagnostics:
+            rejected_tags.append(tag)
+            rejected_mutations.append(
+                {
+                    "action": "rejected",
+                    "capability": tag,
+                    "reason": "unknown_diagnostic_rejected",
+                }
+            )
+            continue
+        supported_families = set(
+            registry.diagnostic_obligation(tag)["supported_question_families"]
+        )
+        matching_families = tuple(
+            family
+            for family in request.question_families
+            if family in supported_families
+        )
+        if not matching_families:
+            rejected_tags.append(tag)
+            rejected_mutations.append(
+                {
+                    "action": "rejected",
+                    "capability": tag,
+                    "reason": "diagnostic_question_family_incompatible",
+                }
+            )
+            continue
+        applicable_tags.append(tag)
+        for family in matching_families:
+            diagnostic_tags_by_family[family].append(tag)
+
+    required: list[str] = []
+    conditional: list[str] = []
+    independent: list[str] = []
+    evidence: list[str] = []
+    for family in request.question_families:
+        family_resolution = resolve_analysis_obligations(
+            ObligationRequest(
+                question_families=(family,),
+                diagnostic_tags=tuple(diagnostic_tags_by_family[family]),
+                target_metrics=request.target_metrics,
+                requested_dimensions=request.requested_dimensions,
+                baselines=request.baselines,
+                context_sources=request.context_sources,
+                claim_intents=request.claim_intents,
+            ),
+            registry,
+        )
+        required.extend(family_resolution.required_capabilities)
+        conditional.extend(family_resolution.conditional_capabilities)
+        independent.extend(family_resolution.independent_capabilities)
+        evidence.extend(family_resolution.minimum_publishable_evidence)
+
+    ordered_required = registry.order_capabilities(required)
+    required_set = set(ordered_required)
+    ordered_conditional = registry.order_capabilities(
+        capability for capability in conditional if capability not in required_set
+    )
+    conditional_set = set(ordered_conditional)
+    ordered_independent = registry.order_capabilities(
+        capability
+        for capability in independent
+        if capability not in required_set and capability not in conditional_set
+    )
+    mutations = (
+        *rejected_mutations,
+        *(
+            {
+                "action": "obligation_required",
+                "capability": capability,
+            }
+            for capability in (*ordered_required, *ordered_conditional)
+        ),
+    )
+    return PartitionedObligationResolution(
+        required_capabilities=ordered_required,
+        conditional_capabilities=ordered_conditional,
+        independent_capabilities=ordered_independent,
+        minimum_publishable_evidence=tuple(dict.fromkeys(evidence)),
+        mutations=tuple(mutations),
+        applicable_diagnostic_tags=tuple(applicable_tags),
+        rejected_diagnostic_tags=tuple(rejected_tags),
     )
 
 

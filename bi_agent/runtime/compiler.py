@@ -16,7 +16,7 @@ from bi_agent.runtime.revenue_runtime_plan import (
 )
 from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
-    resolve_analysis_obligations,
+    resolve_partitioned_analysis_obligations,
 )
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
@@ -173,9 +173,10 @@ def compile_graph(
     )
     diagnostic_axes = obligation_request.diagnostic_tags
     try:
-        obligation_resolution = resolve_analysis_obligations(
+        obligation_resolution = resolve_partitioned_analysis_obligations(
             obligation_request, runtime_registry
         )
+        diagnostic_axes = obligation_resolution.applicable_diagnostic_tags
         obligation_error = ""
     except ValueError as exc:
         obligation_resolution = None
@@ -198,6 +199,11 @@ def compile_graph(
     )
 
     supported_families = frozenset(obligation_request.question_families)
+    rejected_diagnostics = (
+        obligation_resolution.rejected_diagnostic_tags
+        if obligation_resolution is not None
+        else ()
+    )
     unknown = tuple(node for node in proposed_graph if node not in SUPPORTED_CAPABILITIES)
     unsupported_for_family = tuple(
         node
@@ -233,6 +239,15 @@ def compile_graph(
     if obligation_resolution is not None:
         records = (
             *records,
+            *(
+                MutationRecord(
+                    action="rejected",
+                    capability=str(mutation["capability"]),
+                    reason=str(mutation["reason"]),
+                )
+                for mutation in obligation_resolution.mutations
+                if mutation.get("action") == "rejected"
+            ),
             *(
                 MutationRecord(
                     action="auto_added",
@@ -279,7 +294,7 @@ def compile_graph(
             accepted=accepted,
             proposed=proposed_graph,
             rejected_or_degraded=_dedupe(
-                (*unknown, *unsupported_for_family, question_family)
+                (*unknown, *unsupported_for_family, *rejected_diagnostics, question_family)
             ),
             records=records,
             node_status="degraded",
@@ -302,11 +317,17 @@ def compile_graph(
             ),
         )
         return _compiled(
-            status="accepted" if not unknown and not unsupported_for_family else "degraded",
+            status=(
+                "accepted"
+                if not unknown and not unsupported_for_family and not rejected_diagnostics
+                else "degraded"
+            ),
             target_metric=target_metric,
             accepted=accepted,
             proposed=proposed_graph,
-            rejected_or_degraded=_dedupe((*unknown, *unsupported_for_family)),
+            rejected_or_degraded=_dedupe(
+                (*unknown, *unsupported_for_family, *rejected_diagnostics)
+            ),
             records=records,
             runtime_plan=make_runtime_plan(accepted),
         )
@@ -314,11 +335,17 @@ def compile_graph(
     if question_family == "custom_baseline_comparison" and known_requested:
         accepted = _order_capabilities(_dedupe(known_requested), diagnostic_axes)
         return _compiled(
-            status="accepted" if not unknown and not unsupported_for_family else "degraded",
+            status=(
+                "accepted"
+                if not unknown and not unsupported_for_family and not rejected_diagnostics
+                else "degraded"
+            ),
             target_metric=target_metric,
             accepted=accepted,
             proposed=proposed_graph,
-            rejected_or_degraded=_dedupe((*unknown, *unsupported_for_family)),
+            rejected_or_degraded=_dedupe(
+                (*unknown, *unsupported_for_family, *rejected_diagnostics)
+            ),
             records=records,
             runtime_plan=make_runtime_plan(accepted),
         )
@@ -326,11 +353,17 @@ def compile_graph(
     if explicit_requested and known_requested:
         accepted = _order_capabilities(_dedupe(known_requested), diagnostic_axes)
         return _compiled(
-            status="accepted" if not unknown and not unsupported_for_family else "degraded",
+            status=(
+                "accepted"
+                if not unknown and not unsupported_for_family and not rejected_diagnostics
+                else "degraded"
+            ),
             target_metric=target_metric,
             accepted=accepted,
             proposed=proposed_graph,
-            rejected_or_degraded=_dedupe((*unknown, *unsupported_for_family)),
+            rejected_or_degraded=_dedupe(
+                (*unknown, *unsupported_for_family, *rejected_diagnostics)
+            ),
             records=records,
             runtime_plan=make_runtime_plan(accepted),
         )
@@ -365,7 +398,13 @@ def compile_graph(
         accepted=accepted,
         proposed=proposed_graph,
         rejected_or_degraded=_dedupe(
-            (*unknown, *unsupported_for_family, *accepted, *skipped_supported)
+            (
+                *unknown,
+                *unsupported_for_family,
+                *rejected_diagnostics,
+                *accepted,
+                *skipped_supported,
+            )
         ),
         records=records,
         node_status="degraded",

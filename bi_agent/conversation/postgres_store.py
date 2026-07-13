@@ -396,6 +396,7 @@ class PostgresConversationStore:
                    r.status AS run_status,
                    r.thread_id AS run_thread_id,
                    r.topic_id AS run_topic_id,
+                   r.request AS run_request,
                    e.payload AS outcome_payload,
                    e.ref AS outcome_ref,
                    e.run_id AS outcome_run_id,
@@ -419,6 +420,7 @@ class PostgresConversationStore:
         )
         if row is None:
             raise EvidenceIntegrityError("clarification_resume_authority_missing")
+        run_request = _json_value(_field(row, "run_request", 7)) or {}
         return validate_clarification_resume_authority(
             source_run_id=source_run_id,
             thread_id=thread_id,
@@ -431,10 +433,15 @@ class PostgresConversationStore:
             run_status=str(_field(row, "run_status", 4) or ""),
             run_thread_id=str(_field(row, "run_thread_id", 5) or ""),
             run_topic_id=str(_field(row, "run_topic_id", 6) or ""),
-            clarification_outcome=_json_value(_field(row, "outcome_payload", 7)) or {},
-            outcome_run_id=str(_field(row, "outcome_run_id", 9) or ""),
-            outcome_thread_id=str(_field(row, "outcome_thread_id", 10) or ""),
-            outcome_topic_id=str(_field(row, "outcome_topic_id", 11) or ""),
+            clarification_outcome=_json_value(_field(row, "outcome_payload", 8)) or {},
+            outcome_run_id=str(_field(row, "outcome_run_id", 10) or ""),
+            outcome_thread_id=str(_field(row, "outcome_thread_id", 11) or ""),
+            outcome_topic_id=str(_field(row, "outcome_topic_id", 12) or ""),
+            material_authority=(
+                run_request.get("material_authority")
+                if isinstance(run_request, Mapping)
+                else None
+            ),
         )
 
     def record_context_manifest(self, manifest: dict[str, Any]) -> None:

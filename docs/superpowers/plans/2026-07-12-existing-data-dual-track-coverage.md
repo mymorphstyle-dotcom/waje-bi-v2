@@ -820,6 +820,7 @@ git commit -m "feat: close current data query coverage"
 - Produces a typed `available_evidence_brief` containing verified claims, unresolved obligations, scoped gaps, omitted factors, and next actions.
 - Preserves verified claim provenance and exact ReuseDecision refs through final delivery.
 - Persists an accepted degraded-route decision so the same source gap does not reopen clarification in the resumed topic.
+- Persists a signed source-material authority envelope in the source run request and resolves it with the immutable AnalysisContract and clarification outcome. The envelope preserves ordered families and targets plus explicit components, dimensions, baselines, context sources, claim intents, and scope without reverse-engineering compiler dependency closure.
 
 - [x] **Step 1: Write failing partial-value and resume tests**
 
@@ -904,6 +905,45 @@ Reuse exact assets and results only after all signature fields match. Persist
 the accepted obligation/degradation choice in the clarification outcome and
 include it in the resumed analysis proposal, accepted graph, Answer Package,
 ContextManifest, and verifier inputs.
+
+At the source run's clarification boundary, persist a versioned, exact-shape,
+signed material-authority envelope under PostgreSQL `analysis_runs.request`.
+Bind it to the source run, thread, and topic. Keep the source intent's primary
+and ordered families, primary and ordered targets, explicit components,
+dimensions, baselines, context sources, claim intents, and scope separate from
+the exact route material slots, including diagnostic requirement tags. The
+envelope also includes exact typed local diagnostic rejection history as signed
+route-control metadata. The PostgreSQL/InMemory resume
+authority resolvers must validate and return this stored envelope together with
+the signed AnalysisContract and clarification outcome. Resume must compare all
+mutable context copies with the envelope and fail closed on drift.
+
+Do not reconstruct explicit material axes from compiled AnalysisContract
+dependency fields. In particular, `scope.requested_metric_ids` may contain
+formula or capability dependency closure, while dataset requirements do not
+preserve whether a dataset was an explicit context request. Add regression
+tests for an empty explicit component list with a non-empty driver dependency
+closure and for a metric-source dataset that also has a context role.
+
+Cross-check only the reversible contract overlap: ordered question families,
+ordered targets, and material scope must match the signed material envelope in
+the shared authority validator and compiler defense-in-depth path. Add separate
+negative tests for each mismatch while retaining the dependency-closure and
+dual-role positive cases above.
+
+Apply the same ordered family, ordered target, and material-scope validation to
+the current terminal-resume proposal. Reject a terminal clarification payload
+that changes any of those signed axes; allow an exact repeat and preserve the
+existing non-terminal clarification behavior. Cover direct compiler drift and
+workflow clarification-choice drift with independent failing tests.
+
+Do not trust `clarification_resume_context.analysis_route` as the source of
+obligation rejection history. At source waiting persistence, project only the
+local resolver's exact rejected records into the signed route-control section.
+On resume, restore trusted history from that section into workflow state and
+ignore any mutation history carried by the mutable prior route. Test legal
+history preservation, forged prior-route injection, unknown fields/reasons,
+duplicate records, and exactly-once mutation-ledger projection.
 
 - [x] **Step 5: Run workflow and delivery regressions**
 

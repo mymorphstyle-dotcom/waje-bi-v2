@@ -228,6 +228,12 @@ class InMemoryConversationStore:
         if len(outcome_events) != 1:
             raise EvidenceIntegrityError("clarification_resume_outcome_missing")
         event = outcome_events[0]
+        run_request = run.get("request") or {}
+        material_authority = (
+            run_request.get("material_authority")
+            if isinstance(run_request, Mapping)
+            else None
+        )
         return validate_clarification_resume_authority(
             source_run_id=source_run_id,
             thread_id=thread_id,
@@ -244,6 +250,7 @@ class InMemoryConversationStore:
             outcome_run_id=str(event.get("run_id") or ""),
             outcome_thread_id=str(event.get("thread_id") or ""),
             outcome_topic_id=str(event.get("topic_id") or ""),
+            material_authority=material_authority,
         )
 
     def record_context_manifest(self, manifest: dict) -> None:

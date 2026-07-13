@@ -14,6 +14,7 @@ from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult
 from bi_agent.runtime.answer_package import (
     AuthorityFact,
+    _claim_authority_facts,
     _render_authority_facts,
     build_answer_package,
     collect_visible_limitations,
@@ -23,10 +24,50 @@ from bi_agent.runtime.answer_package import (
 from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_digest, canonical_value
 from bi_agent.runtime.claim_provenance import (
     build_context_manifest_record,
+    build_verified_claim_record,
     validated_context_manifest_record,
 )
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
+
+
+def _workflow_clarification_material(
+    *,
+    question_family="revenue_health_review",
+    target_metric="paid_amount",
+    baselines=(),
+    requested_components=(),
+    requested_dimensions=(),
+    context_sources=(),
+    claim_intents=(),
+    scope=None,
+    diagnostic_tags=(),
+):
+    return {
+        "original_intent": {
+            "question_family": question_family,
+            "question_families": [question_family],
+            "primary_question_family": question_family,
+            "secondary_question_families": [],
+            "target_metric": target_metric,
+            "baseline_candidates": list(baselines),
+            "context_sources": list(context_sources),
+            "claim_intents": list(claim_intents),
+            "requested_dimensions": list(requested_dimensions),
+            "requested_components": list(requested_components),
+            "scope": scope,
+        },
+        "material_slots": {
+            "target_metrics": [target_metric],
+            "requested_components": list(requested_components),
+            "requested_dimensions": list(requested_dimensions),
+            "baselines": list(baselines),
+            "context_sources": list(context_sources),
+            "claim_intents": list(claim_intents),
+            "diagnostic_tags": list(diagnostic_tags),
+            "scope": scope,
+        },
+    }
 
 
 class AgentCoreBridgeTest(unittest.TestCase):
@@ -80,6 +121,109 @@ class AgentCoreBridgeTest(unittest.TestCase):
             validated_context_manifest_record({**legacy, "thread_id": "tampered"})
         with self.assertRaisesRegex(EvidenceIntegrityError, "payload_keys_invalid"):
             validated_context_manifest_record({**legacy, "unknown": True})
+
+    def test_pre_window_aggregate_raw_package_identity_still_reverifies(self):
+        package, context, _ = _verified_delivery_package(
+            run_id="run-pre-window-aggregate-package",
+        )
+        summary = package["sections"][0]["payload"]
+        evidence = tuple(package["sections"][1]["payload"]["evidence"])
+        evidence_by_ref = {
+            item["evidence_ref"]: item for item in evidence
+        }
+        current_claim = summary["claims"][0]
+        facts = _claim_authority_facts(
+            current_claim,
+            evidence_by_ref=evidence_by_ref,
+            evidence_resolver=context["evidence_resolver"],
+            rows_loader=context["rows_loader"],
+            runtime_registry=context["runtime_registry"],
+            release_resolver=context["release_resolver"],
+        )
+        raw_fact = next(
+            fact
+            for fact in facts["authority_facts"]
+            if fact.metric_id == "paid_amount"
+            and fact.window_id == "target_day"
+        )
+        legacy_fact_payload = {
+            "query_contract_ref": raw_fact.query_contract_ref,
+            "result_ref": raw_fact.result_ref,
+            "metric_id": raw_fact.metric_id,
+            "value": str(raw_fact.value),
+            "window_id": raw_fact.window_id,
+            "window_role": raw_fact.window_role,
+            "observation_key": raw_fact.observation_key,
+            "dimensions": raw_fact.dimensions,
+            "grain": raw_fact.grain,
+            "value_semantics": raw_fact.value_semantics,
+            "display_format": raw_fact.display_format,
+        }
+        legacy_fact_ref = (
+            "authority-fact:sha256:"
+            f"{canonical_digest(legacy_fact_payload)}"
+        )
+        provenance_fields = {
+            "claim_ref",
+            "claim_digest",
+            "run_id",
+            "context_manifest_ref",
+            "result_refs",
+            "completeness_record_refs",
+            "artifact_refs",
+            "memory_refs",
+            "reuse_decisions",
+            "provenance_record_ref",
+        }
+        legacy_factual = {
+            key: deepcopy(value)
+            for key, value in current_claim.items()
+            if key not in provenance_fields
+        }
+        legacy_factual["fact_refs"] = [legacy_fact_ref]
+        legacy_factual["fact_selectors"]["paid_amount"] = {
+            key: value
+            for key, value in legacy_factual["fact_selectors"][
+                "paid_amount"
+            ].items()
+            if key
+            not in {
+                "aggregation",
+                "required_complete_days",
+                "observation_keys",
+            }
+        }
+        legacy_factual["target"] = {
+            key: value
+            for key, value in legacy_factual["target"].items()
+            if key not in {"aggregation", "required_complete_days"}
+        }
+        provenance = package["admin_audit"][
+            "trusted_claim_provenance_records"
+        ][0]
+        legacy_claim = build_verified_claim_record(
+            legacy_factual,
+            run_id=package["run_id"],
+            context_manifest=package["admin_audit"]["context_manifest"],
+            evidence_by_ref=evidence_by_ref,
+            trusted_provenance=provenance,
+        )
+        summary["claims"][0] = legacy_claim
+
+        delivered = reverify_answer_package_for_delivery(
+            package,
+            evidence_resolver=context["evidence_resolver"],
+            rows_loader=context["rows_loader"],
+            runtime_registry=context["runtime_registry"],
+            release_resolver=context["release_resolver"],
+        )
+
+        self.assertNotIn(
+            "aggregation",
+            legacy_claim["fact_selectors"]["paid_amount"],
+        )
+        self.assertNotIn("aggregation", legacy_claim["target"])
+        self.assertEqual(delivered["status"], "draft", delivered)
 
     def test_answer_verifier_and_authority_manifest_receive_exact_accepted_assumptions(self):
         choice = {
@@ -508,8 +652,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                         "analysis_contract"
                     ],
                     "analysis_route": {"requested_nodes": ["segment_contribution"]},
-                    "original_intent": {},
-                    "material_slots": {},
+                    **_workflow_clarification_material(),
                     "clarification": {
                         "questions": [{
                             "question": "部分结果尚未形成能力绑定，怎么继续？",
@@ -565,7 +708,63 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertNotIn("omitted_result_refs", str(result))
 
     def test_query_gap_answer_resumes_same_topic_and_original_analysis_lineage(self):
+        from bi_agent.conversation.clarification_authority import (
+            build_clarification_outcome,
+        )
+        from bi_agent.runtime.analysis_contracts import (
+            AnalysisContract,
+            ContractGap,
+            MetricBinding,
+            analysis_contract_signature,
+        )
+
         captured = []
+        paid_amount_contract_ref = "contracts/metrics/paid-amount.metric.yaml@0.1"
+        source_contract = AnalysisContract(
+            analysis_contract_id="analysis:run-query-gap-original:1",
+            contract_version="1",
+            question_families=("revenue_health_review",),
+            target_metric_refs=(paid_amount_contract_ref,),
+            claim_intents=(),
+            scope={
+                "type": "full_sample",
+                "requested_metric_ids": ("paid_amount",),
+                "requested_dimension_ids": (),
+            },
+            business_timezone="Europe/London",
+            as_of="2026-06-03T12:00:00+01:00",
+            resolved_windows=(),
+            metric_bindings=(
+                MetricBinding(
+                    metric_id="paid_amount",
+                    contract_ref=paid_amount_contract_ref,
+                    dataset_id="paid_order_success",
+                    expression="sum(paid_amount_ngn)",
+                    aggregation="sum",
+                    required_fields=("paid_amount_ngn",),
+                    grain=("window_id",),
+                    claim_types=("comparative_change",),
+                    reconciliation_tolerance=0.01,
+                    reconciliation_strategy="additive_sum",
+                    value_semantics="raw_scalar",
+                    display_format="number",
+                ),
+            ),
+            dimension_bindings=(),
+            dataset_requirements=("paid_order_success",),
+            capability_requirements=("event_evidence",),
+            permission_scope="analyst",
+            contract_gaps=(
+                ContractGap(
+                    gap_type="source_unbound",
+                    gap_id="event-evidence-source-unbound",
+                    affected_capabilities=("event_evidence",),
+                    owner="business_context_owner",
+                    repair_options=("bind_existing_active_release",),
+                    requires_clarification=True,
+                ),
+            ),
+        ).to_dict()
 
         def workflow(request):
             captured.append(dict(request))
@@ -576,10 +775,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     answer_package={
                         "status": "waiting_for_clarification",
                         "accepted_graph": ["compare_periods"],
-                        "analysis_contract": {
-                            "analysis_contract_id": "analysis:query-gap:1",
-                            "as_of": "2026-06-03T12:00:00+01:00",
-                        },
+                        "analysis_contract": source_contract,
                         "analysis_route": {
                             "requested_nodes": ["compare_periods"],
                             "analysis_requirements": {
@@ -663,25 +859,40 @@ class AgentCoreBridgeTest(unittest.TestCase):
         store = InMemoryConversationStore()
         store.save_analysis_runtime_records = lambda **_: "inserted"
         recorded_outcomes = []
+        resolved_authority = {}
 
         def record_outcome(**kwargs):
             recorded_outcomes.append(kwargs)
-            return "clarification-outcome:resolved-choice"
+            return build_clarification_outcome(**kwargs)["outcome_ref"]
 
-        resolved_authority = {
-            "source_run_id": "run-query-gap-original",
-            "thread_id": "thread-query-gap-resume",
-            "topic_id": "topic-authority",
-            "analysis_contract": {"authority": "postgres"},
-            "analysis_contract_signature": "signature-authority",
-            "clarification_outcome": {
-                "outcome_ref": "clarification-outcome:resolved-choice"
-            },
-        }
+        def resolve_authority(**kwargs):
+            outcome = build_clarification_outcome(
+                source_run_id=kwargs["source_run_id"],
+                thread_id=kwargs["thread_id"],
+                topic_id=kwargs["topic_id"],
+                choice=kwargs["choice"],
+            )
+            self.assertEqual(outcome["outcome_ref"], kwargs["outcome_ref"])
+            resolved_authority.clear()
+            resolved_authority.update(
+                {
+                    "source_run_id": kwargs["source_run_id"],
+                    "thread_id": kwargs["thread_id"],
+                    "topic_id": kwargs["topic_id"],
+                    "analysis_contract": source_contract,
+                    "analysis_contract_signature": analysis_contract_signature(
+                        source_contract
+                    ),
+                    "material_authority": store.runs[kwargs["source_run_id"]][
+                        "request"
+                    ]["material_authority"],
+                    "clarification_outcome": outcome,
+                }
+            )
+            return resolved_authority
+
         store.record_clarification_outcome = record_outcome
-        store.resolve_clarification_resume_authority = (
-            lambda **_: resolved_authority
-        )
+        store.resolve_clarification_resume_authority = resolve_authority
         core = ConversationAgentCore(store, workflow_runner=workflow)
         first = core.run_message(
             thread_id="thread-query-gap-resume",
@@ -761,7 +972,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )
         self.assertEqual(
             captured[1]["clarification_outcome_ref"],
-            "clarification-outcome:resolved-choice",
+            resolved_authority["clarification_outcome"]["outcome_ref"],
         )
 
     def test_recommended_choice_advances_with_available_work_instead_of_wait_loop(self):
@@ -789,6 +1000,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
                         "accepted_graph": ["compare_periods", "event_evidence"],
                         "analysis_contract": {"analysis_contract_id": "analysis:wait:1"},
                         "analysis_route": {"requested_nodes": ["compare_periods", "event_evidence"]},
+                        **_workflow_clarification_material(
+                            context_sources=("external_event",),
+                        ),
                         "clarification": {
                             "questions": [{
                                 "question": "当前来源不可用，怎么继续？",
@@ -842,6 +1056,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
             "topic_id": kwargs["topic_id"],
             "analysis_contract": {"authority": "postgres"},
             "analysis_contract_signature": "signature-authority",
+            "material_authority": store.runs[kwargs["source_run_id"]]["request"][
+                "material_authority"
+            ],
             "clarification_outcome": {"outcome_ref": kwargs["outcome_ref"]},
         }
         core = ConversationAgentCore(
@@ -915,6 +1132,10 @@ class AgentCoreBridgeTest(unittest.TestCase):
                         "accepted_graph": ["event_evidence"],
                         "analysis_contract": {"analysis_contract_id": "analysis:no-ready:1"},
                         "analysis_route": {"requested_nodes": ["event_evidence"]},
+                        **_workflow_clarification_material(
+                            question_family="data_quality_or_evidence_review",
+                            context_sources=("external_event",),
+                        ),
                         "clarification": {
                             "questions": [{
                                 "question": "当前没有可执行证据路径，怎么继续？",
@@ -956,6 +1177,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
             "topic_id": kwargs["topic_id"],
             "analysis_contract": {"authority": "postgres"},
             "analysis_contract_signature": "signature-authority",
+            "material_authority": store.runs[kwargs["source_run_id"]]["request"][
+                "material_authority"
+            ],
             "clarification_outcome": {"outcome_ref": kwargs["outcome_ref"]},
         }
         core = ConversationAgentCore(store, workflow_runner=workflow)
@@ -1011,6 +1235,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     "accepted_graph": ["event_evidence"],
                     "analysis_contract": records["analysis_contract"],
                     "analysis_route": {"requested_nodes": ["event_evidence"]},
+                    **_workflow_clarification_material(
+                        context_sources=("external_event",),
+                    ),
                     "clarification": {
                         "questions": [{
                             "question": "当前来源不可用，怎么继续？",
@@ -1051,6 +1278,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
                         "analysis_contract_id": "analysis:missing:1"
                     },
                     "analysis_route": {"requested_nodes": ["event_evidence"]},
+                    **_workflow_clarification_material(
+                        context_sources=("external_event",),
+                    ),
                     "clarification": {
                         "questions": [{
                             "question": "当前来源不可用，怎么继续？",
@@ -1122,6 +1352,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     "status": "waiting_for_clarification",
                     "accepted_graph": ["event_evidence"],
                     "analysis_route": {"requested_nodes": ["event_evidence"]},
+                    **_workflow_clarification_material(
+                        context_sources=("external_event",),
+                    ),
                     "clarification": {
                         "questions": [{
                             "question": "当前来源不可用，怎么继续？",
@@ -1188,14 +1421,11 @@ class AgentCoreBridgeTest(unittest.TestCase):
                                 "baselines": ["previous_day"],
                             },
                         },
-                        "original_intent": {
-                            "target_metric": "active_users",
-                            "question_family": "market_health_comparison",
-                        },
-                        "material_slots": {
-                            "target_metrics": ["active_users"],
-                            "baselines": ["previous_day"],
-                        },
+                        **_workflow_clarification_material(
+                            question_family="market_health_comparison",
+                            target_metric="active_users",
+                            baselines=("previous_day",),
+                        ),
                         "clarification": {
                             "questions": [{
                                 "question": "按哪个范围继续？",
@@ -4084,6 +4314,469 @@ class AgentCoreBridgeTest(unittest.TestCase):
             _strict_quality_failed({"quality_review": {**review, "blocks_display": True}})
         )
 
+    def test_live_harness_projects_quality_from_run_matched_internal_artifact(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import _runtime_quality_review
+
+        with TemporaryDirectory() as tmpdir:
+            artifact_root = Path(tmpdir) / "artifacts"
+            artifact_path = artifact_root / "phase-7" / "run-1" / "answer_package.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "run-1",
+                        "quality_gate": {
+                            "direct_answer": True,
+                            "business_insight_present": True,
+                            "followups_one_intent": False,
+                            "has_verified_claims": True,
+                            "verified_claim_preserved": True,
+                            "display_status": "ready_with_warnings",
+                            "repairable_warnings": ["missing_business_interpretation"],
+                            "risk_flags": ["causal_wording_risk"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            review = _runtime_quality_review(
+                {
+                    "run_id": "run-1",
+                    "artifact_path": str(artifact_path),
+                    "answer_package": {"quality_gate": {}},
+                },
+                artifact_root=artifact_root,
+            )
+
+        self.assertEqual(review["display_status"], "ready_with_warnings")
+        self.assertEqual(
+            review["final_answer_audit_warnings"],
+            ["missing_business_interpretation"],
+        )
+        self.assertEqual(review["risk_markers"], ["causal_wording_risk"])
+
+    def test_live_harness_falls_back_when_internal_quality_projection_is_incomplete(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import _runtime_quality_review
+
+        complete_gate = {
+            "direct_answer": True,
+            "business_insight_present": True,
+            "followups_one_intent": True,
+            "has_verified_claims": True,
+            "verified_claim_preserved": True,
+            "repairable_warnings": [],
+        }
+        with TemporaryDirectory() as tmpdir:
+            artifact_root = Path(tmpdir) / "artifacts"
+            artifact_path = (
+                artifact_root
+                / "phase-7"
+                / "run-incomplete-quality"
+                / "answer_package.json"
+            )
+            artifact_path.parent.mkdir(parents=True)
+            for missing_field in complete_gate:
+                with self.subTest(missing_field=missing_field):
+                    internal_gate = {
+                        **complete_gate,
+                        "display_status": "internal_incomplete",
+                        "repairable_warnings": ["internal_warning"],
+                    }
+                    internal_gate.pop(missing_field)
+                    artifact_path.write_text(
+                        json.dumps(
+                            {
+                                "run_id": "run-incomplete-quality",
+                                "quality_gate": internal_gate,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    review = _runtime_quality_review(
+                        {
+                            "run_id": "run-incomplete-quality",
+                            "artifact_path": str(artifact_path),
+                            "answer_package": {
+                                "quality_gate": {
+                                    **complete_gate,
+                                    "display_status": "public_complete",
+                                    "repairable_warnings": ["public_warning"],
+                                }
+                            },
+                        },
+                        artifact_root=artifact_root,
+                    )
+                    self.assertEqual(review["display_status"], "public_complete")
+                    self.assertEqual(
+                        review["final_answer_audit_warnings"],
+                        ["public_warning"],
+                    )
+
+    def test_live_harness_quality_projection_requires_exact_field_types(self):
+        from tools.phase7.run_live_conversation_system_test import (
+            _has_valid_quality_projection,
+        )
+
+        complete_gate = {
+            "direct_answer": True,
+            "business_insight_present": True,
+            "followups_one_intent": False,
+            "has_verified_claims": True,
+            "verified_claim_preserved": True,
+            "repairable_warnings": [],
+        }
+        malformed_values = {
+            "direct_answer": 1,
+            "business_insight_present": "true",
+            "followups_one_intent": None,
+            "has_verified_claims": "false",
+            "verified_claim_preserved": 0,
+            "repairable_warnings": (),
+        }
+        for field, malformed in malformed_values.items():
+            with self.subTest(field=field):
+                self.assertFalse(
+                    _has_valid_quality_projection(
+                        {
+                            "quality_gate": {
+                                **complete_gate,
+                                field: malformed,
+                            }
+                        }
+                    )
+                )
+
+    def test_live_harness_rejects_internal_quality_artifact_outside_root(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import _runtime_quality_review
+
+        with TemporaryDirectory() as tmpdir:
+            artifact_root = Path(tmpdir) / "artifacts"
+            artifact_root.mkdir()
+            outside_path = Path(tmpdir) / "outside.json"
+            outside_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "run-1",
+                        "quality_gate": {
+                            "repairable_warnings": ["untrusted_warning"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            review = _runtime_quality_review(
+                {
+                    "run_id": "run-1",
+                    "artifact_path": str(outside_path),
+                    "answer_package": {
+                        "quality_gate": {
+                            "display_status": "public_delivery",
+                            "repairable_warnings": ["public_warning"],
+                        }
+                    },
+                },
+                artifact_root=artifact_root,
+            )
+
+        self.assertEqual(review["display_status"], "public_delivery")
+        self.assertEqual(review["final_answer_audit_warnings"], ["public_warning"])
+
+    def test_live_harness_rejects_internal_quality_artifact_for_another_run(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import _runtime_quality_review
+
+        with TemporaryDirectory() as tmpdir:
+            artifact_root = Path(tmpdir) / "artifacts"
+            artifact_path = artifact_root / "phase-7" / "run-2" / "answer_package.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "forged-run",
+                        "quality_gate": {
+                            "repairable_warnings": ["forged_warning"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            review = _runtime_quality_review(
+                {
+                    "run_id": "run-2",
+                    "artifact_path": str(artifact_path),
+                    "answer_package": {
+                        "quality_gate": {
+                            "display_status": "public_delivery",
+                            "repairable_warnings": ["public_warning"],
+                        }
+                    },
+                },
+                artifact_root=artifact_root,
+            )
+
+        self.assertEqual(review["display_status"], "public_delivery")
+        self.assertEqual(review["final_answer_audit_warnings"], ["public_warning"])
+
+    def test_live_harness_anchors_relative_internal_artifact_to_repository_root(self):
+        import os
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import _runtime_quality_review
+
+        with TemporaryDirectory() as tmpdir:
+            fake_path = (
+                Path(tmpdir)
+                / "artifacts"
+                / "phase-7"
+                / "cwd-forgery"
+                / "answer_package.json"
+            )
+            fake_path.parent.mkdir(parents=True)
+            fake_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "cwd-forgery",
+                        "quality_gate": {
+                            "repairable_warnings": ["cwd_untrusted"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(tmpdir)
+                review = _runtime_quality_review(
+                    {
+                        "run_id": "cwd-forgery",
+                        "artifact_path": (
+                            "artifacts/phase-7/cwd-forgery/answer_package.json"
+                        ),
+                        "answer_package": {
+                            "quality_gate": {
+                                "display_status": "public_delivery",
+                                "repairable_warnings": ["public_warning"],
+                            }
+                        },
+                    }
+                )
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertEqual(review["display_status"], "public_delivery")
+        self.assertEqual(review["final_answer_audit_warnings"], ["public_warning"])
+
+    def test_live_harness_falls_back_from_malformed_internal_quality_codes(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import _runtime_quality_review
+
+        malformed_values = {
+            "repairable_warnings": "split-me",
+            "issues": {"nested": "do-not-project"},
+            "risk_flags": 42,
+            "final_summary_display_warnings": ["valid", {"nested": "invalid"}],
+        }
+        with TemporaryDirectory() as tmpdir:
+            artifact_root = Path(tmpdir) / "artifacts"
+            artifact_path = artifact_root / "phase-7" / "run-malformed" / "answer_package.json"
+            artifact_path.parent.mkdir(parents=True)
+            for field, malformed in malformed_values.items():
+                with self.subTest(field=field):
+                    artifact_path.write_text(
+                        json.dumps(
+                            {
+                                "run_id": "run-malformed",
+                                "quality_gate": {field: malformed},
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    review = _runtime_quality_review(
+                        {
+                            "run_id": "run-malformed",
+                            "artifact_path": str(artifact_path),
+                            "answer_package": {
+                                "quality_gate": {
+                                    "display_status": "public_delivery",
+                                    "repairable_warnings": ["public_warning"],
+                                }
+                            },
+                        },
+                        artifact_root=artifact_root,
+                    )
+                    self.assertEqual(review["display_status"], "public_delivery")
+                    self.assertEqual(
+                        review["final_answer_audit_warnings"],
+                        ["public_warning"],
+                    )
+                    self.assertNotIn("nested", json.dumps(review))
+
+    def test_live_harness_rejects_non_string_run_id_for_internal_quality(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import _runtime_quality_review
+
+        with TemporaryDirectory() as tmpdir:
+            artifact_root = Path(tmpdir) / "artifacts"
+            artifact_path = artifact_root / "phase-7" / "numeric-run" / "answer_package.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": 42,
+                        "quality_gate": {
+                            "repairable_warnings": ["numeric_run_untrusted"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            review = _runtime_quality_review(
+                {
+                    "run_id": 42,
+                    "artifact_path": str(artifact_path),
+                    "answer_package": {
+                        "quality_gate": {
+                            "display_status": "public_delivery",
+                            "repairable_warnings": ["public_warning"],
+                        }
+                    },
+                },
+                artifact_root=artifact_root,
+            )
+
+        self.assertEqual(review["display_status"], "public_delivery")
+        self.assertEqual(review["final_answer_audit_warnings"], ["public_warning"])
+
+    def test_live_harness_uses_resumed_run_artifact_for_quality_projection(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import (
+            _effective_result,
+            _runtime_quality_review,
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            artifact_root = Path(tmpdir) / "artifacts"
+            artifact_path = artifact_root / "phase-7" / "resume-1" / "answer_package.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "resume-1",
+                        "quality_gate": {
+                            "direct_answer": True,
+                            "business_insight_present": True,
+                            "followups_one_intent": False,
+                            "has_verified_claims": True,
+                            "verified_claim_preserved": True,
+                            "display_status": "ready_with_warnings",
+                            "repairable_warnings": ["resume_warning"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            effective = _effective_result(
+                {
+                    "status": "waiting_for_clarification",
+                    "run_id": "initial-1",
+                    "resumed_status": "completed",
+                    "resumed_run_id": "resume-1",
+                    "resumed_artifact_path": str(artifact_path),
+                    "resumed_answer_package": {"quality_gate": {}},
+                }
+            )
+
+            review = _runtime_quality_review(effective, artifact_root=artifact_root)
+
+        self.assertEqual(review["final_answer_audit_warnings"], ["resume_warning"])
+
+    def test_live_harness_writes_effective_resumed_quality_to_case_and_sidecar(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7.run_live_conversation_system_test import (
+            _case_output,
+            _write_case_artifact,
+        )
+
+        initial_quality = {
+            "display_status": "waiting",
+            "quality_warnings": ["initial_warning"],
+        }
+        resumed_quality = {
+            "display_status": "ready_with_warnings",
+            "quality_warnings": ["resumed_warning", "resumed_second_warning"],
+        }
+        turn = {
+            "index": 1,
+            "status": "waiting_for_clarification",
+            "run_id": "initial-run",
+            "quality_review": initial_quality,
+            "resumed_status": "completed",
+            "resumed_run_id": "resumed-run",
+            "resumed_quality_review": resumed_quality,
+            "expectation_review": {"passed": True},
+            "real_clickhouse_review": {
+                "real_clickhouse_verified": True,
+                "runtime_correctness": {
+                    "all_required_queries_complete": True,
+                    "all_capabilities_bound": True,
+                    "all_claims_traceable": True,
+                },
+            },
+        }
+        output = _case_output(
+            case={"id": "resumed-quality-sidecar"},
+            thread_id="thread-resumed-quality",
+            run_mode="dry_run",
+            strict_quality=False,
+            real_clickhouse=False,
+            turns=[turn],
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir)
+            _write_case_artifact(
+                artifact_dir,
+                "resumed-quality-sidecar",
+                output,
+            )
+            case_payload = json.loads(
+                (artifact_dir / "resumed-quality-sidecar.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            sidecar = json.loads(
+                (
+                    artifact_dir
+                    / "resumed-quality-sidecar.quality-review.json"
+                ).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(
+            case_payload["quality_warnings"],
+            ["resumed_second_warning", "resumed_warning"],
+        )
+        self.assertEqual(case_payload["quality_review"], resumed_quality)
+        self.assertEqual(
+            case_payload["coverage_summary"]["answer_quality"]["warning_count"],
+            2,
+        )
+        self.assertEqual(sidecar["turns"], [resumed_quality])
+        self.assertNotIn("initial_warning", json.dumps(sidecar))
+
     def test_eval_review_tool_emits_nonblocking_runtime_and_quality_scorecards(self):
         from tempfile import TemporaryDirectory
 
@@ -4430,6 +5123,421 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(review["claim_evidence_review"]["claim_count"], 0)
         self.assertFalse(review["claim_support_policy_passed"])
         self.assertFalse(review["passed"])
+
+    def test_expectation_review_accepts_legal_zero_claim_terminal_boundary(self):
+        from tools.phase7.run_live_conversation_system_test import _expectation_review
+
+        review = _expectation_review(
+            {"expect": {}},
+            {"intent": "analysis", "topic_relation": "new_topic"},
+            {
+                "intent": "analysis",
+                "topic_relation": "new_topic",
+                "answer_package": {
+                    "sections": [
+                        {
+                            "payload": {
+                                "answer_text": "现有快照在固定时钟下不可用，未形成业务结论。",
+                                "claims": [],
+                            }
+                        }
+                    ]
+                },
+                "context_manifest": {
+                    "manifest_id": "context-no-claim",
+                    "can_support_claims": False,
+                    "items": [],
+                },
+            },
+            [],
+        )
+
+        self.assertEqual(review["claim_evidence_review"]["claim_count"], 0)
+        self.assertTrue(review["claim_evidence_review"]["passed"])
+        self.assertTrue(review["claim_support_policy_passed"])
+        self.assertTrue(review["passed"])
+
+    def test_expectation_review_rejects_claim_when_manifest_denies_claim_support(self):
+        from tools.phase7.run_live_conversation_system_test import _expectation_review
+
+        review = _expectation_review(
+            {"expect": {}},
+            {"intent": "analysis", "topic_relation": "new_topic"},
+            {
+                "intent": "analysis",
+                "topic_relation": "new_topic",
+                "answer_package": {
+                    "sections": [
+                        {
+                            "payload": {
+                                "claims": [
+                                    {
+                                        "text": "渠道收入上升。",
+                                        "evidence_refs": ["evidence:market-1"],
+                                        "context_manifest_ref": "context-denied",
+                                        "reuse_decisions": [
+                                            {
+                                                "decision": "rerun",
+                                                "result_ref": "result:market-1",
+                                                "reason": "current_run_evidence",
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "context_manifest": {
+                    "manifest_id": "context-denied",
+                    "can_support_claims": False,
+                    "items": [
+                        {
+                            "source_type": "evidence",
+                            "source_ref": "evidence:market-1",
+                            "can_support_claims": True,
+                            "claim_use": "evidence",
+                        }
+                    ],
+                },
+            },
+            [],
+        )
+
+        self.assertEqual(review["claim_evidence_review"]["claim_count"], 1)
+        self.assertTrue(review["claim_evidence_review"]["passed"])
+        self.assertFalse(review["claim_support_policy_passed"])
+        self.assertFalse(review["passed"])
+
+    def test_expectation_review_rejects_string_false_claim_support_with_valid_refs(self):
+        from tools.phase7.run_live_conversation_system_test import _expectation_review
+
+        review = _expectation_review(
+            {"expect": {}},
+            {"intent": "analysis", "topic_relation": "new_topic"},
+            {
+                "intent": "analysis",
+                "topic_relation": "new_topic",
+                "answer_package": {
+                    "sections": [
+                        {
+                            "payload": {
+                                "claims": [
+                                    {
+                                        "text": "渠道收入上升。",
+                                        "evidence_refs": ["evidence:market-typed"],
+                                        "context_manifest_ref": "context-typed",
+                                        "reuse_decisions": [
+                                            {
+                                                "decision": "rerun",
+                                                "result_ref": "result:market-typed",
+                                                "reason": "current_run_evidence",
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "context_manifest": {
+                    "manifest_id": "context-typed",
+                    "can_support_claims": "false",
+                    "items": [
+                        {
+                            "source_type": "evidence",
+                            "source_ref": "evidence:market-typed",
+                            "can_support_claims": True,
+                            "claim_use": "evidence",
+                        }
+                    ],
+                },
+            },
+            [],
+        )
+
+        self.assertEqual(review["claim_evidence_review"]["claim_count"], 1)
+        self.assertTrue(review["claim_evidence_review"]["passed"])
+        self.assertFalse(review["context_manifest_can_support_claims"])
+        self.assertFalse(review["claim_support_policy_passed"])
+        self.assertFalse(review["passed"])
+
+    def test_expectation_review_requires_explicit_false_for_zero_claim_terminal(self):
+        from tools.phase7.run_live_conversation_system_test import _expectation_review
+
+        for raw_value in ("false", 0, True, None):
+            with self.subTest(raw_value=raw_value):
+                manifest = {
+                    "manifest_id": "context-zero-claim-typed",
+                    "items": [],
+                }
+                if raw_value is not None:
+                    manifest["can_support_claims"] = raw_value
+                review = _expectation_review(
+                    {"expect": {}},
+                    {"intent": "analysis", "topic_relation": "new_topic"},
+                    {
+                        "intent": "analysis",
+                        "topic_relation": "new_topic",
+                        "answer_package": {
+                            "sections": [{"payload": {"claims": []}}]
+                        },
+                        "context_manifest": manifest,
+                    },
+                    [],
+                )
+
+                self.assertEqual(
+                    review["claim_evidence_review"]["claim_count"],
+                    0,
+                )
+                self.assertFalse(review["claim_support_policy_passed"])
+                self.assertFalse(review["passed"])
+
+    def test_live_harness_passes_absolute_core_artifact_root_outside_repo_cwd(self):
+        import os
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7 import run_live_conversation_system_test as system_test
+
+        captured: list[dict] = []
+
+        class Core:
+            evidence_resolver = None
+
+            def run_message(self, **kwargs):
+                captured.append(kwargs)
+                return {
+                    "status": "failed",
+                    "run_id": "run-absolute-artifact-root",
+                    "topic_id": "topic-absolute-artifact-root",
+                    "intent": "analysis",
+                    "topic_relation": "new_topic",
+                    "failure_reason": "contract_partial",
+                    "answer_package": None,
+                    "context_manifest": {
+                        "manifest_id": "context-absolute-artifact-root",
+                        "can_support_claims": False,
+                        "items": [],
+                    },
+                    "accepted_graph": [],
+                    "artifact_path": "",
+                    "llm_calls": [],
+                }
+
+        case = {
+            "id": "absolute-core-artifact-root",
+            "turns": [{"user": "检查现有数据边界。", "expect": {}}],
+        }
+        with TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            repository_root = temp_root / "repository"
+            outside_cwd = temp_root / "outside-cwd"
+            repository_root.mkdir()
+            outside_cwd.mkdir()
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(outside_cwd)
+                with patch.object(system_test, "ROOT", repository_root):
+                    system_test.run_case(
+                        Core(),
+                        case,
+                        temp_root / "eval-artifacts",
+                    )
+            finally:
+                os.chdir(previous_cwd)
+
+        expected = str((repository_root / "artifacts" / "phase-7").resolve())
+        self.assertEqual(captured[0]["artifact_root"], expected)
+        self.assertTrue(Path(captured[0]["artifact_root"]).is_absolute())
+
+    def test_live_harness_rejects_initial_quality_artifact_from_sibling_suite(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7 import run_live_conversation_system_test as system_test
+
+        public_gate = {
+            "direct_answer": True,
+            "business_insight_present": True,
+            "followups_one_intent": False,
+            "has_verified_claims": False,
+            "verified_claim_preserved": False,
+            "repairable_warnings": ["public_warning"],
+            "display_status": "public_complete",
+        }
+        sibling_gate = {
+            **public_gate,
+            "repairable_warnings": ["sibling_warning"],
+            "display_status": "sibling_untrusted",
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            repository_root = temp_root / "repository"
+            sibling_path = (
+                repository_root
+                / "artifacts"
+                / "other-suite"
+                / "run-sibling-initial"
+                / "answer_package.json"
+            )
+            sibling_path.parent.mkdir(parents=True)
+            sibling_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "run-sibling-initial",
+                        "quality_gate": sibling_gate,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class Core:
+                evidence_resolver = None
+
+                def run_message(self, **kwargs):
+                    Path(kwargs["artifact_root"]).mkdir(parents=True, exist_ok=True)
+                    return {
+                        "status": "completed",
+                        "run_id": "run-sibling-initial",
+                        "topic_id": "topic-sibling-initial",
+                        "intent": "analysis",
+                        "topic_relation": "new_topic",
+                        "answer_package": {"quality_gate": public_gate},
+                        "context_manifest": {
+                            "manifest_id": "context-sibling-initial",
+                            "can_support_claims": False,
+                            "items": [],
+                        },
+                        "accepted_graph": [],
+                        "artifact_path": str(sibling_path),
+                        "llm_calls": [],
+                    }
+
+            with patch.object(system_test, "ROOT", repository_root):
+                output = system_test.run_case(
+                    Core(),
+                    {
+                        "id": "sibling-initial-quality",
+                        "turns": [{"user": "检查证据边界。", "expect": {}}],
+                    },
+                    temp_root / "eval-artifacts",
+                )
+
+        review = output["turns"][0]["quality_review"]
+        self.assertEqual(review["display_status"], "public_complete")
+        self.assertEqual(
+            review["final_answer_audit_warnings"],
+            ["public_warning"],
+        )
+
+    def test_live_harness_rejects_resumed_quality_artifact_from_sibling_suite(self):
+        from tempfile import TemporaryDirectory
+
+        from tools.phase7 import run_live_conversation_system_test as system_test
+
+        public_gate = {
+            "direct_answer": True,
+            "business_insight_present": True,
+            "followups_one_intent": False,
+            "has_verified_claims": False,
+            "verified_claim_preserved": False,
+            "repairable_warnings": ["public_resume_warning"],
+            "display_status": "public_resume_complete",
+        }
+        sibling_gate = {
+            **public_gate,
+            "repairable_warnings": ["sibling_resume_warning"],
+            "display_status": "sibling_resume_untrusted",
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            repository_root = temp_root / "repository"
+            sibling_path = (
+                repository_root
+                / "artifacts"
+                / "other-suite"
+                / "run-sibling-resumed"
+                / "answer_package.json"
+            )
+            sibling_path.parent.mkdir(parents=True)
+            sibling_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "run-sibling-resumed",
+                        "quality_gate": sibling_gate,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class Core:
+                evidence_resolver = None
+
+                def __init__(self):
+                    self.calls = 0
+
+                def run_message(self, **kwargs):
+                    self.calls += 1
+                    Path(kwargs["artifact_root"]).mkdir(parents=True, exist_ok=True)
+                    if self.calls == 1:
+                        return {
+                            "status": "waiting_for_clarification",
+                            "run_id": "run-sibling-waiting",
+                            "topic_id": "topic-sibling-resume",
+                            "intent": "analysis",
+                            "topic_relation": "new_topic",
+                            "answer_package": None,
+                            "context_manifest": {
+                                "manifest_id": "context-sibling-waiting",
+                                "can_support_claims": False,
+                                "items": [],
+                            },
+                            "accepted_graph": [],
+                            "artifact_path": "",
+                            "llm_calls": [],
+                            "clarification": {},
+                        }
+                    return {
+                        "status": "completed",
+                        "run_id": "run-sibling-resumed",
+                        "topic_id": "topic-sibling-resume",
+                        "intent": "analysis",
+                        "topic_relation": "inherit_current",
+                        "answer_package": {"quality_gate": public_gate},
+                        "context_manifest": {
+                            "manifest_id": "context-sibling-resumed",
+                            "can_support_claims": False,
+                            "items": [],
+                        },
+                        "accepted_graph": [],
+                        "artifact_path": str(sibling_path),
+                        "llm_calls": [],
+                    }
+
+            with patch.object(system_test, "ROOT", repository_root):
+                output = system_test.run_case(
+                    Core(),
+                    {
+                        "id": "sibling-resumed-quality",
+                        "turns": [
+                            {
+                                "user": "检查证据边界。",
+                                "expect": {},
+                                "clarification_response": "按推荐继续。",
+                            }
+                        ],
+                    },
+                    temp_root / "eval-artifacts",
+                )
+
+        review = output["turns"][0]["resumed_quality_review"]
+        self.assertEqual(review["display_status"], "public_resume_complete")
+        self.assertEqual(
+            review["final_answer_audit_warnings"],
+            ["public_resume_warning"],
+        )
 
     def test_live_harness_uses_fresh_thread_for_each_case_run(self):
         from tools.phase7.run_live_conversation_system_test import _case_thread_id

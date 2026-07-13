@@ -170,6 +170,11 @@ def _effective_result(turn_record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _effective_quality_review(turn_record: Mapping[str, Any]) -> dict[str, Any]:
+    review = _effective_result(dict(turn_record)).get("quality_review")
+    return review if isinstance(review, dict) else {}
+
+
 def _automatic_clarification_response(result: Mapping[str, Any]) -> str:
     clarification = result.get("clarification") or {}
     actions = tuple(
@@ -1952,13 +1957,34 @@ def _expectation_review(
     ]
     manifest = effective_result.get("context_manifest")
     manifest_present = isinstance(manifest, dict) and bool(manifest)
+    requires_claims = _expectation_requires_claims(expect)
     claim_review = _claim_evidence_review(
         effective_result.get("answer_package") or {},
         manifest if isinstance(manifest, dict) else {},
-        requires_claims=_expectation_requires_claims(expect),
+        requires_claims=requires_claims,
     )
-    manifest_can_support_claims = bool(manifest.get("can_support_claims")) if isinstance(manifest, dict) else False
-    claim_support_ok = manifest_present and manifest_can_support_claims and claim_review["passed"]
+    raw_manifest_claim_support = (
+        manifest.get("can_support_claims")
+        if isinstance(manifest, dict)
+        else None
+    )
+    manifest_can_support_claims = raw_manifest_claim_support is True
+    legal_zero_claim_terminal = (
+        not requires_claims
+        and claim_review["claim_count"] == 0
+        and raw_manifest_claim_support is False
+    )
+    claim_support_ok = (
+        manifest_present
+        and claim_review["passed"]
+        and (
+            (
+                claim_review["claim_count"] > 0
+                and manifest_can_support_claims
+            )
+            or legal_zero_claim_terminal
+        )
+    )
     clarification_ok = True
     if expect.get("allow_clarification"):
         clarification_ok = (
@@ -2037,19 +2063,79 @@ def _answer_text(answer_package: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+_QUALITY_CODE_LIST_FIELDS = (
+    "issues",
+    "repairable_warnings",
+    "final_summary_display_warnings",
+    "risk_flags",
+)
+_QUALITY_BOOLEAN_FIELDS = (
+    "blocks_display",
+    "direct_answer",
+    "has_verified_claims",
+    "verified_claim_preserved",
+    "business_insight_present",
+    "followups_one_intent",
+)
+_REQUIRED_QUALITY_BOOLEAN_FIELDS = (
+    "direct_answer",
+    "business_insight_present",
+    "followups_one_intent",
+    "has_verified_claims",
+    "verified_claim_preserved",
+)
+
+
+def _quality_code_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _has_valid_quality_projection(answer_package: Mapping[str, Any]) -> bool:
+    quality_gate = answer_package.get("quality_gate")
+    if not isinstance(quality_gate, Mapping) or not quality_gate:
+        return False
+    if any(field not in quality_gate for field in _REQUIRED_QUALITY_BOOLEAN_FIELDS):
+        return False
+    if "repairable_warnings" not in quality_gate:
+        return False
+    for field in _QUALITY_CODE_LIST_FIELDS:
+        if field not in quality_gate:
+            continue
+        value = quality_gate[field]
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) for item in value
+        ):
+            return False
+    for field in _QUALITY_BOOLEAN_FIELDS:
+        if field in quality_gate and not isinstance(quality_gate[field], bool):
+            return False
+    if "display_status" in quality_gate and not isinstance(
+        quality_gate["display_status"], str
+    ):
+        return False
+    return True
+
+
 def _quality_review(answer_package: dict[str, Any]) -> dict[str, Any]:
     quality_gate = answer_package.get("quality_gate") if isinstance(answer_package, dict) else {}
-    if not isinstance(quality_gate, dict):
+    if not isinstance(quality_gate, Mapping):
         quality_gate = {}
-    issues = list(quality_gate.get("issues") or ())
-    final_summary_warnings = list(quality_gate.get("final_summary_display_warnings") or ())
+    issues = _quality_code_list(quality_gate.get("issues"))
+    final_summary_warnings = _quality_code_list(
+        quality_gate.get("final_summary_display_warnings")
+    )
+    repairable_warnings = _quality_code_list(
+        quality_gate.get("repairable_warnings")
+    )
     soft_warnings = list(
         dict.fromkeys(
             [
                 str(item)
                 for item in (
                     *issues,
-                    *list(quality_gate.get("repairable_warnings") or ()),
+                    *repairable_warnings,
                     *final_summary_warnings,
                 )
                 if item
@@ -2057,19 +2143,82 @@ def _quality_review(answer_package: dict[str, Any]) -> dict[str, Any]:
         )
     )
     return {
-        "blocks_display": bool(quality_gate.get("blocks_display")),
-        "display_status": str(quality_gate.get("display_status") or ""),
-        "final_answer_audit_warnings": list(quality_gate.get("repairable_warnings") or ()),
+        "blocks_display": quality_gate.get("blocks_display") is True,
+        "display_status": (
+            quality_gate.get("display_status")
+            if isinstance(quality_gate.get("display_status"), str)
+            else ""
+        ),
+        "final_answer_audit_warnings": repairable_warnings,
         "quality_gate_issues": issues,
         "final_summary_display_warnings": final_summary_warnings,
         "quality_warnings": soft_warnings,
-        "risk_markers": list(quality_gate.get("risk_flags") or ()),
-        "direct_answer": bool(quality_gate.get("direct_answer")),
-        "has_verified_claims": bool(quality_gate.get("has_verified_claims")),
-        "verified_claim_preserved": bool(quality_gate.get("verified_claim_preserved")),
-        "business_insight_present": bool(quality_gate.get("business_insight_present")),
-        "followups_one_intent": bool(quality_gate.get("followups_one_intent")),
+        "risk_markers": _quality_code_list(quality_gate.get("risk_flags")),
+        "direct_answer": quality_gate.get("direct_answer") is True,
+        "has_verified_claims": quality_gate.get("has_verified_claims") is True,
+        "verified_claim_preserved": (
+            quality_gate.get("verified_claim_preserved") is True
+        ),
+        "business_insight_present": (
+            quality_gate.get("business_insight_present") is True
+        ),
+        "followups_one_intent": quality_gate.get("followups_one_intent") is True,
     }
+
+
+def _load_run_matched_internal_answer_package(
+    result: Mapping[str, Any],
+    *,
+    artifact_root: Path | None = None,
+) -> dict[str, Any] | None:
+    raw_path = result.get("artifact_path")
+    expected_run_id = result.get("run_id")
+    if (
+        not isinstance(raw_path, str)
+        or not raw_path.strip()
+        or not isinstance(expected_run_id, str)
+        or not expected_run_id
+    ):
+        return None
+    raw = Path(raw_path)
+    if ".." in raw.parts:
+        return None
+    try:
+        trusted_root = (artifact_root or (ROOT / "artifacts")).resolve(strict=True)
+        candidate = (
+            raw
+            if raw.is_absolute()
+            else (trusted_root / raw if artifact_root is not None else ROOT / raw)
+        )
+        internal_path = candidate.resolve(strict=True)
+        internal_path.relative_to(trusted_root)
+        internal_package = json.loads(internal_path.read_text(encoding="utf-8"))
+    except (OSError, RuntimeError, UnicodeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(internal_package, dict):
+        return None
+    persisted_run_id = internal_package.get("run_id")
+    if not isinstance(persisted_run_id, str) or not persisted_run_id:
+        return None
+    if persisted_run_id != expected_run_id:
+        return None
+    return internal_package
+
+
+def _runtime_quality_review(
+    result: Mapping[str, Any],
+    *,
+    artifact_root: Path | None = None,
+) -> dict[str, Any]:
+    internal_package = _load_run_matched_internal_answer_package(
+        result,
+        artifact_root=artifact_root,
+    )
+    if internal_package is not None:
+        if _has_valid_quality_projection(internal_package):
+            return _quality_review(internal_package)
+    public_package = result.get("answer_package") or {}
+    return _quality_review(public_package if isinstance(public_package, dict) else {})
 
 
 def _strict_quality_failed(turn_record: dict[str, Any]) -> bool:
@@ -2841,11 +2990,7 @@ def _case_output(
             str(warning)
             for turn in turns
             for warning in (
-                (
-                    (turn.get("resumed_quality_review") or turn.get("quality_review") or {})
-                    .get("quality_warnings")
-                    or ()
-                )
+                _effective_quality_review(turn).get("quality_warnings") or ()
             )
             if warning
         }
@@ -3002,7 +3147,7 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
         "answer_quality": {
             "blocking": False,
             "warning_count": sum(
-                len((turn.get("quality_review") or {}).get("quality_warnings") or ())
+                len(_effective_quality_review(turn).get("quality_warnings") or ())
                 for turn in turns
             ),
         },
@@ -3045,22 +3190,23 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _has_completed_final_answer_audit(turn: Mapping[str, Any]) -> bool:
+def _has_completed_final_answer_audit(
+    turn: Mapping[str, Any],
+    *,
+    artifact_root: Path | None = None,
+) -> bool:
     effective = _effective_result(dict(turn))
     if str(effective.get("status") or "") != "completed":
         return False
-    raw_path = effective.get("artifact_path")
-    expected_run_id = str(effective.get("run_id") or "")
-    if not isinstance(raw_path, str) or not raw_path.strip() or not expected_run_id:
-        return False
-    artifact_root = Path("artifacts").resolve()
-    try:
-        internal_path = Path(raw_path).resolve()
-        internal_path.relative_to(artifact_root)
-        internal_package = json.loads(internal_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
-        return False
-    if str(internal_package.get("run_id") or "") != expected_run_id:
+    internal_package = _load_run_matched_internal_answer_package(
+        effective,
+        artifact_root=(
+            artifact_root
+            if artifact_root is not None
+            else ROOT / "artifacts" / "phase-7"
+        ),
+    )
+    if internal_package is None:
         return False
     return any(
         isinstance(item, Mapping)
@@ -3100,7 +3246,10 @@ def _write_case_artifact(
         "quality-review": {
             "case_id": case_id,
             "answer_quality": output.get("coverage_summary", {}).get("answer_quality", {}),
-            "turns": [turn.get("quality_review") for turn in output.get("turns", [])],
+            "turns": [
+                _effective_quality_review(turn)
+                for turn in output.get("turns", [])
+            ],
         },
         "coverage-summary": output.get("coverage_summary", {}),
     }
@@ -3120,6 +3269,7 @@ def run_case(
     run_mode: str = "dry_run",
 ) -> dict[str, Any]:
     thread_id = _case_thread_id(case)
+    core_artifact_root = (ROOT / "artifacts" / "phase-7").resolve()
     analysis_context = dict(case.get("analysis_context") or {})
     coverage_authority = None
     requires_coverage_authority = any(
@@ -3149,9 +3299,9 @@ def run_case(
         result = core.run_message(
             thread_id=thread_id,
             user_message=turn["user"],
+            artifact_root=str(core_artifact_root),
             analysis_context=analysis_context or None,
         )
-        answer_package = result.get("answer_package") or {}
         turn_record = {
             "index": index,
             "user": turn["user"],
@@ -3165,7 +3315,10 @@ def run_case(
             "context_manifest": result.get("context_manifest"),
             "accepted_graph": result.get("accepted_graph"),
             "llm_calls": result.get("llm_calls", []),
-            "quality_review": _quality_review(answer_package),
+            "quality_review": _runtime_quality_review(
+                result,
+                artifact_root=core_artifact_root,
+            ),
             "clarification": result.get("clarification"),
             "artifact_path": result.get("artifact_path"),
             "scenario": dict(turn.get("scenario") or {}),
@@ -3182,9 +3335,9 @@ def run_case(
             resumed = core.run_message(
                 thread_id=thread_id,
                 user_message=response,
+                artifact_root=str(core_artifact_root),
                 analysis_context=analysis_context or None,
             )
-            resumed_answer_package = resumed.get("answer_package") or {}
             clarification_resumes.append({
                 "index": clarification_index,
                 "response": response,
@@ -3205,7 +3358,10 @@ def run_case(
             turn_record["resumed_context_manifest"] = resumed.get("context_manifest")
             turn_record["resumed_accepted_graph"] = resumed.get("accepted_graph")
             turn_record["resumed_llm_calls"] = resumed.get("llm_calls", [])
-            turn_record["resumed_quality_review"] = _quality_review(resumed_answer_package)
+            turn_record["resumed_quality_review"] = _runtime_quality_review(
+                resumed,
+                artifact_root=core_artifact_root,
+            )
             turn_record["resumed_clarification"] = resumed.get("clarification")
             turn_record["resumed_artifact_path"] = resumed.get("artifact_path")
             current = resumed

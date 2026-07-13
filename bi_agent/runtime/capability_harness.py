@@ -14,7 +14,15 @@ from bi_agent.runtime.capability_execution import (
     BoundCapabilityInput,
     validate_bound_capability_input,
 )
+from bi_agent.runtime.authoritative_query_chain import validate_authoritative_query_chain
 from bi_agent.runtime.evidence_authority import legacy_fixture_enabled
+from bi_agent.runtime.window_metric_evidence import (
+    WindowMetricAggregate,
+    WindowMetricComparison,
+    WindowMetricEvidenceError,
+    WindowMetricObservation,
+    aggregate_window_metric_comparison,
+)
 
 PATTERN_COMPARE_CAPABILITIES = frozenset(
     {
@@ -164,34 +172,24 @@ def _execute_data_quality_profile(
 def _execute_window_metric_compare(
     request: CapabilityRequest,
 ) -> CapabilityEvidenceEnvelope:
-    rows = tuple(dict(row) for row in _capability_rows(request, ()))
-    target_rows = tuple(row for row in rows if row.get("window_role") == "target")
-    baseline_rows = tuple(row for row in rows if row.get("window_role") == "baseline")
     limitations: tuple[str, ...] = ()
-    target_value: Decimal | None = None
-    baseline_value: Decimal | None = None
-    if len(target_rows) != 1 or len(baseline_rows) != 1:
-        limitations = ("window_pair_cardinality_invalid",)
+    comparison: WindowMetricComparison | None = None
+    if _legacy_fixture_allowed(request):
+        comparison = _legacy_window_metric_comparison(request)
+        if comparison is None:
+            limitations = ("window_pair_cardinality_invalid",)
     else:
-        try:
-            target_value = Decimal(str(target_rows[0][request.metric]))
-            baseline_value = Decimal(str(baseline_rows[0][request.metric]))
-            if not target_value.is_finite() or not baseline_value.is_finite():
-                raise InvalidOperation
-        except (InvalidOperation, KeyError, ValueError):
-            limitations = ("window_metric_invalid",)
-            target_value = None
-            baseline_value = None
-    absolute_change = (
-        target_value - baseline_value
-        if target_value is not None and baseline_value is not None
-        else None
-    )
-    relative_change = (
-        absolute_change / baseline_value
-        if absolute_change is not None and baseline_value not in {None, Decimal(0)}
-        else None
-    )
+        comparison = _authoritative_window_metric_comparison(request)
+    payload = comparison.to_payload() if comparison is not None else {
+        "metric": request.metric,
+        "target_window_id": "",
+        "baseline_window_id": "",
+        "target_value": None,
+        "baseline_value": None,
+        "absolute_change": None,
+        "relative_change": None,
+        "comparisons": (),
+    }
     evidence_type, strength, wording_limit, limitations = _evidence_boundary(
         request,
         evidence_type="statistical_association" if not limitations else "insufficient",
@@ -201,10 +199,13 @@ def _execute_window_metric_compare(
     )
     result_refs = _result_refs(request, ())
     numeric_facts = {
-        "target_value": target_value,
-        "baseline_value": baseline_value,
-        "absolute_change": absolute_change,
-        "relative_change": relative_change,
+        key: payload[key]
+        for key in (
+            "target_value",
+            "baseline_value",
+            "absolute_change",
+            "relative_change",
+        )
     }
     return CapabilityEvidenceEnvelope(
         evidence_ref=f"{request.capability_id}:{request.run_id}",
@@ -219,18 +220,7 @@ def _execute_window_metric_compare(
         target_label=str(request.target.get("label", "")),
         time_window=request.time_window,
         numeric_facts=numeric_facts,
-        typed_payload={
-            "metric": request.metric,
-            "target_window_id": (
-                str(target_rows[0].get("window_id") or "") if len(target_rows) == 1 else ""
-            ),
-            "baseline_window_id": (
-                str(baseline_rows[0].get("window_id") or "")
-                if len(baseline_rows) == 1
-                else ""
-            ),
-            **numeric_facts,
-        },
+        typed_payload=payload,
         result_refs=result_refs,
         sql_hashes=_sql_hashes(request, ()),
         evidence_type=evidence_type,
@@ -245,6 +235,80 @@ def _execute_window_metric_compare(
         admin_audit_ref=f"capability:{request.run_id}:{request.capability_id}",
         **_bound_provenance(request),
     )
+
+
+def _authoritative_window_metric_comparison(
+    request: CapabilityRequest,
+) -> WindowMetricComparison:
+    bound = _bound_input(request)
+    if (
+        bound is None
+        or not bound.binding_manifest_ref
+        or request.evidence_resolver is None
+        or request.rows_loader is None
+        or request.runtime_registry is None
+    ):
+        raise WindowMetricEvidenceError("window_metric_authority_missing")
+    binding = request.evidence_resolver.resolve_capability_binding(
+        bound.binding_manifest_ref
+    )
+    chain = validate_authoritative_query_chain(
+        binding,
+        resolver=request.evidence_resolver,
+        rows_loader=request.rows_loader,
+        runtime_registry=request.runtime_registry,
+        release_resolver=request.release_resolver,
+    )
+    if len(chain.primary_results) != 1:
+        raise WindowMetricEvidenceError("window_metric_query_cardinality_invalid")
+    result = chain.primary_results[0]
+    contract = chain.query_records[result.result_ref].contract
+    return aggregate_window_metric_comparison(
+        contract,
+        result.rows,
+        metric_id=request.metric,
+    )
+
+
+def _legacy_window_metric_comparison(
+    request: CapabilityRequest,
+) -> WindowMetricComparison | None:
+    rows = tuple(dict(row) for row in _capability_rows(request, ()))
+    targets = tuple(row for row in rows if row.get("window_role") == "target")
+    baselines = tuple(row for row in rows if row.get("window_role") == "baseline")
+    if len(targets) != 1 or len(baselines) != 1:
+        return None
+    # Legacy fixture mode is explicitly non-authoritative; retain its narrow two-row path.
+    target_value = _legacy_decimal(targets[0].get(request.metric))
+    baseline_value = _legacy_decimal(baselines[0].get(request.metric))
+    if target_value is None or baseline_value is None:
+        return None
+    aggregates = tuple(
+        WindowMetricAggregate(
+            window_id=str(row.get("window_id") or ""),
+            role=str(row.get("window_role") or ""),
+            aggregation="daily_total",
+            required_complete_days=1,
+            value=value,
+            observations=(
+                WindowMetricObservation(
+                    str(row.get("observation_key") or ""), value
+                ),
+            ),
+        )
+        for row, value in zip((*targets, *baselines), (target_value, baseline_value))
+    )
+    return WindowMetricComparison(request.metric, aggregates[0], aggregates[1], ())
+
+
+def _legacy_decimal(value: Any) -> Decimal | None:
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
 def _execute_context_capability(
     request: CapabilityRequest,
 ) -> CapabilityEvidenceEnvelope:
@@ -344,11 +408,24 @@ def _budget_limitation(request: CapabilityRequest) -> str:
         return "capability_timeout"
     if should_ask_before_more_exploration(request.budget_state):
         return "capability_budget_exhausted"
-    rows = params.get("rows", ())
+    bound = _bound_input(request)
+    rows = (
+        tuple(
+            row
+            for slot_rows in bound.rows_by_slot.values()
+            for row in slot_rows
+        )
+        if bound is not None
+        else params.get("rows", ())
+    )
     row_budget = _positive_int(params.get("row_budget", 5000), 5000)
     if isinstance(rows, (list, tuple)) and len(rows) > row_budget:
         return "row_budget_exceeded"
-    result_refs = tuple(params.get("result_refs", ()))
+    result_refs = (
+        (*bound.result_refs, *bound.validation_result_refs)
+        if bound is not None
+        else tuple(params.get("result_refs", ()))
+    )
     result_ref_budget = _positive_int(params.get("result_ref_budget", 100), 100)
     if len(result_refs) > result_ref_budget:
         return "result_ref_budget_exceeded"

@@ -5,6 +5,11 @@ from datetime import date, datetime, timezone
 import math
 from typing import Any, Iterable, Mapping
 
+from bi_agent.conversation.clarification_authority import (
+    validate_material_authority,
+    validate_material_authority_contract_overlap,
+    validate_terminal_resume_proposal_overlap,
+)
 from bi_agent.runtime.analysis_contracts import (
     AnalysisContract,
     CapabilityExecutionPlan,
@@ -30,6 +35,19 @@ from bi_agent.runtime.dataset_catalog import (
 )
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from bi_agent.runtime.window_resolver import WindowResolution, resolve_revenue_windows
+
+
+_TERMINAL_GAP_AUTHORITY_KEYS = frozenset(
+    {
+        "source_run_id",
+        "thread_id",
+        "topic_id",
+        "analysis_contract",
+        "analysis_contract_signature",
+        "material_authority",
+        "clarification_outcome",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -229,31 +247,14 @@ def compile_analysis_contract(
         )
     )
     target_metrics = _values(proposal, "target_metrics")
-    bound_target_metric_ids = {
-        binding.metric_id
-        for binding in metric_bindings
-        if binding.metric_id in target_metrics
-    }
-    unresolved_target_metric_refs = _unresolved_target_metric_refs(
-        target_metrics,
-        bound_target_metric_ids,
-        registry,
-    )
     analysis = AnalysisContract(
         analysis_contract_id=analysis_contract_id,
         contract_version=registry.contract_version,
         question_families=_values(proposal, "question_families"),
-        target_metric_refs=tuple(
-            dict.fromkeys(
-                (
-                    *(
-                        binding.contract_ref
-                        for binding in metric_bindings
-                        if binding.metric_id in target_metrics
-                    ),
-                    *unresolved_target_metric_refs,
-                )
-            )
+        target_metric_refs=_ordered_target_metric_refs(
+            target_metrics,
+            metric_bindings,
+            registry,
         ),
         claim_intents=accepted_claim_intents,
         scope=_scope(
@@ -304,14 +305,7 @@ def _accepted_terminal_gap_authority(
     authority = proposal.get("accepted_terminal_gap_authority")
     if not isinstance(authority, Mapping):
         raise ValueError("accepted_terminal_gap_authority_missing")
-    if set(authority) != {
-        "source_run_id",
-        "thread_id",
-        "topic_id",
-        "analysis_contract",
-        "analysis_contract_signature",
-        "clarification_outcome",
-    }:
+    if set(authority) != _TERMINAL_GAP_AUTHORITY_KEYS:
         raise ValueError("accepted_terminal_gap_authority_shape_invalid")
     if str(authority.get("source_run_id") or "") != source_run_id:
         raise ValueError("accepted_terminal_gap_source_mismatch")
@@ -324,6 +318,12 @@ def _accepted_terminal_gap_authority(
         or authority.get("topic_id") != expected_topic
     ):
         raise ValueError("accepted_terminal_gap_owner_mismatch")
+    validated_material_authority = validate_material_authority(
+        authority.get("material_authority"),
+        source_run_id=source_run_id,
+        thread_id=expected_thread,
+        topic_id=expected_topic,
+    )
     source = authority.get("analysis_contract")
     if not isinstance(source, Mapping):
         raise ValueError("accepted_terminal_gap_source_invalid")
@@ -337,6 +337,14 @@ def _accepted_terminal_gap_authority(
         analysis_contract_signature(prior)
     ):
         raise ValueError("accepted_terminal_gap_contract_signature_invalid")
+    validate_material_authority_contract_overlap(
+        validated_material_authority,
+        prior,
+    )
+    validate_terminal_resume_proposal_overlap(
+        validated_material_authority,
+        proposal,
+    )
     outcome = authority.get("clarification_outcome")
     if not isinstance(outcome, Mapping) or set(outcome) != {
         "outcome_ref",
@@ -2507,14 +2515,20 @@ def _source_ambiguity_gap(
     )
 
 
-def _unresolved_target_metric_refs(
+def _ordered_target_metric_refs(
     target_metrics: tuple[str, ...],
-    bound_target_metric_ids: set[str],
+    metric_bindings: tuple[MetricBinding, ...],
     registry: RuntimeContractRegistry,
 ) -> tuple[str, ...]:
     refs: list[str] = []
     for metric_id in target_metrics:
-        if metric_id in bound_target_metric_ids:
+        bound_refs = tuple(
+            binding.contract_ref
+            for binding in metric_bindings
+            if binding.metric_id == metric_id
+        )
+        if bound_refs:
+            refs.extend(bound_refs)
             continue
         try:
             sources = registry.metric_sources(metric_id).values()
