@@ -125,6 +125,18 @@ a verified claim only from its own complete binding, result, completeness, and
 evidence provenance. Overlapping claim types do not transfer authority from an
 omitted capability to a ready sibling.
 
+An item-scoped metric or dimension gap cannot become global merely because its
+control-plane marker is `analysis_contract`. Persistence resolves that item to
+the concrete metric, dimension, binding, query, and producing-capability
+dependencies before testing a verified claim. A gap for `paid_users`,
+`first_paid_users`, or `channel` therefore cannot block an independent
+`paid_amount` claim produced by a complete `market_health_compare` chain. A
+truly unscoped gap, or a scoped gap that intersects the claim's evidence metric,
+dimensions, binding, query, or producing capability, remains a hard publication
+failure. This dependency test is required in both compiler reconciliation and
+runtime-persistence validation; a shared claim type alone cannot create the
+intersection.
+
 The signed terminal-resume proposal continues to carry the complete reviewed
 claim-intent and context-source request while capability nodes are removed by
 the accepted gap choice. Route pruning must not pre-filter those signed axes.
@@ -357,6 +369,17 @@ AgentCore validates and finalizes it only after delivery, Answer Package, asset,
 and runtime-record persistence boundaries succeed. A missing or malformed
 carrier fails the run and cannot establish a completed source authority.
 
+Blocked or queryless AnalysisContracts still require a reversible target metric
+identity. Their target refs are resolved through reviewed metric/source
+contracts and do not require a query-time MetricBinding that cannot exist on a
+blocked path. The completed-material carrier performs this target-resolution
+preflight before any runtime publication is written. If the target is not
+uniquely resolvable, publication fails before the first write with a typed
+authority error. AgentCore distinguishes bundle validation from completed-
+authority finalization, preserves any already-written artifact path and safe
+subreason, and never reports a partial authority as an opaque
+`analysis_runtime_persistence_failed`.
+
 Result reuse candidates are a follow-up index derived from that completed claim
 authority. AgentCore publishes them only after completed-authority finalization
 succeeds, so a finalizer failure leaves no failed-run result refs. If index
@@ -554,6 +577,38 @@ semantics out of the provider transport and leaves one composable boundary for
 later context-family coherence checks. Test doubles that do not advertise this
 retry capability continue through their existing one-shot workflow validation.
 No path fills or rewrites provider intent locally after a real output failure.
+
+The business-intent prompt also receives registry-derived compatibility maps
+for every allowed business-context source and context-backed dimension. If the
+provider requests one of those axes, its primary/secondary question-family set
+must intersect the corresponding reviewed family set. That coherence check is
+composed with the pattern validator inside the same provider retry loop. Local
+code cannot add a missing family, remove the requested source/dimension, or
+otherwise repair intent after provider failure. Metric-native dimensions remain
+valid without an unrelated context family.
+
+Evaluation consumes one run-matched PostgreSQL authority projection containing
+the AnalysisContract, QueryContracts, QueryExecution and Completeness records,
+CapabilityBinding records, delivery-verifier audit, evidence/claim links, and
+final ReuseDecisions. Obligation, dataset-state, real-ClickHouse, and reuse
+reviews all use that normalized projection. A client-facing Answer Package may
+remain minimized; claim producer labels alone never prove execution, and
+cross-run, duplicate, or digest-drifted authority fails closed.
+
+Semantic rerun and physical query reuse are separate decisions. A follow-up may
+require a new AnalysisContract and new claim while reusing an identical physical
+QueryContract. The internal reuse channel compiles the current contract first,
+then requires exact query signature, windows, release, permission, schema, and
+completeness equality before a cache hit. Public ContextManifest semantics may
+still say `rerun`. The final physical ReuseDecision is immutable runtime
+authority and is included in the normalized evaluation projection.
+
+When a real run or clarification resume fails before publication, downstream
+coverage stages report `not_evaluated_due_to_run_failure` with the preserved
+primary LLM/runtime reason. They do not manufacture secondary
+`artifact_path_missing`, empty-dataset, or missing-binding root causes. Provider
+schema failures retain safe per-attempt audit metadata and never receive a local
+narrative fallback.
 
 The reviewed clarification escape `tell the agent to do differently` is a
 machine contract token even though it is displayed inside a user-facing options

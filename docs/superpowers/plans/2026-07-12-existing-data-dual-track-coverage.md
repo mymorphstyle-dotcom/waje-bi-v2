@@ -1503,6 +1503,11 @@ boundary:
   still calls the client once, and legacy test doubles retain their existing
   one-shot workflow validation. The callback remains composable for subsequent
   context-family coherence validation without adding another retry loop;
+- business-intent input exposes registry-derived compatibility maps for each
+  allowed context source and context-backed dimension. Any requested business-
+  context axis must be covered by at least one selected primary/secondary family
+  inside the same provider callback and three-attempt loop. Exhaustion fails
+  typed; local code cannot add a family or delete an axis;
 - production/live business-intent input and prompt expose the shared baseline
   registry's closed `allowed_baseline_ids` plus business labels and semantics;
   baseline candidates must be an explicit array of exact string ids copied from
@@ -1543,6 +1548,44 @@ Run focused RED/GREEN tests, the complete LLM workflow suite, provider-client
 tests, and the affected conversation and obligation regressions. This repair
 must cover runtime classes and cannot key on an eval sentence, case id, or one
 provider response.
+
+- [ ] **Step 6b: Close runtime-publication and evaluation-authority failures**
+
+Implement these general lanes from the real fixed/platform artifacts before the
+formal final rerun:
+
+- item-scoped metric or dimension gaps with only the control marker
+  `analysis_contract` must resolve their concrete dependencies before runtime
+  publication. They block a verified claim only when the item intersects that
+  claim's evidence metric, dimensions, binding, query, or producing capability.
+  Truly unscoped gaps and real intersections remain hard failures;
+- blocked/queryless AnalysisContracts must resolve target metric identity from
+  reviewed metric/source contracts without requiring an absent query-time
+  MetricBinding. Run this completed-material preflight before writing runtime
+  publication. Preserve typed bundle/finalizer failure reasons and any existing
+  artifact path; do not leave a partial publication behind an opaque generic
+  failure;
+- add one eval-private run-matched authority projection over PostgreSQL
+  AnalysisContract, QueryContract, QueryExecution, Completeness,
+  CapabilityBinding, delivery verifier, evidence/claim links, and final
+  ReuseDecision. Obligation, dataset, real-ClickHouse, and reuse reviews consume
+  this same projection and reject cross-run, duplicate, or digest drift;
+- keep semantic rerun for new AnalysisContracts/claims while forwarding an
+  internal physical-query candidate. Compile the current QueryContract first;
+  cache hit requires exact signature, windows, release, permission, schema, and
+  completeness. Persist the final physical ReuseDecision as immutable runtime
+  authority;
+- when the primary run or clarification resume fails, coverage output records
+  `not_evaluated_due_to_run_failure` plus the preserved primary reason. Missing
+  artifact/binding/dataset checks do not become secondary root failures.
+
+Write paired RED tests for each hard boundary: unrelated scoped gap passes while
+an intersecting gap blocks; queryless target resolves while ambiguous target
+fails before the first write; persisted authority proves execution while a
+claim label alone does not; identical physical contracts reuse while every
+signature/security/provenance change reruns; failed runs keep their primary
+reason. Then run the affected persistence, AgentCore, obligation, runtime-review,
+and real suite tests.
 
 - [ ] **Step 7: Final independent code and artifact review**
 
