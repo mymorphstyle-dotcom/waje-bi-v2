@@ -213,6 +213,18 @@ result, current result, QueryContract, expected capability, and expected
 dataset provenance. Nested, unpublished, same-run, cross-topic, non-prior, or
 otherwise unbound reuse markers never satisfy acceptance.
 
+Evaluation resolves the current AnalysisContract from the conversation store's
+run-matched persisted authority. The local Answer Package artifact remains a
+mandatory replay and cross-check input, but it does not have to duplicate the
+full contract under one presentation-specific admin field. An artifact may
+carry either an exact embedded contract or the exact
+`analysis_runtime_persistence.analysis_contract_ref`; when both exist, both
+must match the store authority. The resolver queries PostgreSQL by run owner and
+requires one contract row, then validates the stored signature and typed
+contract content. It never derives a contract id from the run-id format.
+Missing resolvers, missing or ambiguous rows, run/ref/signature/content drift,
+artifact path failures, and client-only fallbacks remain typed hard failures.
+
 Known source gaps should not trigger repeated clarification. Once the user
 accepts the reviewed degraded route, the run resumes the original topic and
 executes every remaining valid capability.

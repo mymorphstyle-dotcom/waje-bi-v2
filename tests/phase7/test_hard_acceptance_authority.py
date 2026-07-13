@@ -8,6 +8,7 @@ import pytest
 from bi_agent.runtime.analysis_contracts import (
     AnalysisContract,
     ContractGap,
+    analysis_contract_signature,
     analysis_contract_from_dict,
     query_contract_signature,
 )
@@ -370,7 +371,7 @@ def test_obligation_review_unions_ordered_persisted_family_set_with_provenance(
         ("run_mismatch", "run_id_mismatch"),
         ("missing_expected_run_id", "run_id_missing"),
         ("missing_payload_run_id", "persisted_run_id_missing"),
-        ("contract_id_mismatch", "analysis_contract_id_mismatch"),
+        ("contract_id_mismatch", "persisted_analysis_contract_mismatch"),
         ("effective_contract_mismatch", "effective_analysis_contract_id_mismatch"),
         ("expected_run_id_nonstring", "run_id_invalid"),
         ("persisted_run_id_nonstring", "persisted_run_id_invalid"),
@@ -440,8 +441,24 @@ def test_runtime_audit_package_never_falls_back_to_client_gap_authority(
         result["run_id"] = (
             123 if artifact_state == "expected_run_id_nonstring" else run_id
         )
+    signature = analysis_contract_signature(
+        analysis_contract_from_dict(contract)
+    )
 
-    assert system_test._runtime_audit_package(result) == {
+    def resolve_authority(_resolved_run_id):
+        return {
+            "run_id": run_id,
+            "analysis_contract": {
+                **contract,
+                "contract_signature": signature,
+            },
+            "stored_contract_signature": signature,
+        }
+
+    assert system_test._runtime_audit_package(
+        result,
+        authority_resolver=resolve_authority,
+    ) == {
         "_authority_error": expected_error
     }
 
@@ -456,6 +473,428 @@ def test_runtime_audit_package_rejects_client_path_fallback(tmp_path, monkeypatc
         "run_id": "run-expected",
         "answer_package": {"artifact_path": "artifacts/client.json"},
     }) == {"_authority_error": "artifact_path_missing"}
+
+
+def test_runtime_audit_package_resolves_completed_contract_by_run_when_artifact_only_has_ref(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    run_id = "run-completed-resume"
+    contract = {
+        **_analysis_contract(_canonical_gap()),
+        "analysis_contract_id": "analysis-contract:completed-resume:v2",
+    }
+    signature = analysis_contract_signature(
+        analysis_contract_from_dict(contract)
+    )
+    package = {
+        "run_id": run_id,
+        "status": "completed",
+        "sections": [{"id": "summary", "payload": {"claims": []}}],
+        "admin_audit": {
+            "analysis_runtime_persistence": {
+                "status": "persisted",
+                "analysis_contract_ref": contract["analysis_contract_id"],
+                "verified_claim_refs": [],
+            }
+        },
+    }
+    path = artifact_root / "answer_package.json"
+    path.write_text(json.dumps(package), encoding="utf-8")
+    resolved_run_ids = []
+
+    def resolve_authority(resolved_run_id):
+        resolved_run_ids.append(resolved_run_id)
+        return {
+            "run_id": run_id,
+            "analysis_contract": {
+                **contract,
+                "contract_signature": signature,
+            },
+            "stored_contract_signature": signature,
+        }
+
+    audited = system_test._runtime_audit_package(
+        {
+            "run_id": run_id,
+            "status": "completed",
+            "artifact_path": str(path),
+            "answer_package": package,
+        },
+        authority_resolver=resolve_authority,
+    )
+
+    assert resolved_run_ids == [run_id]
+    assert audited["run_id"] == run_id
+    assert audited["sections"] == package["sections"]
+    assert audited["admin_audit"]["analysis_contract"] == contract
+
+
+@pytest.mark.parametrize(
+    ("resolver_state", "expected_error"),
+    [
+        ("missing", "missing_runtime_authority_resolver"),
+        ("record_missing", "persisted_analysis_contract_missing"),
+        ("run_mismatch", "runtime_authority_run_id_mismatch"),
+        ("signature_drift", "persisted_analysis_contract_signature_mismatch"),
+    ],
+)
+def test_runtime_audit_package_fails_closed_on_invalid_run_authority(
+    tmp_path, monkeypatch, resolver_state, expected_error
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    run_id = "run-authority-boundary"
+    contract = {
+        **_analysis_contract(_canonical_gap()),
+        "analysis_contract_id": f"analysis:{run_id}:1",
+    }
+    signature = analysis_contract_signature(
+        analysis_contract_from_dict(contract)
+    )
+    package = {
+        "run_id": run_id,
+        "admin_audit": {
+            "analysis_runtime_persistence": {
+                "status": "persisted",
+                "analysis_contract_ref": contract["analysis_contract_id"],
+            }
+        },
+    }
+    path = artifact_root / "answer_package.json"
+    path.write_text(json.dumps(package), encoding="utf-8")
+
+    def resolve_authority(_resolved_run_id):
+        if resolver_state == "record_missing":
+            return None
+        return {
+            "run_id": "run-other" if resolver_state == "run_mismatch" else run_id,
+            "analysis_contract": {
+                **contract,
+                "contract_signature": (
+                    "0" * 64 if resolver_state == "signature_drift" else signature
+                ),
+            },
+            "stored_contract_signature": signature,
+        }
+
+    audited = system_test._runtime_audit_package(
+        {
+            "run_id": run_id,
+            "artifact_path": str(path),
+            "answer_package": package,
+        },
+        authority_resolver=(
+            None if resolver_state == "missing" else resolve_authority
+        ),
+    )
+
+    assert audited == {"_authority_error": expected_error}
+
+
+def test_runtime_audit_package_fails_closed_on_artifact_contract_drift(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    run_id = "run-artifact-contract-drift"
+    contract = {
+        **_analysis_contract(_canonical_gap()),
+        "analysis_contract_id": f"analysis:{run_id}:1",
+    }
+    drifted = {**contract, "question_families": ["revenue_health_review"]}
+    signature = analysis_contract_signature(
+        analysis_contract_from_dict(contract)
+    )
+    path = artifact_root / "answer_package.json"
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "admin_audit": {"analysis_contract": drifted},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert system_test._runtime_audit_package(
+        {
+            "run_id": run_id,
+            "artifact_path": str(path),
+        },
+        authority_resolver=lambda _run_id: {
+            "run_id": run_id,
+            "analysis_contract": {
+                **contract,
+                "contract_signature": signature,
+            },
+            "stored_contract_signature": signature,
+        },
+    ) == {"_authority_error": "persisted_analysis_contract_mismatch"}
+
+
+def test_runtime_audit_package_fails_closed_on_artifact_contract_ref_drift(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    run_id = "run-artifact-contract-ref-drift"
+    contract = {
+        **_analysis_contract(_canonical_gap()),
+        "analysis_contract_id": "analysis-contract:authority:9",
+    }
+    signature = analysis_contract_signature(
+        analysis_contract_from_dict(contract)
+    )
+    path = artifact_root / "answer_package.json"
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "admin_audit": {
+                    "analysis_runtime_persistence": {
+                        "status": "persisted",
+                        "analysis_contract_ref": "analysis-contract:stale:8",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert system_test._runtime_audit_package(
+        {
+            "run_id": run_id,
+            "artifact_path": str(path),
+        },
+        authority_resolver=lambda _run_id: {
+            "run_id": run_id,
+            "analysis_contract": {
+                **contract,
+                "contract_signature": signature,
+            },
+            "stored_contract_signature": signature,
+        },
+    ) == {
+        "_authority_error": "persisted_analysis_contract_ref_mismatch"
+    }
+
+
+@pytest.mark.parametrize(
+    "drift_location",
+    ["result_root", "answer_root", "answer_admin"],
+)
+def test_runtime_audit_package_validates_every_client_contract_copy(
+    tmp_path, monkeypatch, drift_location
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    run_id = "run-client-contract-copies"
+    contract = {
+        **_analysis_contract(_canonical_gap()),
+        "analysis_contract_id": "analysis-contract:client-copies:1",
+    }
+    drifted = {**contract, "question_families": ["revenue_health_review"]}
+    signature = analysis_contract_signature(
+        analysis_contract_from_dict(contract)
+    )
+    artifact = {
+        "run_id": run_id,
+        "admin_audit": {
+            "analysis_runtime_persistence": {
+                "status": "persisted",
+                "analysis_contract_ref": contract["analysis_contract_id"],
+            }
+        },
+    }
+    path = artifact_root / "answer_package.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    result = {
+        "run_id": run_id,
+        "artifact_path": str(path),
+        "analysis_contract": contract,
+        "answer_package": {
+            "analysis_contract": contract,
+            "admin_audit": {"analysis_contract": contract},
+        },
+    }
+    if drift_location == "result_root":
+        result["analysis_contract"] = drifted
+    elif drift_location == "answer_root":
+        result["answer_package"]["analysis_contract"] = drifted
+    else:
+        result["answer_package"]["admin_audit"]["analysis_contract"] = drifted
+
+    assert system_test._runtime_audit_package(
+        result,
+        authority_resolver=lambda _run_id: {
+            "run_id": run_id,
+            "analysis_contract": {
+                **contract,
+                "contract_signature": signature,
+            },
+            "stored_contract_signature": signature,
+        },
+    ) == {"_authority_error": "effective_analysis_contract_mismatch"}
+
+
+def test_runtime_audit_package_accepts_artifact_root_contract_as_only_copy(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    run_id = "run-artifact-root-contract"
+    contract = {
+        **_analysis_contract(_canonical_gap()),
+        "analysis_contract_id": "analysis-contract:artifact-root:1",
+    }
+    signature = analysis_contract_signature(
+        analysis_contract_from_dict(contract)
+    )
+    path = artifact_root / "answer_package.json"
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "analysis_contract": contract,
+                "admin_audit": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audited = system_test._runtime_audit_package(
+        {"run_id": run_id, "artifact_path": str(path)},
+        authority_resolver=lambda _run_id: {
+            "run_id": run_id,
+            "analysis_contract": {
+                **contract,
+                "contract_signature": signature,
+            },
+            "stored_contract_signature": signature,
+        },
+    )
+
+    assert audited["admin_audit"]["analysis_contract"] == contract
+
+
+def test_runtime_audit_package_rejects_drifted_artifact_root_contract_when_admin_copy_matches(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    run_id = "run-artifact-root-drift"
+    contract = {
+        **_analysis_contract(_canonical_gap()),
+        "analysis_contract_id": "analysis-contract:artifact-root:2",
+    }
+    drifted = {**contract, "question_families": ["revenue_health_review"]}
+    signature = analysis_contract_signature(
+        analysis_contract_from_dict(contract)
+    )
+    path = artifact_root / "answer_package.json"
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "analysis_contract": drifted,
+                "admin_audit": {"analysis_contract": contract},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert system_test._runtime_audit_package(
+        {"run_id": run_id, "artifact_path": str(path)},
+        authority_resolver=lambda _run_id: {
+            "run_id": run_id,
+            "analysis_contract": {
+                **contract,
+                "contract_signature": signature,
+            },
+            "stored_contract_signature": signature,
+        },
+    ) == {"_authority_error": "persisted_analysis_contract_mismatch"}
+
+
+def test_postgres_runtime_authority_resolver_queries_unique_contract_by_run_only():
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    run_id = "run-noncanonical-contract-ref"
+    contract = {
+        **_analysis_contract(_canonical_gap()),
+        "analysis_contract_id": "analysis-contract:custom-version:7",
+    }
+    signature = analysis_contract_signature(
+        analysis_contract_from_dict(contract)
+    )
+
+    class Store:
+        def _fetchall(self, statement, params):
+            assert "analysis_contract_id =" not in statement
+            assert params == {"run_id": run_id}
+            return [
+                (
+                    run_id,
+                    signature,
+                    {**contract, "contract_signature": signature},
+                )
+            ]
+
+    resolver = system_test._runtime_authority_resolver_for_store(Store())
+
+    assert resolver(run_id) == {
+        "run_id": run_id,
+        "analysis_contract": {
+            **contract,
+            "contract_signature": signature,
+        },
+        "stored_contract_signature": signature,
+    }
+
+
+def test_postgres_runtime_authority_resolver_rejects_ambiguous_contracts_for_run():
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    run_id = "run-ambiguous-contract-authority"
+
+    class Store:
+        def _fetchall(self, statement, params):
+            assert params == {"run_id": run_id}
+            return [
+                (run_id, "1" * 64, {"analysis_contract_id": "contract:1"}),
+                (run_id, "2" * 64, {"analysis_contract_id": "contract:2"}),
+            ]
+
+    resolver = system_test._runtime_authority_resolver_for_store(Store())
+
+    with pytest.raises(
+        ValueError,
+        match="^runtime_authority_contract_ambiguous$",
+    ):
+        resolver(run_id)
 
 
 @pytest.mark.parametrize("path_kind", ["absolute_outside", "traversal", "symlink_escape"])

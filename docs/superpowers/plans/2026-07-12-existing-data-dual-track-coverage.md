@@ -1293,6 +1293,16 @@ It must validate the capability contract ref/signature and every required plan
 slot through exact query-contract signatures, succeeded result refs, and linked
 completeness reports. Runtime summary flags and client-package fallbacks remain
 non-authoritative.
+Resolve the evaluated AnalysisContract from the conversation store by exact run
+owner and require one signed persisted contract. Keep the local artifact path
+and payload mandatory for replay, but accept either its exact embedded contract
+or its exact `analysis_runtime_persistence.analysis_contract_ref` as the
+cross-check shape. Do not require one Answer Package nesting layout and do not
+derive the contract id from the run-id format. Missing resolver, missing or
+ambiguous rows, run/ref/signature/content drift, artifact failures, and
+client-only fallback all fail closed. Add RED coverage for completed/resumed
+packages that retain only the persisted contract ref, plus every negative
+boundary above.
 If the coverage audit resolves expected capability states, strict acceptance
 uses the exact capability-state/outcome pairs. Dataset-level observed state and
 typed-gap aggregates remain visible for compatibility and reporting, but do not

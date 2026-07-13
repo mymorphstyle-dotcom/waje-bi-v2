@@ -3250,12 +3250,8 @@ def _real_clickhouse_review(
     evidence_resolver: Any = None,
     required_datasets: tuple[str, ...] | list[str] = (),
     analysis_context: Mapping[str, Any] | None = None,
+    runtime_authority_resolver: Any = None,
 ) -> dict[str, Any]:
-    package = _runtime_audit_package(result)
-    if not package:
-        inline_package = result.get("answer_package") or {}
-        if isinstance(inline_package, Mapping):
-            package = dict(inline_package)
     if not real_clickhouse:
         return {
             "required": False,
@@ -3269,6 +3265,10 @@ def _real_clickhouse_review(
             },
             "issues": [],
         }
+    package = _runtime_audit_package(
+        result,
+        authority_resolver=runtime_authority_resolver,
+    )
 
     issues: list[str] = []
     result_refs: set[str] = set()
@@ -3634,7 +3634,130 @@ def _report_is_contract_accepted(
     )
 
 
-def _runtime_audit_package(result: Mapping[str, Any]) -> dict[str, Any]:
+def _runtime_authority_resolver_for_store(conversation_store: Any):
+    """Build the eval-only run resolver over normalized runtime authority."""
+    if conversation_store is None:
+        return None
+
+    def resolve(run_id: str) -> dict[str, Any] | None:
+        publications = getattr(
+            conversation_store,
+            "analysis_runtime_records",
+            None,
+        )
+        if isinstance(publications, Mapping):
+            publication = publications.get(run_id)
+            if not isinstance(publication, Mapping):
+                return None
+            payload = publication.get("payload")
+            if not isinstance(payload, Mapping):
+                raise ValueError("runtime_authority_publication_invalid")
+            contract = payload.get("analysis_contract")
+            if not isinstance(contract, Mapping):
+                raise ValueError("runtime_authority_contract_missing")
+            contract_ref = str(contract.get("analysis_contract_id") or "")
+            indexed = getattr(
+                conversation_store,
+                "analysis_runtime_authority",
+                None,
+            )
+            indexed_contract = (
+                indexed.get("analysis_contract", {}).get(contract_ref)
+                if isinstance(indexed, Mapping)
+                and isinstance(indexed.get("analysis_contract"), Mapping)
+                else None
+            )
+            if (
+                not isinstance(indexed_contract, Mapping)
+                or canonical_value(indexed_contract) != canonical_value(contract)
+            ):
+                raise ValueError("runtime_authority_contract_index_mismatch")
+            return {
+                "run_id": run_id,
+                "analysis_contract": dict(contract),
+                "stored_contract_signature": str(
+                    contract.get("contract_signature") or ""
+                ),
+            }
+
+        fetchall = getattr(conversation_store, "_fetchall", None)
+        if not callable(fetchall):
+            return None
+        rows = fetchall(
+            """
+            /* live_eval_runtime_analysis_contract */
+            SELECT ac.run_id,
+                   ac.contract_signature,
+                   ac.payload
+            FROM waje_runtime.analysis_runs r
+            JOIN waje_runtime.analysis_contracts ac
+              ON ac.run_id = r.run_id
+            WHERE r.run_id = %(run_id)s
+            """,
+            {"run_id": run_id},
+        )
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ValueError("runtime_authority_contract_ambiguous")
+        row = rows[0]
+        if isinstance(row, Mapping):
+            resolved_run_id = row.get("run_id")
+            stored_signature = row.get("contract_signature")
+            contract = row.get("payload")
+        else:
+            resolved_run_id, stored_signature, contract = row
+        return {
+            "run_id": resolved_run_id,
+            "analysis_contract": contract,
+            "stored_contract_signature": stored_signature,
+        }
+
+    return resolve
+
+
+def _present_analysis_contract_copies(
+    *containers: Mapping[str, Any],
+) -> tuple[Any, ...]:
+    return tuple(
+        container["analysis_contract"]
+        for container in containers
+        if "analysis_contract" in container
+    )
+
+
+def _analysis_contract_copy_issue(
+    copies: tuple[Any, ...],
+    authoritative_contract: Any,
+) -> str:
+    for raw_contract in copies:
+        if (
+            not isinstance(raw_contract, Mapping)
+            or not isinstance(raw_contract.get("analysis_contract_id"), str)
+            or not raw_contract.get("analysis_contract_id")
+        ):
+            return "invalid"
+        try:
+            typed_contract = analysis_contract_from_dict(raw_contract)
+        except (KeyError, TypeError, ValueError):
+            return "invalid"
+        if (
+            typed_contract.analysis_contract_id
+            != authoritative_contract.analysis_contract_id
+        ):
+            return "id_mismatch"
+        if canonical_value(typed_contract.to_dict()) != canonical_value(
+            authoritative_contract.to_dict()
+        ):
+            return "content_mismatch"
+    return ""
+
+
+def _runtime_audit_package(
+    result: Mapping[str, Any],
+    *,
+    authority_resolver: Any = None,
+) -> dict[str, Any]:
     def failure(reason: str) -> dict[str, Any]:
         return {"_authority_error": reason}
 
@@ -3673,39 +3796,113 @@ def _runtime_audit_package(result: Mapping[str, Any]) -> dict[str, Any]:
     payload_run_id = raw_payload_run_id
     if payload_run_id != expected_run_id:
         return failure("run_id_mismatch")
-    admin = payload.get("admin_audit")
-    if not isinstance(admin, Mapping):
-        return failure("persisted_analysis_contract_missing")
-    raw_contract = admin.get("analysis_contract")
-    if not isinstance(raw_contract, Mapping):
-        return failure("persisted_analysis_contract_missing")
+    if not callable(authority_resolver):
+        return failure("missing_runtime_authority_resolver")
     try:
-        persisted_contract = analysis_contract_from_dict(raw_contract)
+        resolved_authority = authority_resolver(expected_run_id)
+    except Exception:
+        return failure("runtime_authority_resolution_failed")
+    if not isinstance(resolved_authority, Mapping):
+        return failure("persisted_analysis_contract_missing")
+    resolved_run_id = resolved_authority.get("run_id")
+    if not isinstance(resolved_run_id, str) or not resolved_run_id:
+        return failure("runtime_authority_run_id_invalid")
+    if resolved_run_id != expected_run_id:
+        return failure("runtime_authority_run_id_mismatch")
+    raw_authority_contract = resolved_authority.get("analysis_contract")
+    if not isinstance(raw_authority_contract, Mapping):
+        return failure("persisted_analysis_contract_missing")
+    contract_payload = dict(raw_authority_contract)
+    embedded_signature = str(
+        contract_payload.pop("contract_signature", "") or ""
+    )
+    stored_signature = str(
+        resolved_authority.get("stored_contract_signature") or ""
+    )
+    try:
+        persisted_contract = analysis_contract_from_dict(contract_payload)
     except (KeyError, TypeError, ValueError):
         return failure("persisted_analysis_contract_invalid")
-    expected_contract_id = f"analysis:{expected_run_id}:1"
-    if persisted_contract.analysis_contract_id != expected_contract_id:
+    if (
+        not embedded_signature
+        or not stored_signature
+        or embedded_signature != stored_signature
+        or analysis_contract_signature(persisted_contract) != stored_signature
+    ):
+        return failure("persisted_analysis_contract_signature_mismatch")
+    if not persisted_contract.analysis_contract_id:
         return failure("analysis_contract_id_mismatch")
+
+    raw_admin = payload.get("admin_audit")
+    if "admin_audit" in payload and not isinstance(raw_admin, Mapping):
+        return failure("persisted_analysis_contract_invalid")
+    admin = raw_admin if isinstance(raw_admin, Mapping) else {}
+    artifact_copies = _present_analysis_contract_copies(payload, admin)
+    artifact_persistence_present = "analysis_runtime_persistence" in admin
+    if not artifact_copies and not artifact_persistence_present:
+        return failure("persisted_analysis_contract_missing")
+    if artifact_persistence_present:
+        artifact_persistence = admin.get("analysis_runtime_persistence")
+        if not isinstance(artifact_persistence, Mapping):
+            return failure("persisted_analysis_contract_ref_invalid")
+        if (
+            artifact_persistence.get("status") != "persisted"
+            or artifact_persistence.get("analysis_contract_ref")
+            != persisted_contract.analysis_contract_id
+        ):
+            return failure("persisted_analysis_contract_ref_mismatch")
+    artifact_copy_issue = _analysis_contract_copy_issue(
+        artifact_copies,
+        persisted_contract,
+    )
+    if artifact_copy_issue:
+        if artifact_copy_issue == "invalid":
+            return failure("persisted_analysis_contract_invalid")
+        return failure("persisted_analysis_contract_mismatch")
+
     client_package = result.get("answer_package") or {}
     if not isinstance(client_package, Mapping):
         client_package = {}
-    effective_present = "analysis_contract" in result or (
-        isinstance(client_package, Mapping) and "analysis_contract" in client_package
+    raw_client_admin = client_package.get("admin_audit")
+    if "admin_audit" in client_package and not isinstance(
+        raw_client_admin,
+        Mapping,
+    ):
+        return failure("effective_analysis_contract_invalid")
+    client_admin = (
+        raw_client_admin if isinstance(raw_client_admin, Mapping) else {}
     )
-    effective = (
-        result.get("analysis_contract")
-        if "analysis_contract" in result
-        else client_package.get("analysis_contract")
+    if "analysis_runtime_persistence" in client_admin:
+        client_persistence = client_admin.get("analysis_runtime_persistence")
+        if not isinstance(client_persistence, Mapping):
+            return failure("effective_analysis_contract_ref_invalid")
+        if (
+            client_persistence.get("status") != "persisted"
+            or client_persistence.get("analysis_contract_ref")
+            != persisted_contract.analysis_contract_id
+        ):
+            return failure("effective_analysis_contract_ref_mismatch")
+    client_copy_issue = _analysis_contract_copy_issue(
+        _present_analysis_contract_copies(
+            result,
+            client_package,
+            client_admin,
+        ),
+        persisted_contract,
     )
-    if effective_present:
-        if not isinstance(effective, Mapping):
-            return failure("effective_analysis_contract_invalid")
-        effective_id = effective.get("analysis_contract_id")
-        if not isinstance(effective_id, str) or not effective_id:
-            return failure("effective_analysis_contract_invalid")
-        if effective_id != persisted_contract.analysis_contract_id:
-            return failure("effective_analysis_contract_id_mismatch")
-    return dict(payload)
+    if client_copy_issue == "invalid":
+        return failure("effective_analysis_contract_invalid")
+    if client_copy_issue == "id_mismatch":
+        return failure("effective_analysis_contract_id_mismatch")
+    if client_copy_issue == "content_mismatch":
+        return failure("effective_analysis_contract_mismatch")
+    return {
+        **dict(payload),
+        "admin_audit": {
+            **dict(admin),
+            "analysis_contract": persisted_contract.to_dict(),
+        },
+    }
 
 
 def _clickhouse_query_intent_issues(answer_package: dict[str, Any]) -> list[str]:
@@ -4295,6 +4492,9 @@ def run_case(
         except Exception as exc:
             raise RuntimeError("eval_coverage_authority_unavailable") from exc
     required_datasets = tuple(case.get("required_datasets") or ())
+    runtime_authority_resolver = _runtime_authority_resolver_for_store(
+        getattr(core, "store", None)
+    )
     turns: list[dict[str, Any]] = []
     prior_run_lineage: list[dict[str, str]] = []
     prior_topic_id: str | None = None
@@ -4373,15 +4573,24 @@ def run_case(
             turn_record["clarification_resumes"] = clarification_resumes
         turn_record["expectation_review"] = _review_expectations(turn, turn_record)
         effective = _effective_result(turn_record)
+        runtime_authority = (
+            _runtime_audit_package(
+                effective,
+                authority_resolver=runtime_authority_resolver,
+            )
+            if turn_record["scenario"]
+            else None
+        )
         turn_record["real_clickhouse_review"] = _real_clickhouse_review(
             effective,
             real_clickhouse=real_clickhouse,
             evidence_resolver=getattr(core, "evidence_resolver", None),
             required_datasets=required_datasets,
             analysis_context=analysis_context,
+            runtime_authority_resolver=runtime_authority_resolver,
         )
         if turn_record["scenario"]:
-            turn_record["runtime_authority"] = _runtime_audit_package(effective)
+            turn_record["runtime_authority"] = runtime_authority
             turn_record["obligation_review"] = review_case_obligations(
                 turn_record,
                 RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),

@@ -40,7 +40,13 @@ the snapshot. The harness does not synthesize source availability.
 
 For real ClickHouse runs, the harness reads the runtime authority through the
 Core evidence resolver backed by PostgreSQL. Client validator flags and bare
-query hashes do not satisfy the review. Each turn verifies the persisted chain:
+query hashes do not satisfy the review. The AnalysisContract is resolved by the
+exact run owner and its persisted signature. The local Answer Package remains a
+required replay artifact and must carry either an exact embedded contract or an
+exact `analysis_runtime_persistence.analysis_contract_ref`; presentation shape
+alone never becomes authority. Missing or ambiguous store rows and any
+run/ref/signature/content drift fail the review. Each turn verifies the
+persisted chain:
 
 `CapabilityBinding -> QueryContract -> QueryResult -> Completeness -> Snapshot`
 

@@ -75,6 +75,32 @@ def _workflow_clarification_material(
 
 
 class AgentCoreBridgeTest(unittest.TestCase):
+    def _run_matched_runtime_authority_resolver(self, package):
+        from bi_agent.runtime.analysis_contracts import (
+            analysis_contract_from_dict,
+            analysis_contract_signature,
+        )
+
+        run_id = package["run_id"]
+        contract = deepcopy(package["admin_audit"]["analysis_contract"])
+        signature = analysis_contract_signature(
+            analysis_contract_from_dict(contract)
+        )
+
+        def resolve(requested_run_id):
+            if requested_run_id != run_id:
+                return None
+            return {
+                "run_id": run_id,
+                "analysis_contract": {
+                    **contract,
+                    "contract_signature": signature,
+                },
+                "stored_contract_signature": signature,
+            }
+
+        return resolve
+
     def _persisted_runtime_result(self, package, **result_fields):
         from tempfile import TemporaryDirectory
 
@@ -4657,6 +4683,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
             evidence_resolver=PartialResolver(),
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
+            runtime_authority_resolver=(
+                self._run_matched_runtime_authority_resolver(package)
+            ),
         )
 
         query_ref = binding.query_contract_refs[0]
@@ -4737,6 +4766,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
             evidence_resolver=ContractPartialResolver(),
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
+            runtime_authority_resolver=(
+                self._run_matched_runtime_authority_resolver(package)
+            ),
         )
 
         self.assertTrue(review["real_clickhouse_verified"], review["issues"])
@@ -4792,6 +4824,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 "target_date": "2026-06-02",
                 "pattern_history_start": "2026-01-01",
             },
+            runtime_authority_resolver=(
+                self._run_matched_runtime_authority_resolver(package)
+            ),
         )
 
         self.assertIn(
@@ -4836,6 +4871,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
             evidence_resolver=ClaimResolver(),
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
+            runtime_authority_resolver=(
+                self._run_matched_runtime_authority_resolver(package)
+            ),
         )
 
         self.assertTrue(review["real_clickhouse_verified"], review["issues"])
@@ -4868,6 +4906,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
             evidence_resolver=context["evidence_resolver"],
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
+            runtime_authority_resolver=(
+                self._run_matched_runtime_authority_resolver(package)
+            ),
         )
 
         self.assertFalse(review["runtime_correctness"]["all_claims_traceable"])
@@ -4892,6 +4933,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
             evidence_resolver=context["evidence_resolver"],
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
+            runtime_authority_resolver=(
+                self._run_matched_runtime_authority_resolver(package)
+            ),
         )
 
         self.assertFalse(review["real_clickhouse_verified"])
@@ -4962,6 +5006,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
             self._persisted_runtime_result(package, context_manifest={}),
             real_clickhouse=True,
             evidence_resolver=LegacyResolver(),
+            runtime_authority_resolver=(
+                self._run_matched_runtime_authority_resolver(package)
+            ),
         )
 
         self.assertFalse(review["real_clickhouse_verified"])
@@ -5144,7 +5191,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(output["turns"][0]["llm_calls"], audits)
         self.assertEqual(output["llm_calls"], audits)
 
-    def test_live_harness_uses_internal_artifact_only_for_runtime_audit(self):
+    def test_live_harness_uses_internal_artifact_content_with_run_matched_contract_authority(self):
         from tools.phase7.run_live_conversation_system_test import (
             _runtime_audit_package,
         )
@@ -5160,7 +5207,12 @@ class AgentCoreBridgeTest(unittest.TestCase):
             "sections": [],
         }
 
-        audited = _runtime_audit_package(result)
+        audited = _runtime_audit_package(
+            result,
+            authority_resolver=(
+                self._run_matched_runtime_authority_resolver(package)
+            ),
+        )
 
         self.assertEqual(audited["final_answer"], "内部完整答案")
         self.assertEqual(

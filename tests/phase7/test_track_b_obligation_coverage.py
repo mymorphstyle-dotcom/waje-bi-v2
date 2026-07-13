@@ -4,7 +4,11 @@ from datetime import datetime
 
 import pytest
 
-from bi_agent.runtime.analysis_contracts import AnalysisContract
+from bi_agent.runtime.analysis_contracts import (
+    AnalysisContract,
+    analysis_contract_from_dict,
+    analysis_contract_signature,
+)
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
@@ -67,10 +71,24 @@ def _executed_market_authority(tmp_path, monkeypatch) -> dict:
         json.dumps({"run_id": run_id, "admin_audit": admin_audit}),
         encoding="utf-8",
     )
-    return system_test._runtime_audit_package({
-        "run_id": run_id,
-        "artifact_path": str(path),
-    })
+    contract = admin_audit["analysis_contract"]
+    signature = analysis_contract_signature(
+        analysis_contract_from_dict(contract)
+    )
+    return system_test._runtime_audit_package(
+        {
+            "run_id": run_id,
+            "artifact_path": str(path),
+        },
+        authority_resolver=lambda _run_id: {
+            "run_id": run_id,
+            "analysis_contract": {
+                **contract,
+                "contract_signature": signature,
+            },
+            "stored_contract_signature": signature,
+        },
+    )
 
 
 def test_obligation_review_does_not_execute_from_legacy_market_bindings(
