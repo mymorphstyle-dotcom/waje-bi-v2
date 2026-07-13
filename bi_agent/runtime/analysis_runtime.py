@@ -756,12 +756,13 @@ class AnalysisRuntime:
 def _project_waiting_persistence_records(
     records: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    query_contracts = tuple(records.get("query_contracts") or ())
-    query_records = tuple(records.get("query_execution_records") or ())
-    rows_records = tuple(records.get("rows_records") or ())
-    snapshot_records = tuple(records.get("snapshot_records") or ())
-    completeness_records = tuple(records.get("completeness_records") or ())
-    bindings = tuple(records.get("capability_binding_records") or ())
+    required = _required_waiting_persistence_records(records)
+    query_contracts = required["query_contracts"]
+    query_records = required["query_execution_records"]
+    rows_records = required["rows_records"]
+    snapshot_records = required["snapshot_records"]
+    completeness_records = required["completeness_records"]
+    bindings = required["capability_binding_records"]
     query_contract_refs = {
         contract.query_contract_id for contract in query_contracts
     }
@@ -835,6 +836,45 @@ def _project_waiting_persistence_records(
         "owner": "analysis_runtime_persistence_owner",
         "reason": "unbound_result_chain_omitted",
     }
+
+
+def _required_waiting_persistence_records(
+    records: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        analysis_contract = records["analysis_contract"]
+    except KeyError as exc:
+        raise ValueError(
+            "analysis_runtime_partial_publication_records_invalid:analysis_contract"
+        ) from exc
+    if not isinstance(analysis_contract, Mapping):
+        raise ValueError(
+            "analysis_runtime_partial_publication_records_invalid:analysis_contract"
+        )
+    typed_sequences = {
+        "query_contracts": QueryContract,
+        "query_execution_records": QueryExecutionRecord,
+        "rows_records": RowsRecord,
+        "snapshot_records": SnapshotRecord,
+        "completeness_records": CompletenessRecord,
+        "capability_binding_records": CapabilityBindingRecord,
+    }
+    required: dict[str, Any] = {"analysis_contract": analysis_contract}
+    for field, expected_type in typed_sequences.items():
+        try:
+            raw = records[field]
+        except KeyError as exc:
+            raise ValueError(
+                f"analysis_runtime_partial_publication_records_invalid:{field}"
+            ) from exc
+        if not isinstance(raw, (list, tuple)) or any(
+            type(record) is not expected_type for record in raw
+        ):
+            raise ValueError(
+                f"analysis_runtime_partial_publication_records_invalid:{field}"
+            )
+        required[field] = tuple(raw)
+    return required
 
 
 def _binding_has_complete_persistence_closure(

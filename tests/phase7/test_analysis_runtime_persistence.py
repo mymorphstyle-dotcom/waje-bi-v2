@@ -589,6 +589,53 @@ def _use_high_value_claim_ceiling(bundle, *, claim_intents=("candidate_driver",)
 
 
 class AnalysisRuntimePersistenceTest(unittest.TestCase):
+    def test_waiting_partial_publication_requires_typed_authority_envelope(self):
+        from bi_agent.runtime.analysis_runtime import AnalysisRuntime
+
+        result, _, _, _ = _waiting_runtime_records_with_unbound_results(
+            keep_binding=False
+        )
+        invalid_values = {
+            "analysis_contract": (),
+            "query_contracts": {},
+            "query_execution_records": {},
+            "rows_records": {},
+            "snapshot_records": {},
+            "completeness_records": {},
+            "capability_binding_records": {},
+        }
+        for field, invalid in invalid_values.items():
+            for state in ("missing", "none", "wrong_type"):
+                with self.subTest(field=field, state=state):
+                    records = dict(result.persistence_records)
+                    if state == "missing":
+                        records.pop(field)
+                    elif state == "none":
+                        records[field] = None
+                    else:
+                        records[field] = invalid
+                    malformed = SimpleNamespace(
+                        persistence_records=records,
+                        analysis_contract=result.analysis_contract,
+                        repair_decisions=(),
+                    )
+
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        f"analysis_runtime_partial_publication_records_invalid:{field}",
+                    ):
+                        AnalysisRuntime.build_persistence_bundle(
+                            object.__new__(AnalysisRuntime),
+                            malformed,
+                            answer_package={
+                                "status": "waiting_for_clarification",
+                                "sections": [],
+                            },
+                            request={"run_id": "run-task9"},
+                            artifact_path="artifact:waiting",
+                            publication_mode="waiting_for_clarification",
+                        )
+
     def test_waiting_partial_publication_omits_every_unbound_result_chain(self):
         from bi_agent.runtime.analysis_runtime import AnalysisRuntime
 
