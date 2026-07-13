@@ -138,6 +138,8 @@ def compile_analysis_contract(
         contract_capabilities,
         metric_bindings,
         registry,
+        ready_capabilities=capabilities,
+        accepted_terminal_gaps=accepted_terminal_gaps,
     )
     affected_capabilities = capabilities or ("analysis_contract",)
     contract_dataset_ids = _dedupe(
@@ -1166,19 +1168,27 @@ def _bind_claim_intents(
     accepted_capabilities: tuple[str, ...],
     metric_bindings: tuple[MetricBinding, ...],
     registry: RuntimeContractRegistry,
+    *,
+    ready_capabilities: tuple[str, ...],
+    accepted_terminal_gaps: tuple[ContractGap, ...],
 ) -> tuple[tuple[str, ...], tuple[ContractGap, ...]]:
     explicit = _values(proposal, "claim_intents")
-    capability_inferred = []
-    for capability_id in accepted_capabilities:
-        capability_contract = _registry_entry(
-            registry.capability_inputs,
-            capability_id,
-        )
-        if capability_contract is not None:
-            capability_inferred.extend(
-                _mapping_values(capability_contract, "supported_claim_types")
+
+    def reviewed_claims(capability_ids: tuple[str, ...]) -> tuple[str, ...]:
+        return _dedupe(
+            claim_type
+            for capability_id in capability_ids
+            for capability_contract in (
+                _registry_entry(registry.capability_inputs, capability_id),
             )
-    capability_ceiling = _dedupe(capability_inferred)
+            if capability_contract is not None
+            for claim_type in _mapping_values(
+                capability_contract,
+                "supported_claim_types",
+            )
+        )
+
+    capability_ceiling = reviewed_claims(accepted_capabilities)
     if explicit:
         supported = tuple(
             claim_intent
@@ -1209,15 +1219,29 @@ def _bind_claim_intents(
         )
         return supported or ("unbound_claim_intent",), gaps
 
-    if capability_ceiling:
-        return capability_ceiling, ()
+    if accepted_terminal_gaps:
+        accepted = _dedupe(
+            (
+                *reviewed_claims(ready_capabilities),
+                *(
+                    claim_type
+                    for gap in accepted_terminal_gaps
+                    for claim_type in gap.affected_claim_types
+                ),
+            )
+        )
+        if accepted:
+            return accepted, ()
+    else:
+        if capability_ceiling:
+            return capability_ceiling, ()
 
-    metric_inferred = []
-    for binding in metric_bindings:
-        metric_inferred.extend(binding.claim_types)
-    accepted = _dedupe(metric_inferred)
-    if accepted:
-        return accepted, ()
+        metric_inferred = []
+        for binding in metric_bindings:
+            metric_inferred.extend(binding.claim_types)
+        accepted = _dedupe(metric_inferred)
+        if accepted:
+            return accepted, ()
 
     diagnosed = ("unbound_claim_intent",)
     return diagnosed, (

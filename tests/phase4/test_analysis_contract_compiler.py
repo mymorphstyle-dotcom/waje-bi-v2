@@ -2619,6 +2619,144 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     list(outcome.analysis_contract.claim_intents),
                 )
 
+    def test_resumed_degradation_partitions_implicit_claims_before_persistence(self):
+        from bi_agent.runtime.runtime_persistence import (
+            validate_analysis_runtime_records,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
+        prior = _compile_analysis_contract(
+            run_id="run-implicit-claim-partition-source",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["comparative_change"],
+            },
+            accepted_capabilities=("outlier_contribution",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=as_of,
+            permission_scope="analyst",
+        )
+        choice = {
+            "choice_id": "omit-unavailable-outlier-contribution",
+            "action_kind": "omit_unavailable_context",
+            "source_run_id": "run-implicit-claim-partition-source",
+            "affected_capabilities": ["outlier_contribution"],
+        }
+        outcome_body = {
+            "source_run_id": "run-implicit-claim-partition-source",
+            "thread_id": "thread-implicit-claim-partition",
+            "topic_id": "topic-implicit-claim-partition",
+            "choice": choice,
+        }
+        clarification_outcome = {
+            "outcome_ref": "clarification-outcome:"
+            + stable_contract_signature(outcome_body),
+            **outcome_body,
+        }
+        clarification_outcome["outcome_signature"] = stable_contract_signature(
+            clarification_outcome
+        )
+        authority = {
+            "source_run_id": "run-implicit-claim-partition-source",
+            "thread_id": "thread-implicit-claim-partition",
+            "topic_id": "topic-implicit-claim-partition",
+            "analysis_contract": prior.analysis_contract.to_dict(),
+            "analysis_contract_signature": analysis_contract_signature(
+                prior.analysis_contract
+            ),
+            "clarification_outcome": clarification_outcome,
+        }
+        resume_proposal = {
+            "target_metrics": ["paid_amount"],
+            "accepted_degradation_choice": choice,
+            "accepted_terminal_gap_authority": authority,
+            "resume_thread_id": "thread-implicit-claim-partition",
+            "resume_topic_id": "topic-implicit-claim-partition",
+        }
+        resumed = _compile_analysis_contract(
+            run_id="run-implicit-claim-partition-resumed",
+            proposal=resume_proposal,
+            accepted_capabilities=("pattern_scan",),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=as_of,
+            permission_scope="analyst",
+        )
+        claims = resumed.analysis_contract.claim_intents
+
+        with self.subTest(boundary="omitted_capability_does_not_expand"):
+            self.assertNotIn(
+                "external_shock_candidate_or_anomaly",
+                claims,
+            )
+        with self.subTest(boundary="ready_sibling_claim_is_preserved"):
+            self.assertIn("recurring_pattern_existence", claims)
+        with self.subTest(boundary="carried_gap_claim_is_preserved"):
+            self.assertIn("comparative_change", claims)
+        with self.subTest(boundary="explicit_claim_still_uses_contract_ceiling"):
+            explicit = _compile_analysis_contract(
+                run_id="run-explicit-claim-partition-resumed",
+                proposal={
+                    **resume_proposal,
+                    "claim_intents": ["external_shock_candidate_or_anomaly"],
+                },
+                accepted_capabilities=("pattern_scan",),
+                catalog=DatasetCatalog(()),
+                registry=registry,
+                as_of=as_of,
+                permission_scope="analyst",
+            )
+            self.assertEqual(
+                explicit.analysis_contract.claim_intents,
+                ("external_shock_candidate_or_anomaly",),
+            )
+        with self.subTest(boundary="no_accepted_gap_keeps_full_inference"):
+            unpartitioned = _compile_analysis_contract(
+                run_id="run-implicit-claim-no-terminal-gap",
+                proposal={"target_metrics": ["paid_amount"]},
+                accepted_capabilities=("outlier_contribution",),
+                catalog=DatasetCatalog(()),
+                registry=registry,
+                as_of=as_of,
+                permission_scope="analyst",
+            )
+            self.assertEqual(
+                unpartitioned.analysis_contract.claim_intents,
+                (
+                    "external_shock_candidate_or_anomaly",
+                    "comparative_change",
+                ),
+            )
+        with self.subTest(boundary="persistence_hard_boundary_accepts_contract"):
+            contract_payload = resumed.analysis_contract.to_dict()
+            contract_payload["contract_signature"] = analysis_contract_signature(
+                resumed.analysis_contract
+            )
+            validated = validate_analysis_runtime_records(
+                run_id="run-implicit-claim-partition-resumed",
+                analysis_contract=contract_payload,
+                query_contracts=(),
+                query_execution_records=(),
+                rows_records=(),
+                snapshot_records=(),
+                completeness_records=(),
+                capability_binding_records=(),
+                evidence_manifests=(),
+                context_manifests=(),
+                trusted_provenance_records=(),
+                verified_claims=(),
+                claim_links=(),
+                repair_attempts=(),
+            )
+            self.assertEqual(
+                tuple(validated["analysis_contract"]["claim_intents"]),
+                claims,
+            )
+
     def test_resumed_degradation_carries_exact_terminal_gaps_for_omitted_capabilities(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
