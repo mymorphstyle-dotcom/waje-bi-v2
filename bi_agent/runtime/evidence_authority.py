@@ -404,25 +404,17 @@ def _canonical_ordered_rows(
     unique_key_fields: Sequence[str],
 ) -> tuple[Mapping[str, Any], ...]:
     normalized = []
-    keys_seen = set()
     key_fields = tuple(str(field) for field in unique_key_fields if field)
-    for index, row in enumerate(rows):
-        if not isinstance(row, Mapping):
-            raise EvidenceIntegrityError(f"row_not_mapping:{index}")
+    missing_key_fields = _preflight_result_row_keys(rows, key_fields)
+    if missing_key_fields:
+        raise EvidenceIntegrityError(
+            "unique_key_fields_missing:" + ",".join(missing_key_fields)
+        )
+    for row in rows:
         canonical_row = _canonical_value(row)
         if key_fields:
-            missing = tuple(field for field in key_fields if field not in row)
-            if missing:
-                raise EvidenceIntegrityError(
-                    f"unique_key_fields_missing:{index}:{','.join(missing)}"
-                )
             raw_key = tuple(row[field] for field in key_fields)
-            if any(not _scalar_key(value) for value in raw_key):
-                raise EvidenceIntegrityError(f"unique_key_not_scalar:{index}")
             key = canonical_digest(raw_key)
-            if key in keys_seen:
-                raise EvidenceIntegrityError(f"duplicate_unique_key:{key}")
-            keys_seen.add(key)
             sort_key = key
         else:
             sort_key = canonical_digest(canonical_row)
@@ -436,32 +428,57 @@ def canonical_result_rows(
     unique_key_fields: Sequence[str],
 ) -> tuple[Mapping[str, Any], ...]:
     key_fields = tuple(str(field) for field in unique_key_fields if field)
-    if key_fields and _result_rows_require_digest_order(rows, key_fields):
+    if _preflight_result_row_keys(rows, key_fields):
         return _canonical_ordered_rows(rows, ())
     return _canonical_ordered_rows(rows, key_fields)
 
 
-def _result_rows_require_digest_order(
+def _preflight_result_row_keys(
     rows: Sequence[Mapping[str, Any]],
     key_fields: tuple[str, ...],
-) -> bool:
-    missing_key = False
+) -> tuple[str, ...]:
+    invalid_row_types = sorted(
+        {
+            type(row).__name__
+            for row in rows
+            if not isinstance(row, Mapping)
+        }
+    )
+    if invalid_row_types:
+        raise EvidenceIntegrityError(
+            "row_not_mapping:" + ",".join(invalid_row_types)
+        )
+    if not key_fields:
+        return ()
+    missing_key_fields = set()
+    invalid_key_fields = set()
+    duplicate_keys = set()
     keys_seen = set()
-    for index, row in enumerate(rows):
-        if not isinstance(row, Mapping):
-            raise EvidenceIntegrityError(f"row_not_mapping:{index}")
+    for row in rows:
         missing = tuple(field for field in key_fields if field not in row)
         if missing:
-            missing_key = True
+            missing_key_fields.update(missing)
+            continue
+        invalid = tuple(
+            field for field in key_fields if not _scalar_key(row[field])
+        )
+        if invalid:
+            invalid_key_fields.update(invalid)
             continue
         raw_key = tuple(row[field] for field in key_fields)
-        if any(not _scalar_key(value) for value in raw_key):
-            raise EvidenceIntegrityError(f"unique_key_not_scalar:{index}")
         key = canonical_digest(raw_key)
         if key in keys_seen:
-            raise EvidenceIntegrityError(f"duplicate_unique_key:{key}")
+            duplicate_keys.add(key)
         keys_seen.add(key)
-    return missing_key
+    if invalid_key_fields:
+        raise EvidenceIntegrityError(
+            "unique_key_not_scalar:" + ",".join(sorted(invalid_key_fields))
+        )
+    if duplicate_keys:
+        raise EvidenceIntegrityError(
+            "duplicate_unique_key:" + ",".join(sorted(duplicate_keys))
+        )
+    return tuple(sorted(missing_key_fields))
 
 
 def canonical_result_rows_hash(

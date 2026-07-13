@@ -1295,6 +1295,68 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
                         contract.result_shape.unique_key,
                     )
 
+    def test_non_scalar_unique_keys_fail_idempotently_across_executor_order(self):
+        contract = baseline_contract(metric=reviewed_metric())
+        contract = replace(
+            contract,
+            contract_signature=query_contract_signature(contract),
+        )
+        snapshot = paid_snapshot()
+        for invalid_key in ({"nested": "date"}, math.nan):
+            with self.subTest(invalid_key=invalid_key):
+                rows = (
+                    {
+                        "window_id": "target_day",
+                        "window_role": "target",
+                        "observation_key": invalid_key,
+                        "paid_amount": 1.0,
+                    },
+                    {
+                        "window_id": "previous_day",
+                        "window_role": "baseline",
+                        "observation_key": "2026-06-01",
+                        "paid_amount": 2.0,
+                    },
+                )
+                authority = RuntimeEvidenceAuthority()
+                results = tuple(
+                    ClickHouseQueryExecutor(
+                        _RowsRuntime(ordered_rows),
+                        evidence_authority=authority,
+                        release_resolver=_PAID_RELEASE_RESOLVER,
+                    ).execute(
+                        contract,
+                        {snapshot.snapshot_ref: snapshot},
+                        execution_attempt_ref=(
+                            "attempt:test:non-scalar-unique-key:"
+                            f"{type(invalid_key).__name__}"
+                        ),
+                    )
+                    for ordered_rows in (rows, tuple(reversed(rows)))
+                )
+
+                self.assertEqual(
+                    tuple(result.execution_status for result in results),
+                    ("failed", "failed"),
+                )
+                self.assertEqual(results[0].result_ref, results[1].result_ref)
+                self.assertEqual(results[0].rows_ref, results[1].rows_ref)
+                self.assertEqual(
+                    results[0].failure_reason,
+                    results[1].failure_reason,
+                )
+                self.assertEqual(
+                    results[0].failure_reason,
+                    (
+                        "invalid_result_rows:"
+                        "unique_key_not_scalar:observation_key"
+                    ),
+                )
+                self.assertEqual(
+                    authority.resolve_query_execution(results[0].result_ref),
+                    authority.resolve_query_execution(results[1].result_ref),
+                )
+
     def test_rows_hash_rejects_nan_and_non_scalar_unique_keys(self):
         cases = (
             ({"window_id": "target", "channel": "A", "amount": math.nan},),
