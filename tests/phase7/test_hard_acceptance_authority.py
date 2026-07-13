@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 
 import pytest
@@ -10,6 +11,7 @@ from bi_agent.runtime.analysis_contracts import (
     analysis_contract_from_dict,
     query_contract_signature,
 )
+from bi_agent.runtime.dataset_catalog import DatasetCatalog
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
@@ -611,6 +613,55 @@ def test_capability_block_accepts_canonical_exact_analysis_contract_gap():
         accepted_capabilities=set(),
         authority={"analysis_contract": _analysis_contract(_canonical_gap())},
     ) == {"answer_verify": "blocked"}
+
+
+def test_queryless_block_requires_compiler_persisted_exact_gap():
+    from bi_agent.runtime.analysis_contract_compiler import (
+        compile_analysis_contract,
+    )
+    from tools.phase7.run_live_conversation_system_test import (
+        _derive_capability_outcomes,
+    )
+
+    registry = RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
+    outcome = compile_analysis_contract(
+        run_id="run-queryless-block-authority",
+        proposal={
+            "question_families": ["pattern_explanation"],
+            "target_metrics": ["paid_amount"],
+            "baselines": ["previous_day"],
+            "claim_intents": ["recurring_pattern_existence"],
+        },
+        accepted_capabilities=(
+            "metric_timeseries",
+            "evidence_reduce",
+            "answer_verify",
+        ),
+        catalog=DatasetCatalog(()),
+        registry=registry,
+        as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+        permission_scope="analyst",
+    )
+    authority = {
+        "analysis_contract": outcome.analysis_contract.to_dict(),
+        "checkpoint_events": [
+            {"node": "reduce_evidence", "status": "blocked"},
+            {"node": "verify_answer", "status": "blocked"},
+        ],
+    }
+
+    assert _derive_capability_outcomes(
+        ("metric_timeseries", "evidence_reduce", "answer_verify"),
+        accepted_capabilities=set(),
+        authority=authority,
+        registry=registry,
+    ) == {
+        "metric_timeseries": "blocked",
+        "evidence_reduce": "blocked",
+        "answer_verify": "missing_route",
+    }
 
 
 def test_capability_block_accepts_compiler_dimension_gap_without_binding():

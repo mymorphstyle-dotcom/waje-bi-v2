@@ -245,6 +245,85 @@ def test_obligation_review_fails_missing_current_data_obligation():
 
 
 @pytest.mark.parametrize(
+    ("observed_state", "missing"),
+    [
+        ("executable", []),
+        ("degraded", []),
+        ("source_unbound", []),
+        ("contract_partial", []),
+        ("snapshot_unavailable_as_of", []),
+        ("permission_blocked", ["paid_order_success:degraded"]),
+        ("unobserved", ["paid_order_success:degraded"]),
+    ],
+)
+def test_legacy_degraded_dataset_gate_uses_typed_state_relation(
+    observed_state, missing
+):
+    from tools.phase7.run_live_conversation_system_test import (
+        review_case_obligations,
+    )
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    required_capabilities = [
+        "metric_coverage_profile",
+        "data_quality_profile",
+        "answer_verify",
+    ]
+    gap_type = (
+        "dataset_snapshot_unavailable_as_of"
+        if observed_state == "snapshot_unavailable_as_of"
+        else observed_state
+    )
+    gaps = (
+        []
+        if observed_state in {"executable", "degraded", "unobserved"}
+        else [{
+            "dataset_id": "paid_order_success",
+            "gap_type": gap_type,
+            "gap_id": f"dataset:paid_order_success:{gap_type}",
+            "owner": "data_owner",
+        }]
+    )
+    authority = _run_matched_contract_authority(
+        _analysis_contract_gap_authority(gaps, required_capabilities),
+        run_id=f"run-legacy-degraded-{observed_state}",
+    )
+    if observed_state in {"executable", "degraded"}:
+        authority["query_executions"] = [{
+            "dataset_id": "paid_order_success",
+            "execution_status": (
+                "succeeded" if observed_state == "executable" else "degraded"
+            ),
+            "completeness_status": (
+                "complete" if observed_state == "executable" else "partial"
+            ),
+        }]
+
+    review = review_case_obligations(
+        {
+            "status": "completed",
+            "accepted_graph": required_capabilities,
+            "scenario": {
+                "question_family": "data_quality_or_evidence_review",
+                "target_metrics": ["paid_amount"],
+                "expected_dataset_states": {
+                    "paid_order_success": "degraded"
+                },
+                "allowed_claim_ceiling": "trust_boundary",
+                "terminal_boundary": "contract_allowed_partial",
+            },
+            "runtime_authority": authority,
+        },
+        registry,
+    )
+
+    assert review["observed_dataset_states"].get(
+        "paid_order_success", "unobserved"
+    ) == observed_state
+    assert review["missing_current_data_obligations"] == missing
+
+
+@pytest.mark.parametrize(
     ("boundary", "gaps", "claim_strength", "status", "passed"),
     [
         ("verified_answer", [], "observed", "completed", False),
@@ -832,10 +911,17 @@ def test_obligation_coverage_outcomes_are_mutually_exclusive_and_authoritative()
     summary = _coverage_summary([
         {
             "obligation_review": {
-                "required_capabilities": ["ready", "partial", "unseen", "unrouted"],
+                "required_capabilities": [
+                    "ready",
+                    "partial",
+                    "stopped",
+                    "unseen",
+                    "unrouted",
+                ],
                 "capability_outcomes": {
                     "ready": "executed",
                     "partial": "degraded",
+                    "stopped": "blocked",
                     "unseen": "unobserved",
                     "unrouted": "missing_route",
                 },
@@ -846,12 +932,12 @@ def test_obligation_coverage_outcomes_are_mutually_exclusive_and_authoritative()
     ])
 
     assert summary["obligation_coverage"] == {
-        "required": 4,
-        "routed": 3,
-        "terminal": 2,
+        "required": 5,
+        "routed": 4,
+        "terminal": 3,
         "executed": 1,
         "degraded": 1,
-        "blocked": 0,
+        "blocked": 1,
         "unobserved": 1,
         "missing_route": 1,
     }

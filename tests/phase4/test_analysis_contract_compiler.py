@@ -220,6 +220,58 @@ def _market_dashboard_snapshots():
 
 
 class AnalysisContractCompilerTest(unittest.TestCase):
+    def test_queryless_reducer_inherits_exact_upstream_claim_gaps(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = _compile_analysis_contract(
+            run_id="run-queryless-gap-propagation",
+            proposal={
+                "question_families": ["pattern_explanation"],
+                "target_metrics": ["paid_amount"],
+                "baselines": ["previous_day"],
+                "claim_intents": ["recurring_pattern_existence"],
+            },
+            accepted_capabilities=(
+                "metric_timeseries",
+                "evidence_reduce",
+                "answer_verify",
+            ),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        inherited = {
+            gap.gap_id: gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if "metric_timeseries" in gap.affected_capabilities
+        }
+
+        self.assertEqual(
+            set(inherited),
+            {
+                "dataset:paid_order_success:source_unbound",
+                (
+                    "capability:metric_timeseries:required_query:"
+                    "daily_metric_baselines:unbound"
+                ),
+            },
+        )
+        for gap in inherited.values():
+            self.assertEqual(
+                gap.affected_capabilities,
+                ("metric_timeseries", "evidence_reduce"),
+            )
+            self.assertEqual(
+                gap.affected_claim_types,
+                ("recurring_pattern_existence",),
+            )
+            self.assertNotIn("answer_verify", gap.affected_capabilities)
+            self.assertTrue(gap.owner)
+            self.assertTrue(gap.repair_options)
+
     def test_source_gap_keeps_empty_claim_scope_when_capability_claims_are_disjoint(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
@@ -245,7 +297,11 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 outcome = _compile_analysis_contract(
                     run_id=f"run-disjoint-claim-{capability_id}",
                     proposal={**proposal, "claim_intents": [unrelated_claim]},
-                    accepted_capabilities=(capability_id,),
+                    accepted_capabilities=(
+                        capability_id,
+                        "evidence_reduce",
+                        "answer_verify",
+                    ),
                     catalog=DatasetCatalog(()),
                     registry=registry,
                     as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),

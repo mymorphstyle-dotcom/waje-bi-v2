@@ -214,6 +214,7 @@ def compile_analysis_contract(
         claim_types_by_capability=_claim_types_by_capability(
             capabilities, accepted_claim_intents, registry
         ),
+        registry=registry,
     )
     gaps = _merge_contract_gaps(
         (
@@ -1867,10 +1868,14 @@ def _scope_gaps(
     affected_capabilities: tuple[str, ...],
     affected_claim_types: tuple[str, ...],
     claim_types_by_capability: Mapping[str, tuple[str, ...]] | None = None,
+    registry: RuntimeContractRegistry | None = None,
 ) -> tuple[ContractGap, ...]:
     scoped = []
     for gap in gaps:
         capabilities = gap.affected_capabilities or affected_capabilities
+        direct_source_ambiguity = _is_direct_analysis_source_ambiguity(
+            gap, capabilities
+        )
         claim_types = gap.affected_claim_types
         if not claim_types and claim_types_by_capability is not None:
             claim_types = _dedupe(
@@ -1878,21 +1883,29 @@ def _scope_gaps(
                 for capability_id in capabilities
                 for claim_type in claim_types_by_capability.get(capability_id, ())
             )
-        if (
-            not claim_types
-            and _is_direct_analysis_source_ambiguity(gap, capabilities)
-        ):
+        if not claim_types and direct_source_ambiguity:
             claim_types = affected_claim_types
         scoped_claim_types = (
             claim_types
             if claim_types_by_capability is not None
             else claim_types or affected_claim_types
         )
+        if registry is not None and scoped_claim_types:
+            capabilities = _dedupe((
+                *capabilities,
+                *(
+                    capability_id
+                    for capability_id in affected_capabilities
+                    if capability_id not in capabilities
+                    and _queryless_capability_blocks_claims(
+                        capability_id,
+                        scoped_claim_types,
+                        registry,
+                    )
+                ),
+            ))
         diagnostic_context = gap.diagnostic_context
-        if (
-            scoped_claim_types
-            and _is_direct_analysis_source_ambiguity(gap, capabilities)
-        ):
+        if scoped_claim_types and direct_source_ambiguity:
             diagnostic_context = {
                 **gap.diagnostic_context,
                 "claim_intents": list(scoped_claim_types),
@@ -1906,6 +1919,30 @@ def _scope_gaps(
             )
         )
     return tuple(scoped)
+
+
+def _queryless_capability_blocks_claims(
+    capability_id: str,
+    affected_claim_types: tuple[str, ...],
+    registry: RuntimeContractRegistry,
+) -> bool:
+    contract = _registry_entry(registry.capability_inputs, capability_id)
+    if contract is None:
+        return False
+    readiness = contract.get("minimum_readiness") or {}
+    degradation = contract.get("degradation_policy") or {}
+    if not isinstance(readiness, Mapping) or not isinstance(degradation, Mapping):
+        return False
+    supported_claim_types = set(
+        _mapping_values(contract, "supported_claim_types")
+    )
+    return (
+        readiness.get("required_slots") == "none"
+        and str(degradation.get("missing_required_input") or "").startswith(
+            "block_"
+        )
+        and bool(supported_claim_types.intersection(affected_claim_types))
+    )
 
 
 def _is_direct_analysis_source_ambiguity(

@@ -369,7 +369,10 @@ def review_case_obligations(
     missing_data = [
         f"{dataset_id}:{state}"
         for dataset_id, state in expected_states.items()
-        if observed_states.get(dataset_id) != state
+        if not _legacy_dataset_state_satisfies(
+            expected=state,
+            observed=observed_states.get(dataset_id, "unobserved"),
+        )
     ]
     mismatched_gaps = [
         f"{dataset_id}:{gap_type}"
@@ -754,6 +757,18 @@ def _authority_resolved_expected_gaps(
         elif state in gap_states:
             resolved[dataset_id] = state
     return resolved
+
+
+def _legacy_dataset_state_satisfies(*, expected: str, observed: str) -> bool:
+    if expected == "degraded":
+        return observed in {
+            "executable",
+            "degraded",
+            "source_unbound",
+            "contract_partial",
+            "snapshot_unavailable_as_of",
+        }
+    return observed == expected
 
 
 def _derive_capability_outcomes(
@@ -2959,11 +2974,7 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "obligation_coverage": {
             "required": required,
-            "routed": (
-                outcome_counts["executed"]
-                + outcome_counts["degraded"]
-                + outcome_counts["unobserved"]
-            ),
+            "routed": required - outcome_counts["missing_route"],
             "terminal": (
                 outcome_counts["executed"]
                 + outcome_counts["degraded"]
