@@ -1,6 +1,6 @@
 import math
 from dataclasses import asdict, replace
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import unittest
 import bi_agent.runtime.evidence_authority as evidence_authority_module
@@ -1126,12 +1126,30 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
         self.assertEqual(roundtrip_report.completeness_status, "complete")
         typed_rows = evidence_authority_module.canonical_result_rows(
             (
-                {"id": "b", "day": date(2026, 6, 2), "amount": Decimal("2")},
-                {"id": "a", "day": date(2026, 6, 1), "amount": Decimal("1")},
+                {
+                    "id": "b",
+                    "day": date(2026, 6, 2),
+                    "at": datetime(2026, 6, 2, tzinfo=timezone.utc),
+                    "amount": Decimal("2"),
+                },
+                {
+                    "id": "a",
+                    "day": date(2026, 6, 1),
+                    "at": datetime(2026, 6, 1, tzinfo=timezone.utc),
+                    "amount": Decimal("1"),
+                },
             ),
             ("id",),
         )
+        reversed_typed_rows = evidence_authority_module.canonical_result_rows(
+            tuple(reversed(typed_rows)),
+            ("id",),
+        )
+        self.assertEqual(typed_rows, reversed_typed_rows)
         self.assertTrue(all(isinstance(row["day"], date) for row in typed_rows))
+        self.assertTrue(
+            all(isinstance(row["at"], datetime) for row in typed_rows)
+        )
         self.assertTrue(
             all(isinstance(row["amount"], Decimal) for row in typed_rows)
         )
@@ -1419,6 +1437,62 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
                     authority.resolve_query_execution(results[0].result_ref),
                     authority.resolve_query_execution(results[1].result_ref),
                 )
+
+    def test_canonical_projection_collision_fails_closed_across_executor_order(self):
+        contract = baseline_contract(metric=reviewed_metric())
+        contract = replace(
+            contract,
+            contract_signature=query_contract_signature(contract),
+        )
+        snapshot = paid_snapshot()
+        rows = (
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "paid_amount": Decimal("1"),
+            },
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "paid_amount": {"$decimal": "1"},
+            },
+        )
+        authority = RuntimeEvidenceAuthority()
+        results = tuple(
+            ClickHouseQueryExecutor(
+                _RowsRuntime(ordered_rows),
+                evidence_authority=authority,
+                release_resolver=_PAID_RELEASE_RESOLVER,
+            ).execute(
+                contract,
+                {snapshot.snapshot_ref: snapshot},
+                execution_attempt_ref="attempt:test:row-projection-collision",
+            )
+            for ordered_rows in (rows, tuple(reversed(rows)))
+        )
+
+        self.assertEqual(
+            tuple(result.execution_status for result in results),
+            ("failed", "failed"),
+        )
+        self.assertEqual(results[0].result_ref, results[1].result_ref)
+        self.assertEqual(results[0].rows_ref, results[1].rows_ref)
+        self.assertEqual(results[0].failure_reason, results[1].failure_reason)
+        self.assertTrue(
+            results[0].failure_reason.startswith(
+                "invalid_result_rows:canonical_row_projection_collision:"
+            )
+        )
+        for ordered_rows in (rows, tuple(reversed(rows))):
+            with self.subTest(ordered_rows=ordered_rows):
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "canonical_row_projection_collision",
+                ):
+                    evidence_authority_module.canonical_result_rows(
+                        ordered_rows,
+                        contract.result_shape.unique_key,
+                    )
 
     def test_rows_hash_rejects_nan_and_non_scalar_unique_keys(self):
         cases = (

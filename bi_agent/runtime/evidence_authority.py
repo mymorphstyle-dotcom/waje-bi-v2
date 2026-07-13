@@ -404,6 +404,7 @@ def _canonical_ordered_rows(
     unique_key_fields: Sequence[str],
 ) -> tuple[Mapping[str, Any], ...]:
     normalized = []
+    typed_identities_by_projection: dict[str, set[str]] = {}
     key_fields = tuple(str(field) for field in unique_key_fields if field)
     missing_key_fields = _preflight_result_row_keys(rows, key_fields)
     if missing_key_fields:
@@ -412,15 +413,64 @@ def _canonical_ordered_rows(
         )
     for row in rows:
         canonical_projection = _canonical_value(row)
+        projection_digest = canonical_digest(canonical_projection)
+        typed_identity = canonical_digest(_typed_value_identity(row))
+        typed_identities_by_projection.setdefault(
+            projection_digest,
+            set(),
+        ).add(typed_identity)
         if key_fields:
             raw_key = tuple(row[field] for field in key_fields)
             key = canonical_digest(raw_key)
             sort_key = key
         else:
-            sort_key = canonical_digest(canonical_projection)
+            sort_key = projection_digest
         normalized.append((sort_key, dict(row)))
+    projection_collisions = sorted(
+        digest
+        for digest, typed_identities in typed_identities_by_projection.items()
+        if len(typed_identities) > 1
+    )
+    if projection_collisions:
+        raise EvidenceIntegrityError(
+            "canonical_row_projection_collision:"
+            + ",".join(projection_collisions)
+        )
     normalized.sort(key=lambda item: item[0])
     return tuple(row for _, row in normalized)
+
+
+def _typed_value_identity(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            "type": "mapping",
+            "items": [
+                [key, _typed_value_identity(value[key])]
+                for key in sorted(value)
+            ],
+        }
+    if isinstance(value, (list, tuple)):
+        return {
+            "type": "sequence",
+            "items": [_typed_value_identity(item) for item in value],
+        }
+    if isinstance(value, Decimal):
+        return {"type": "decimal", "value": str(value)}
+    if isinstance(value, datetime):
+        return {"type": "datetime", "value": value.isoformat()}
+    if isinstance(value, date):
+        return {"type": "date", "value": value.isoformat()}
+    if value is None:
+        return {"type": "null"}
+    if isinstance(value, bool):
+        return {"type": "bool", "value": value}
+    if isinstance(value, int):
+        return {"type": "int", "value": value}
+    if isinstance(value, float):
+        return {"type": "float", "value": value}
+    if isinstance(value, str):
+        return {"type": "string", "value": value}
+    return {"type": type(value).__name__, "value": _canonical_value(value)}
 
 
 def canonical_result_rows(
