@@ -1522,7 +1522,7 @@ def _asset_content_validation(
             (primary_report.get("coverage_summary") or {}).get("observed_windows")
         )
     )
-    if observed != actual_windows:
+    if tuple(sorted(observed)) != tuple(sorted(actual_windows)):
         return "row_payload_report_window_mismatch", ()
     return "", actual_windows
 

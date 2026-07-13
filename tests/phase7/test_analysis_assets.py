@@ -11,6 +11,7 @@ from bi_agent.runtime.analysis_contracts import CompletenessReport
 from bi_agent.runtime.artifacts import to_jsonable
 from bi_agent.runtime.evidence_authority import _record_completeness
 from bi_agent.runtime.analysis_assets import (
+    _canonical_sha256,
     build_analysis_assets,
     build_dimension_scan_reuse_contract as _build_dimension_scan_reuse_contract,
     evaluate_dimension_scan_reuse as _evaluate_dimension_scan_reuse,
@@ -352,6 +353,107 @@ class AnalysisAssetsTest(unittest.TestCase):
 
         self.assertEqual(decision["reuse_decision"]["decision"], "reuse")
         self.assertEqual(len(matched), 1)
+
+    def test_multi_window_membership_reuses_across_row_and_report_order(self):
+        windows = {
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            },
+            "previous_day": {
+                "start_inclusive": "2026-06-01",
+                "end_exclusive": "2026-06-02",
+                "timezone": "Africa/Lagos",
+            },
+        }
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=(
+                {"window_id": "previous_day", "amount": 9, "channel": "A"},
+                {"window_id": "target_day", "amount": 10, "channel": "A"},
+            ),
+        )
+
+        decision = evaluate_dimension_scan_reuse(
+            asset,
+            expected_contract=contract,
+            now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+            evidence_resolver=resolver,
+        )
+
+        self.assertEqual(
+            tuple(
+                contract["completeness_reports"][0]["coverage_summary"][
+                    "observed_windows"
+                ]
+            ),
+            ("target_day", "previous_day"),
+        )
+        self.assertEqual(
+            tuple(row["window_id"] for row in asset["row_payload"]["rows"]),
+            ("previous_day", "target_day"),
+        )
+        self.assertEqual(decision["reuse_decision"]["decision"], "reuse")
+
+    def test_report_window_membership_missing_or_extra_stays_context_only(self):
+        windows = {
+            "target_day": {
+                "start_inclusive": "2026-06-02",
+                "end_exclusive": "2026-06-03",
+                "timezone": "Africa/Lagos",
+            },
+            "previous_day": {
+                "start_inclusive": "2026-06-01",
+                "end_exclusive": "2026-06-02",
+                "timezone": "Africa/Lagos",
+            },
+        }
+        contract, asset, resolver = verified_reuse_fixture(
+            resolved_windows=windows,
+            rows=(
+                {"window_id": "previous_day", "amount": 9, "channel": "A"},
+                {"window_id": "target_day", "amount": 10, "channel": "A"},
+            ),
+        )
+
+        for observed_windows in (
+            ("target_day",),
+            ("target_day", "previous_day", "uncontracted_window"),
+        ):
+            with self.subTest(observed_windows=observed_windows):
+                report = contract["completeness_reports"][0]
+                mutated_report = {
+                    **report,
+                    "coverage_summary": {
+                        **report["coverage_summary"],
+                        "observed_windows": observed_windows,
+                    },
+                }
+                mutated_reports = (mutated_report,)
+                mutated_contract = {
+                    **contract,
+                    "completeness_reports": mutated_reports,
+                    "completeness_digest": _canonical_sha256(mutated_reports),
+                }
+                mutated_contract["contract_signature"] = _reuse_contract_signature(
+                    mutated_contract
+                )
+                decision = evaluate_dimension_scan_reuse(
+                    {**asset, "reuse_contract": mutated_contract},
+                    expected_contract=contract,
+                    now=datetime.fromisoformat("2026-06-03T06:00:00+00:00"),
+                    evidence_resolver=resolver,
+                )
+
+                self.assertEqual(
+                    decision["reuse_decision"]["decision"],
+                    "context_only",
+                )
+                self.assertEqual(
+                    decision["reuse_decision"]["reason"],
+                    "row_payload_report_window_mismatch",
+                )
 
     def test_nan_and_mapping_unique_keys_are_stable_context_only(self):
         windows = {
