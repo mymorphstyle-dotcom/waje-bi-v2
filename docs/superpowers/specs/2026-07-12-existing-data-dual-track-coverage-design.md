@@ -349,12 +349,23 @@ The shared recovery contract is a no-op for the InMemory store and an explicit
 transaction rollback for PostgreSQL, so an aborted PostgreSQL write never blocks
 the typed audit write that follows.
 
+ConversationRuntime keeps claim/result reuse eligibility separate from
+intent-material continuity. A same-topic result that requires a semantic rerun
+must remain `rerun` and must never enter the public `reuse_candidates` channel,
+but its completed material may enter the private prior-topic context when the
+snapshot and contract still match and the current role can read its scope. A
+snapshot, contract, or permission mismatch remains ineligible for both
+channels. This lets a follow-up change dimensions, grouping, comparison order,
+or another semantic axis without losing the authoritative metric, scope, time
+window, and ordered prior-baseline context needed by the intent provider.
+
 ConversationRuntime accepts prior-topic material only when every forwarded
-reuse candidate first passes its existing candidate validation and the store's
-indexed candidate-authority resolver, then matches that canonical store record
-exactly before the completed-authority resolver runs. Candidate, authoritative
-AnalysisContract, and execution material permission scopes must agree, and the
-current role must be allowed to read that scope before provider invocation.
+material-context candidate first passes its existing candidate validation and
+the store's indexed candidate-authority resolver, then matches that canonical
+store record exactly before the completed-authority resolver runs. Candidate,
+authoritative AnalysisContract, and execution material permission scopes must
+agree, and the current role must be allowed to read that scope before provider
+invocation.
 Every completed-authority value is preflighted as an exact Mapping before any
 field access; a scalar, sequence, or null value fails with the stable
 `prior_topic_completed_authority_shape_invalid` integrity contract.
@@ -373,7 +384,11 @@ source authority and AnalysisContract again, then projects target metric,
 scope, time window, and ordered prior baselines into
 `bound_business_context`. The provider still returns a complete intent and the
 normal intent validator remains authoritative over that response. Prior-topic
-material is never copied onto the workflow request's public top-level business
+axes that the current question does not explicitly replace must be returned as
+their exact canonical bound values; an explicitly changed axis must be returned
+as a complete new canonical value. Null or empty required axes remain contract
+failures and are never filled locally. Prior-topic material is never copied
+onto the workflow request's public top-level business
 axes, never overwrites provider output locally, and never falls back to topic
 summary text or local intent inference. If a follow-up has no completed
 authority, existing no-context behavior remains; malformed, drifted, or

@@ -1019,8 +1019,18 @@ ConversationRuntime's one-bad-ref fail-closed rule to hide orphan candidates.
 Expose one store recovery method: InMemory implements a no-op and PostgreSQL
 calls `rollback()` so the typed audit can run after an aborted write.
 
+ConversationRuntime must separate claim/result reuse from intent-material
+continuity. A validated same-topic result whose decision is `rerun` solely for
+`semantic_scope_mismatch` remains excluded from public `reuse_candidates`, but
+may supply private `prior_topic_material_context` when snapshot, contract, and
+permission checks have already passed. Results rejected for snapshot, contract,
+or permission mismatch remain excluded. Add general RED cases spanning several
+semantic mutations and assert that the claim path still reruns while the intent
+provider receives the completed signed metric, scope, time window, and ordered
+prior baselines as context only.
+
 ConversationRuntime may derive private `prior_topic_material_context` only from
-already validated result reuse candidates whose completed source authorities
+already validated material-context candidates whose completed source authorities
 also pass the store resolver. Validate every ref, collapse duplicate refs from
 one run, and merge multiple source runs only when their canonical material
 projections are identical. Conflicts fail typed independent of candidate order;
@@ -1039,7 +1049,11 @@ before invoking `business_intent`. Project target metric, scope, time window,
 and ordered prior baselines only into the prompt's `bound_business_context`.
 Keep the provider's complete intent output mandatory: do not copy those axes to
 the public request, overwrite provider output, infer them from topic summaries,
-or add a local narrative/intent fallback. Cover completed persistence,
+or add a local narrative/intent fallback.
+Require the provider to copy an exact canonical bound axis when the current
+question does not replace it, and to return a complete canonical replacement
+when it does. Null or empty required axes fail the existing LLM contract.
+Cover completed persistence,
 failed/waiting rejection, InMemory/PostgreSQL parity, tamper/owner/status and
 contract drift, multiple refs for one run, identical/conflicting multi-run
 order independence, provider-preflight failure, absence of topic-summary

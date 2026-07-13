@@ -321,6 +321,104 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(mismatch.reuse_decisions[0].decision, "context_only")
         self.assertEqual(mismatch.run_request.to_dict()["reuse_candidates"], [])
 
+    def test_semantic_rerun_keeps_claim_reuse_closed_and_forwards_signed_intent_material(self):
+        messages = (
+            "换成按周后继续比较。",
+            "按日均口径重新比较。",
+            "只看渠道后再分析一次。",
+        )
+        for index, message in enumerate(messages):
+            with self.subTest(message=message):
+                thread_id = f"thread-semantic-rerun-{index}"
+                store = InMemoryConversationStore()
+                store.create_thread(thread_id, owner_id="analyst-1")
+                topic = store.create_topic(
+                    thread_id,
+                    title="付费金额基线比较",
+                    summary="已完成付费金额基线比较。",
+                )
+                store.set_current_topic(thread_id, topic.topic_id)
+                candidate = _add_authoritative_result_candidate(
+                    store,
+                    topic_id=topic.topic_id,
+                    result_ref=f"result:semantic-rerun-{index}",
+                    source_run_id=f"run-semantic-rerun-{index}",
+                    baselines=("previous_day", "rolling_7_day_baseline"),
+                )
+
+                turn = ConversationRuntime(store).handle_message(
+                    thread_id,
+                    message,
+                )
+                request = turn.run_request.to_dict()
+
+                self.assertEqual(turn.topic_relation, "inherit_current")
+                self.assertEqual(turn.reuse_decisions[0].decision, "rerun")
+                self.assertEqual(
+                    turn.reuse_decisions[0].reason,
+                    "semantic_scope_mismatch",
+                )
+                self.assertEqual(request["reuse_candidates"], [])
+                self.assertEqual(
+                    request["prior_topic_material_context"][
+                        "source_result_refs"
+                    ],
+                    [candidate["result_ref"]],
+                )
+                result_item = next(
+                    item
+                    for item in turn.context_manifest.items
+                    if item.source_type == "result_ref"
+                )
+                self.assertEqual(result_item.claim_use, "rerun")
+                self.assertFalse(result_item.can_support_claims)
+                material_item = next(
+                    item
+                    for item in turn.context_manifest.items
+                    if item.source_type == "material_authority"
+                )
+                self.assertEqual(material_item.claim_use, "context_only")
+                self.assertFalse(material_item.can_support_claims)
+
+    def test_snapshot_or_contract_mismatch_never_forwards_intent_material(self):
+        variants = (
+            {"current_snapshot": "2026H2"},
+            {"contract_version": "contracts-v2"},
+        )
+        for index, kwargs in enumerate(variants):
+            with self.subTest(kwargs=kwargs):
+                thread_id = f"thread-material-mismatch-{index}"
+                store = InMemoryConversationStore()
+                store.create_thread(thread_id, owner_id="analyst-1")
+                topic = store.create_topic(
+                    thread_id,
+                    title="付费金额分析",
+                    summary="已完成付费金额分析。",
+                )
+                store.set_current_topic(thread_id, topic.topic_id)
+                _add_authoritative_result_candidate(
+                    store,
+                    topic_id=topic.topic_id,
+                    result_ref=f"result:material-mismatch-{index}",
+                    source_run_id=f"run-material-mismatch-{index}",
+                )
+
+                turn = ConversationRuntime(store).handle_message(
+                    thread_id,
+                    "换成按周后继续比较。",
+                    **kwargs,
+                )
+                request = turn.run_request.to_dict()
+
+                self.assertEqual(request["reuse_candidates"], [])
+                self.assertEqual(request["prior_topic_material_context"], {})
+                self.assertFalse(
+                    any(
+                        item.source_type == "material_authority"
+                        for item in turn.context_manifest.items
+                    )
+                )
+
     def test_runtime_forwards_all_exact_topic_candidates_newest_first(self):
         runtime = _seed_runtime()
         topic = runtime.store.current_topic("thread-phase7")
@@ -541,8 +639,14 @@ class ConversationRuntimeTest(unittest.TestCase):
 
     def test_prior_topic_material_conflict_is_order_independent(self):
         orders = (
-            (("run-previous", ("previous_day",)), ("run-rolling", ("rolling_7_day_baseline",))),
-            (("run-rolling", ("rolling_7_day_baseline",)), ("run-previous", ("previous_day",))),
+            (
+                ("run-previous", ("previous_day",)),
+                ("run-rolling", ("rolling_7_day_baseline",)),
+            ),
+            (
+                ("run-rolling", ("rolling_7_day_baseline",)),
+                ("run-previous", ("previous_day",)),
+            ),
         )
         for index, order in enumerate(orders):
             with self.subTest(order=index):
@@ -571,6 +675,40 @@ class ConversationRuntimeTest(unittest.TestCase):
                     ConversationRuntime(store).handle_message(
                         thread_id,
                         "继续看刚才的渠道贡献。",
+                    )
+
+    def test_semantic_rerun_validates_all_material_candidates_before_context(self):
+        orders = (
+            (("run-previous", ("previous_day",)), ("run-rolling", ("rolling_7_day_baseline",))),
+            (("run-rolling", ("rolling_7_day_baseline",)), ("run-previous", ("previous_day",))),
+        )
+        for index, order in enumerate(orders):
+            with self.subTest(order=index):
+                thread_id = f"thread-semantic-material-conflict-{index}"
+                store = InMemoryConversationStore()
+                store.create_thread(thread_id, owner_id="analyst-1")
+                topic = store.create_topic(
+                    thread_id,
+                    title="付费金额变化",
+                    summary="已完成付费金额变化分析。",
+                )
+                store.set_current_topic(thread_id, topic.topic_id)
+                for source_run_id, baselines in order:
+                    _add_authoritative_result_candidate(
+                        store,
+                        topic_id=topic.topic_id,
+                        result_ref=f"result:{source_run_id}",
+                        source_run_id=source_run_id,
+                        baselines=baselines,
+                    )
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "prior_topic_material_conflict",
+                ):
+                    ConversationRuntime(store).handle_message(
+                        thread_id,
+                        "换成按周后继续比较。",
                     )
 
     def test_identical_multi_run_material_is_canonical_across_input_order(self):

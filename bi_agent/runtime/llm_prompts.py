@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 from bi_agent.conversation.models import CLARIFICATION_ESCAPE_OPTION
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v44"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v45"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 CLARIFICATION_PROMPT_TASKS = frozenset(
     {"boundary_decision", "clarification_question", "query_gap_clarification"}
@@ -240,8 +240,14 @@ def _task_rules(task: str) -> str:
             "bound_business_context may contain metric, scope, time window, ordered "
             "prior_baselines, baseline, target, pattern family, or pattern params that "
             "are already known business "
-            "constraints. Treat them as context for the run, not as a family label. Do "
-            "not choose pattern_explanation solely because pattern_family or pattern_params "
+            "constraints. Treat them as context for the run, not as a family label. "
+            "Return every required material axis with a non-null, non-empty value. When "
+            "bound_business_context supplies a material axis and the current question "
+            "does not explicitly replace that axis, copy its exact canonical value into "
+            "the corresponding output field. When the current question explicitly "
+            "replaces that axis, return the new canonical value and keep the output "
+            "complete. Do not choose pattern_explanation solely because pattern_family "
+            "or pattern_params "
             "are present. Use the launch recipe vocabulary: paid_amount_change_explanation, "
             "pattern_explanation, business_object_impact_review, revenue_health_review, "
             "segment_or_factor_attribution, anomaly_or_black_swan_review, "

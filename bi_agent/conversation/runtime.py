@@ -172,18 +172,22 @@ class ConversationRuntime:
             contract_version,
         )
         reuse_candidates = self._reuse_candidate_payloads(topic, reuse_decisions)
+        material_context_candidates = self._material_context_candidate_payloads(
+            topic,
+            reuse_decisions,
+        )
         prior_topic_material_context: dict[str, Any] = {}
         if (
             topic_relation == "inherit_current"
             and topic is not None
-            and reuse_candidates
+            and material_context_candidates
         ):
             prior_topic_material_context = (
                 self._validated_prior_topic_material_context(
                     thread_id=thread_id,
                     topic=topic,
                     role=role,
-                    candidates=reuse_candidates,
+                    candidates=material_context_candidates,
                 )
             )
         topic_assets = self._topic_analysis_assets(thread_id, topic)
@@ -525,7 +529,13 @@ class ConversationRuntime:
                 decisions.append(decision)
             else:
                 rejected.append(decision)
-        return tuple(decisions or rejected[:1])
+        semantic_reruns = [
+            decision
+            for decision in rejected
+            if decision.decision == "rerun"
+            and decision.reason == "semantic_scope_mismatch"
+        ]
+        return tuple(decisions or semantic_reruns or rejected[:1])
 
     def _reuse_candidate_payloads(
         self,
@@ -543,6 +553,31 @@ class ConversationRuntime:
             dict(record.payload)
             for record in self.store.results_for_topic(topic.topic_id)
             if record.result_ref in candidate_refs and record.payload
+        )
+
+    def _material_context_candidate_payloads(
+        self,
+        topic: Optional[TopicState],
+        reuse_decisions: tuple[ReuseDecision, ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        material_refs = {
+            decision.result_ref
+            for decision in reuse_decisions
+            if decision.result_ref
+            and (
+                decision.decision == "candidate"
+                or (
+                    decision.decision == "rerun"
+                    and decision.reason == "semantic_scope_mismatch"
+                )
+            )
+        }
+        if not topic or not material_refs:
+            return ()
+        return tuple(
+            dict(record.payload)
+            for record in self.store.results_for_topic(topic.topic_id)
+            if record.result_ref in material_refs and record.payload
         )
 
     def _validated_prior_topic_material_context(

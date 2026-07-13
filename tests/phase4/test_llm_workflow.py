@@ -5786,6 +5786,9 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("still unbound", text)
         self.assertIn("would change the business answer", text)
         self.assertIn("must not also appear in ambiguous_slots", text)
+        self.assertIn("non-null, non-empty value", text)
+        self.assertIn("copy its exact canonical value", text)
+        self.assertIn("explicitly replaces that axis", text)
 
     def test_capabilities_select_runtime_rows_by_query_intent(self):
         state = {
