@@ -3345,25 +3345,6 @@ def _apply_query_gap_action_to_route(
     if not affected:
         return requested, dict(route)
     output = dict(route)
-    requirements = dict(output.get("analysis_requirements") or {})
-    source_capabilities = []
-    supported_claims = set()
-    for capability in remaining:
-        try:
-            contract = registry.capability_inputs(capability)
-        except KeyError:
-            continue
-        if str(contract.get("source_mode") or "") == "requested_context_sources":
-            source_capabilities.append(capability)
-        supported_claims.update(contract.get("supported_claim_types") or ())
-    if not source_capabilities:
-        requirements["context_sources"] = []
-    requirements["claim_intents"] = [
-        claim
-        for claim in requirements.get("claim_intents") or ()
-        if claim in supported_claims
-    ]
-    output["analysis_requirements"] = requirements
     output["requested_nodes"] = list(remaining)
     output["route_summary"] = (
         "按用户选择继续执行可验证的主指标分析，并在结论中保留缺失背景证据的限制。"

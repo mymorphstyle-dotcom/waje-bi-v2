@@ -4409,7 +4409,7 @@ class LLMWorkflowTest(unittest.TestCase):
         }
         self.assertEqual(_route_after_accept_analysis(boundary_only), "block")
 
-    def test_query_gap_action_omits_only_unavailable_context_capability(self):
+    def test_query_gap_action_omits_only_capability_and_preserves_signed_material(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
         registry = RuntimeContractRegistry.from_path(
@@ -4433,10 +4433,13 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertEqual(remaining, ("market_health_compare",))
-        self.assertEqual(updated["analysis_requirements"]["context_sources"], [])
+        self.assertEqual(
+            updated["analysis_requirements"]["context_sources"],
+            ["external_event"],
+        )
         self.assertEqual(
             updated["analysis_requirements"]["claim_intents"],
-            ["comparative_change"],
+            ["candidate_mechanism", "comparative_change"],
         )
         waiting, unchanged = _apply_query_gap_action_to_route(
             ("market_health_compare", "event_evidence"),
@@ -4596,10 +4599,13 @@ class LLMWorkflowTest(unittest.TestCase):
             ),
         )
         self.assertEqual(remaining, ("market_health_compare",))
-        self.assertEqual(updated["analysis_requirements"]["context_sources"], [])
+        self.assertEqual(
+            updated["analysis_requirements"]["context_sources"],
+            ["external_event", "gameplay"],
+        )
         self.assertEqual(
             updated["analysis_requirements"]["claim_intents"],
-            ["comparative_change"],
+            ["comparative_change", "candidate_mechanism"],
         )
 
     def test_material_query_gap_without_feasible_action_routes_to_typed_block(self):

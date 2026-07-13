@@ -125,6 +125,14 @@ a verified claim only from its own complete binding, result, completeness, and
 evidence provenance. Overlapping claim types do not transfer authority from an
 omitted capability to a ready sibling.
 
+The signed terminal-resume proposal continues to carry the complete reviewed
+claim-intent and context-source request while capability nodes are removed by
+the accepted gap choice. Route pruning must not pre-filter those signed axes.
+The compiler is the single boundary that partitions the reviewed request
+against the remaining capabilities and records unsupported portions as typed
+gaps; otherwise the resume handoff would mutate material authority before exact
+validation.
+
 ### 4. Register the existing paid-success facts as authority
 
 Add a narrow registration workflow for the current paid-order archive and
