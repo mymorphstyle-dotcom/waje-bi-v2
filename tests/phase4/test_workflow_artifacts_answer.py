@@ -1173,7 +1173,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             any(warning["code"] == "single_period_confidence_wording" for warning in verifier["warnings"])
         )
 
-    def test_retry_policy_retries_technical_failure_once_only(self):
+    def test_business_node_wrapper_does_not_implicitly_retry_failures(self):
         technical = run_pattern_workflow(
             {
                 "force_failure": {
@@ -1200,7 +1200,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 for event in technical.checkpoint_events
                 if event["node"] == "execute_capabilities"
             ],
-            [1, 2],
+            [1],
         )
         self.assertEqual(
             [
@@ -1209,6 +1209,22 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 if event["node"] == "execute_capabilities"
             ],
             [1],
+        )
+        self.assertEqual(
+            [
+                event["failure_type"]
+                for event in technical.checkpoint_events
+                if event["node"] == "execute_capabilities"
+            ],
+            ["technical"],
+        )
+        self.assertEqual(
+            [
+                event["failure_type"]
+                for event in permission.checkpoint_events
+                if event["node"] == "execute_capabilities"
+            ],
+            ["permission"],
         )
 
     def test_sql_safety_failure_returns_blocked_answer_with_validator_reason(self):
