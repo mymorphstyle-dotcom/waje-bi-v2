@@ -35,6 +35,7 @@ from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
 )
+from bi_agent.runtime.permission_roles import resolve_product_runtime_roles
 
 
 WorkflowRunner = Callable[[dict[str, Any]], Any]
@@ -74,14 +75,30 @@ class ConversationAgentCore:
         user_message: str,
         user_id: str | None = None,
         permission_context: dict | None = None,
-        role: str = "analyst",
+        role: str | None = None,
+        runtime_permission_scope: str | None = None,
         artifact_root: str = "artifacts/phase-7",
         clarification: dict[str, Any] | None = None,
         prior_analysis_assets: tuple[Mapping[str, Any], ...] = (),
         analysis_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         analysis_context = _validated_analysis_context(analysis_context)
-        role = str((permission_context or {}).get("role") or role or "analyst")
+        context_role = (permission_context or {}).get("role")
+        role, runtime_permission_scope = resolve_product_runtime_roles(
+            role,
+            runtime_permission_scope,
+            permission_context_role=(
+                str(context_role) if context_role not in (None, "") else None
+            ),
+        )
+        permission_context = {
+            **{
+                key: value
+                for key, value in (permission_context or {}).items()
+                if key not in {"role", "permission_scope", "runtime_permission_scope"}
+            },
+            "role": role,
+        }
         run_id = run_id or f"run-{uuid4().hex[:12]}"
         self.store.get_thread(thread_id)
         self.store.upsert_run(run_id, thread_id=thread_id, status="running")
@@ -117,7 +134,7 @@ class ConversationAgentCore:
                     "clarification": turn.clarification.to_dict() if turn.clarification else None,
                     "clarification_answer": clarification,
                     "user_id": user_id,
-                    "permission_context": permission_context or {},
+                    "permission_context": permission_context,
                 }
                 self.store.upsert_run(
                     run_id,
@@ -181,8 +198,9 @@ class ConversationAgentCore:
                     user_message if original_question else ""
                 ),
                 "role": role,
+                "runtime_permission_scope": runtime_permission_scope,
                 "user_id": user_id,
-                "permission_context": permission_context or {},
+                "permission_context": permission_context,
                 "artifact_root": artifact_root,
                 "clarification_answer": clarification,
                 "prior_analysis_assets": tuple(turn.run_request.prior_analysis_assets or ()),
@@ -417,6 +435,9 @@ class ConversationAgentCore:
                     ),
                     material_slots=(
                         result.answer_package.get("material_slots") or {}
+                    ),
+                    runtime_material=result.answer_package.get(
+                        "execution_material"
                     ),
                     obligation_rejection_history=(
                         obligation_resolution.get("mutation_history") or ()
@@ -1468,7 +1489,9 @@ def _dry_run_workflow(request: dict[str, Any]) -> WorkflowRunResult:
             "run_id": run_id,
             "status": "draft",
             "snapshot_id": "dry-run",
-            "permission_scope": str(request.get("role") or "analyst"),
+            "permission_scope": str(
+                request.get("runtime_permission_scope") or "analyst"
+            ),
             "follow_up_context": "dry-run harness artifact",
             "final_answer": final_answer,
             "follow_up_questions": _dry_run_follow_up_questions(accepted_graph),
@@ -1811,6 +1834,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--message", required=True)
     parser.add_argument("--role", default="analyst")
+    parser.add_argument("--runtime-permission-scope")
     parser.add_argument("--artifact-root", default="artifacts/phase-7")
     parser.add_argument("--clarification")
     parser.add_argument("--prior-analysis-assets")
@@ -1828,6 +1852,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         run_id=args.run_id,
         user_message=args.message,
         role=args.role,
+        runtime_permission_scope=args.runtime_permission_scope,
         artifact_root=args.artifact_root,
         clarification=clarification,
         prior_analysis_assets=prior_analysis_assets,

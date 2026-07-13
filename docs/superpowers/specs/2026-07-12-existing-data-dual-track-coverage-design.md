@@ -189,6 +189,30 @@ signature, release, permission, schema, and completeness drift. Business
 synonyms for full-sample scope are normalized before signature comparison; this
 normalization applies to the whole intent class rather than an eval sentence.
 
+The positive platform reuse evaluation uses the current-authority
+`market_dashboard` path. Its two turns keep metric, full-sample scope,
+permission, source release membership, and fixed-window membership identical,
+while reversing only baseline priority. The unavailable-as-of
+`paid_order_success` / `compare_periods` path remains a typed blocker and cannot
+stand in for positive reuse. Eval acceptance reads one run-matched
+`admin_audit` ReuseDecision, resolves the source result through the conversation
+store's signed result-candidate authority, and requires that candidate to belong
+to a completed earlier run in the same evaluated thread and topic. It then
+validates both the source authoritative query chain and the current capability
+binding chain. The source candidate payload, signature, result-ref record,
+contract owner, query, rows, snapshots/releases, permission, completeness, and
+binding must agree; the current binding must be ready and every current report
+must be complete and analysis-ready. The signed candidate, ReuseDecision, and
+current QueryExecutionRecord cache metadata must carry the same non-empty
+candidate signature. The current run must resolve from the conversation store
+under the evaluated run, thread, and topic, and every QueryContract in its
+binding chain must be owned by the accepted current AnalysisContract. Source
+and current AnalysisContracts have different run owners even when their
+physical QueryContracts match. Acceptance still requires the exact source
+result, current result, QueryContract, expected capability, and expected
+dataset provenance. Nested, unpublished, same-run, cross-topic, non-prior, or
+otherwise unbound reuse markers never satisfy acceptance.
+
 Known source gaps should not trigger repeated clarification. Once the user
 accepts the reviewed degraded route, the run resumes the original topic and
 executes every remaining valid capability.
@@ -211,15 +235,42 @@ The source run also persists a versioned, exact-shape, signed
 material-authority envelope in its PostgreSQL `analysis_runs.request` payload.
 The envelope separately records the source intent's primary and ordered
 question-family set, primary and ordered target metrics, explicit components,
-dimensions, baselines, context sources, claim intents, and scope; it also
-records the exact route material slots, including diagnostic requirement tags,
-that opened clarification. It also records the locally validated diagnostic
+dimensions, context sources, claim intents, scope, and the canonicalized source
+time-window value. Exact canonical baseline ids already present in source intent
+are preserved separately. Narrative baseline structures are translated through
+a shared closed set of stable business aliases and typed shapes, then
+intersected with the reviewed canonical route. Terminal and nonterminal resume
+use this same canonicalizer. Mixed canonical and typed candidates retain every
+successfully mapped route baseline in canonical route order; reordering is
+stable while removal changes the signed material. Bare ranges such as past 7
+days, previous business day, near 7 days, or same period last week do not imply
+an average, exact weekday, or relative-day contract without a typed shape.
+Previous-day narrative mapping accepts exact aliases and a closed set of
+metric-suffix labels; conjunctions, alternatives, and other composite labels
+fail closed. Typed-shape parameters are binding constraints: unsupported or
+conflicting window and lag values cannot be masked by a direct canonical id in
+the same structure. When both a selected time-window baseline and
+`baseline_candidates` are present, the candidate list is the authoritative
+allowed set and every selected canonical id must be its subset. Unknown,
+contradictory, partially overlapping, or unreviewed selections fail closed.
+Route-added baseline dependencies remain solely in the route material
+projection and cannot be misrepresented as original intent. The envelope also records the route's
+diagnostic requirement tags that opened clarification and the locally validated
+diagnostic
 rejection history as exact typed route-control records. The signature binds all
 of those fields to the source run, thread, and topic owner. The resume authority
 resolver reads and validates that stored envelope and returns it beside the
 AnalysisContract and clarification outcome. Mutable `original_intent`,
 `material_slots`, prior-contract copies, and prior-route mutation history must
 match or be ignored in favor of the envelope; they cannot replace it.
+
+Terminal resume replays the signed time-window value and overwrites mutable
+`baseline_candidates` with the signed reviewed route baseline ids before any new
+planning. Candidate material is checked against the source envelope first, so a
+changed canonical baseline or time window is rejected. A narrative spelling
+that has the same reviewed canonical meaning is harmless and cannot alter the
+bound intent. This keeps canonical route expansion available while preserving
+the distinction between explicit source intent and compiler-added baselines.
 
 The AnalysisContract remains the authority for compiled capabilities, query
 dependencies, gaps, and claim ceilings. It is not used to reconstruct explicit
@@ -244,12 +295,120 @@ target, or scope, but it cannot replace any of them while carrying the prior
 gap decision or clarification outcome. A changed family, target, or scope starts
 a new analysis without the prior terminal authority.
 
+The terminal AnalysisRuntime handoff reprojects every signed route-material
+axis from the envelope after validating any repeated current-route or
+clarification value. This includes ordered families and targets, components,
+dimensions, reviewed route baselines, context-source roles, claim intents,
+diagnostic tags, scope, and source time-window semantics. Target execution
+material is never inferred from the narrative `time_window`: the source
+AnalysisContract's exact `target_day` projection, canonical `as_of`, business
+timezone, permission scope, and resolved fixed-window bounds are projected into
+the signed material envelope. The envelope and immutable source contract must
+match exactly on those reversible runtime axes. `context_sources` and
+`requested_context_sources`, baseline candidate aliases, and target-window
+aliases resolve through the same closed canonicalizers before comparison.
+Unknown values and conflicts fail closed. Exact repeats are accepted, omitted
+current values are restored from signed authority, and only non-material
+clarification suggestions may remain sourced from the current LLM response.
+This projection is repeated at the final runtime request boundary so later
+route defaults, clarification-choice merging, caller `analysis_context`, or
+caller role cannot override the validated source-topic material. Both
+permission elevation and permission reduction require a separate typed
+boundary and new contract. A terminal resume rejects any changed `as_of`,
+target, previous-day, rolling-seven-day, same-weekday, pattern-history, or
+anomaly-history bound before compilation.
+
+The envelope therefore has a closed `execution_material` projection sourced
+from the actual source AnalysisRuntimeRequest, current runtime registry, and
+source compile outcome. Alongside the clock and permission fields above, it
+binds filters, grain, explicit dataset requirements, metric and dimension
+dataset overrides, requested-context-source aliases, source accepted graph,
+runtime contract version and registry digest, run-mode authority class, and the
+source QueryContract semantic signatures with snapshot membership. Every
+signed source query also carries its exact `owner_capability_ids`, derived from
+the source CapabilityExecutionPlans' required, optional, and validation query
+refs. A source query without an authoritative owner, an unknown plan ref, or an
+owner outside the source accepted graph fails closed. These are existing
+compiler inputs or outputs; reuse candidates and attempted query signatures
+remain run metadata and cannot authorize material. On resume, the accepted
+graph may retain or remove only capabilities named by the signed degradation
+choice; every unrelated source capability remains required and no new
+capability may appear. The compiler and executor repeat an overlap check by
+projecting the signed query set through that validated current ready graph.
+Every source query with at least one retained owner is still required, including
+a shared query when any owner remains; queries whose owners are all legally
+removed may disappear. The current semantic-signature and snapshot set must
+equal that projection, so 2-to-0 or 2-to-1 deletion without owner-authorized
+graph removal, new queries, release drift, and snapshot drift all fail before
+evidence publication even when both AnalysisContracts are independently valid.
+
+All execution-material fields declared as exact string sequences reject
+`Mapping`, mapping-proxy, `str`, and `bytes` values before iteration. This keeps
+mapping keys from being reinterpreted as dataset requirements, requested
+context sources, accepted capabilities, snapshot refs, or owner ids.
+
+Signing canonicalization cannot change compiler meaning. In particular, grain
+uses one strict compiler-and-authority canonicalizer: the omitted value resolves
+to `window_id`, while explicit values must already be non-empty trimmed strings.
+Leading or trailing whitespace fails at the source compiler entry, before
+dimension binding and gap production, so a source unsupported-grain gap cannot
+vanish because the authority projection later strips the same input.
+
 Only local obligation rejection records may enter the signed route-control
 history. Each record has the exact `action`, `capability`, and `reason` fields,
 uses `action=rejected`, and carries a reviewed local rejection reason. Order is
 stable and duplicates, unknown fields, provider-supplied reasons, and malformed
 records fail closed. Resume restores this history into internal workflow state;
 the mutable prior analysis route cannot authorize or extend it.
+
+### 7. One provider-owned LLM attempt boundary
+
+Production and live runs treat every high-value LLM output as typed runtime
+material. Business intent, clarification questions and recommendations, route
+explanations, evidence interpretation, claim text, terminal explanations, and
+the final business summary must originate in the provider response. The shared
+LLM client may normalize reviewed terminology, but it cannot replace a missing,
+empty, wrong-typed, or still-unlocalized narrative value with a local template.
+Those outputs fail with a typed LLM or LLM-contract error before publication.
+Legacy fixture-only narrative helpers remain outside the production/live path
+and cannot be selected by a real provider failure.
+
+The provider client owns the only implicit retry loop and uses exactly
+`DEFAULT_MAX_ATTEMPTS=3`. A LangGraph business node invokes its LLM task once;
+the node wrapper records one checkpoint and does not invoke the node again after
+a provider or output-contract failure. Clarification, terminal explanation, and
+final summary code do not contain their own retry loops. A verifier-driven
+answer repair is an explicit typed repair boundary and may make one new LLM
+call followed by one new hard verification; failure after that pass remains a
+typed terminal failure. It cannot be multiplied by a generic node retry.
+
+Provider isolation uses one-way subprocess IPC. The parent waits for a result
+and drains it before joining the child, so a valid large JSON payload cannot
+deadlock on the pipe buffer. Success, provider error, abnormal exit, empty IPC,
+and explicit timeout paths close both IPC endpoints, reap the child, and finish
+the receiver with a bounded cleanup join. A configured positive timeout defines
+one wall-clock deadline across receive and child join; only expiry of that
+deadline may terminate a still-running provider child. Without that setting,
+the parent continues waiting and naturally reaps the provider child.
+
+For production/live intent binding, explicit request-bound values take
+precedence and must themselves pass the closed contract. Otherwise the real LLM
+must provide every material axis used by the compiler, including the canonical
+question family, target metric, pattern family, scope, time window, and target
+claim. Missing or illegal material cannot silently become
+`pattern_explanation`, `paid_amount`, `intra_period`, `full_sample`, a default
+window, or an empty baseline set. `baseline_candidates` is required as an
+explicit JSON array in production/live runs. The workflow validates the raw
+container before conversion, rejects strings, bytes, mappings, nested sequence
+items, duplicate semantic baselines, unknown aliases, and conflicting typed
+shapes, then canonicalizes each reviewed baseline through the shared baseline
+semantic registry while preserving the provider's candidate priority order. Optional advisory
+`sub_intents` and `ambiguous_slots` may be absent or null, but a supplied value
+must also be an actual sequence; container coercion cannot turn provider text or
+mapping keys into planning input.
+historical window, or a generic target claim. Stable alias canonicalization and
+reviewed deterministic contract reconciliation remain allowed; sentence-based
+inference and unreviewed material rewrites do not.
 
 ## Coverage Audit
 

@@ -6,9 +6,12 @@ import math
 from typing import Any, Iterable, Mapping
 
 from bi_agent.conversation.clarification_authority import (
+    bind_terminal_resume_proposal_material,
+    canonical_execution_grain,
     validate_material_authority,
     validate_material_authority_contract_overlap,
     validate_terminal_resume_proposal_overlap,
+    validate_terminal_runtime_context_overlap,
 )
 from bi_agent.runtime.analysis_contracts import (
     AnalysisContract,
@@ -104,6 +107,53 @@ class _DependencyIndex:
     source_selection_gaps: tuple[ContractGap, ...]
 
 
+def _bind_terminal_execution_material(
+    proposal: Mapping[str, Any],
+    *,
+    accepted_capabilities: tuple[str, ...],
+    registry: RuntimeContractRegistry,
+    as_of: datetime,
+    permission_scope: str,
+) -> Mapping[str, Any]:
+    choice = proposal.get("accepted_degradation_choice")
+    if not isinstance(choice, Mapping) or str(
+        choice.get("action_kind") or ""
+    ) not in {"omit_unavailable_context", "continue_with_boundary_only"}:
+        return proposal
+    authority = proposal.get("accepted_terminal_gap_authority")
+    if not isinstance(authority, Mapping) or set(
+        authority
+    ) != _TERMINAL_GAP_AUTHORITY_KEYS:
+        raise ValueError("accepted_terminal_gap_authority_shape_invalid")
+    material = validate_material_authority(
+        authority.get("material_authority"),
+        source_run_id=str(authority.get("source_run_id") or ""),
+        thread_id=str(proposal.get("resume_thread_id") or ""),
+        topic_id=str(proposal.get("resume_topic_id") or ""),
+        require_execution_material=True,
+    )
+    execution = material["execution_material"]
+    bound_proposal = bind_terminal_resume_proposal_material(
+        material,
+        proposal,
+    )
+    validate_terminal_runtime_context_overlap(
+        material,
+        analysis_context={"as_of": as_of},
+        permission_scope=permission_scope,
+        accepted_graph=accepted_capabilities,
+        accepted_choice=choice,
+        run_mode=(
+            "fixture"
+            if execution["run_mode_class"] == "fixture"
+            else "production"
+        ),
+        runtime_contract_version=registry.contract_version,
+        runtime_registry_digest=registry.source_payload_digest,
+    )
+    return bound_proposal
+
+
 def compile_analysis_contract(
     *,
     run_id: str,
@@ -116,6 +166,17 @@ def compile_analysis_contract(
     release_resolver: DatasetReleaseResolver | None = None,
 ) -> AnalysisCompileOutcome:
     capabilities = _dedupe(accepted_capabilities)
+    proposal = _bind_terminal_execution_material(
+        proposal,
+        accepted_capabilities=capabilities,
+        registry=registry,
+        as_of=as_of,
+        permission_scope=permission_scope,
+    )
+    proposal = {
+        **proposal,
+        "grain": canonical_execution_grain(proposal.get("grain")),
+    }
     dependencies = _build_dependency_index(proposal, capabilities, registry)
     capability_dependencies = _capability_dependency_sets(
         proposal, capabilities, dependencies
@@ -348,6 +409,7 @@ def _accepted_terminal_gap_authority(
         source_run_id=source_run_id,
         thread_id=expected_thread,
         topic_id=expected_topic,
+        require_execution_material=True,
     )
     source = authority.get("analysis_contract")
     if not isinstance(source, Mapping):

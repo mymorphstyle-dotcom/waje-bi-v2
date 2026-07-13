@@ -4,9 +4,11 @@ import { runAgentCore } from "../../../_agentCore";
 import {
   addUserMessage,
   createRun,
+  filterAgentCoreForRole,
   jsonError,
   requireArtifactForContinue,
   requireThread,
+  resolveGatewayRole,
 } from "../../../_conversationStore";
 
 export const dynamic = "force-dynamic";
@@ -17,10 +19,16 @@ type RouteContext = { params: Promise<{ artifactId: string }> };
 export async function POST(request: NextRequest, context: RouteContext) {
   const { artifactId } = await context.params;
   const body = await request.json().catch(() => ({}));
-  const role = process.env.WAJE_GATEWAY_ROLE || "analyst";
+  const roleDecision = resolveGatewayRole(
+    process.env.WAJE_GATEWAY_ROLE,
+    process.env.NODE_ENV,
+  );
   const message = typeof body.message === "string" ? body.message : "基于这个结果继续分析";
   try {
-    const artifact = await requireArtifactForContinue(artifactId, role);
+    const artifact = await requireArtifactForContinue(
+      artifactId,
+      roleDecision.displayRole,
+    );
     const threadId = typeof body.threadId === "string" ? body.threadId : artifact.threadId;
     if (threadId !== artifact.threadId) {
       throw new Error("artifact_thread_mismatch");
@@ -28,7 +36,17 @@ export async function POST(request: NextRequest, context: RouteContext) {
     await requireThread(threadId);
     const userMessage = await addUserMessage(threadId, message);
     const run = await createRun(threadId);
-    const agentCore = await runAgentCore(threadId, run.id, message, role);
+    const agentCore = await runAgentCore(
+      threadId,
+      run.id,
+      message,
+      roleDecision.displayRole,
+      { runtimePermissionScope: roleDecision.runtimePermissionScope },
+    );
+    const visibleAgentCore = filterAgentCoreForRole(
+      agentCore as unknown as Record<string, unknown>,
+      roleDecision.displayRole,
+    );
     const effectiveRun = agentCore?.status === "waiting_for_clarification"
       ? { ...run, status: "waiting_for_clarification" as const }
       : run;
@@ -38,7 +56,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
         artifact,
         message: userMessage,
         run: effectiveRun,
-        agentCore,
+        agentCore: visibleAgentCore,
         eventsUrl: `/api/runs/${run.id}/events`,
       },
       { status: 202 },

@@ -423,39 +423,20 @@ def test_business_intent_material_requirements_fail_closed(field, value):
     assert exc.value.failure_type == "llm_contract"
 
 
-def test_business_intent_retries_missing_context_family_axis(monkeypatch):
+def test_business_intent_missing_context_family_axis_fails_after_one_node_call(
+    monkeypatch,
+):
     from bi_agent.runtime import langgraph_workflow as workflow
 
-    outputs = [
-        {
-            "question_family": "data_quality_or_evidence_review",
-            "question_families": ["data_quality_or_evidence_review"],
-            "primary_question_family": "data_quality_or_evidence_review",
-            "secondary_question_families": [],
-        },
-        {
-            "question_family": "data_quality_or_evidence_review",
-            "question_families": ["data_quality_or_evidence_review"],
-            "primary_question_family": "data_quality_or_evidence_review",
-            "secondary_question_families": [],
-        },
-        {
-            "question_family": "business_object_impact_review",
-            "question_families": [
-                "business_object_impact_review",
-                "data_quality_or_evidence_review",
-            ],
-            "primary_question_family": "business_object_impact_review",
-            "secondary_question_families": ["data_quality_or_evidence_review"],
-        },
-    ]
     payloads = []
 
     def invoke(state, node, payload):
         payloads.append(payload)
-        family = outputs.pop(0)
         return {
-            **family,
+            "question_family": "data_quality_or_evidence_review",
+            "question_families": ["data_quality_or_evidence_review"],
+            "primary_question_family": "data_quality_or_evidence_review",
+            "secondary_question_families": [],
             "target_metric": "paid_amount",
             "pattern_family": "custom_baseline",
             "scope": "full_sample",
@@ -479,23 +460,17 @@ def test_business_intent_retries_missing_context_family_axis(monkeypatch):
         "checkpoint_events": [],
     }
 
-    workflow._retrying_node(
-        "understand_business_intent", workflow._understand_business_intent
-    )(state)
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="context_family_axis_missing:dimension:gameplay:gameplay",
+    ):
+        workflow._retrying_node(
+            "understand_business_intent", workflow._understand_business_intent
+        )(state)
 
-    assert len(payloads) == 3
-    for payload in payloads[1:]:
-        feedback = payload["node_retry_feedback"]
-        assert feedback["reason"] == "context_family_axis_missing:dimension:gameplay:gameplay"
-        assert "business_object_impact_review" in feedback["correction"]
-        assert "data_quality_or_evidence_review" in feedback["correction"]
-    assert state["intent"]["question_family"] == "business_object_impact_review"
-    assert state["intent"]["question_families"] == [
-        "business_object_impact_review",
-        "data_quality_or_evidence_review",
-    ]
-    assert state["intent"]["context_sources"] == []
-    assert state["intent"]["requested_dimensions"] == ["gameplay"]
+    assert len(payloads) == 1
+    assert "node_retry_feedback" not in payloads[0]
+    assert [event["status"] for event in state["checkpoint_events"]] == ["failed"]
 
 
 def test_channel_dimension_does_not_create_unrelated_context_family_axis():
@@ -614,7 +589,7 @@ def test_metric_only_dataset_never_establishes_context_family_compatibility():
     )
 
 
-def test_business_intent_context_family_axis_fails_closed_after_retry(monkeypatch):
+def test_business_intent_context_family_axis_fails_closed_after_one_call(monkeypatch):
     from bi_agent.runtime import langgraph_workflow as workflow
 
     def invoke(state, node, payload):
@@ -652,14 +627,10 @@ def test_business_intent_context_family_axis_fails_closed_after_retry(monkeypatc
             "understand_business_intent", workflow._understand_business_intent
         )(state)
 
-    assert [event["status"] for event in state["checkpoint_events"]] == [
-        "retrying",
-        "retrying",
-        "failed",
-    ]
+    assert [event["status"] for event in state["checkpoint_events"]] == ["failed"]
 
 
-def test_failed_business_intent_retries_return_llm_audits_and_checkpoints():
+def test_failed_business_intent_returns_one_llm_audit_and_failed_checkpoint():
     from types import SimpleNamespace
 
     from bi_agent.runtime import langgraph_workflow as workflow
@@ -720,17 +691,9 @@ def test_failed_business_intent_retries_return_llm_audits_and_checkpoints():
     assert [
         call["structured_output"]["question_family"]
         for call in result.llm_calls
-    ] == [
-        "pattern_explanation",
-        "anomaly_or_black_swan_review",
-        "data_quality_or_evidence_review",
-    ]
-    assert [event["attempt"] for event in result.checkpoint_events] == [1, 2, 3]
-    assert [event["status"] for event in result.checkpoint_events] == [
-        "retrying",
-        "retrying",
-        "failed",
-    ]
+    ] == ["pattern_explanation"]
+    assert [event["attempt"] for event in result.checkpoint_events] == [1]
+    assert [event["status"] for event in result.checkpoint_events] == ["failed"]
     assert {
         event["reason"] for event in result.checkpoint_events
     } == {"context_family_axis_missing:gameplay"}
@@ -816,12 +779,11 @@ def test_route_design_resolves_obligations_after_capability_family_inference(
     ]
 
 
-def test_route_design_retries_metric_only_context_and_persists_repaired_context(
+def test_route_design_metric_only_context_fails_after_one_node_call(
     monkeypatch,
 ):
     from bi_agent.runtime import langgraph_workflow as workflow
 
-    outputs = ["market_dashboard", "gameplay"]
     payloads = []
 
     def invoke(state, node, payload):
@@ -830,7 +792,7 @@ def test_route_design_retries_metric_only_context_and_persists_repaired_context(
             "requested_nodes": ["gameplay_activity_context"],
             "analysis_requirements": {
                 "target_metrics": ["paid_amount"],
-                "context_sources": [outputs.pop(0)],
+                "context_sources": ["market_dashboard"],
             },
         }
 
@@ -850,23 +812,18 @@ def test_route_design_retries_metric_only_context_and_persists_repaired_context(
         "request": {},
         "checkpoint_events": [],
     }
-    workflow._retrying_node(
-        "design_analysis_route", workflow._design_analysis_route
-    )(state)
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="analysis_route_contract_invalid:analysis_requirements:context_sources",
+    ):
+        workflow._retrying_node(
+            "design_analysis_route", workflow._design_analysis_route
+        )(state)
 
     assert payloads[0]["allowed_context_source_ids"]
-    assert "node_retry_feedback" in payloads[1]
-    correction = payloads[1]["node_retry_feedback"]["correction"]
-    assert "context_sources must use only allowed_context_source_ids" in correction
-    assert "An empty context_sources array is valid" in correction
-    assert "dataset_requirements" in correction
-    assert state["analysis_route"]["analysis_requirements"]["context_sources"] == [
-        "gameplay"
-    ]
-    assert [event["status"] for event in state["checkpoint_events"]] == [
-        "retrying",
-        "completed",
-    ]
+    assert len(payloads) == 1
+    assert "node_retry_feedback" not in payloads[0]
+    assert [event["status"] for event in state["checkpoint_events"]] == ["failed"]
 
     with pytest.raises(
         workflow.WorkflowFailure,
@@ -876,38 +833,12 @@ def test_route_design_retries_metric_only_context_and_persists_repaired_context(
             {"analysis_requirements": {"baselines": "previous_day"}},
             _registry(),
         )
-    from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
-    from bi_agent.runtime.dataset_catalog import DatasetCatalog
-
-    outcome = compile_analysis_contract(
-        run_id="run-route-authority-closure",
-        proposal=state["analysis_route"]["analysis_requirements"],
-        accepted_capabilities=tuple(state["analysis_route"]["requested_nodes"]),
-        catalog=DatasetCatalog(()),
-        registry=_registry(),
-        as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        permission_scope="analyst",
-    )
-    contract_capabilities = set(outcome.analysis_contract.capability_requirements)
-    requested = set(state["analysis_route"]["requested_nodes"])
-    planned = {plan.capability_id for plan in outcome.capability_plans}
-    terminal = {
-        capability
-        for gap in outcome.analysis_contract.contract_gaps
-        if gap.owner and gap.repair_options
-        for capability in gap.affected_capabilities
-    }
-    assert requested <= contract_capabilities
-    assert requested <= planned | terminal
-
-
 def test_route_baseline_proposals_are_bounded_by_the_reviewed_runtime_vocabulary(
     monkeypatch,
 ):
     from bi_agent.runtime import langgraph_workflow as workflow
     from bi_agent.runtime.window_resolver import CURRENT_DATA_BASELINES
 
-    proposed_baselines = ["unreviewed_baseline_alias", "previous_day"]
     payloads = []
 
     def invoke(state, node, payload):
@@ -916,7 +847,7 @@ def test_route_baseline_proposals_are_bounded_by_the_reviewed_runtime_vocabulary
             "requested_nodes": ["data_quality_profile"],
             "analysis_requirements": {
                 "target_metrics": ["paid_amount"],
-                "baselines": [proposed_baselines.pop(0)],
+                "baselines": ["unreviewed_baseline_alias"],
             },
         }
 
@@ -935,20 +866,18 @@ def test_route_baseline_proposals_are_bounded_by_the_reviewed_runtime_vocabulary
         "checkpoint_events": [],
     }
 
-    workflow._retrying_node(
-        "design_analysis_route", workflow._design_analysis_route
-    )(state)
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="analysis_route_contract_invalid:analysis_requirements:baselines",
+    ):
+        workflow._retrying_node(
+            "design_analysis_route", workflow._design_analysis_route
+        )(state)
 
     allowed = list(CURRENT_DATA_BASELINES)
-    assert [payload["allowed_baseline_ids"] for payload in payloads] == [
-        allowed,
-        allowed,
-    ]
-    assert payloads[1]["node_retry_feedback"]["allowed_baseline_ids"] == allowed
-    assert payloads[1]["node_retry_feedback"]["reason"].endswith(":baselines")
-    assert state["analysis_route"]["analysis_requirements"]["baselines"] == [
-        "previous_day"
-    ]
+    assert [payload["allowed_baseline_ids"] for payload in payloads] == [allowed]
+    assert "node_retry_feedback" not in payloads[0]
+    assert [event["status"] for event in state["checkpoint_events"]] == ["failed"]
 
     with pytest.raises(
         workflow.WorkflowFailure,
@@ -1398,25 +1327,18 @@ def test_route_typed_lists_reject_nested_values_as_llm_contract(field, value):
         },
     ],
 )
-def test_route_typed_list_failure_retries_once_and_accepts_repair(
+def test_route_typed_list_failure_fails_after_one_node_call(
     monkeypatch, invalid_requirements
 ):
     from bi_agent.runtime import langgraph_workflow as workflow
 
-    outputs = [
-        invalid_requirements,
-        {
-            "target_metrics": ["paid_amount"],
-            "requested_dimensions": ["channel"],
-        },
-    ]
     payloads = []
 
     def invoke(state, node, payload):
         payloads.append(payload)
         return {
             "requested_nodes": ["data_quality_profile"],
-            "analysis_requirements": outputs.pop(0),
+            "analysis_requirements": invalid_requirements,
         }
 
     monkeypatch.setattr(workflow, "_invoke_llm", invoke)
@@ -1434,21 +1356,18 @@ def test_route_typed_list_failure_retries_once_and_accepts_repair(
         "checkpoint_events": [],
     }
 
-    workflow._retrying_node(
-        "design_analysis_route", workflow._design_analysis_route
-    )(state)
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="analysis_route_contract_invalid:analysis_requirements:",
+    ) as exc:
+        workflow._retrying_node(
+            "design_analysis_route", workflow._design_analysis_route
+        )(state)
 
-    assert payloads[1]["node_retry_feedback"]["reason"].startswith(
-        "analysis_route_contract_invalid:analysis_requirements:"
-    )
-    assert state["checkpoint_events"][0]["failure_type"] == "llm_contract"
-    assert [event["status"] for event in state["checkpoint_events"]] == [
-        "retrying",
-        "completed",
-    ]
-    assert state["analysis_route"]["analysis_requirements"][
-        "requested_dimensions"
-    ] == ["channel"]
+    assert exc.value.failure_type == "llm_contract"
+    assert len(payloads) == 1
+    assert "node_retry_feedback" not in payloads[0]
+    assert [event["status"] for event in state["checkpoint_events"]] == ["failed"]
 
 
 @pytest.mark.parametrize(
@@ -1500,10 +1419,7 @@ def test_route_typed_list_failure_exhaustion_fails_closed(
         )(state)
 
     assert exc.value.failure_type == "llm_contract"
-    assert [event["status"] for event in state["checkpoint_events"]] == [
-        "retrying",
-        "failed",
-    ]
+    assert [event["status"] for event in state["checkpoint_events"]] == ["failed"]
 
 
 def test_normalized_question_families_preserve_secondary_analysis_axis():

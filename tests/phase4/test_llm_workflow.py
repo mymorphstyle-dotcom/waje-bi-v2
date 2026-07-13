@@ -1,7 +1,9 @@
 import json
 from copy import deepcopy
 import multiprocessing
+import os
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -43,7 +45,6 @@ from bi_agent.runtime.langgraph_workflow import (
     _business_query_repair_gap,
     _reconcile_route_metric_capabilities,
     _normalize_evidence_interpretation_output,
-    _normalize_query_gap_clarification_output,
     _question_family_values,
     normalize_final_answer_audit,
     _generate_query_gap_clarification,
@@ -88,6 +89,7 @@ from bi_agent.runtime.analysis_runtime import (
 )
 from bi_agent.runtime.llm_client import (
     LLMConfigurationError,
+    LLMOutputError,
     LLMTimeoutError,
     OpenAICompatibleLLMClient,
     _localize_narrative_fields,
@@ -96,6 +98,35 @@ from bi_agent.runtime.llm_prompts import build_prompt, validate_prompt_specs
 from bi_agent.runtime.data_contract_diagnostics import diagnose_contract_gaps
 from tests.phase4.fake_llm import FakeLLMClient
 from tests.phase4.fake_llm import FakeLLMResult
+
+
+def _test_terminal_execution_material():
+    from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    return {
+        "schema_version": "1",
+        "target_semantic": "2026-06-02",
+        "as_of": "2026-06-03T12:00:00+01:00",
+        "business_timezone": "Africa/Lagos",
+        "permission_scope": "analyst",
+        "fixed_window_bounds": {
+            "target_day": ["2026-06-02", "2026-06-02"],
+        },
+        "filters": [],
+        "grain": "window_id",
+        "dataset_requirements": [],
+        "metric_dataset_overrides": {},
+        "dimension_dataset_overrides": {},
+        "requested_context_sources": [],
+        "accepted_graph": ["compare_periods"],
+        "runtime_contract_version": registry.contract_version,
+        "runtime_registry_digest": registry.source_payload_digest,
+        "run_mode_class": "authoritative",
+        "source_query_contracts": [],
+    }
 
 
 def run_pattern_workflow(request=None):
@@ -126,6 +157,19 @@ def spawn_safe_stuck_llm_request(config, messages):
         "content": '{"ok": true}',
         "usage": {},
     }
+
+
+def spawn_large_fake_llm_request(config, messages):
+    size = int(config.get("payload_size", 20_000))
+    return {f"key-{index:06d}": "value" for index in range(size)}
+
+
+def spawn_failing_llm_request(config, messages):
+    raise RuntimeError("provider-worker-failed")
+
+
+def spawn_exit_without_llm_result(config, messages):
+    os._exit(7)
 
 
 class SpawnTimeoutThenSuccessWorker:
@@ -308,7 +352,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 ):
                     _understand_business_intent(state)
 
-    def test_business_intent_answer_contract_retry_uses_typed_correction(self):
+    def test_business_intent_contract_failure_is_not_retried_by_workflow_node(self):
         class StringThenEmptyContractLLM(FakeLLMClient):
             def __init__(self):
                 super().__init__()
@@ -337,19 +381,21 @@ class LLMWorkflowTest(unittest.TestCase):
             "checkpoint_events": [],
         }
 
-        result = _retrying_node(
-            "understand_business_intent", _understand_business_intent
-        )(state)
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "business_intent_contract_invalid:answer_contract",
+        ):
+            _retrying_node(
+                "understand_business_intent", _understand_business_intent
+            )(state)
 
-        self.assertEqual(fake.attempts, 2)
-        self.assertEqual(result["intent"]["answer_contract"], {})
-        retry_prompt = "\n".join(
-            message["content"] for message in fake.message_batches[1]
+        self.assertEqual(fake.attempts, 1)
+        self.assertEqual(
+            [event["status"] for event in state["checkpoint_events"]],
+            ["failed"],
         )
-        self.assertIn("business_intent_contract_invalid:answer_contract", retry_prompt)
-        self.assertIn("answer_contract must be a JSON object", retry_prompt)
 
-    def test_business_intent_answer_contract_stays_fail_closed_after_three_attempts(
+    def test_business_intent_answer_contract_stays_fail_closed_after_one_node_call(
         self,
     ):
         class AlwaysStringContractLLM(FakeLLMClient):
@@ -384,7 +430,323 @@ class LLMWorkflowTest(unittest.TestCase):
                 "understand_business_intent", _understand_business_intent
             )(state)
 
-        self.assertEqual(fake.attempts, 3)
+        self.assertEqual(fake.attempts, 1)
+
+    def test_production_business_intent_rejects_missing_material_without_local_defaults(self):
+        base = {
+            "question_family": "pattern_explanation",
+            "target_metric": "paid_amount",
+            "pattern_family": "intra_period",
+            "scope": "full_sample",
+            "time_window": "2026-06-02",
+            "target_claim": "recurring_pattern_existence",
+            "baseline_candidates": [],
+            "analysis_requirements": {
+                "context_sources": [],
+                "claim_intents": [],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+            "answer_contract": {},
+        }
+        for axis in (
+            "question_family",
+            "target_metric",
+            "pattern_family",
+            "scope",
+            "time_window",
+            "target_claim",
+        ):
+            with self.subTest(axis=axis):
+                output = {**base, axis: ""}
+                state = {
+                    "request": {
+                        "question": "检查昨天的业务变化",
+                        "run_mode": "production",
+                    },
+                    "llm_client": FakeLLMClient({"business_intent": output}),
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                with self.assertRaisesRegex(
+                    WorkflowFailure,
+                    f"business_intent_contract_invalid:{axis}",
+                ):
+                    _understand_business_intent(state)
+
+    def test_production_business_intent_does_not_infer_weekly_params_from_question_text(self):
+        state = {
+            "request": {
+                "question": "周末表现是否不同？",
+                "run_mode": "live",
+            },
+            "llm_client": FakeLLMClient({
+                "business_intent": {
+                    "question_family": "pattern_explanation",
+                    "target_metric": "paid_amount",
+                    "pattern_family": "weekly",
+                    "pattern_params": {},
+                    "scope": "full_sample",
+                    "time_window": "2026-05-26..2026-06-02",
+                    "target_claim": "recurring_pattern_existence",
+                    "baseline_candidates": [],
+                    "analysis_requirements": {
+                        "context_sources": [],
+                        "claim_intents": [],
+                        "requested_dimensions": [],
+                        "requested_components": [],
+                    },
+                    "answer_contract": {},
+                }
+            }),
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "business_intent_contract_invalid:pattern_params",
+        ):
+            _understand_business_intent(state)
+
+    def test_production_business_intent_rejects_uninterpretable_scope_mapping(self):
+        output = {
+            "question_family": "pattern_explanation",
+            "target_metric": "paid_amount",
+            "pattern_family": "intra_period",
+            "pattern_params": {"target_phase": "month_start"},
+            "scope": {"segment": "vip"},
+            "time_window": "2026-01-01..2026-06-02",
+            "target_claim": "recurring_pattern_existence",
+            "baseline_candidates": [],
+            "analysis_requirements": {
+                "context_sources": [],
+                "claim_intents": [],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+            "answer_contract": {},
+        }
+        state = {
+            "request": {"question": "检查 VIP 用户规律", "run_mode": "production"},
+            "llm_client": FakeLLMClient({"business_intent": output}),
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "business_intent_contract_invalid:scope",
+        ):
+            _understand_business_intent(state)
+
+    def test_production_business_intent_rejects_non_json_time_window_shape(self):
+        output = {
+            "question_family": "pattern_explanation",
+            "target_metric": "paid_amount",
+            "pattern_family": "intra_period",
+            "pattern_params": {"target_phase": "month_start"},
+            "scope": {"type": "full_sample"},
+            "time_window": {"target": object()},
+            "target_claim": "recurring_pattern_existence",
+            "baseline_candidates": [],
+            "analysis_requirements": {
+                "context_sources": [],
+                "claim_intents": [],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+            "answer_contract": {},
+        }
+        state = {
+            "request": {"question": "检查业务规律", "run_mode": "live"},
+            "llm_client": FakeLLMClient({"business_intent": output}),
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "business_intent_contract_invalid:time_window",
+        ):
+            _understand_business_intent(state)
+
+    def test_production_business_intent_rejects_invalid_baseline_candidates(self):
+        base = {
+            "question_family": "custom_baseline_comparison",
+            "target_metric": "paid_amount",
+            "pattern_family": "custom_baseline",
+            "pattern_params": {
+                "period_key": "period",
+                "group_key": "group",
+                "target_group": "target",
+                "baseline_group": "baseline",
+            },
+            "scope": "full_sample",
+            "time_window": "2026-05-26..2026-06-02",
+            "target_claim": "comparative_change",
+            "baseline_candidates": [],
+            "analysis_requirements": {
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+            "answer_contract": {},
+        }
+        invalid = (
+            ("missing", None),
+            ("null", None),
+            ("mapping", {"previous_day": True}),
+            ("string", "previous_day"),
+            ("bytes", b"previous_day"),
+            ("duplicate", ["previous_day", "前一天"]),
+            ("unknown", ["unreviewed_baseline"]),
+            ("nested_sequence", [["previous_day"]]),
+            ("typed_conflict", [{"type": "rolling_average", "window": 8}]),
+        )
+        for label, raw in invalid:
+            with self.subTest(label=label):
+                output = dict(base)
+                if label == "missing":
+                    output.pop("baseline_candidates")
+                else:
+                    output["baseline_candidates"] = raw
+                state = {
+                    "request": {
+                        "question": "比较目标日与候选基线",
+                        "run_mode": "production",
+                    },
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                with patch(
+                    "bi_agent.runtime.langgraph_workflow._invoke_llm",
+                    return_value=output,
+                ), self.assertRaisesRegex(
+                    WorkflowFailure,
+                    "business_intent_contract_invalid:baseline_candidates",
+                ):
+                    _understand_business_intent(state)
+
+    def test_production_business_intent_preserves_canonicalized_baseline_priority_order(self):
+        output = {
+            "question_family": "custom_baseline_comparison",
+            "target_metric": "paid_amount",
+            "pattern_family": "custom_baseline",
+            "pattern_params": {
+                "period_key": "period",
+                "group_key": "group",
+                "target_group": "target",
+                "baseline_group": "baseline",
+            },
+            "scope": "full_sample",
+            "time_window": "2026-05-26..2026-06-02",
+            "target_claim": "comparative_change",
+            "baseline_candidates": [
+                {"type": "same_weekday", "lag_weeks": 1},
+                "previous_day",
+                {"type": "rolling_average", "window": 7},
+            ],
+            "analysis_requirements": {
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+            "answer_contract": {},
+        }
+        state = {
+            "request": {
+                "question": "比较目标日与三个候选基线",
+                "run_mode": "live",
+            },
+            "llm_client": FakeLLMClient({"business_intent": output}),
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        _understand_business_intent(state)
+
+        self.assertEqual(
+            state["intent"]["baseline_candidates"],
+            [
+                "same_weekday_last_week",
+                "previous_day",
+                "rolling_7_day_baseline",
+            ],
+        )
+
+    def test_production_business_intent_preserves_forward_and_reverse_baseline_priority(self):
+        for candidates in (
+            ["previous_day", "same_weekday_last_week"],
+            ["same_weekday_last_week", "previous_day"],
+        ):
+            with self.subTest(candidates=candidates):
+                output = {
+                    "question_family": "custom_baseline_comparison",
+                    "target_metric": "paid_amount",
+                    "pattern_family": "custom_baseline",
+                    "pattern_params": {
+                        "period_key": "period",
+                        "group_key": "group",
+                        "target_group": "target",
+                        "baseline_group": "baseline",
+                    },
+                    "scope": "full_sample",
+                    "time_window": "2026-05-26..2026-06-02",
+                    "target_claim": "comparative_change",
+                    "baseline_candidates": candidates,
+                    "analysis_requirements": {
+                        "context_sources": [],
+                        "claim_intents": ["comparative_change"],
+                        "requested_dimensions": [],
+                        "requested_components": [],
+                    },
+                    "answer_contract": {},
+                }
+                state = {
+                    "request": {
+                        "question": "比较目标日与候选基线",
+                        "run_mode": "production",
+                    },
+                    "llm_client": FakeLLMClient({"business_intent": output}),
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                _understand_business_intent(state)
+
+                self.assertEqual(state["intent"]["baseline_candidates"], candidates)
+
+    def test_business_intent_rejects_wrong_advisory_sequence_containers(self):
+        for field, raw in (
+            ("sub_intents", {"intent": "compare"}),
+            ("sub_intents", "compare"),
+            ("ambiguous_slots", {"slot": "baseline"}),
+            ("ambiguous_slots", b"baseline"),
+        ):
+            with self.subTest(field=field, raw=raw):
+                state = {
+                    "request": {"question": "检查业务变化"},
+                    "llm_client": FakeLLMClient({
+                        "business_intent": {
+                            "question_family": "pattern_explanation",
+                            "pattern_family": "intra_period",
+                            field: raw,
+                        }
+                    }),
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                with self.assertRaisesRegex(
+                    WorkflowFailure,
+                    f"business_intent_contract_invalid:{field}",
+                ):
+                    _understand_business_intent(state)
 
     def test_degraded_route_preserves_ready_authority_claim_when_other_sources_are_unbound(self):
         claim = {
@@ -488,6 +850,13 @@ class LLMWorkflowTest(unittest.TestCase):
         from bi_agent.conversation.clarification_authority import (
             build_material_authority,
         )
+        from bi_agent.runtime.runtime_contract_registry import (
+            RuntimeContractRegistry,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
 
         choice = {
             "choice_id": "omit_event_source",
@@ -528,6 +897,29 @@ class LLMWorkflowTest(unittest.TestCase):
                     "claim_intents": [],
                     "diagnostic_tags": [],
                     "scope": "full_sample",
+                },
+                runtime_material={
+                    "schema_version": "1",
+                    "target_semantic": "2026-06-02",
+                    "as_of": "2026-06-03T12:00:00+01:00",
+                    "business_timezone": "Africa/Lagos",
+                    "permission_scope": "analyst",
+                    "fixed_window_bounds": {
+                        "target_day": ["2026-06-02", "2026-06-02"],
+                    },
+                    "filters": [],
+                    "grain": "window_id",
+                    "dataset_requirements": [],
+                    "metric_dataset_overrides": {},
+                    "dimension_dataset_overrides": {},
+                    "requested_context_sources": [],
+                    "accepted_graph": ["compare_periods"],
+                    "runtime_contract_version": registry.contract_version,
+                    "runtime_registry_digest": (
+                        registry.source_payload_digest
+                    ),
+                    "run_mode_class": "authoritative",
+                    "source_query_contracts": [],
                 },
             ),
             "clarification_outcome": {
@@ -751,6 +1143,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 "diagnostic_tags": [],
                 "scope": "full_sample",
             },
+            runtime_material=_test_terminal_execution_material(),
         )
         accepted_choice = {
             "choice_id": "continue-terminal-scope",
@@ -961,6 +1354,243 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(nonterminal_empty_proposal["scope"], "full_sample")
 
+    def _terminal_window_resume_state(self):
+        from bi_agent.conversation.clarification_authority import (
+            build_material_authority,
+        )
+        from bi_agent.runtime.runtime_contract_registry import (
+            RuntimeContractRegistry,
+        )
+
+        fixed_window_bounds = {
+            "target_day": ["2026-06-02", "2026-06-02"],
+            "previous_day": ["2026-06-01", "2026-06-01"],
+            "rolling_7_day_baseline": ["2026-05-26", "2026-06-01"],
+            "same_weekday_last_week": ["2026-05-26", "2026-05-26"],
+            "pattern_history": ["2026-01-01", "2026-06-02"],
+            "anomaly_history": ["2026-05-03", "2026-06-01"],
+        }
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        material_authority = build_material_authority(
+            source_run_id="run-terminal-window-source",
+            thread_id="thread-terminal-window",
+            topic_id="topic-terminal-window",
+            original_intent={
+                "question_family": "revenue_health_review",
+                "question_families": ["revenue_health_review"],
+                "primary_question_family": "revenue_health_review",
+                "secondary_question_families": [],
+                "target_metric": "paid_amount",
+                "requested_components": [],
+                "requested_dimensions": [],
+                "baseline_candidates": ["previous_day"],
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "scope": "full_sample",
+                "time_window": {
+                    "target": "yesterday",
+                    "baseline": "previous_day",
+                },
+            },
+            material_slots={
+                "target_metrics": ["paid_amount"],
+                "requested_components": [],
+                "requested_dimensions": [],
+                "baselines": ["previous_day"],
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "diagnostic_tags": [],
+                "scope": "full_sample",
+            },
+            runtime_material={
+                "schema_version": "1",
+                "target_semantic": "2026-06-02",
+                "as_of": "2026-06-03T12:00:00+01:00",
+                "business_timezone": "Africa/Lagos",
+                "permission_scope": "analyst",
+                "fixed_window_bounds": fixed_window_bounds,
+                "filters": [],
+                "grain": "window_id",
+                "dataset_requirements": [],
+                "metric_dataset_overrides": {},
+                "dimension_dataset_overrides": {},
+                "requested_context_sources": [],
+                "accepted_graph": ["compare_periods"],
+                "runtime_contract_version": registry.contract_version,
+                "runtime_registry_digest": registry.source_payload_digest,
+                "run_mode_class": "authoritative",
+                "source_query_contracts": [],
+            },
+        )
+        state = {
+            "run_id": "run-terminal-window-resumed",
+            "request": {
+                "thread_id": "thread-terminal-window",
+                "topic_id": "topic-terminal-window",
+                "role": "analyst",
+                "analysis_context": {
+                    "as_of": "2026-06-03T12:00:00+01:00",
+                    "target_date": "2026-06-02",
+                    "previous_day": "2026-06-01",
+                    "rolling_7_day_start": "2026-05-26",
+                    "rolling_7_day_end": "2026-06-01",
+                    "same_weekday_last_week": "2026-05-26",
+                    "pattern_history_start": "2026-01-01",
+                    "anomaly_history_start": "2026-05-03",
+                },
+                "accepted_degradation_choice": {
+                    "choice_id": "continue-terminal-window",
+                    "action_kind": "continue_with_boundary_only",
+                    "source_run_id": "run-terminal-window-source",
+                    "affected_capabilities": ["compare_periods"],
+                },
+                "accepted_terminal_gap_authority": {
+                    "source_run_id": "run-terminal-window-source",
+                    "thread_id": "thread-terminal-window",
+                    "topic_id": "topic-terminal-window",
+                    "analysis_contract": {"authority": "postgres"},
+                    "analysis_contract_signature": "signature-authority",
+                    "material_authority": material_authority,
+                    "clarification_outcome": {
+                        "outcome_ref": "clarification-outcome:terminal-window"
+                    },
+                },
+            },
+            "intent": {
+                "question_family": "revenue_health_review",
+                "question_families": ["revenue_health_review"],
+                "target_metric": "paid_amount",
+                "scope": "full_sample",
+                "time_window": {
+                    "target": "yesterday",
+                    "baseline": "previous_day",
+                },
+            },
+            "analysis_route": {
+                "requested_nodes": ["compare_periods"],
+                "analysis_requirements": {
+                    "question_families": ["revenue_health_review"],
+                    "target_metrics": ["paid_amount"],
+                    "baselines": ["previous_day"],
+                    "claim_intents": ["comparative_change"],
+                    "scope": "full_sample",
+                    "target_semantic": "yesterday",
+                },
+            },
+        }
+
+        return state
+
+    def test_terminal_resume_rejects_clarification_baseline_drift(self):
+        baseline_drift = deepcopy(self._terminal_window_resume_state())
+        baseline_drift["request"]["clarification_choice"] = {
+            "baselines": ["same_weekday_last_week"]
+        }
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "terminal_resume_proposal_baselines_mismatch",
+        ):
+            _analysis_runtime_request(baseline_drift)
+
+    def test_terminal_resume_rejects_current_llm_target_time_drift(self):
+        target_drift = deepcopy(self._terminal_window_resume_state())
+        target_drift["analysis_route"]["analysis_requirements"][
+            "target_semantic"
+        ] = "today"
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "terminal_resume_proposal_time_window_mismatch",
+        ):
+            _analysis_runtime_request(target_drift)
+
+    def test_terminal_resume_rejects_caller_as_of_and_fixed_window_drift(self):
+        as_of_drift = deepcopy(self._terminal_window_resume_state())
+        as_of_drift["request"]["analysis_context"]["as_of"] = (
+            "2027-06-03T12:00:00+01:00"
+        )
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "terminal_resume_runtime_as_of_mismatch",
+        ):
+            _analysis_runtime_request(as_of_drift)
+
+        window_cases = {
+            "target_date": "target_day",
+            "previous_day": "previous_day",
+            "rolling_7_day_start": "rolling_7_day_baseline",
+            "rolling_7_day_end": "rolling_7_day_baseline",
+            "same_weekday_last_week": "same_weekday_last_week",
+            "pattern_history_start": "pattern_history",
+            "anomaly_history_start": "anomaly_history",
+        }
+        for context_key, window_id in window_cases.items():
+            with self.subTest(window_id=window_id, context_key=context_key):
+                drift = deepcopy(self._terminal_window_resume_state())
+                drift["request"]["analysis_context"][context_key] = (
+                    "2027-01-01"
+                )
+                with self.assertRaisesRegex(
+                    WorkflowFailure,
+                    "terminal_resume_runtime_fixed_window_bounds_mismatch:"
+                    + window_id,
+                ):
+                    _analysis_runtime_request(drift)
+
+    def test_terminal_resume_rejects_permission_elevation(self):
+        state = self._terminal_window_resume_state()
+        state["request"]["role"] = "admin"
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "terminal_resume_runtime_permission_scope_mismatch",
+        ):
+            _analysis_runtime_request(state)
+
+    def test_terminal_resume_rejects_permission_reduction(self):
+        state = self._terminal_window_resume_state()
+        state["request"]["role"] = "business_reader"
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "terminal_resume_runtime_permission_scope_mismatch",
+        ):
+            _analysis_runtime_request(state)
+
+    def test_terminal_resume_final_runtime_request_uses_signed_clock_and_permission(self):
+        state = self._terminal_window_resume_state()
+        state["request"]["analysis_context"] = {}
+
+        runtime_request = _analysis_runtime_request(state)
+
+        self.assertEqual(
+            runtime_request.as_of.isoformat(),
+            "2026-06-03T12:00:00+01:00",
+        )
+        self.assertEqual(runtime_request.permission_scope, "analyst")
+        self.assertEqual(
+            runtime_request.proposal["target_semantic"],
+            "2026-06-02",
+        )
+        self.assertEqual(
+            runtime_request.proposal["fixed_window_bounds"],
+            {
+                "target_day": ["2026-06-02", "2026-06-02"],
+                "previous_day": ["2026-06-01", "2026-06-01"],
+                "rolling_7_day_baseline": [
+                    "2026-05-26",
+                    "2026-06-01",
+                ],
+                "same_weekday_last_week": [
+                    "2026-05-26",
+                    "2026-05-26",
+                ],
+                "pattern_history": ["2026-01-01", "2026-06-02"],
+                "anomaly_history": ["2026-05-03", "2026-06-01"],
+            },
+        )
+
     def test_terminal_runtime_request_requires_signed_material_authority(self):
         from bi_agent.conversation.clarification_authority import (
             build_material_authority,
@@ -993,6 +1623,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 "diagnostic_tags": [],
                 "scope": "full_sample",
             },
+            runtime_material=_test_terminal_execution_material(),
         )
         valid_authority = {
             "source_run_id": "run-terminal-authority-source",
@@ -1252,15 +1883,24 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertEqual(
             prompt.required_keys,
-            ("questions", "recommended_assumption", "decision_summary", "display_summary"),
+            (
+                "questions",
+                "recommended_assumption",
+                "recommendation_reason",
+                "decision_summary",
+                "display_summary",
+            ),
         )
         self.assertIn("exactly one question", text)
-        self.assertIn("2-3 draft options", text)
-        self.assertIn("allowed_actions.business_semantics", text)
+        self.assertIn("allowed_business_options", text)
+        self.assertIn("in the supplied order", text)
         self.assertIn("questions must never be empty", text)
         self.assertIn("tell the agent to do differently", text)
         self.assertIn("cannot claim", text)
         self.assertIn("character-for-character", text)
+        self.assertIn("allowed_business_options", text)
+        self.assertIn("non-empty recommendation_reason", text)
+        self.assertNotIn("allowed_business_options. return.", text)
         self.assertIn("future availability timestamp", text)
 
     def test_final_llm_audit_hard_label_is_recorded_as_nonblocking_risk(self):
@@ -1279,123 +1919,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(audit["risk_flags"], ["unsupported_main_claim"])
         self.assertEqual(audit["display_status"], "ready_with_warnings")
 
-    def test_query_gap_clarification_normalizes_structured_options_and_preserves_escape(self):
-        normalized = _normalize_query_gap_clarification_output(
-            {
-                "questions": [
-                    {
-                        "question": "目标日数据未完整时怎么继续？",
-                        "options": [
-                            {"label": "等待刷新", "description": "数据齐备后继续。"},
-                            {"label": "改用完整日", "description": "重新确认目标日。"},
-                        ],
-                    },
-                    {
-                        "question": "另一个问题不应扩大单次澄清范围。",
-                        "options": [
-                            {"text": "选项一"},
-                            {"description": "选项二"},
-                        ],
-                    },
-                ],
-                "recommended_assumption": {"option": "等待刷新"},
-                "decision_summary": "目标窗口会改变结论。",
-            }
-        )
-
-        self.assertEqual(len(normalized["questions"]), 1)
-        self.assertEqual(len(normalized["questions"][0]["options"]), 3)
-        self.assertIn("等待刷新", normalized["questions"][0]["options"][0])
-        self.assertIn(
-            "tell the agent to do differently",
-            normalized["questions"][0]["options"][-1].lower(),
-        )
-        self.assertIn("option", normalized["recommended_assumption"])
-
-    def test_query_gap_clarification_accepts_choice_maps_and_recommended_choice(self):
-        mapped = _normalize_query_gap_clarification_output(
-            {
-                "questions": [
-                    {
-                        "question_text": "缺口存在时如何推进？",
-                        "choices": {
-                            "wait": {"text": "等待数据刷新"},
-                            "change": "改用完整窗口",
-                        },
-                    }
-                ],
-                "recommended_assumption": {"option": "等待数据刷新"},
-                "decision_summary": "窗口选择会改变结论。",
-            }
-        )
-        recommended_only = _normalize_query_gap_clarification_output(
-            {
-                "question": "缺口存在时如何推进？",
-                "questions": [],
-                "recommended_assumption": {"option": "等待数据刷新"},
-                "decision_summary": "窗口选择会改变结论。",
-            }
-        )
-        singular = _normalize_query_gap_clarification_output(
-            {
-                "questions": {
-                    "question": "缺口存在时如何推进？",
-                    "options": ["等待数据刷新"],
-                },
-                "recommended_assumption": {"option": "等待数据刷新"},
-                "decision_summary": "窗口选择会改变结论。",
-            }
-        )
-
-        self.assertEqual(len(mapped["questions"][0]["options"]), 3)
-        self.assertEqual(len(recommended_only["questions"][0]["options"]), 2)
-        self.assertEqual(len(singular["questions"][0]["options"]), 2)
-        self.assertEqual(
-            recommended_only["recommended_assumption"],
-            {"option": "等待数据刷新"},
-        )
-
-    def test_query_gap_recommendation_normalizes_only_one_explicit_business_option(self):
-        def normalized(recommendation):
-            return _normalize_query_gap_clarification_output(
-                {
-                    "questions": [{
-                        "question": "按哪个业务口径继续？",
-                        "options": [
-                            "等待相关业务数据可用后继续。",
-                            "改用当前可验证的业务范围继续。",
-                            "tell the agent to do differently",
-                        ],
-                    }],
-                    "recommended_assumption": recommendation,
-                    "decision_summary": "选择会影响结论。",
-                }
-            )["recommended_assumption"]
-
-        self.assertEqual(
-            normalized({
-                "recommended_option": {
-                    "text": "建议等待相关业务数据可用后继续。再恢复分析。"
-                }
-            }),
-            {"option": "等待相关业务数据可用后继续。"},
-        )
-        self.assertNotIn(
-            "option",
-            normalized(
-                "可等待相关业务数据可用后继续。也可改用当前可验证的业务范围继续。"
-            ),
-        )
-        self.assertNotIn(
-            "option",
-            normalized("tell the agent to do differently"),
-        )
-        self.assertNotIn(
-            "option",
-            normalized({"assumption": "采用产品默认业务假设继续。"}),
-        )
-
-    def test_query_gap_clarification_retry_receives_contract_failure_reason(self):
+    def test_query_gap_clarification_contract_failure_has_no_node_retry(self):
         class InvalidThenValidLLM(FakeLLMClient):
             def __init__(self):
                 super().__init__()
@@ -1448,17 +1972,18 @@ class LLMWorkflowTest(unittest.TestCase):
             "checkpoint_events": [],
         }
 
-        result = _retrying_node(
-            "generate_query_gap_clarification",
-            _generate_query_gap_clarification,
-        )(state)
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "query_gap_clarification_internal_authority_leak",
+        ):
+            _retrying_node(
+                "generate_query_gap_clarification",
+                _generate_query_gap_clarification,
+            )(state)
 
-        self.assertEqual(result["workflow_status"], "waiting_for_clarification")
+        self.assertEqual(len(fake.message_batches), 1)
         first_prompt = "\n".join(
             message["content"] for message in fake.message_batches[0]
-        )
-        second_prompt = "\n".join(
-            message["content"] for message in fake.message_batches[1]
         )
         for hidden_value in (
             "external_event",
@@ -1466,13 +1991,7 @@ class LLMWorkflowTest(unittest.TestCase):
             "dataset_snapshot_unavailable_as_of",
         ):
             self.assertNotIn(hidden_value, first_prompt)
-            self.assertNotIn(hidden_value, second_prompt)
         self.assertIn("业务数据在分析时点尚不可用", first_prompt)
-        self.assertIn("query_gap_clarification_internal_authority_leak", second_prompt)
-        self.assertEqual(
-            result["request"]["node_retry_feedback"]["node"],
-            "generate_query_gap_clarification",
-        )
 
     def test_query_gap_business_projection_excludes_authority_metadata(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
@@ -1522,50 +2041,7 @@ class LLMWorkflowTest(unittest.TestCase):
         ):
             self.assertNotIn(hidden_value, rendered)
 
-    def test_query_gap_recommendation_is_repaired_by_llm_option_index(self):
-        class RecommendationRepairLLM(FakeLLMClient):
-            def __init__(self, option_index):
-                super().__init__()
-                self.option_index = option_index
-                self.message_batches = []
-
-            def invoke_json(self, *, task, prompt_version, messages, required_keys):
-                self.message_batches.append((task, [dict(message) for message in messages]))
-                if task == "query_gap_clarification":
-                    return FakeLLMResult(
-                        {
-                            "questions": [{
-                                "question": "需要确认按哪个业务口径继续？",
-                                "options": [
-                                    "继续主指标分析，并明确相关业务背景证据缺失",
-                                    "等待相关业务数据可用后继续",
-                                    "tell the agent to do differently",
-                                ],
-                            }],
-                            "recommended_assumption": {
-                                "assumption": "采用产品默认业务假设继续。"
-                            },
-                            "decision_summary": "该选择会影响结论。",
-                            "display_summary": "等待用户确认。",
-                        },
-                        {"task": task},
-                    )
-                if task == "query_gap_recommendation_repair":
-                    return FakeLLMResult(
-                        {
-                            "option_index": self.option_index,
-                            "brief_reason": "当前选择更符合证据边界。",
-                            "display_summary": "已形成推荐选项。",
-                        },
-                        {"task": task},
-                    )
-                return super().invoke_json(
-                    task=task,
-                    prompt_version=prompt_version,
-                    messages=messages,
-                    required_keys=required_keys,
-                )
-
+    def test_query_gap_clarification_binds_exact_actions_in_one_llm_call(self):
         def state(llm):
             return {
                 "request": {},
@@ -1597,65 +2073,25 @@ class LLMWorkflowTest(unittest.TestCase):
                 "checkpoint_events": [],
             }
 
-        valid = RecommendationRepairLLM(1)
-        result = _generate_query_gap_clarification(state(valid))
+        fake = FakeLLMClient()
+        result = _generate_query_gap_clarification(state(fake))
         self.assertEqual(
             result["query_gap_clarification"]["recommended_assumption"],
-            {"option": "等待相关业务数据可用后再恢复本次分析"},
+            {"option": "继续可验证的主指标分析，并明确缺少相关业务背景证据"},
         )
-        repair_prompt = "\n".join(
-            message["content"] for task, messages in valid.message_batches
-            if task == "query_gap_recommendation_repair"
-            for message in messages
+        self.assertEqual(fake.calls, ["query_gap_clarification"])
+        actions = result["query_gap_clarification"]["choice_actions"]
+        self.assertTrue(all(item.get("choice_id") for item in actions))
+        self.assertTrue(actions[0]["business_reason"])
+        self.assertEqual(
+            [item["action_kind"] for item in actions],
+            ["omit_unavailable_context", "wait_for_source", "user_redirect"],
         )
-        self.assertIn("继续可验证的主指标分析，并明确缺少相关业务背景证据", repair_prompt)
-        self.assertIn("等待相关业务数据可用后再恢复本次分析", repair_prompt)
-        for hidden_value in ("external_event", "2026-06-09", "snapshot"):
-            self.assertNotIn(hidden_value, repair_prompt)
-
-        with self.assertRaisesRegex(
-            WorkflowFailure,
-            "query_gap_recommendation_repair_invalid",
-        ):
-            _generate_query_gap_clarification(state(RecommendationRepairLLM(2)))
 
     def test_ready_independent_capability_forces_omit_recommendation_across_multiple_gaps(self):
-        class VaryingRecommendationLLM(FakeLLMClient):
-            def __init__(self, option_index):
-                super().__init__()
-                self.option_index = option_index
+        fake = FakeLLMClient()
 
-            def invoke_json(self, *, task, prompt_version, messages, required_keys):
-                if task == "query_gap_clarification":
-                    return FakeLLMResult(
-                        {
-                            "questions": [{
-                                "question": "如何继续？",
-                                "options": ["等待", "继续", "tell the agent to do differently"],
-                            }],
-                            "recommended_assumption": {"assumption": "等待所有背景数据"},
-                            "decision_summary": "需要选择。",
-                            "display_summary": "等待确认。",
-                        },
-                        {"task": task},
-                    )
-                if task == "query_gap_recommendation_repair":
-                    return FakeLLMResult(
-                        {
-                            "option_index": self.option_index,
-                            "brief_reason": "模型建议。",
-                            "display_summary": "已建议。",
-                        },
-                        {"task": task},
-                    )
-                return super().invoke_json(
-                    task=task,
-                    prompt_version=prompt_version,
-                    messages=messages,
-                    required_keys=required_keys,
-                )
-
-        def state(option_index):
+        def state():
             return {
                 "request": {},
                 "analysis_route": {
@@ -1693,20 +2129,20 @@ class LLMWorkflowTest(unittest.TestCase):
                 )(),
                 "query_repair_decisions": [],
                 "intent": {"target_metric": "active_users", "time_window": "previous_day"},
-                "llm_client": VaryingRecommendationLLM(option_index),
+                "llm_client": fake,
                 "llm_calls": [],
                 "checkpoint_events": [],
             }
 
-        for option_index in (0, 1):
-            result = _generate_query_gap_clarification(state(option_index))
-            clarification = result["query_gap_clarification"]
-            recommended = clarification["recommended_assumption"]["option"]
-            action_by_label = {
-                item["business_label"]: item["action_kind"]
-                for item in clarification["choice_actions"]
-            }
-            self.assertEqual(action_by_label[recommended], "omit_unavailable_context")
+        result = _generate_query_gap_clarification(state())
+        clarification = result["query_gap_clarification"]
+        recommended = clarification["recommended_assumption"]["option"]
+        action_by_label = {
+            item["business_label"]: item["action_kind"]
+            for item in clarification["choice_actions"]
+        }
+        self.assertEqual(action_by_label[recommended], "omit_unavailable_context")
+        self.assertEqual(fake.calls, ["query_gap_clarification"])
 
     def test_boundary_only_acceptance_is_scoped_to_gaps_when_ready_sibling_exists(self):
         result = type(
@@ -3108,7 +3544,10 @@ class LLMWorkflowTest(unittest.TestCase):
                 route["obligation_resolution"]["mutation_history"]
             ),
         }
-        _accept_analysis_route(state)
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._record_execution_material"
+        ):
+            _accept_analysis_route(state)
 
         records = [
             {
@@ -3296,9 +3735,10 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertIn("do not rerun queries", captured[0][1]["repair_scope"])
 
+        captured.clear()
         with patch(
             "bi_agent.runtime.langgraph_workflow.reverify_answer_package_for_delivery",
-            side_effect=(failed, failed, failed),
+            side_effect=(failed, failed),
         ), patch(
             "bi_agent.runtime.langgraph_workflow._build_answer_package_from_state",
             return_value={},
@@ -3318,6 +3758,7 @@ class LLMWorkflowTest(unittest.TestCase):
             failed_state["workflow_failure_reason"],
             "delivery_reverify_failed:free_text_without_verified_claim,reported_verifier_mismatch",
         )
+        self.assertEqual(len(captured), 1)
 
     def test_explicit_failed_graph_output_keeps_reason_and_package(self):
         class Graph:
@@ -3596,7 +4037,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(_route_after_query_gap_clarification(state), "block")
         self.assertNotIn("query_gap_action_render", fake.calls)
 
-    def test_query_gap_action_render_rejects_missing_duplicate_and_unknown_actions(self):
+    def test_query_gap_action_binding_rejects_cardinality_tampering_and_reordering(self):
         business_gaps = [{
             "allowed_actions": [
                 {
@@ -3614,37 +4055,99 @@ class LLMWorkflowTest(unittest.TestCase):
             ]
         }]
 
-        def state(rendered_actions):
-            return {
-                "llm_client": FakeLLMClient({
-                    "query_gap_action_render": {
-                        "rendered_actions": rendered_actions,
-                    }
-                }),
-                "llm_calls": [],
-            }
-
+        escape = "tell the agent to do differently"
         invalid = (
-            [{"choice_id": "continue", "label": "继续", "reason": "可继续"}],
-            [
-                {"choice_id": "continue", "label": "继续", "reason": "可继续"},
-                {"choice_id": "continue", "label": "等待", "reason": "需等待"},
-            ],
-            [
-                {"choice_id": "continue", "label": "继续", "reason": "可继续"},
-                {"choice_id": "unknown", "label": "其他", "reason": "未知"},
-            ],
+            ["继续主指标分析并说明限制", escape],
+            ["继续主指标分析并说明限制", "继续主指标分析并说明限制", escape],
+            ["继续主指标分析并说明限制", "其他", escape],
+            ["等待相关业务数据", "继续主指标分析并说明限制", escape],
+            [" 继续主指标分析并说明限制", "等待相关业务数据", escape],
+            [{"label": "继续主指标分析并说明限制"}, "等待相关业务数据", escape],
+            ["继续主指标分析并说明限制", "等待相关业务数据", "Tell the agent to do differently"],
+            [escape, "继续主指标分析并说明限制", "等待相关业务数据"],
         )
-        for rendered_actions in invalid:
-            with self.subTest(rendered_actions=rendered_actions), self.assertRaisesRegex(
+        for options in invalid:
+            with self.subTest(options=options), self.assertRaisesRegex(
                 WorkflowFailure,
-                "query_gap_action_render_invalid",
+                "query_gap_action_binding_invalid:options",
             ):
                 _render_query_gap_actions(
-                    state(rendered_actions),
+                    {"llm_calls": []},
                     business_gaps,
-                    (),
+                    output={
+                        "questions": [{"question": "如何继续？", "options": options}],
+                        "recommended_assumption": {
+                            "option": "继续主指标分析并说明限制"
+                        },
+                        "recommendation_reason": "符合当前业务证据边界。",
+                    },
                 )
+
+    def test_query_gap_action_binding_rejects_non_exact_recommendation(self):
+        business_gaps = [{
+            "allowed_actions": [{
+                "choice_id": "continue",
+                "action_kind": "omit_unavailable_context",
+                "business_semantics": "继续主指标分析并说明限制",
+                "affected_capabilities": ["event_evidence"],
+            }]
+        }]
+        for recommendation in (
+            " 继续主指标分析并说明限制 ",
+            {"label": "继续主指标分析并说明限制"},
+        ):
+            with self.subTest(recommendation=recommendation), self.assertRaisesRegex(
+                WorkflowFailure,
+                "query_gap_action_binding_invalid:recommended_option",
+            ):
+                _render_query_gap_actions(
+                    {"llm_calls": []},
+                    business_gaps,
+                    output={
+                        "questions": [{
+                            "question": "如何继续？",
+                            "options": [
+                                "继续主指标分析并说明限制",
+                                "tell the agent to do differently",
+                            ],
+                        }],
+                        "recommended_assumption": {"option": recommendation},
+                        "recommendation_reason": "符合当前业务证据边界。",
+                    },
+                )
+
+    def test_query_gap_action_binding_rejects_missing_recommendation_reason(self):
+        business_gaps = [{
+            "allowed_actions": [{
+                "choice_id": "continue",
+                "action_kind": "omit_unavailable_context",
+                "business_semantics": "继续主指标分析并说明限制",
+                "affected_capabilities": ["event_evidence"],
+            }]
+        }]
+        output = {
+            "questions": [{
+                "question": "如何继续？",
+                "options": [
+                    "继续主指标分析并说明限制",
+                    "tell the agent to do differently",
+                ],
+            }],
+            "recommended_assumption": {
+                "option": "继续主指标分析并说明限制"
+            },
+            "recommendation_reason": "",
+        }
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "query_gap_action_binding_invalid:recommendation_reason",
+        ):
+            _render_query_gap_actions(
+                {"llm_calls": []},
+                business_gaps,
+                output=output,
+            )
 
     def test_window_coverage_repair_recommends_terminal_degradation_and_allows_pause(self):
         gap = _business_query_repair_gap(({
@@ -4379,6 +4882,8 @@ class LLMWorkflowTest(unittest.TestCase):
         with patch(
             "bi_agent.runtime.langgraph_workflow.compile_graph",
             side_effect=AssertionError("legacy compiler must not run"),
+        ), patch(
+            "bi_agent.runtime.langgraph_workflow._record_execution_material"
         ):
             _accept_analysis_route(state)
 
@@ -4528,6 +5033,8 @@ class LLMWorkflowTest(unittest.TestCase):
         with patch(
             "bi_agent.runtime.langgraph_workflow.compile_graph",
             side_effect=ValueError("legacy_hard_error"),
+        ), patch(
+            "bi_agent.runtime.langgraph_workflow._record_execution_material"
         ), self.assertRaisesRegex(ValueError, "legacy_hard_error"):
             _accept_analysis_route(state)
 
@@ -5403,7 +5910,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("options must be an array of strings", text)
         self.assertIn('"options":["业务选项A","业务选项B"', text)
 
-    def test_general_clarification_repairs_recommendation_to_validated_option(self):
+    def test_general_clarification_invalid_recommendation_fails_without_repair_call(self):
         from bi_agent.runtime.langgraph_workflow import _generate_clarification
 
         fake = FakeLLMClient(
@@ -5419,10 +5926,6 @@ class LLMWorkflowTest(unittest.TestCase):
                     }],
                     "recommended_assumption": {"option": "使用推荐基线"},
                 },
-                "query_gap_recommendation_repair": {
-                    "option_index": 1,
-                    "brief_reason": "更适合控制星期效应。",
-                },
             }
         )
         state = {
@@ -5437,13 +5940,13 @@ class LLMWorkflowTest(unittest.TestCase):
             "checkpoint_events": [],
         }
 
-        _generate_clarification(state)
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "general_clarification_contract_invalid:recommended_option",
+        ):
+            _generate_clarification(state)
 
-        self.assertIn("query_gap_recommendation_repair", fake.calls)
-        self.assertEqual(
-            state["clarification_outcome"]["recommended_assumption"],
-            {"option": "与上周同一天比较"},
-        )
+        self.assertEqual(fake.calls, ["clarification_question"])
 
     def test_route_requirements_preserve_confirmed_material_slots_and_flag_conflict(self):
         state = {
@@ -5604,7 +6107,7 @@ class LLMWorkflowTest(unittest.TestCase):
             ("recurring_pattern_existence",),
         )
 
-    def test_invalid_general_clarification_retries_with_contract_reason(self):
+    def test_invalid_general_clarification_fails_after_one_node_call(self):
         from bi_agent.runtime.langgraph_workflow import _generate_clarification
 
         class InvalidThenValid(FakeLLMClient):
@@ -5655,16 +6158,15 @@ class LLMWorkflowTest(unittest.TestCase):
             "checkpoint_events": [],
         }
 
-        result = _retrying_node("generate_clarification", _generate_clarification)(state)
-
-        self.assertEqual(fake.attempts, 2)
-        self.assertEqual(result["clarification_outcome"]["status"], "question_tool_opened")
-        self.assertIn(
+        with self.assertRaisesRegex(
+            WorkflowFailure,
             "general_clarification_contract_invalid:options",
-            result["request"]["node_retry_feedback"]["reason"],
-        )
+        ):
+            _retrying_node("generate_clarification", _generate_clarification)(state)
 
-    def test_general_clarification_contract_gets_three_reasoned_attempts(self):
+        self.assertEqual(fake.attempts, 1)
+
+    def test_general_clarification_contract_has_no_business_layer_retry(self):
         from bi_agent.runtime.langgraph_workflow import _generate_clarification
 
         state = {
@@ -5701,20 +6203,16 @@ class LLMWorkflowTest(unittest.TestCase):
             "bi_agent.runtime.langgraph_workflow._invoke_llm",
             side_effect=clarify,
         ):
-            result = _retrying_node(
-                "generate_clarification",
-                _generate_clarification,
-            )(state)
+            with self.assertRaisesRegex(
+                WorkflowFailure,
+                "general_clarification_contract_invalid:options",
+            ):
+                _retrying_node(
+                    "generate_clarification",
+                    _generate_clarification,
+                )(state)
 
-        self.assertEqual(len(payloads), 3)
-        self.assertIn(
-            "general_clarification_contract_invalid:options",
-            payloads[1]["retry_context"]["reason"],
-        )
-        self.assertEqual(
-            result["clarification_outcome"]["recommended_assumption"],
-            {"option": "保留当前口径继续"},
-        )
+        self.assertEqual(len(payloads), 1)
 
     def test_segment_causal_followup_defaults_to_observational_boundary(self):
         state = {
@@ -6175,24 +6673,22 @@ class LLMWorkflowTest(unittest.TestCase):
                 "degraded",
             )
 
-    def test_degraded_explanation_sanitizes_invented_future_window(self):
-        sanitized = _sanitize_terminal_explanation(
-            {
-                "status": "degraded",
-                "explanation": "方向不一致且变化幅度低于当前重要性阈值。",
-                "owner": "分析团队",
-                "repair_path": "延长观察周期至12个月以上后重新评估。",
-            },
-            {
-                "evidence_brief": {
-                    "limitations": ["below_materiality_floor", "weak_direction"],
-                }
-            },
-            "degraded",
-        )
-
-        self.assertNotIn("12个月", sanitized["repair_path"])
-        self.assertIn("继续观察新周期", sanitized["repair_path"])
+    def test_degraded_explanation_rejects_invented_future_window(self):
+        with self.assertRaisesRegex(WorkflowFailure, "repair_path_future_window"):
+            _sanitize_terminal_explanation(
+                {
+                    "status": "degraded",
+                    "explanation": "方向不一致且变化幅度低于当前重要性阈值。",
+                    "owner": "分析团队",
+                    "repair_path": "延长观察周期至12个月以上后重新评估。",
+                },
+                {
+                    "evidence_brief": {
+                        "limitations": ["below_materiality_floor", "weak_direction"],
+                    }
+                },
+                "degraded",
+            )
 
     def test_degraded_explanation_sanitizes_contract_and_data_collection_drift(self):
         with self.assertRaisesRegex(WorkflowFailure, "data_or_contract_drift"):
@@ -6356,6 +6852,51 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertEqual(attempts["count"], 3)
 
+    def test_llm_client_retries_invalid_high_value_narrative_only_at_provider_boundary(self):
+        attempts = {"count": 0}
+
+        class ResponseMessage:
+            content = '{"answer_text": "Generated evidence-based answer."}'
+
+        class ResponseChoice:
+            message = ResponseMessage()
+
+        class Response:
+            id = "response-invalid-narrative"
+            choices = [ResponseChoice()]
+            usage = None
+
+        class InvalidNarrativeCompletions:
+            def create(self, **kwargs):
+                attempts["count"] += 1
+                return Response()
+
+        class InvalidNarrativeChat:
+            completions = InvalidNarrativeCompletions()
+
+        class InvalidNarrativeClient:
+            chat = InvalidNarrativeChat()
+
+        client = OpenAICompatibleLLMClient(
+            provider="openai_compatible",
+            model="invalid-narrative-model",
+            api_key="test-key",
+        )
+        client._client = InvalidNarrativeClient()
+
+        with self.assertRaisesRegex(
+            LLMOutputError,
+            "llm_narrative_invalid:answer_text",
+        ):
+            client.invoke_json(
+                task="answer_synthesis",
+                prompt_version="test",
+                messages=[{"role": "user", "content": "{}"}],
+                required_keys=["answer_text"],
+            )
+
+        self.assertEqual(attempts["count"], 3)
+
     def test_llm_client_does_not_cap_json_completion_tokens(self):
         captured = {}
 
@@ -6419,6 +6960,418 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.audit["response_id"], "subprocess-response")
         self.assertEqual(result.audit["attempt_count"], 1)
 
+    def test_llm_subprocess_drains_large_payload_before_join_with_timeout(self):
+        before = {child.pid for child in multiprocessing.active_children()}
+
+        result = llm_client_module._request_openai_json_in_subprocess(
+            {"payload_size": 20_000},
+            [{"role": "user", "content": "x"}],
+            1.0,
+            request_worker=spawn_large_fake_llm_request,
+        )
+
+        self.assertEqual(len(result), 20_000)
+        self.assertEqual(
+            {
+                child.pid
+                for child in multiprocessing.active_children()
+                if child.pid not in before
+            },
+            set(),
+        )
+
+    def test_llm_subprocess_drains_large_payload_without_provider_timeout(self):
+        before = {child.pid for child in multiprocessing.active_children()}
+        try:
+            with llm_client_module._wall_clock_timeout(2.0):
+                result = llm_client_module._request_openai_json_in_subprocess(
+                    {"payload_size": 20_000},
+                    [{"role": "user", "content": "x"}],
+                    None,
+                    request_worker=spawn_large_fake_llm_request,
+                )
+        finally:
+            leaked = [
+                child
+                for child in multiprocessing.active_children()
+                if child.pid not in before
+            ]
+            for child in leaked:
+                if child.is_alive():
+                    child.kill()
+                child.join()
+
+        self.assertEqual(len(result), 20_000)
+        self.assertEqual(leaked, [])
+
+    def test_llm_subprocess_reports_worker_error_and_empty_result_without_leaks(self):
+        before = {child.pid for child in multiprocessing.active_children()}
+        for worker, message in (
+            (spawn_failing_llm_request, "provider-worker-failed"),
+            (spawn_exit_without_llm_result, "llm_subprocess_failed:exitcode=7"),
+        ):
+            with self.subTest(worker=worker.__name__), self.assertRaisesRegex(
+                RuntimeError,
+                message,
+            ):
+                llm_client_module._request_openai_json_in_subprocess(
+                    {},
+                    [{"role": "user", "content": "x"}],
+                    1.0,
+                    request_worker=worker,
+                )
+        self.assertEqual(
+            {
+                child.pid
+                for child in multiprocessing.active_children()
+                if child.pid not in before
+            },
+            set(),
+        )
+
+    def test_llm_subprocess_timeout_cleans_process_and_ipc(self):
+        before = {child.pid for child in multiprocessing.active_children()}
+        receiver_threads_before = {
+            thread.ident
+            for thread in threading.enumerate()
+            if thread.name == "waje-llm-provider-receiver" and thread.is_alive()
+        }
+        with self.assertRaisesRegex(LLMTimeoutError, "llm_request_timeout"):
+            llm_client_module._request_openai_json_in_subprocess(
+                {},
+                [{"role": "user", "content": "x"}],
+                0.01,
+                request_worker=spawn_safe_stuck_llm_request,
+            )
+        self.assertEqual(
+            {
+                child.pid
+                for child in multiprocessing.active_children()
+                if child.pid not in before
+            },
+            set(),
+        )
+        self.assertEqual(
+            {
+                thread.ident
+                for thread in threading.enumerate()
+                if thread.name == "waje-llm-provider-receiver" and thread.is_alive()
+            },
+            receiver_threads_before,
+        )
+
+    def test_llm_subprocess_without_timeout_never_kills_eof_alive_child(self):
+        receiver_threads_before = {
+            thread.ident
+            for thread in threading.enumerate()
+            if thread.name == "waje-llm-provider-receiver" and thread.is_alive()
+        }
+
+        class FakeConnection:
+            def __init__(self, *, eof=False):
+                self.eof = eof
+                self.closed = False
+
+            def poll(self):
+                return True
+
+            def recv(self):
+                if self.eof:
+                    raise EOFError
+                return None
+
+            def close(self):
+                self.closed = True
+
+        class FakeProcess:
+            sentinel = object()
+
+            def __init__(self):
+                self.alive = True
+                self.exitcode = None
+                self.kills = 0
+                self.joins = []
+                self.closed = False
+
+            def start(self):
+                return None
+
+            def join(self, timeout=None):
+                self.joins.append(timeout)
+                if timeout is None:
+                    self.alive = False
+                    self.exitcode = 9
+
+            def is_alive(self):
+                return self.alive
+
+            def kill(self):
+                self.kills += 1
+                self.alive = False
+                self.exitcode = -9
+
+            def close(self):
+                self.closed = True
+
+        output = FakeConnection(eof=True)
+        child = FakeConnection()
+        process = FakeProcess()
+
+        class FakeContext:
+            def Pipe(self, duplex=False):
+                return output, child
+
+            def Process(self, **kwargs):
+                return process
+
+        with patch.object(
+            llm_client_module,
+            "_process_context",
+            return_value=FakeContext(),
+        ), self.assertRaises(RuntimeError) as raised:
+            llm_client_module._request_openai_json_in_subprocess(
+                {},
+                [{"role": "user", "content": "x"}],
+                None,
+                request_worker=spawn_safe_fake_llm_request,
+            )
+
+        self.assertEqual(str(raised.exception), "llm_subprocess_failed:exitcode=9")
+        self.assertEqual(process.kills, 0)
+        self.assertIn(None, process.joins)
+        self.assertTrue(output.closed)
+        self.assertTrue(child.closed)
+        self.assertTrue(process.closed)
+        self.assertEqual(
+            {
+                thread.ident
+                for thread in threading.enumerate()
+                if thread.name == "waje-llm-provider-receiver" and thread.is_alive()
+            },
+            receiver_threads_before,
+        )
+
+    def test_llm_subprocess_receiver_cleanup_join_is_bounded(self):
+        original_thread = threading.Thread
+        receiver_threads = []
+
+        class RecordingThread(original_thread):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.join_timeouts = []
+                receiver_threads.append(self)
+
+            def join(self, timeout=None):
+                self.join_timeouts.append(timeout)
+                return super().join(timeout)
+
+        class FakeConnection:
+            def recv(self):
+                raise EOFError
+
+            def close(self):
+                return None
+
+        class FakeProcess:
+            def __init__(self):
+                self.alive = True
+                self.exitcode = None
+
+            def start(self):
+                return None
+
+            def join(self, timeout=None):
+                self.alive = False
+                self.exitcode = 4
+
+            def is_alive(self):
+                return self.alive
+
+            def kill(self):
+                raise AssertionError("provider child must not be killed without a timeout")
+
+            def close(self):
+                return None
+
+        process = FakeProcess()
+
+        class FakeContext:
+            def Pipe(self, duplex=False):
+                return FakeConnection(), FakeConnection()
+
+            def Process(self, **kwargs):
+                return process
+
+        with patch.object(
+            llm_client_module,
+            "_process_context",
+            return_value=FakeContext(),
+        ), patch.object(
+            llm_client_module.threading,
+            "Thread",
+            RecordingThread,
+        ), self.assertRaisesRegex(
+            RuntimeError,
+            "llm_subprocess_failed:exitcode=4",
+        ):
+            llm_client_module._request_openai_json_in_subprocess(
+                {},
+                [{"role": "user", "content": "x"}],
+                None,
+                request_worker=spawn_safe_fake_llm_request,
+            )
+
+        self.assertEqual(len(receiver_threads), 1)
+        cleanup_join_timeout = receiver_threads[0].join_timeouts[-1]
+        self.assertIsNotNone(cleanup_join_timeout)
+        self.assertGreater(cleanup_join_timeout, 0)
+        self.assertFalse(receiver_threads[0].is_alive())
+
+    def test_llm_subprocess_closes_process_handle_before_receiver_cleanup_failure(self):
+        class StuckReceiver:
+            def __init__(self, *args, **kwargs):
+                self.join_timeouts = []
+
+            def start(self):
+                return None
+
+            def join(self, timeout=None):
+                self.join_timeouts.append(timeout)
+
+            def is_alive(self):
+                return True
+
+        class FakeConnection:
+            def __init__(self):
+                self.closed = False
+
+            def recv(self):
+                raise AssertionError("stuck receiver does not execute its target")
+
+            def close(self):
+                self.closed = True
+
+        class FakeProcess:
+            def __init__(self):
+                self.alive = True
+                self.exitcode = None
+                self.closed = False
+
+            def start(self):
+                return None
+
+            def join(self, timeout=None):
+                return None
+
+            def is_alive(self):
+                return self.alive
+
+            def kill(self):
+                self.alive = False
+                self.exitcode = -9
+
+            def close(self):
+                self.closed = True
+
+        output = FakeConnection()
+        child = FakeConnection()
+        process = FakeProcess()
+
+        class FakeContext:
+            def Pipe(self, duplex=False):
+                return output, child
+
+            def Process(self, **kwargs):
+                return process
+
+        with patch.object(
+            llm_client_module,
+            "_process_context",
+            return_value=FakeContext(),
+        ), patch.object(
+            llm_client_module.threading,
+            "Thread",
+            StuckReceiver,
+        ), self.assertRaisesRegex(
+            RuntimeError,
+            "llm_receiver_cleanup_timeout",
+        ):
+            llm_client_module._request_openai_json_in_subprocess(
+                {},
+                [{"role": "user", "content": "x"}],
+                0.01,
+                request_worker=spawn_safe_fake_llm_request,
+            )
+
+        self.assertTrue(output.closed)
+        self.assertTrue(child.closed)
+        self.assertTrue(process.closed)
+
+    def test_llm_subprocess_rejects_result_received_after_total_deadline(self):
+        class FakeConnection:
+            def __init__(self, *, slow=False):
+                self.slow = slow
+
+            def poll(self):
+                return True
+
+            def recv(self):
+                if self.slow:
+                    time.sleep(0.05)
+                return {"ok": True, "result": {"ok": True}}
+
+            def close(self):
+                return None
+
+        class FakeProcess:
+            sentinel = object()
+
+            def __init__(self):
+                self.alive = True
+                self.exitcode = None
+                self.kills = 0
+
+            def start(self):
+                return None
+
+            def join(self, timeout=None):
+                self.alive = False
+                self.exitcode = 0
+
+            def is_alive(self):
+                return self.alive
+
+            def kill(self):
+                self.kills += 1
+                self.alive = False
+                self.exitcode = -9
+
+            def close(self):
+                return None
+
+        output = FakeConnection(slow=True)
+        child = FakeConnection()
+        process = FakeProcess()
+
+        class FakeContext:
+            def Pipe(self, duplex=False):
+                return output, child
+
+            def Process(self, **kwargs):
+                return process
+
+        with patch.object(
+            llm_client_module,
+            "_process_context",
+            return_value=FakeContext(),
+        ), self.assertRaisesRegex(LLMTimeoutError, "llm_request_timeout"):
+            llm_client_module._request_openai_json_in_subprocess(
+                {},
+                [{"role": "user", "content": "x"}],
+                0.01,
+                request_worker=spawn_safe_fake_llm_request,
+            )
+
     def test_llm_client_does_not_fall_back_to_fork_context(self):
         class ForkContext:
             def get_start_method(self):
@@ -6472,10 +7425,10 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.audit["response_id"], "subprocess-retry-success")
         self.assertEqual(result.audit["attempt_count"], 2)
 
-    def test_llm_narrative_fallback_keeps_machine_tokens(self):
+    def test_llm_narrative_normalization_keeps_machine_tokens_without_templates(self):
         output = _localize_narrative_fields(
             {
-                "status_message": "success",
+                "status_message": "已完成当前业务判断。",
                 "target_metric": "paid_amount",
                 "recommended_assumption": "产品默认的材料性和稳定性规则，不使用p值。",
                 "route_summary": "使用compare_period_phases和metric_timeseries分析paid_amount，不说显著性。",
@@ -6491,7 +7444,7 @@ class LLMWorkflowTest(unittest.TestCase):
                     "（product default materiality and stability rules），"
                     "超过默认重要性阈值（例如5%）。"
                 ),
-                "claims": [{"text": "Pattern observed."}],
+                "claims": [{"text": "当前证据显示一个可观察模式。"}],
             }
         )
 
@@ -6519,7 +7472,21 @@ class LLMWorkflowTest(unittest.TestCase):
                 "超过默认重要性阈值。"
             ),
         )
-        self.assertEqual(output["claims"][0]["text"], "已生成基于证据的业务表述。")
+        self.assertEqual(output["claims"][0]["text"], "当前证据显示一个可观察模式。")
+
+    def test_llm_narrative_invalid_high_value_text_fails_without_local_template(self):
+        for key, value in (
+            ("answer_text", "Generated evidence-based answer."),
+            ("summary_text", {"unexpected": "shape"}),
+            ("text", "Pattern observed."),
+            ("business_summary", None),
+        ):
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(
+                    LLMOutputError,
+                    f"llm_narrative_invalid:{key}",
+                ):
+                    _localize_narrative_fields({key: value})
 
     def test_llm_narrative_keeps_accepted_assumptions_flat(self):
         output = _localize_narrative_fields(
@@ -6549,6 +7516,56 @@ class LLMWorkflowTest(unittest.TestCase):
             output["business_summary"],
             "对比Alpha渠道和Beta渠道的付费金额表现。",
         )
+
+    def test_llm_narrative_allows_uppercase_business_acronyms(self):
+        output = _localize_narrative_fields(
+            {
+                "business_summary": "ROI、DAU 与 ARPPU 同步改善，收入按 NGN 计价。",
+                "owner": "WAJE 业务分析团队",
+                "recommendation_reason": "该方案有利于复核 ROI 变化。",
+            }
+        )
+
+        self.assertIn("ROI", output["business_summary"])
+        self.assertIn("NGN", output["business_summary"])
+        self.assertEqual(output["owner"], "WAJE 业务分析团队")
+
+    def test_llm_narrative_rejects_unreviewed_uppercase_words_in_high_value_fields(self):
+        for key, value in (
+            ("owner", "当前 OWNER"),
+            ("explanation", "当前 FAILED"),
+            ("repair_path", "执行 RETRY"),
+            ("summary_text", "当前 READY"),
+        ):
+            with self.subTest(key=key), self.assertRaisesRegex(
+                LLMOutputError,
+                f"llm_narrative_invalid:{key}",
+            ):
+                _localize_narrative_fields({key: value})
+
+    def test_llm_narrative_rejects_english_owner_and_recommendation_reason(self):
+        for key, value in (
+            ("owner", "Generated owner"),
+            ("recommendation_reason", "Generated recommendation"),
+        ):
+            with self.subTest(key=key), self.assertRaisesRegex(
+                LLMOutputError,
+                f"llm_narrative_invalid:{key}",
+            ):
+                _localize_narrative_fields({key: value})
+
+        with self.assertRaisesRegex(
+            LLMOutputError,
+            "llm_narrative_invalid:business_summary",
+        ):
+            _localize_narrative_fields({"business_summary": "ROI AND DAU IMPROVED"})
+        with self.assertRaisesRegex(
+            LLMOutputError,
+            "llm_narrative_invalid:business_summary",
+        ):
+            _localize_narrative_fields(
+                {"business_summary": "当前 GENERATED EVIDENCE 不可发布。"}
+            )
 
     def test_llm_narrative_removes_invented_default_stability_percent(self):
         output = _localize_narrative_fields(
@@ -7545,17 +8562,19 @@ class LLMWorkflowTest(unittest.TestCase):
             "ask_overridden_to_degrade",
         )
 
-    def test_llm_narrative_replaces_non_string_narrative_values(self):
-        output = _localize_narrative_fields(
-            {
-                "evidence_boundary": {
-                    "weekday_calendar_compare": "medium",
-                    "event_evidence": "low",
+    def test_llm_narrative_rejects_non_string_narrative_values(self):
+        with self.assertRaisesRegex(
+            LLMOutputError,
+            "llm_narrative_invalid:evidence_boundary",
+        ):
+            _localize_narrative_fields(
+                {
+                    "evidence_boundary": {
+                        "weekday_calendar_compare": "medium",
+                        "event_evidence": "low",
+                    }
                 }
-            }
-        )
-
-        self.assertEqual(output["evidence_boundary"], "证据边界已记录。")
+            )
 
     def test_llm_narrative_localizes_audit_issue_descriptions(self):
         output = _localize_narrative_fields(
@@ -7873,7 +8892,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
         self.assertEqual(result.answer_package["quality_gate"]["code"], "evidence_verifier_failed")
 
-    def test_empty_final_business_summary_is_retried_with_failure_reason(self):
+    def test_empty_final_business_summary_fails_after_one_node_call(self):
         state = {
             "request": {"question": "昨天的收入证据充分吗？"},
             "intent": {"pattern_family": ""},
@@ -7892,18 +8911,30 @@ class LLMWorkflowTest(unittest.TestCase):
             "bi_agent.runtime.langgraph_workflow._invoke_llm",
             side_effect=summarize,
         ):
-            _final_business_summary(state)
+            with self.assertRaisesRegex(
+                WorkflowFailure,
+                "final_business_summary_contract_invalid:summary_text",
+            ):
+                _final_business_summary(state)
 
-        self.assertEqual(len(payloads), 2)
-        self.assertEqual(payloads[0]["final_answer_retry_instruction"], "")
-        self.assertIn(
-            "上一次输出为空",
-            payloads[1]["final_answer_retry_instruction"],
-        )
-        self.assertEqual(
-            state["final_business_summary"],
-            "当前数据证据不足，需要检查支付状态数据。",
-        )
+        self.assertEqual(len(payloads), 1)
+        self.assertNotIn("final_answer_retry_instruction", payloads[0])
+
+    def test_final_business_summary_rejects_non_string_or_untrimmed_text(self):
+        for summary_text in ({"text": "摘要"}, 42, " 摘要 "):
+            state = {
+                "request": {"question": "昨天的收入证据充分吗？"},
+                "intent": {"pattern_family": ""},
+                "draft_claims": [],
+            }
+            with self.subTest(summary_text=summary_text), patch(
+                "bi_agent.runtime.langgraph_workflow._invoke_llm",
+                return_value={"summary_text": summary_text},
+            ), self.assertRaisesRegex(
+                WorkflowFailure,
+                "final_business_summary_contract_invalid:summary_text",
+            ):
+                _final_business_summary(state)
 
     def test_final_answer_audit_warning_is_recorded_without_rewriting_summary(self):
         class RetryAuditLLM(FakeLLMClient):
@@ -7924,16 +8955,6 @@ class LLMWorkflowTest(unittest.TestCase):
                         "最终结论：已验证结论是：Q2 相比 Q1 的付费金额提升 20.0%。\n"
                         "需要注意：还不能直接说这是唯一原因或已被因果证明。"
                     )
-                    if payload.get("final_answer_retry_instruction"):
-                        summary_text = (
-                            "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
-                            "分析脉络：我检查了目标窗口、基线窗口和贡献证据。\n"
-                            "关键发现：当前证据能把排查方向收敛到渠道贡献方向，周期内付费金额模式也有稳定数字锚点。\n"
-                            "最终结论：已验证结论是：2024-01..2026-05 的周期内付费金额模式中位提升 20.0%，"
-                            "方向一致比例 100.0%，覆盖 29 个可比周期。"
-                            "当前证据能把排查方向收敛到渠道贡献方向。\n"
-                            "需要注意：还不能直接说这是唯一原因或已被因果证明。"
-                        )
                     return FakeLLMResult(
                         {"summary_text": summary_text, "display_summary": "已生成最终业务总结。"},
                         {
@@ -8025,7 +9046,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.status, "draft")
         self.assertEqual(fake.calls.count("final_business_summary"), 1)
         self.assertEqual(fake.calls.count("final_answer_audit"), 1)
-        self.assertEqual(fake.summary_inputs[0].get("final_answer_retry_instruction"), "")
+        self.assertNotIn("final_answer_retry_instruction", fake.summary_inputs[0])
         self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
         self.assertEqual(result.answer_package["final_answer"], "")
 
@@ -9053,6 +10074,7 @@ class LLMWorkflowTest(unittest.TestCase):
         from types import SimpleNamespace
 
         runtime_result = SimpleNamespace(
+            analysis_contract=object(),
             query_results=(
                 SimpleNamespace(
                     execution_status="succeeded",
@@ -9060,6 +10082,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 ),
             ),
             query_contracts=(),
+            capability_plans=(),
             bound_capability_inputs={},
             repair_decisions=(),
             to_workflow_payload=lambda: {
@@ -9085,7 +10108,9 @@ class LLMWorkflowTest(unittest.TestCase):
 
         with patch(
             "bi_agent.runtime.langgraph_workflow._analysis_runtime_request",
-            return_value=object(),
+            return_value=SimpleNamespace(accepted_graph=()),
+        ), patch(
+            "bi_agent.runtime.langgraph_workflow._record_execution_material"
         ):
             _validate_runtime_binding(state)
             _fetch_runtime_rows(state)
@@ -10477,7 +11502,7 @@ class LLMWorkflowTest(unittest.TestCase):
         output = {
             "status": "degraded",
             "explanation": "利润指标所需数据暂时不可用。",
-            "owner": "数据工程团队",
+            "owner": "业务分析负责人",
             "repair_path": "补齐数据源后重跑。",
         }
 
@@ -10509,7 +11534,7 @@ class LLMWorkflowTest(unittest.TestCase):
         output = {
             "status": "degraded",
             "explanation": "支付成功率暂时不可核验，付费金额仅作为相关缺口背景。",
-            "owner": "数据工程团队",
+            "owner": "业务分析负责人",
             "repair_path": "补齐数据源后重跑。",
         }
 
@@ -10517,7 +11542,7 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertIn("支付成功率", result["explanation"])
 
-    def test_degraded_explanation_retries_semantic_rejection_with_reason(self):
+    def test_degraded_explanation_semantic_rejection_fails_after_one_node_call(self):
         from bi_agent.runtime.langgraph_workflow import _generate_degraded_explanation
 
         state = {
@@ -10555,16 +11580,12 @@ class LLMWorkflowTest(unittest.TestCase):
             "bi_agent.runtime.langgraph_workflow._invoke_llm",
             side_effect=explain,
         ):
-            _generate_degraded_explanation(state)
+            with self.assertRaisesRegex(WorkflowFailure, "target_metric_drift"):
+                _generate_degraded_explanation(state)
 
-        self.assertEqual(len(payloads), 2)
-        self.assertIn(
-            "target_metric_drift",
-            payloads[1]["retry_context"]["failure_reason"],
-        )
-        self.assertIn("付费金额", state["final_explanation"]["explanation"])
+        self.assertEqual(len(payloads), 1)
 
-    def test_degraded_explanation_reassigns_quality_owner_when_limits_are_business(self):
+    def test_degraded_explanation_rejects_quality_owner_drift_when_limits_are_business(self):
         state = {
             "evidence_brief": {
                 "limitations": ["below_materiality_floor", "weak_direction"]
@@ -10578,9 +11599,57 @@ class LLMWorkflowTest(unittest.TestCase):
             "repair_path": "继续观察新周期。",
         }
 
-        final_explanation = _sanitize_terminal_explanation(output, state, "degraded")
+        with self.assertRaisesRegex(WorkflowFailure, "owner_drift"):
+            _sanitize_terminal_explanation(output, state, "degraded")
 
-        self.assertEqual(final_explanation["owner"], "业务分析负责人")
+    def test_degraded_explanation_rejects_missing_owner_and_repair_path(self):
+        state = {
+            "evidence_brief": {"limitations": ["source_unbound"]},
+            "validator_results": [],
+        }
+        base = {
+            "status": "degraded",
+            "explanation": "付费金额所需业务证据暂时不可用。",
+            "owner": "业务分析负责人",
+            "repair_path": "补齐业务证据后重跑。",
+        }
+        for field, reason in (
+            ("owner", "owner_missing"),
+            ("repair_path", "repair_path_missing"),
+        ):
+            with self.subTest(field=field), self.assertRaisesRegex(
+                WorkflowFailure,
+                reason,
+            ):
+                _sanitize_terminal_explanation({**base, field: ""}, state, "degraded")
+
+    def test_degraded_explanation_rejects_non_string_or_untrimmed_fields(self):
+        state = {
+            "evidence_brief": {"limitations": ["source_unbound"]},
+            "validator_results": [],
+        }
+        base = {
+            "status": "degraded",
+            "explanation": "付费金额所需业务证据暂时不可用。",
+            "owner": "业务分析负责人",
+            "repair_path": "补齐业务证据后重跑。",
+        }
+        invalid = (
+            ("explanation", {"text": "说明"}),
+            ("owner", 42),
+            ("repair_path", ["重跑"]),
+            ("owner", " 业务分析负责人 "),
+        )
+        for field, value in invalid:
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(
+                WorkflowFailure,
+                f"{field}_invalid",
+            ):
+                _sanitize_terminal_explanation(
+                    {**base, field: value},
+                    state,
+                    "degraded",
+                )
 
     def test_degraded_explanation_rejects_data_source_repair_for_business_limits(self):
         state = {

@@ -894,15 +894,15 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             sql,
         )
 
-    def test_descriptive_relative_day_baselines_are_canonicalized(self):
+    def test_explicit_relative_day_baselines_are_canonicalized(self):
         from bi_agent.runtime.langgraph_workflow import _canonical_baselines
 
         self.assertEqual(
             _canonical_baselines(
                 (
-                    "前一日（前天）的收入值",
-                    "与前天相比",
-                    "前一个完整业务日",
+                    "previous_day",
+                    "前一日",
+                    "前一天",
                 )
             ),
             ("previous_day",),
@@ -2255,6 +2255,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
 
         from bi_agent.conversation.clarification_authority import (
             build_clarification_outcome,
+            build_execution_material,
             build_material_authority,
         )
         from bi_agent.runtime.analysis_contract_compiler import (
@@ -2324,6 +2325,22 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 "diagnostic_tags": [],
                 "scope": None,
             },
+            runtime_material=build_execution_material(
+                proposal={
+                    "question_families": ["pattern_explanation"],
+                    "target_metrics": ["paid_amount"],
+                    "claim_intents": ["causal_effect"],
+                },
+                accepted_graph=("pattern_scan",),
+                as_of=as_of,
+                permission_scope="analyst",
+                run_mode="production",
+                runtime_contract_version=registry.contract_version,
+                runtime_registry_digest=registry.source_payload_digest,
+                analysis_contract=prior.analysis_contract,
+                query_contracts=prior.query_contracts,
+                capability_execution_plans=prior.capability_plans,
+            ),
         )
         resumed = compile_analysis_contract(
             run_id="run-persistence-authority-resumed",

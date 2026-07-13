@@ -139,6 +139,1032 @@ def test_platform_suite_applies_fixed_authority_clock_to_every_case():
     )
 
 
+def test_platform_positive_reuse_keeps_physical_query_material_and_reorders_priority():
+    from tools.phase7.run_live_conversation_system_test import load_suite_cases
+
+    case = next(
+        item
+        for item in load_suite_cases("platform-current-data")
+        if item["id"] == "platform_baseline_reuse"
+    )
+    first, second = (turn["scenario"] for turn in case["turns"])
+
+    assert first["target_metrics"] == second["target_metrics"] == ["paid_amount"]
+    assert first["scope"] == second["scope"] == {"type": "full_sample"}
+    assert first["permission_scope"] == second["permission_scope"] == "analyst"
+    assert first["expected_dataset_states"] == second["expected_dataset_states"]
+    assert set(first["baselines"]) == set(second["baselines"])
+    assert first["baselines"] != second["baselines"]
+    assert second["expected_reuse"] == {
+        "capability_id": "market_health_compare",
+        "dataset_ids": ["market_dashboard"],
+    }
+    assert second["expected_capability_states"] == {
+        "compare_periods": "snapshot_unavailable_as_of",
+        "market_health_compare": "executable",
+    }
+    assert second["excluded_inputs"] == {
+        "paid_order_success": "snapshot_unavailable_as_of"
+    }
+
+
+def _authoritative_reuse_review_fixture():
+    from bi_agent.runtime.analysis_runtime import AnalysisRuntimeRequest
+    from tests.phase7.test_analysis_runtime_reuse import (
+        _candidate,
+        _proposal,
+        _publish_source,
+        _runtime_fixture,
+        _source_request,
+    )
+
+    runtime, provider, store, topic_id, signed = _runtime_fixture()
+    source = runtime.execute(_source_request("run-reuse-review-source", topic_id))
+    candidate = _candidate(runtime, source, signed)
+    _publish_source(runtime, store, topic_id, source, candidate)
+    current = runtime.execute(
+        AnalysisRuntimeRequest.create(
+            run_id="run-reuse-review-current",
+            topic_id=topic_id,
+            proposal=_proposal(("rolling_7_day_baseline", "previous_day")),
+            accepted_graph=("compare_periods",),
+            as_of="2026-06-03T12:00:00+01:00",
+            permission_scope="analyst",
+            reuse_candidates=(candidate,),
+        )
+    )
+    store.upsert_run(
+        "run-reuse-review-current",
+        thread_id="thread-reuse",
+        topic_id=topic_id,
+        status="completed",
+        request={},
+    )
+    binding = next(
+        item
+        for item in current.persistence_records["capability_binding_records"]
+        if item.capability_id == "compare_periods"
+    )
+    source_binding = next(
+        item
+        for item in source.persistence_records["capability_binding_records"]
+        if item.capability_id == "compare_periods"
+    )
+    authority = _run_matched_contract_authority(
+        current.analysis_contract.to_dict(),
+        run_id="run-reuse-review-current",
+    )
+    authority["admin_audit"]["reuse_decisions"] = [
+        dict(current.reuse_decisions[0])
+    ]
+    authority["sections"] = [{
+        "section_id": "evidence",
+        "payload": {
+            "evidence": [{
+                "evidence_ref": "evidence:reuse-review-current",
+                "binding_manifest_ref": binding.record_ref,
+                "binding_manifest_digest": binding.binding_digest,
+                "result_refs": list(binding.result_refs),
+            }]
+        },
+    }]
+    return SimpleNamespace(
+        authority=authority,
+        registry=runtime.registry,
+        resolver=runtime.evidence_resolver,
+        rows_loader=runtime.rows_loader,
+        release_resolver=runtime.release_resolver,
+        runtime=runtime,
+        provider=provider,
+        store=store,
+        thread_id="thread-reuse",
+        topic_id=topic_id,
+        source_run_id="run-reuse-review-source",
+        current_run_id="run-reuse-review-current",
+        source_result_ref=source.query_results[0].result_ref,
+        current_result_ref=current.query_results[0].result_ref,
+        query_contract_ref=current.query_contracts[0].query_contract_id,
+        source=source,
+        current=current,
+        source_binding=source_binding,
+        current_binding=binding,
+        signed_snapshots=signed,
+    )
+
+
+def _authoritative_market_reuse_review_fixture():
+    from bi_agent.conversation.store import InMemoryConversationStore
+    from bi_agent.runtime.analysis_runtime import AnalysisRuntime, AnalysisRuntimeRequest
+    from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
+    from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
+    from tests.phase4.test_analysis_contract_compiler import (
+        _market_dashboard_snapshots,
+        canonical_release_catalog,
+    )
+    from tests.phase7.test_analysis_runtime_reuse import (
+        _CountingRowsRuntime,
+        _candidate,
+        _publish_source,
+    )
+
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    evidence_authority = RuntimeEvidenceAuthority(runtime_registry=registry)
+    market, channel = _market_dashboard_snapshots()
+    catalog, release_resolver, signed = canonical_release_catalog(market, channel)
+    provider = _CountingRowsRuntime()
+    store = InMemoryConversationStore()
+    store.create_thread("thread-reuse", owner_id="analyst-1")
+    topic = store.create_topic("thread-reuse", title="经营盘基线复用")
+    runtime = AnalysisRuntime(
+        catalog=catalog,
+        registry=registry,
+        executor=ClickHouseQueryExecutor(
+            provider,
+            evidence_resolver=evidence_authority,
+            rows_loader=evidence_authority.rows_loader,
+            evidence_writer=evidence_authority._runtime_writer(),
+            release_resolver=release_resolver,
+        ),
+        release_resolver=release_resolver,
+        evidence_authority=evidence_authority,
+        store=store,
+    )
+
+    def request(run_id, baselines, *, reuse_candidates=()):
+        return AnalysisRuntimeRequest.create(
+            run_id=run_id,
+            topic_id=topic.topic_id,
+            proposal={
+                "question_families": ["custom_baseline_comparison"],
+                "target_metrics": ["paid_amount"],
+                "claim_intents": ["comparative_change"],
+                "scope": {"type": "full_sample"},
+                "target_semantic": "yesterday",
+                "baselines": list(baselines),
+            },
+            accepted_graph=("market_health_compare",),
+            as_of="2026-06-03T12:00:00+01:00",
+            permission_scope="analyst",
+            reuse_candidates=reuse_candidates,
+        )
+
+    source = runtime.execute(
+        request(
+            "run-market-reuse-review-source",
+            ("previous_day", "rolling_7_day_baseline"),
+        )
+    )
+    candidate = _candidate(runtime, source, signed)
+    _publish_source(runtime, store, topic.topic_id, source, candidate)
+    current = runtime.execute(
+        request(
+            "run-market-reuse-review-current",
+            ("rolling_7_day_baseline", "previous_day"),
+            reuse_candidates=(candidate,),
+        )
+    )
+    store.upsert_run(
+        "run-market-reuse-review-current",
+        thread_id="thread-reuse",
+        topic_id=topic.topic_id,
+        status="completed",
+        request={},
+    )
+    binding = next(
+        item
+        for item in current.persistence_records["capability_binding_records"]
+        if item.capability_id == "market_health_compare"
+    )
+    authority = _run_matched_contract_authority(
+        current.analysis_contract.to_dict(),
+        run_id="run-market-reuse-review-current",
+    )
+    authority["admin_audit"]["reuse_decisions"] = [
+        dict(current.reuse_decisions[0])
+    ]
+    authority["sections"] = [{
+        "section_id": "evidence",
+        "payload": {
+            "evidence": [{
+                "evidence_ref": "evidence:market-reuse-review-current",
+                "binding_manifest_ref": binding.record_ref,
+                "binding_manifest_digest": binding.binding_digest,
+                "result_refs": [
+                    *binding.result_refs,
+                    *binding.validation_result_refs,
+                ],
+            }]
+        },
+    }]
+    return SimpleNamespace(
+        authority=authority,
+        registry=registry,
+        resolver=evidence_authority,
+        rows_loader=evidence_authority.rows_loader,
+        release_resolver=release_resolver,
+        store=store,
+        thread_id="thread-reuse",
+        topic_id=topic.topic_id,
+        source_run_id="run-market-reuse-review-source",
+        current_run_id="run-market-reuse-review-current",
+        source_result_ref=source.query_results[0].result_ref,
+        current_result_ref=current.query_results[0].result_ref,
+        query_contract_ref=current.query_contracts[0].query_contract_id,
+    )
+
+
+def _reuse_case_lineage(
+    fixture,
+    *,
+    current_run_id=None,
+    current_topic_id=None,
+    prior_runs=None,
+):
+    return {
+        "thread_id": fixture.thread_id,
+        "current_run_id": current_run_id or fixture.current_run_id,
+        "current_topic_id": current_topic_id or fixture.topic_id,
+        "prior_runs": list(
+            prior_runs
+            if prior_runs is not None
+            else ({
+                "run_id": fixture.source_run_id,
+                "thread_id": fixture.thread_id,
+                "topic_id": fixture.topic_id,
+                "status": "completed",
+            },)
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [
+        None,
+        "market_health_compare",
+        {},
+        {"capability_id": "market_health_compare"},
+        {"capability_id": "", "dataset_ids": ["market_dashboard"]},
+        {"capability_id": "market_health_compare", "dataset_ids": []},
+        {
+            "capability_id": "market_health_compare",
+            "dataset_ids": ["market_dashboard"],
+            "extra": True,
+        },
+    ],
+)
+def test_required_reuse_review_rejects_invalid_exact_expectation_schema(expected):
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    review = _review_required_reuse(
+        fixture.authority,
+        expected,
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert review["errors"] == ["expected_reuse_schema_invalid"]
+
+
+def test_required_reuse_review_accepts_actual_market_dashboard_provenance():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_market_reuse_review_fixture()
+    signed_candidate = fixture.store.resolve_result_candidate_authority(
+        result_ref=fixture.source_result_ref,
+        topic_id=fixture.topic_id,
+    )["result_ref_record"]["payload"]
+    decision = fixture.authority["admin_audit"]["reuse_decisions"][0]
+    current_record = fixture.resolver.resolve_query_execution(
+        fixture.current_result_ref
+    )
+    assert {
+        signed_candidate["candidate_signature"],
+        decision["candidate_signature"],
+        current_record.result_payload["provider_stats"]["candidate_signature"],
+    } == {signed_candidate["candidate_signature"]}
+    review = _review_required_reuse(
+        fixture.authority,
+        {
+            "capability_id": "market_health_compare",
+            "dataset_ids": ["market_dashboard"],
+        },
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review == {
+        "passed": True,
+        "errors": [],
+        "source_result_ref": fixture.source_result_ref,
+        "current_result_ref": fixture.current_result_ref,
+        "query_contract_ref": fixture.query_contract_ref,
+        "capability_id": "market_health_compare",
+        "dataset_ids": ["market_dashboard"],
+    }
+
+
+def test_required_reuse_review_rejects_decision_candidate_signature_tamper():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    fixture.authority["admin_audit"]["reuse_decisions"][0][
+        "candidate_signature"
+    ] = "0" * 64
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_candidate_signature_lineage_mismatch" in review["errors"]
+
+
+def test_required_reuse_review_rejects_current_result_candidate_signature_tamper():
+    from tests.phase4.test_authoritative_query_chain import (
+        _replace_binding_completeness,
+    )
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    current_record = fixture.resolver.resolve_query_execution(
+        fixture.current_result_ref
+    )
+    changed_provider_stats = {
+        **current_record.result_payload["provider_stats"],
+        "candidate_signature": "0" * 64,
+    }
+    changed_record = _resigned_query_execution(
+        current_record,
+        provider_stats=changed_provider_stats,
+    )
+    changed_binding = _binding_with_query_execution(
+        fixture.current_binding,
+        current_record,
+        changed_record,
+    )
+    completeness = fixture.resolver.resolve_completeness(
+        fixture.current_binding.completeness_record_refs[0]
+    )
+    changed_completeness = _resigned_completeness_provider_stats(
+        completeness,
+        changed_provider_stats,
+    )
+    changed_binding = _replace_binding_completeness(
+        changed_binding,
+        changed_completeness,
+    )
+    evidence = fixture.authority["sections"][0]["payload"]["evidence"][0]
+    evidence["binding_manifest_ref"] = changed_binding.record_ref
+    evidence["binding_manifest_digest"] = changed_binding.binding_digest
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=_CurrentReuseRecordResolver(
+            fixture.resolver,
+            changed_binding,
+            changed_record,
+            changed_completeness,
+        ),
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_candidate_signature_lineage_mismatch" in review["errors"]
+
+
+@pytest.mark.parametrize("owner_axis", ["thread_id", "topic_id", "run_id"])
+def test_required_reuse_review_rejects_current_store_run_owner_tamper(owner_axis):
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    if owner_axis == "run_id":
+        fixture.store.runs["run-reuse-review-foreign"] = fixture.store.runs.pop(
+            fixture.current_run_id
+        )
+    else:
+        fixture.store.runs[fixture.current_run_id][owner_axis] = (
+            f"{owner_axis}:foreign"
+        )
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_current_run_owner_invalid" in review["errors"]
+
+
+def test_required_reuse_review_rejects_integrity_clean_current_query_owner_tamper():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    current_record = fixture.resolver.resolve_query_execution(
+        fixture.current_result_ref
+    )
+    changed_record = _resigned_query_execution(
+        current_record,
+        contract=replace(
+            current_record.contract,
+            analysis_contract_ref="analysis:foreign-current-owner:1",
+        ),
+    )
+    changed_binding = _binding_with_query_execution(
+        fixture.current_binding,
+        current_record,
+        changed_record,
+    )
+    evidence = fixture.authority["sections"][0]["payload"]["evidence"][0]
+    evidence["binding_manifest_ref"] = changed_binding.record_ref
+    evidence["binding_manifest_digest"] = changed_binding.binding_digest
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=_CurrentReuseRecordResolver(
+            fixture.resolver,
+            changed_binding,
+            changed_record,
+        ),
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_current_query_contract_owner_invalid" in review["errors"]
+
+
+def test_required_reuse_review_resolves_exact_current_binding_and_source_result():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    assert fixture.source_binding.analysis_contract_ref != (
+        fixture.current_binding.analysis_contract_ref
+    )
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review == {
+        "passed": True,
+        "errors": [],
+        "source_result_ref": fixture.source_result_ref,
+        "current_result_ref": fixture.current_result_ref,
+        "query_contract_ref": fixture.query_contract_ref,
+        "capability_id": "compare_periods",
+        "dataset_ids": ["paid_order_success"],
+    }
+
+
+def test_required_reuse_review_rejects_nested_unbound_marker():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    marker = fixture.authority["admin_audit"].pop("reuse_decisions")
+    fixture.authority["sections"].append({"payload": {"reuse_decisions": marker}})
+
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert review["errors"] == ["admin_reuse_decision_missing"]
+
+
+def test_required_reuse_review_deduplicates_same_authoritative_binding_ref():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    duplicate = json.loads(json.dumps(fixture.authority["sections"][0]))
+    duplicate["payload"]["evidence"][0]["evidence_ref"] = (
+        "evidence:reuse-review-current-alias"
+    )
+    fixture.authority["sections"].append(duplicate)
+
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is True
+
+
+def test_required_reuse_review_accepts_expected_binding_with_unrelated_sibling_binding():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    sibling = fixture.source_binding
+    assert fixture.current_result_ref not in {
+        *sibling.result_refs,
+        *sibling.validation_result_refs,
+    }
+    fixture.authority["sections"][0]["payload"]["evidence"].append({
+        "evidence_ref": "evidence:reuse-review-source-sibling",
+        "binding_manifest_ref": sibling.record_ref,
+        "binding_manifest_digest": sibling.binding_digest,
+        "result_refs": [
+            *sibling.result_refs,
+            *sibling.validation_result_refs,
+        ],
+    })
+
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is True
+    assert review["current_result_ref"] == fixture.current_result_ref
+
+
+def test_required_reuse_review_rejects_two_expected_bindings_as_ambiguous():
+    from bi_agent.runtime.evidence_authority import (
+        runtime_evidence_record_integrity_errors,
+    )
+    from tests.phase4.test_authoritative_query_chain import _resign_binding
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    sibling_plan = {
+        **fixture.current_binding.plan_payload,
+        "review_binding_alias": "parallel-expected-binding",
+    }
+    sibling = _resign_binding(
+        fixture.current_binding,
+        plan_payload=sibling_plan,
+    )
+    assert sibling.record_ref != fixture.current_binding.record_ref
+    assert runtime_evidence_record_integrity_errors(sibling) == ()
+    fixture.authority["sections"][0]["payload"]["evidence"].append({
+        "evidence_ref": "evidence:reuse-review-current-sibling",
+        "binding_manifest_ref": sibling.record_ref,
+        "binding_manifest_digest": sibling.binding_digest,
+        "result_refs": [
+            *sibling.result_refs,
+            *sibling.validation_result_refs,
+        ],
+    })
+
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=_AdditionalBindingResolver(fixture.resolver, sibling),
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert review["errors"] == ["reuse_current_binding_ambiguous"]
+
+
+def test_required_reuse_review_ignores_unrelated_full_package_decision():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    fixture.authority["admin_audit"]["reuse_decisions"].append({
+        "source_ref": "result:unrelated-source",
+        "result_ref": "result:unrelated-current",
+        "decision": "reuse",
+        "reason": "validated_authoritative_query_chain",
+        "can_support_claim": True,
+        "requires_rerun": False,
+        "query_contract_ref": "query:unrelated",
+    })
+
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is True
+
+
+def test_required_reuse_review_rejects_two_valid_expected_path_decisions():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    decision = fixture.authority["admin_audit"]["reuse_decisions"][0]
+    fixture.authority["admin_audit"]["reuse_decisions"].append(dict(decision))
+
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert review["errors"] == ["expected_reuse_tuple_ambiguous"]
+
+
+def test_required_reuse_review_rejects_clean_wrong_source_lookup():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+
+    class WrongSourceResolver(_ClaimAuthorityResolver):
+        def resolve_query_execution(self, result_ref):
+            if result_ref == fixture.source_result_ref:
+                return fixture.resolver.resolve_query_execution(
+                    fixture.current_result_ref
+                )
+            return super().resolve_query_execution(result_ref)
+
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=WrongSourceResolver(fixture.resolver),
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_source_result_authority_invalid" in review["errors"]
+
+
+def test_required_reuse_review_rejects_clean_source_row_mismatch():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+    from tests.phase7.test_analysis_runtime_reuse import (
+        _candidate,
+        _publish_source,
+        _source_request,
+    )
+
+    fixture = _authoritative_reuse_review_fixture()
+    original_aggregate = fixture.provider.aggregate
+
+    def changed_rows(*args, **kwargs):
+        result = original_aggregate(*args, **kwargs)
+        rows = tuple(
+            {
+                **row,
+                "paid_amount": float(row["paid_amount"]) + 11.0,
+            }
+            for row in result.rows
+        )
+        return replace(result, rows=rows)
+
+    fixture.provider.aggregate = changed_rows
+    alternative = fixture.runtime.execute(
+        _source_request("run-reuse-review-row-tamper", fixture.topic_id)
+    )
+    alternative_candidate = _candidate(
+        fixture.runtime,
+        alternative,
+        fixture.signed_snapshots,
+    )
+    _publish_source(
+        fixture.runtime,
+        fixture.store,
+        fixture.topic_id,
+        alternative,
+        alternative_candidate,
+    )
+    decision = fixture.authority["admin_audit"]["reuse_decisions"][0]
+    decision["source_ref"] = alternative.query_results[0].result_ref
+
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(
+            fixture,
+            prior_runs=({
+                "run_id": "run-reuse-review-row-tamper",
+                "thread_id": fixture.thread_id,
+                "topic_id": fixture.topic_id,
+                "status": "completed",
+            },),
+        ),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_source_rows_mismatch" in review["errors"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("same_result", "reuse_source_current_result_alias"),
+        ("reason", "reuse_decision_reason_invalid"),
+    ],
+)
+def test_required_reuse_review_requires_distinct_results_and_exact_reason(
+    mutation, expected_error
+):
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    decision = fixture.authority["admin_audit"]["reuse_decisions"][0]
+    if mutation == "same_result":
+        decision["source_ref"] = decision["result_ref"]
+    else:
+        decision["reason"] = "same_query_probably_reusable"
+
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert expected_error in review["errors"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_error"),
+    [
+        ("source_ref", "result:forged-source", "reuse_source_result_mismatch"),
+        ("result_ref", "result:forged-current", "reuse_current_result_mismatch"),
+        ("query_contract_ref", "query:forged", "reuse_query_contract_mismatch"),
+    ],
+)
+def test_required_reuse_review_rejects_tampered_exact_refs(
+    field, value, expected_error
+):
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    fixture.authority["admin_audit"]["reuse_decisions"][0][field] = value
+
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert expected_error in review["errors"]
+
+
+def test_required_reuse_review_rejects_source_candidate_from_same_run():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(
+            fixture,
+            current_run_id=fixture.source_run_id,
+        ),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_source_run_not_prior" in review["errors"]
+
+
+def test_required_reuse_review_rejects_source_candidate_from_other_topic():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(
+            fixture,
+            current_topic_id="topic:other-eval-topic",
+        ),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_source_candidate_authority_invalid" in review["errors"]
+
+
+def test_required_reuse_review_rejects_unpublished_source_result():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    fixture.store.result_refs[fixture.topic_id].clear()
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_source_candidate_authority_invalid" in review["errors"]
+
+
+def test_required_reuse_review_rejects_source_run_outside_prior_case_lineage():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture, prior_runs=()),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_source_run_not_prior" in review["errors"]
+
+
+def test_required_reuse_review_rejects_tampered_candidate_signature():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    record = fixture.store.result_refs[fixture.topic_id][0]
+    fixture.store.result_refs[fixture.topic_id][0] = replace(
+        record,
+        payload={**record.payload, "candidate_signature": "0" * 64},
+    )
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=fixture.resolver,
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_source_candidate_authority_invalid" in review["errors"]
+
+
+def test_required_reuse_review_rejects_degraded_current_binding():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    degraded = _resigned_claim_binding(fixture.current_binding, status="degraded")
+    evidence = fixture.authority["sections"][0]["payload"]["evidence"][0]
+    evidence["binding_manifest_ref"] = degraded.record_ref
+    evidence["binding_manifest_digest"] = degraded.binding_digest
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=_AdditionalBindingResolver(fixture.resolver, degraded),
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_current_chain_not_claim_ready" in review["errors"]
+
+
+def test_required_reuse_review_rejects_noncomplete_current_input_report():
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    noncomplete = _resigned_claim_binding(
+        fixture.current_binding,
+        input_completeness_statuses=("partial",),
+    )
+    evidence = fixture.authority["sections"][0]["payload"]["evidence"][0]
+    evidence["binding_manifest_ref"] = noncomplete.record_ref
+    evidence["binding_manifest_digest"] = noncomplete.binding_digest
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=_AdditionalBindingResolver(fixture.resolver, noncomplete),
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_current_chain_not_claim_ready" in review["errors"]
+
+
+def test_required_reuse_review_rejects_nonready_source_candidate_chain():
+    from bi_agent.conversation.models import sign_result_reuse_candidate
+    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
+
+    fixture = _authoritative_reuse_review_fixture()
+    degraded = _resigned_claim_binding(fixture.source_binding, status="degraded")
+    record = fixture.store.result_refs[fixture.topic_id][0]
+    payload = sign_result_reuse_candidate({
+        **record.payload,
+        "binding_record_refs": [degraded.record_ref],
+        "binding_record_digests": [degraded.binding_digest],
+    })
+    fixture.store.result_refs[fixture.topic_id][0] = replace(record, payload=payload)
+    review = _review_required_reuse(
+        fixture.authority,
+        {"capability_id": "compare_periods", "dataset_ids": ["paid_order_success"]},
+        registry=fixture.registry,
+        evidence_resolver=_AdditionalBindingResolver(fixture.resolver, degraded),
+        rows_loader=fixture.rows_loader,
+        release_resolver=fixture.release_resolver,
+        conversation_store=fixture.store,
+        case_lineage=_reuse_case_lineage(fixture),
+    )
+
+    assert review["passed"] is False
+    assert "reuse_source_chain_not_claim_ready" in review["errors"]
+
+
 def test_all_suite_claim_ceilings_use_runtime_maximum_strength_taxonomy():
     from tools.phase7.run_live_conversation_system_test import load_suite_cases
 
@@ -524,6 +1550,120 @@ class _ClaimAuthorityResolver:
         if self.binding is ...:
             return self.delegate.resolve_capability_binding(binding_ref)
         return self.binding
+
+
+class _AdditionalBindingResolver(_ClaimAuthorityResolver):
+    def __init__(self, delegate, binding):
+        super().__init__(delegate)
+        self.additional_binding = binding
+
+    def resolve_capability_binding(self, binding_ref):
+        if binding_ref == self.additional_binding.record_ref:
+            return self.additional_binding
+        return super().resolve_capability_binding(binding_ref)
+
+
+class _CurrentReuseRecordResolver(_AdditionalBindingResolver):
+    def __init__(self, delegate, binding, query_record, completeness_record=None):
+        super().__init__(delegate, binding)
+        self.query_record = query_record
+        self.completeness_record = completeness_record
+
+    def resolve_query_execution(self, result_ref):
+        if result_ref == self.query_record.result_ref:
+            return self.query_record
+        return super().resolve_query_execution(result_ref)
+
+    def resolve_query_execution_record(self, record_ref):
+        if record_ref == self.query_record.record_ref:
+            return self.query_record
+        return super().resolve_query_execution_record(record_ref)
+
+    def resolve_completeness(self, record_ref):
+        if (
+            self.completeness_record is not None
+            and record_ref == self.completeness_record.record_ref
+        ):
+            return self.completeness_record
+        return super().resolve_completeness(record_ref)
+
+
+def _resigned_query_execution(record, *, contract=None, provider_stats=None):
+    from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
+
+    changed_contract = contract or record.contract
+    query_contract_payload = canonical_value({
+        **record.query_contract,
+        "analysis_contract_ref": changed_contract.analysis_contract_ref,
+    })
+    result_payload = dict(record.result_payload)
+    if provider_stats is not None:
+        result_payload["provider_stats"] = dict(provider_stats)
+    record_payload = dict(record.record_payload)
+    record_payload["query_contract"] = query_contract_payload
+    record_payload["result"] = canonical_value(result_payload)
+    record_payload = canonical_value(record_payload)
+    digest = canonical_digest(record_payload)
+    return replace(
+        record,
+        record_ref=f"query-execution:{record.result_ref}:{digest}",
+        record_digest=digest,
+        record_payload=record_payload,
+        query_contract=query_contract_payload,
+        contract=changed_contract,
+        result_payload=canonical_value(result_payload),
+    )
+
+
+def _binding_with_query_execution(binding, previous, changed):
+    from tests.phase4.test_authoritative_query_chain import _resign_binding
+
+    prefix = "" if previous.result_ref in binding.result_refs else "validation_"
+    refs_field = f"{prefix}query_execution_record_refs"
+    digests_field = f"{prefix}query_execution_record_digests"
+    refs = tuple(
+        changed.record_ref if ref == previous.record_ref else ref
+        for ref in getattr(binding, refs_field)
+    )
+    digests = tuple(
+        changed.record_digest if ref == previous.record_ref else digest
+        for ref, digest in zip(
+            getattr(binding, refs_field),
+            getattr(binding, digests_field),
+        )
+    )
+    binding_payload = dict(binding.binding_payload)
+    binding_payload[refs_field] = refs
+    binding_payload[digests_field] = digests
+    return _resign_binding(
+        binding,
+        **{
+            refs_field: refs,
+            digests_field: digests,
+            "binding_payload": binding_payload,
+        },
+    )
+
+
+def _resigned_completeness_provider_stats(record, provider_stats):
+    from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
+
+    payload = dict(record.report_payload)
+    assertions = []
+    for assertion in payload.get("assertion_results") or ():
+        item = dict(assertion)
+        if item.get("assertion") == "provider_not_truncated":
+            item["details"] = dict(provider_stats)
+        assertions.append(item)
+    payload["assertion_results"] = assertions
+    payload = canonical_value(payload)
+    digest = canonical_digest(payload)
+    return replace(
+        record,
+        record_ref=f"completeness-record:{record.report_ref}:{digest}",
+        report_digest=digest,
+        report_payload=payload,
+    )
 
 
 def _resigned_claim_binding(record, **changes):
@@ -1020,6 +2160,8 @@ def test_run_case_passes_core_authority_chain_resolvers_to_obligation_review(
         captured["evidence_resolver"] = kwargs.get("evidence_resolver")
         captured["rows_loader"] = kwargs.get("rows_loader")
         captured["release_resolver"] = kwargs.get("release_resolver")
+        captured["conversation_store"] = kwargs.get("conversation_store")
+        captured["case_lineage"] = kwargs.get("case_lineage")
         return {
             "hard_acceptance_passed": True,
             "reuse_passed": True,
@@ -1032,6 +2174,7 @@ def test_run_case_passes_core_authority_chain_resolvers_to_obligation_review(
     core.evidence_resolver = resolver
     core.rows_loader = rows_loader
     core.release_resolver = release_resolver
+    core.store = object()
     system_test.run_case(
         core,
         {
@@ -1047,6 +2190,13 @@ def test_run_case_passes_core_authority_chain_resolvers_to_obligation_review(
     assert captured["evidence_resolver"] is resolver
     assert captured["rows_loader"] is rows_loader
     assert captured["release_resolver"] is release_resolver
+    assert captured["conversation_store"] is core.store
+    assert captured["case_lineage"]["thread_id"].startswith(
+        "live-resolver-forwarding-"
+    )
+    assert captured["case_lineage"]["current_run_id"] == "run:resolver-forwarding"
+    assert captured["case_lineage"]["current_topic_id"] == "topic:resolver-forwarding"
+    assert captured["case_lineage"]["prior_runs"] == []
 
 
 def test_runtime_review_serializes_same_hard_acceptance_summary(tmp_path):
@@ -1296,8 +2446,14 @@ def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
             "topic_id": "topic-1",
             "prior_topic_id": "topic-1",
             "scenario": {"reuse": "required"},
-            "runtime_authority": {"reuse_decisions": [{"decision": "reuse"}]},
-            "obligation_review": {"hard_acceptance_passed": True, "reuse_passed": True},
+            "runtime_authority": {
+                "sections": [{"payload": {"reuse_decisions": [{"decision": "reuse"}]}}]
+            },
+            "obligation_review": {
+                "hard_acceptance_passed": True,
+                "reuse_passed": True,
+                "reuse_review": {"passed": True, "errors": []},
+            },
             "quality_review": {"display_status": "ready", "direct_answer": True},
             "real_clickhouse_review": {"runtime_correctness": {"all_required_queries_complete": True, "all_capabilities_bound": True, "all_claims_traceable": True}},
         },
@@ -1309,7 +2465,8 @@ def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
     assert summary["reuse_coverage"] == {"required": 1, "passed": 1}
     turns[0]["resumed_status"] = "failed"
     turns[0]["obligation_review"]["hard_acceptance_passed"] = False
-    turns[1]["runtime_authority"]["reuse_decisions"][0]["decision"] = "rerun"
+    turns[1]["obligation_review"]["reuse_review"]["passed"] = False
+    turns[1]["obligation_review"]["reuse_passed"] = False
     turns[1]["obligation_review"]["hard_acceptance_passed"] = False
     failed = _coverage_summary(turns)
     assert failed["clarification_resume"] == {"required": 1, "passed": 0}

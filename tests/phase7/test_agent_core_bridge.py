@@ -11,7 +11,11 @@ from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.models import ConversationRunRequest
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.store import InMemoryConversationStore
-from bi_agent.runtime.langgraph_workflow import WorkflowRunResult
+from bi_agent.runtime.langgraph_workflow import (
+    WorkflowRunResult,
+    _analysis_runtime_request,
+)
+from bi_agent.runtime.analysis_runtime import AnalysisRuntimeRequest
 from bi_agent.runtime.answer_package import (
     AuthorityFact,
     _claim_authority_facts,
@@ -429,6 +433,173 @@ class AgentCoreBridgeTest(unittest.TestCase):
             store.runs["run-fixed-clock"]["request"]["analysis_context"],
             fixed_context,
         )
+
+    def test_agent_core_separates_product_visibility_from_runtime_permission(self):
+        captured = {}
+
+        def workflow(request):
+            captured.update(request)
+            return fake_workflow(request)
+
+        store = InMemoryConversationStore()
+        store.create_thread("thread-role-split", owner_id="analyst-1")
+        topic = store.create_topic(
+            "thread-role-split",
+            title="付费金额变化",
+            summary="继续分析付费金额变化。",
+        )
+        store.set_current_topic("thread-role-split", topic.topic_id)
+        store.add_artifact(
+            artifact_id="artifact:reader-visible",
+            topic_id=topic.topic_id,
+            follow_up_context="reader 可见的既有分析结果。",
+            snapshot_id="2026H1",
+            permission_scope="business_reader",
+        )
+        store.add_memory_item(
+            owner_scope="org-default",
+            text="reader preference",
+            source_ref="memory:reader",
+            visibility="business_reader",
+            status="accepted",
+        )
+        store.add_memory_item(
+            owner_scope="org-default",
+            text="analyst private preference",
+            source_ref="memory:analyst",
+            visibility="analyst",
+            status="accepted",
+        )
+
+        result = ConversationAgentCore(
+            store,
+            workflow_runner=workflow,
+        ).run_message(
+            thread_id="thread-role-split",
+            run_id="run-role-split",
+            user_message="基于这个结果继续分析昨天付费金额变化。",
+            role="business_reader",
+            runtime_permission_scope="viewer",
+        )
+
+        manifest_items = result["context_manifest"]["items"]
+        source_refs = {item["source_ref"] for item in manifest_items}
+        self.assertIn("artifact:reader-visible", source_refs)
+        self.assertIn("memory:reader", source_refs)
+        self.assertNotIn("memory:analyst", source_refs)
+        self.assertEqual(captured["role"], "business_reader")
+        self.assertEqual(captured["runtime_permission_scope"], "viewer")
+        self.assertEqual(
+            captured["permission_context"],
+            {"role": "business_reader"},
+        )
+        typed = _analysis_runtime_request(
+            {
+                "run_id": "run-role-split",
+                "request": captured,
+                "intent": {
+                    "question_family": "paid_amount_change_explanation",
+                    "question_families": ["paid_amount_change_explanation"],
+                    "target_metric": "paid_amount",
+                    "scope": "full_sample",
+                },
+                "analysis_route": {"requested_nodes": []},
+            }
+        )
+        self.assertIsInstance(typed, AnalysisRuntimeRequest)
+        self.assertEqual(typed.permission_scope, "viewer")
+
+    def test_agent_core_maps_admin_product_role_without_changing_visibility_role(self):
+        captured = {}
+
+        def workflow(request):
+            captured.update(request)
+            return fake_workflow(request)
+
+        core = ConversationAgentCore(
+            InMemoryConversationStore(),
+            workflow_runner=workflow,
+        )
+        core.run_message(
+            thread_id="thread-admin-role-split",
+            run_id="run-admin-role-split",
+            user_message="昨天付费金额为什么变化？",
+            role="data_owner_admin",
+            runtime_permission_scope="admin",
+        )
+
+        self.assertEqual(captured["role"], "data_owner_admin")
+        self.assertEqual(captured["runtime_permission_scope"], "admin")
+        self.assertEqual(
+            captured["context_manifest"]["permission_context"]["role"],
+            "data_owner_admin",
+        )
+
+    def test_agent_core_rejects_mismatched_runtime_permission_override(self):
+        core = ConversationAgentCore(
+            InMemoryConversationStore(),
+            workflow_runner=fake_workflow,
+        )
+        with self.assertRaisesRegex(
+            PermissionError,
+            "runtime_permission_scope_mismatch",
+        ):
+            core.run_message(
+                thread_id="thread-role-mismatch",
+                run_id="run-role-mismatch",
+                user_message="昨天付费金额为什么变化？",
+                role="business_reader",
+                runtime_permission_scope="admin",
+                permission_context={"role": "business_reader"},
+            )
+
+    def test_agent_core_preserves_permission_context_product_role_without_elevation(self):
+        cases = (
+            ("business_reader", "business_reader", "viewer"),
+            ("viewer", "business_reader", "viewer"),
+            ("admin", "data_owner_admin", "admin"),
+        )
+        for context_role, expected_role, expected_scope in cases:
+            with self.subTest(context_role=context_role):
+                captured = {}
+
+                def workflow(request):
+                    captured.update(request)
+                    return fake_workflow(request)
+
+                ConversationAgentCore(
+                    InMemoryConversationStore(),
+                    workflow_runner=workflow,
+                ).run_message(
+                    thread_id=f"thread-context-role-{context_role}",
+                    run_id=f"run-context-role-{context_role}",
+                    user_message="昨天付费金额为什么变化？",
+                    permission_context={"role": context_role},
+                )
+
+                self.assertEqual(captured["role"], expected_role)
+                self.assertEqual(
+                    captured["runtime_permission_scope"],
+                    expected_scope,
+                )
+                self.assertEqual(
+                    captured["permission_context"]["role"],
+                    expected_role,
+                )
+
+    def test_agent_core_rejects_conflicting_explicit_and_context_product_roles(self):
+        with self.assertRaisesRegex(PermissionError, "product_role_mismatch"):
+            ConversationAgentCore(
+                InMemoryConversationStore(),
+                workflow_runner=fake_workflow,
+            ).run_message(
+                thread_id="thread-product-role-mismatch",
+                run_id="run-product-role-mismatch",
+                user_message="昨天付费金额为什么变化？",
+                role="analyst",
+                runtime_permission_scope="analyst",
+                permission_context={"role": "business_reader"},
+            )
 
     def test_agent_core_marks_analysis_runtime_requests_as_production(self):
         captured = {}
@@ -1089,11 +1260,13 @@ class AgentCoreBridgeTest(unittest.TestCase):
     def test_query_gap_answer_resumes_same_topic_and_original_analysis_lineage(self):
         from bi_agent.conversation.clarification_authority import (
             build_clarification_outcome,
+            build_execution_material,
         )
         from bi_agent.runtime.analysis_contracts import (
             AnalysisContract,
             ContractGap,
             MetricBinding,
+            ResolvedWindow,
             analysis_contract_signature,
         )
 
@@ -1112,7 +1285,19 @@ class AgentCoreBridgeTest(unittest.TestCase):
             },
             business_timezone="Europe/London",
             as_of="2026-06-03T12:00:00+01:00",
-            resolved_windows=(),
+            resolved_windows=(
+                ResolvedWindow(
+                    window_id="target_day",
+                    role="target",
+                    label="target day",
+                    start_inclusive="2026-06-02",
+                    end_exclusive="2026-06-03",
+                    timezone="Europe/London",
+                    aggregation="day",
+                    required_complete_days=1,
+                    source_watermark_requirement="2026-06-03T00:00:00+01:00",
+                ),
+            ),
             metric_bindings=(
                 MetricBinding(
                     metric_id="paid_amount",
@@ -1131,7 +1316,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
             ),
             dimension_bindings=(),
             dataset_requirements=("paid_order_success",),
-            capability_requirements=("event_evidence",),
+            capability_requirements=("compare_periods", "event_evidence"),
             permission_scope="analyst",
             contract_gaps=(
                 ContractGap(
@@ -1144,6 +1329,23 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 ),
             ),
         ).to_dict()
+        runtime_registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        source_execution_material = build_execution_material(
+            proposal={
+                "question_families": ["revenue_health_review"],
+                "target_metrics": ["paid_amount"],
+            },
+            accepted_graph=("compare_periods",),
+            as_of="2026-06-03T12:00:00+01:00",
+            permission_scope="analyst",
+            run_mode="production",
+            runtime_contract_version=runtime_registry.contract_version,
+            runtime_registry_digest=runtime_registry.source_payload_digest,
+            analysis_contract=source_contract,
+            query_contracts=(),
+        )
 
         def workflow(request):
             captured.append(dict(request))
@@ -1155,6 +1357,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                         "status": "waiting_for_clarification",
                         "accepted_graph": ["compare_periods"],
                         "analysis_contract": source_contract,
+                        "execution_material": source_execution_material,
                         "analysis_route": {
                             "requested_nodes": ["compare_periods"],
                             "analysis_requirements": {
@@ -3296,6 +3499,10 @@ class AgentCoreBridgeTest(unittest.TestCase):
             "run-cli-prior-assets",
             "--message",
             "继续看哪个渠道影响最大",
+            "--role",
+            "business_reader",
+            "--runtime-permission-scope",
+            "viewer",
             "--prior-analysis-assets",
             json.dumps(
                 [
@@ -3327,6 +3534,8 @@ class AgentCoreBridgeTest(unittest.TestCase):
             exit_code = __import__("bi_agent.conversation.agent_core", fromlist=["main"]).main(argv)
 
         self.assertEqual(exit_code, 0)
+        self.assertEqual(captured["role"], "business_reader")
+        self.assertEqual(captured["runtime_permission_scope"], "viewer")
         self.assertEqual(
             captured["prior_analysis_assets"],
             (
@@ -5959,6 +6168,7 @@ def _verified_delivery_package(
     channel="A",
     claim_selector_mode="",
     accepted_assumptions=(),
+    reuse_decisions=(),
 ):
     from bi_agent.runtime.analysis_contracts import AnalysisContract
     from bi_agent.runtime.claim_provenance import (
@@ -6181,6 +6391,9 @@ def _verified_delivery_package(
             raise ValueError(f"unsupported claim_selector_mode: {claim_selector_mode}")
     if claim_dimensions:
         claim["dimensions"] = dict(claim_dimensions)
+    trusted_reuse_decisions = reuse_decisions or (
+        {"source_ref": "asset:test", "decision": "reuse"},
+    )
     package = build_answer_package(
         run_id=run_id,
         draft_claims=(claim,),
@@ -6204,8 +6417,9 @@ def _verified_delivery_package(
             run_id=run_id,
             artifact_refs=("artifact:test",),
             memory_refs=("memory:test",),
-            reuse_decisions=({"source_ref": "asset:test", "decision": "reuse"},),
+            reuse_decisions=trusted_reuse_decisions,
         ),
+        reuse_decisions=reuse_decisions,
         context_assumptions=accepted_assumptions,
         accepted_degradation_choice=(
             dict(accepted_assumptions[0]) if accepted_assumptions else {}
@@ -6217,6 +6431,25 @@ def _verified_delivery_package(
         ),
     )
     return package, context, claim_text
+
+
+def test_verified_package_keeps_full_runtime_reuse_decision_in_admin_audit():
+    decision = {
+        "source_ref": "result:source",
+        "result_ref": "result:current",
+        "decision": "reuse",
+        "query_contract_ref": "query:current",
+        "reason": "validated_authoritative_query_chain",
+        "can_support_claim": True,
+        "requires_rerun": False,
+    }
+
+    package, _, _ = _verified_delivery_package(
+        run_id="admin-reuse-decision",
+        reuse_decisions=(decision,),
+    )
+
+    assert package["admin_audit"]["reuse_decisions"] == [decision]
 
 
 def _fact_selector(

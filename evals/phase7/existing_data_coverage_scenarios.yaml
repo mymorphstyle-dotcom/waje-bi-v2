@@ -129,29 +129,48 @@ conversation_cases:
   - id: platform_baseline_reuse
     group: platform_current_data
     turns:
-      - user: "先比较昨天和近 7 日均值的付费金额。"
+      - user: "先只用现有经营盘，比较全量口径下昨天、前一天和近 7 日均值的付费金额。"
         scenario:
           question_family: custom_baseline_comparison
           target_metrics: [paid_amount]
-          baselines: [rolling_7_day_baseline]
+          scope: {type: full_sample}
+          permission_scope: analyst
+          baselines: [previous_day, rolling_7_day_baseline]
           required_capabilities: []
+          expected_capability_states:
+            compare_periods: snapshot_unavailable_as_of
+            market_health_compare: executable
           expected_dataset_states:
-            paid_order_success: executable
+            paid_order_success: snapshot_unavailable_as_of
+            market_dashboard: executable
           observed_dataset_states: {}
+          excluded_inputs:
+            paid_order_success: snapshot_unavailable_as_of
           allowed_claim_ceiling: directional
-          terminal_boundary: verified_answer
-      - user: "沿用刚才的口径，再和上周同日比一下。"
+          terminal_boundary: contract_allowed_partial
+      - user: "沿用刚才的全量经营盘口径，把近 7 日均值放在前一天前面再比较。"
         scenario:
           question_family: custom_baseline_comparison
           target_metrics: [paid_amount]
-          baselines: [same_weekday_last_week]
+          scope: {type: full_sample}
+          permission_scope: analyst
+          baselines: [rolling_7_day_baseline, previous_day]
           required_capabilities: []
+          expected_capability_states:
+            compare_periods: snapshot_unavailable_as_of
+            market_health_compare: executable
           expected_dataset_states:
-            paid_order_success: executable
+            paid_order_success: snapshot_unavailable_as_of
+            market_dashboard: executable
           observed_dataset_states: {}
+          excluded_inputs:
+            paid_order_success: snapshot_unavailable_as_of
           allowed_claim_ceiling: directional
-          terminal_boundary: verified_answer
+          terminal_boundary: contract_allowed_partial
           reuse: required
+          expected_reuse:
+            capability_id: market_health_compare
+            dataset_ids: [market_dashboard]
 
   - id: platform_quality_clarification_resume
     group: platform_current_data

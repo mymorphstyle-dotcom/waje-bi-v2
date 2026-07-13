@@ -991,13 +991,41 @@ async function audit(
 function canReadScope(role: string, permissionScope: string) {
   const rank: Record<string, number> = {
     business_reader: 1,
+    viewer: 1,
     analyst: 2,
     data_owner_admin: 3,
+    admin: 3,
   };
-  return (rank[role] ?? 0) >= (rank[permissionScope] ?? 3);
+  return rank[role] !== undefined
+    && rank[permissionScope] !== undefined
+    && rank[role] >= rank[permissionScope];
 }
 
-function filterAnswerPackageForRole(answerPackage: Record<string, unknown>, role: string) {
+type GatewayDisplayRole = "business_reader" | "analyst" | "data_owner_admin";
+type RuntimePermissionScope = "viewer" | "analyst" | "admin";
+type GatewayRoleDecision = {
+  displayRole: GatewayDisplayRole;
+  runtimePermissionScope: RuntimePermissionScope;
+};
+
+export function resolveGatewayRole(
+  configuredRole: string | undefined,
+  nodeEnv: string | undefined,
+): GatewayRoleDecision {
+  const role = String(configuredRole ?? "").trim();
+  if (role === "business_reader") {
+    return { displayRole: "business_reader", runtimePermissionScope: "viewer" };
+  }
+  if (role === "analyst") {
+    return { displayRole: "analyst", runtimePermissionScope: "analyst" };
+  }
+  if (role === "data_owner_admin" && nodeEnv !== "production") {
+    return { displayRole: "data_owner_admin", runtimePermissionScope: "admin" };
+  }
+  return { displayRole: "business_reader", runtimePermissionScope: "viewer" };
+}
+
+export function filterAnswerPackageForRole(answerPackage: Record<string, unknown>, role: string) {
   if (role === "data_owner_admin") return answerPackage;
   const allowed = allowedVisibilitiesForRole(role);
   const sections = Array.isArray(answerPackage.sections)
@@ -1012,6 +1040,186 @@ function filterAnswerPackageForRole(answerPackage: Record<string, unknown>, role
     package_type: answerPackage.package_type,
     sections,
   };
+}
+
+export function filterAgentCoreForRole(
+  agentCore: Record<string, unknown>,
+  role: GatewayDisplayRole,
+) {
+  const resumed = isGatewayRecord(agentCore.result)
+    ? agentCore.result
+    : {};
+  const status = String(agentCore.status ?? "");
+  const innerStatus = businessString(resumed.status);
+  if (agentCoreStatusMismatch(status, innerStatus)) {
+    return filterAgentCoreFailure(agentCore, resumed, true);
+  }
+  if (role === "data_owner_admin") return agentCore;
+  const visibleResult = {
+    run_id: resumed.run_id,
+    turn_id: resumed.turn_id,
+    topic_id: resumed.topic_id,
+    status,
+  };
+
+  if (status === "completed") {
+    const answerPackage = isGatewayRecord(resumed.answer_package)
+      ? filterAnswerPackageForRole(resumed.answer_package, role)
+      : null;
+    return {
+      status,
+      result: { ...visibleResult, answer_package: answerPackage },
+    };
+  }
+  if (status === "waiting_for_clarification") {
+    return {
+      status,
+      result: {
+        ...visibleResult,
+        clarification: filterBusinessClarification(resumed.clarification),
+      },
+    };
+  }
+  if (status === "failed") {
+    return filterAgentCoreFailure(agentCore, resumed, false);
+  }
+  if (status === "completed_without_workflow") {
+    return {
+      status,
+      result: {
+        ...visibleResult,
+        intent: businessString(resumed.intent),
+        topic_relation: businessString(resumed.topic_relation),
+      },
+    };
+  }
+  return { status, result: visibleResult };
+}
+
+function agentCoreStatusMismatch(wrapperStatus: string, innerStatus: string | undefined) {
+  if (wrapperStatus === "failed") {
+    return innerStatus !== undefined && innerStatus !== wrapperStatus;
+  }
+  if (
+    wrapperStatus === "completed"
+    || wrapperStatus === "completed_without_workflow"
+    || wrapperStatus === "waiting_for_clarification"
+  ) {
+    return innerStatus !== wrapperStatus;
+  }
+  return false;
+}
+
+function filterAgentCoreFailure(
+  agentCore: Record<string, unknown>,
+  resumed: Record<string, unknown>,
+  statusMismatch: boolean,
+) {
+  const reviewedError = reviewedAgentCoreError(agentCore.error);
+  const error = statusMismatch
+    ? reviewedError ?? "agent_core_run_failed"
+    : reviewedError;
+  return {
+    status: "failed",
+    ...(error ? { error } : {}),
+    result: {
+      run_id: resumed.run_id,
+      turn_id: resumed.turn_id,
+      topic_id: resumed.topic_id,
+      status: "failed",
+      failure_reason: statusMismatch
+        ? "agent_core_run_failed"
+        : reviewedAgentCoreFailureReason(resumed.failure_reason),
+    },
+  };
+}
+
+function filterBusinessClarification(value: unknown) {
+  if (!isGatewayRecord(value)) return null;
+  return {
+    clarification_id: businessString(value.clarification_id),
+    reason: businessString(value.reason),
+    status: businessString(value.status),
+    allow_freeform: typeof value.allow_freeform === "boolean"
+      ? value.allow_freeform
+      : undefined,
+    questions: Array.isArray(value.questions)
+      ? value.questions.flatMap((question) => {
+          if (!isGatewayRecord(question)) return [];
+          return [{
+            question_id: businessString(question.question_id),
+            question: businessString(question.question),
+            options: Array.isArray(question.options)
+              ? question.options.flatMap(filterBusinessClarificationOption)
+              : [],
+          }];
+        })
+      : [],
+    recommended_assumption: filterRecommendedAssumption(value.recommended_assumption),
+    recommendation_reason: businessString(value.recommendation_reason),
+  };
+}
+
+function filterBusinessClarificationOption(value: unknown): Record<string, unknown>[] {
+  if (typeof value === "string") {
+    return [{
+      label: value,
+      description: value,
+      business_meaning: value,
+    }];
+  }
+  if (!isGatewayRecord(value)) return [];
+  return [{
+    id: businessString(value.id) ?? businessString(value.option_id),
+    label: businessString(value.label),
+    description: businessString(value.description),
+    recommended: typeof value.recommended === "boolean" ? value.recommended : undefined,
+    business_meaning: businessString(value.business_meaning),
+  }];
+}
+
+function filterRecommendedAssumption(value: unknown) {
+  if (typeof value === "string") return value;
+  if (!isGatewayRecord(value)) return undefined;
+  return {
+    option: businessString(value.option),
+    assumption: businessString(value.assumption),
+  };
+}
+
+function reviewedAgentCoreFailureReason(value: unknown) {
+  const reason = businessString(value);
+  if (reason && SAFE_AGENT_CORE_FAILURE_REASONS.has(reason)) return reason;
+  return "agent_core_run_failed";
+}
+
+function reviewedAgentCoreError(value: unknown) {
+  const error = businessString(value);
+  if (!error) return undefined;
+  if (SAFE_AGENT_CORE_ERRORS.has(error)) return error;
+  return "agent_core_run_failed";
+}
+
+const SAFE_AGENT_CORE_FAILURE_REASONS = new Set([
+  "analysis_runtime_persistence_failed",
+  "clarification_resume_authority_failed",
+  "delivery_verifier_failed",
+]);
+
+const SAFE_AGENT_CORE_ERRORS = new Set([
+  "agent_core_output_malformed_json",
+  "agent_core_output_shape_invalid",
+  "agent_core_output_status_invalid",
+  "agent_core_process_failed",
+  "agent_core_spawn_failed",
+]);
+
+function businessString(value: unknown) {
+  return typeof value === "string" ? value : undefined;
+}
+
+function isGatewayRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function allowedVisibilitiesForRole(role: string) {

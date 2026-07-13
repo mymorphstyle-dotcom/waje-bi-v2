@@ -24,6 +24,7 @@ from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.analysis_assets import merge_analysis_assets
 from bi_agent.runtime.compiler import suggest_revenue_diagnostic_nodes
 from bi_agent.runtime.llm_prompts import build_prompt
+from bi_agent.runtime.permission_roles import can_read_scope as _can_read_permission_scope
 
 
 ALLOWED_INTENTS = frozenset(
@@ -54,6 +55,10 @@ ALLOWED_TOPIC_RELATIONS = frozenset(
     }
 )
 LOCAL_GUARDED_INTENTS = frozenset({"off_topic", "unsupported_request"})
+
+
+class ConversationOrchestrationError(RuntimeError):
+    pass
 
 
 class ConversationRuntime:
@@ -376,11 +381,9 @@ class ConversationRuntime:
                 required_keys=spec.required_keys,
             )
         except Exception as exc:
-            fallback = dict(local)
-            fallback["decision_source"] = "local_conversation_orchestrator_fallback"
-            fallback["business_summary"] = f"{local['business_summary']} LLM 路由不可用，已采用本地预检。"
-            fallback["llm_audit"] = {"error": str(exc)}
-            return fallback
+            raise ConversationOrchestrationError(
+                "conversation_orchestrator_provider_failed"
+            ) from exc
 
         validated = _validated_orchestration(
             result.output,
@@ -771,18 +774,24 @@ def _validated_orchestration(
     topic_count: int,
 ) -> dict[str, Any]:
     if not isinstance(output, dict):
-        return _local_fallback(local, "local_conversation_orchestrator_fallback")
+        raise ConversationOrchestrationError(
+            "conversation_orchestrator_output_invalid"
+        )
 
     intent = str(output.get("intent") or "").strip()
     topic_relation = str(output.get("topic_relation") or "").strip()
     if intent not in ALLOWED_INTENTS or topic_relation not in ALLOWED_TOPIC_RELATIONS:
-        return _local_fallback(local, "local_conversation_orchestrator_fallback")
+        raise ConversationOrchestrationError(
+            "conversation_orchestrator_output_invalid"
+        )
 
     if local["intent"] in LOCAL_GUARDED_INTENTS and intent != local["intent"]:
         return _local_fallback(local, "local_conversation_orchestrator_guard")
 
     if intent == "clarification_answer" and not allow_clarification_answer:
-        return _local_fallback(local, "local_conversation_orchestrator_fallback")
+        raise ConversationOrchestrationError(
+            "conversation_orchestrator_output_invalid"
+        )
 
     if intent in {"off_topic", "unsupported_request"}:
         topic_relation = "rejected"
@@ -793,7 +802,9 @@ def _validated_orchestration(
     elif active_run_status == "running" and intent == "new_topic":
         topic_relation = "queued_new_topic"
     elif topic_relation == "select_referenced_topic" and topic_count < 2:
-        return _local_fallback(local, "local_conversation_orchestrator_fallback")
+        raise ConversationOrchestrationError(
+            "conversation_orchestrator_output_invalid"
+        )
 
     if topic_count == 0 and _should_run(intent, topic_relation):
         intent = "new_topic"
@@ -801,7 +812,9 @@ def _validated_orchestration(
 
     business_summary = output.get("business_summary")
     if not isinstance(business_summary, str) or not business_summary.strip():
-        business_summary = _intent_summary(intent, "")
+        raise ConversationOrchestrationError(
+            "conversation_orchestrator_business_summary_invalid"
+        )
 
     return {
         "intent": intent,
@@ -1191,8 +1204,7 @@ def _runtime_budget(message: str) -> dict[str, int | str]:
 
 
 def _can_read_scope(role: str, permission_scope: str) -> bool:
-    rank = {"business_reader": 1, "analyst": 2, "data_owner_admin": 3}
-    return rank.get(role, 0) >= rank.get(permission_scope, 3)
+    return _can_read_permission_scope(role, permission_scope)
 
 
 def _topic_title(message: str) -> str:

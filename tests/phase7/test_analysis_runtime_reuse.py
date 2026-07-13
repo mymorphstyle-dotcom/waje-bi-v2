@@ -555,6 +555,13 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
 
     def test_workflow_replaces_provisional_decision_before_claim_provenance(self):
         from bi_agent.runtime.langgraph_workflow import _fetch_runtime_rows
+        from bi_agent.runtime.analysis_contract_compiler import (
+            compile_analysis_contract,
+        )
+        from bi_agent.runtime.dataset_catalog import DatasetCatalog
+        from bi_agent.runtime.runtime_contract_registry import (
+            RuntimeContractRegistry,
+        )
 
         final_decision = {
             "source_ref": "result:source",
@@ -569,9 +576,21 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
         class FakeAnalysisRuntime:
             def __init__(self):
                 self.request = None
+                self.registry = RuntimeContractRegistry.from_path(
+                    "contracts/runtime/clickhouse-analysis-bindings.yaml"
+                )
 
             def execute(self, request):
                 self.request = request
+                compiled = compile_analysis_contract(
+                    run_id=request.run_id,
+                    proposal=request.proposal,
+                    accepted_capabilities=request.accepted_graph,
+                    catalog=DatasetCatalog(()),
+                    registry=self.registry,
+                    as_of=request.as_of,
+                    permission_scope=request.permission_scope,
+                )
                 return SimpleNamespace(
                     to_workflow_payload=lambda: {
                         "runtime_rows_by_intent": {},
@@ -582,7 +601,9 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                     bound_capability_inputs={},
                     repair_decisions=(),
                     query_results=(),
-                    query_contracts=(),
+                    analysis_contract=compiled.analysis_contract,
+                    query_contracts=compiled.query_contracts,
+                    capability_plans=compiled.capability_plans,
                 )
 
         analysis_runtime = FakeAnalysisRuntime()

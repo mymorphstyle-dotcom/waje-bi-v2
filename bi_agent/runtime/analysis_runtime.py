@@ -52,6 +52,7 @@ from bi_agent.runtime.evidence_authority import (
 from bi_agent.runtime.query_completeness import validate_query_result, validate_query_set
 from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
 from bi_agent.runtime.query_repair import QueryRepairDecision, plan_query_repair
+from bi_agent.runtime.permission_roles import runtime_permission_scope_from_request
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
@@ -407,7 +408,7 @@ class AnalysisRuntime:
                 as_of=(request.get("analysis_context") or {}).get("as_of")
                 or request.get("as_of")
                 or "",
-                permission_scope=str(request.get("role") or "analyst"),
+                permission_scope=runtime_permission_scope_from_request(request),
                 topic_id=str(request.get("topic_id") or ""),
                 reuse_candidates=request.get("reuse_candidates") or (),
                 attempted_signatures=request.get("attempted_signatures") or (),

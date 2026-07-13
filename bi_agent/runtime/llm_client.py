@@ -7,7 +7,6 @@ import hashlib
 import json
 import multiprocessing
 import os
-import queue
 import re
 import signal
 import threading
@@ -19,6 +18,7 @@ from openai import OpenAI
 
 DEFAULT_TIMEOUT_SECONDS: float | None = None
 DEFAULT_MAX_ATTEMPTS = 3
+_RECEIVER_CLEANUP_JOIN_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -185,24 +185,102 @@ def _request_openai_json_in_subprocess(
 ) -> dict[str, Any]:
     request_worker = request_worker or _request_openai_json_once
     ctx = _process_context()
-    output_queue = ctx.Queue(maxsize=1)
+    output_connection, child_connection = ctx.Pipe(duplex=False)
     process = ctx.Process(
         target=_openai_request_child,
-        args=(config, [dict(message) for message in messages], output_queue, request_worker),
+        args=(
+            config,
+            [dict(message) for message in messages],
+            child_connection,
+            request_worker,
+        ),
     )
-    process.start()
-    process.join(timeout_seconds)
-    if process.is_alive():
-        process.kill()
-        process.join()
-        raise LLMTimeoutError(f"llm_request_timeout:{timeout_seconds:g}s")
+    timeout = (
+        float(timeout_seconds)
+        if timeout_seconds is not None and float(timeout_seconds) > 0
+        else None
+    )
+    deadline = perf_counter() + timeout if timeout is not None else None
+    started = False
+    timeout_expired = False
+    receive_state: dict[str, Any] = {}
+    receiver: threading.Thread | None = None
+
+    def receive_result() -> None:
+        try:
+            receive_state["result"] = output_connection.recv()
+        except BaseException as exc:
+            receive_state["error"] = exc
+
     try:
-        child_result = output_queue.get_nowait()
-    except queue.Empty as exc:
-        raise RuntimeError(f"llm_subprocess_failed:exitcode={process.exitcode}") from exc
+        process.start()
+        started = True
+        child_connection.close()
+        receiver = threading.Thread(
+            target=receive_result,
+            name="waje-llm-provider-receiver",
+            daemon=True,
+        )
+        receiver.start()
+        receive_wait = (
+            None
+            if deadline is None
+            else max(0.0, deadline - perf_counter())
+        )
+        receiver.join(receive_wait)
+        if receiver.is_alive():
+            timeout_expired = True
+            raise LLMTimeoutError(f"llm_request_timeout:{timeout:g}s")
+        if deadline is not None and perf_counter() >= deadline:
+            timeout_expired = True
+            raise LLMTimeoutError(f"llm_request_timeout:{timeout:g}s")
+
+        remaining = (
+            None
+            if deadline is None
+            else max(0.0, deadline - perf_counter())
+        )
+        process.join(remaining)
+        if process.is_alive():
+            timeout_expired = True
+            raise LLMTimeoutError(f"llm_request_timeout:{timeout:g}s")
+        if process.exitcode != 0:
+            raise RuntimeError(
+                f"llm_subprocess_failed:exitcode={process.exitcode}"
+            )
+        receive_error = receive_state.get("error")
+        if receive_error is not None:
+            raise RuntimeError(
+                f"llm_subprocess_failed:exitcode={process.exitcode}"
+            ) from receive_error
+        child_result = receive_state.get("result")
+    finally:
+        receiver_cleanup_failed = False
+        child_connection.close()
+        if started:
+            if process.is_alive():
+                if timeout_expired and timeout is not None:
+                    process.kill()
+                process.join()
+            else:
+                process.join()
+        output_connection.close()
+        if receiver is not None:
+            receiver.join(_RECEIVER_CLEANUP_JOIN_SECONDS)
+            if receiver.is_alive():
+                receiver_cleanup_failed = True
+        if started:
+            process.close()
+        if receiver_cleanup_failed:
+            raise RuntimeError("llm_receiver_cleanup_timeout")
+    if not isinstance(child_result, Mapping):
+        raise RuntimeError("llm_subprocess_invalid_result")
     if not child_result.get("ok"):
         raise RuntimeError(str(child_result.get("error") or "llm_subprocess_error"))
-    return dict(child_result["result"])
+    result = child_result.get("result")
+    if not isinstance(result, Mapping):
+        raise RuntimeError("llm_subprocess_invalid_result")
+    return dict(result)
 
 
 def _process_context():
@@ -218,18 +296,23 @@ def _process_context():
 def _openai_request_child(
     config: dict[str, Any],
     messages: Sequence[Mapping[str, str]],
-    output_queue: Any,
+    output_connection: Any,
     request_worker: Callable[[dict[str, Any], Sequence[Mapping[str, str]]], dict[str, Any]],
 ) -> None:
     try:
-        output_queue.put(
+        output_connection.send(
             {
                 "ok": True,
                 "result": request_worker(config, messages),
             }
         )
     except BaseException as exc:
-        output_queue.put({"ok": False, "error": str(exc)})
+        try:
+            output_connection.send({"ok": False, "error": str(exc)})
+        except BaseException:
+            pass
+    finally:
+        output_connection.close()
 
 
 def _request_openai_json_once(
@@ -319,6 +402,8 @@ NARRATIVE_KEYS = frozenset(
         "text",
         "explanation",
         "repair_path",
+        "owner",
+        "recommendation_reason",
         "question",
         "accepted_assumptions",
         "business_summary",
@@ -327,52 +412,46 @@ NARRATIVE_KEYS = frozenset(
     }
 )
 
-NARRATIVE_FALLBACKS = {
-    "status_message": "已完成当前业务判断。",
-    "decision_summary": "已完成当前业务判断。",
-    "recommended_assumption": "采用产品默认业务假设继续。",
-    "route_summary": "已完成分析路线设计。",
-    "repair_summary": "已完成分析路线修正。",
-    "business_impact": "已完成数据覆盖影响判断。",
-    "interpretation": "已完成证据解释。",
-    "evidence_boundary": "证据边界已记录。",
-    "answer_text": "已生成基于证据的答案草稿。",
-    "summary_text": "已生成最终业务总结。",
-    "text": "已生成基于证据的业务表述。",
-    "explanation": "当前证据不足，不能发布主业务结论。",
-    "repair_path": "补充缺失证据后重跑。",
-    "question": "请确认业务边界。",
-    "accepted_assumptions": "采用产品默认业务假设继续。",
-    "business_summary": "本次业务理解已确认。",
-    "description": "审计发现需要用业务语言改写。",
-    "issue_description": "审计发现需要用业务语言改写。",
-}
-
-
 def _localize_narrative_fields(value: Any, key: str = "") -> Any:
     if key == "accepted_assumptions" and isinstance(value, str):
         normalized = _normalize_business_narrative(value.strip())
+        if not normalized or _contains_unlocalized_narrative_tokens(normalized):
+            raise LLMOutputError("llm_narrative_invalid:accepted_assumptions")
         return [normalized] if normalized else []
     if key == "accepted_assumptions" and isinstance(value, list):
         normalized_items = []
         for item in value:
             if isinstance(item, str):
                 normalized = _normalize_business_narrative(item.strip())
-                if normalized:
-                    normalized_items.append(normalized)
+                if not normalized or _contains_unlocalized_narrative_tokens(normalized):
+                    raise LLMOutputError(
+                        "llm_narrative_invalid:accepted_assumptions"
+                    )
+                normalized_items.append(normalized)
             else:
-                normalized_items.append(_localize_narrative_fields(item))
+                raise LLMOutputError(
+                    "llm_narrative_invalid:accepted_assumptions"
+                )
         return normalized_items
-    if key in NARRATIVE_KEYS and key != "accepted_assumptions" and not isinstance(value, str):
-        return NARRATIVE_FALLBACKS[key]
+    if key == "recommended_assumption" and isinstance(value, Mapping):
+        return {
+            item_key: _localize_narrative_fields(item, item_key)
+            for item_key, item in value.items()
+        }
+    if (
+        key in NARRATIVE_KEYS
+        and key != "accepted_assumptions"
+        and not isinstance(value, str)
+    ):
+        raise LLMOutputError(f"llm_narrative_invalid:{key}")
     if isinstance(value, dict):
         return {item_key: _localize_narrative_fields(item, item_key) for item_key, item in value.items()}
     if isinstance(value, list):
         return [_localize_narrative_fields(item, key) for item in value]
     if isinstance(value, str) and key in NARRATIVE_KEYS:
         value = _normalize_business_narrative(value)
-        if _needs_chinese_narrative_fallback(value):
-            return NARRATIVE_FALLBACKS[key]
+        if not value.strip() or _contains_unlocalized_narrative_tokens(value):
+            raise LLMOutputError(f"llm_narrative_invalid:{key}")
     return value
 
 
@@ -486,6 +565,10 @@ _BUSINESS_ENTITY_SUFFIX_PATTERN = (
     r"方案|团队|公司|门店|城市|币种|广告|素材|来源|端|业务线|套餐|计划|等级|标签"
 )
 
+_REVIEWED_BUSINESS_NARRATIVE_ACRONYMS = frozenset(
+    {"ARPPU", "DAU", "NGN", "ROI", "WAJE"}
+)
+
 
 def _strip_business_entity_tokens(value: str) -> str:
     return re.sub(
@@ -495,8 +578,16 @@ def _strip_business_entity_tokens(value: str) -> str:
     )
 
 
-def _needs_chinese_narrative_fallback(value: str) -> bool:
+def _contains_unlocalized_narrative_tokens(value: str) -> bool:
+    if not re.search(r"[\u3400-\u9fff]", value):
+        return True
     value = _strip_business_entity_tokens(value)
+    for acronym in _REVIEWED_BUSINESS_NARRATIVE_ACRONYMS:
+        value = re.sub(
+            rf"(?<![A-Za-z0-9]){re.escape(acronym)}(?![A-Za-z0-9])",
+            "",
+            value,
+        )
     return bool(re.search(r"[A-Za-z]{2,}", value))
 
 

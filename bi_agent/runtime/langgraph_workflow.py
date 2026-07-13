@@ -23,10 +23,14 @@ warnings.filterwarnings(
 from langgraph.graph import END, StateGraph
 
 from bi_agent.conversation.clarification_authority import (
+    bind_terminal_resume_proposal_material,
+    build_execution_material,
     build_material_authority,
     validate_material_authority,
+    validate_terminal_compile_overlap,
     validate_terminal_clarification_choice_overlap,
     validate_terminal_resume_proposal_overlap,
+    validate_terminal_runtime_context_overlap,
 )
 from bi_agent.capabilities.data_quality_check import data_quality_check
 from bi_agent.capabilities.driver_decomposition import driver_decomposition
@@ -59,6 +63,10 @@ from bi_agent.runtime.analysis_runtime import (
     analysis_outcome_requires_route_clarification,
 )
 from bi_agent.runtime.artifacts import persist_artifact, to_jsonable
+from bi_agent.runtime.baseline_semantics import (
+    BaselineSemanticError,
+    canonical_baseline_ids,
+)
 from bi_agent.runtime.capability_harness import (
     PATTERN_COMPARE_CAPABILITIES,
     WINDOW_METRIC_COMPARE_CAPABILITIES,
@@ -70,6 +78,7 @@ from bi_agent.runtime.capability_execution import (
     validate_bound_capability_input,
 )
 from bi_agent.runtime.capability_registry import llm_capability_cards
+from bi_agent.runtime.permission_roles import runtime_permission_scope_from_request
 from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
@@ -97,9 +106,6 @@ from bi_agent.runtime.runtime_contract_registry import (
 from bi_agent.runtime.window_resolver import CURRENT_DATA_BASELINES
 
 
-NON_RETRYABLE_FAILURE_TYPES = frozenset(
-    {"business", "evidence", "permission", "contract", "sql", "llm"}
-)
 LLM_REQUIRED_TASKS = (
     "business_intent",
     "boundary_decision",
@@ -482,46 +488,26 @@ def build_pattern_graph():
 
 def _retrying_node(node_name, func):
     def run(state: WorkflowState) -> WorkflowState:
-        max_attempts = 3 if node_name in {
-            "generate_clarification", "understand_business_intent"
-        } else 2
-        for attempt in range(1, max_attempts + 1):
-            started = perf_counter()
-            event = _checkpoint(state, node_name, attempt)
-            try:
-                result = func(state)
-                _finish_checkpoint(event, "completed", started)
-                if node_name == "persist_artifact":
-                    _refresh_persisted_answer_package(result)
-                return result
-            except WorkflowFailure as exc:
-                event["failure_type"] = exc.failure_type
-                event["reason"] = _exception_reason(exc)
-                if (
-                    exc.failure_type not in NON_RETRYABLE_FAILURE_TYPES
-                    and attempt < max_attempts
-                ):
-                    state.setdefault("request", {})["node_retry_feedback"] = {
-                        "node": node_name,
-                        "attempt": attempt,
-                        "failure_type": exc.failure_type,
-                        "reason": _exception_reason(exc),
-                    }
-                    _finish_checkpoint(event, "retrying", started)
-                    continue
-                _finish_checkpoint(event, "failed", started)
-                raise
-            except Exception as exc:
-                event["failure_type"] = "technical"
-                event["reason"] = _exception_reason(exc)
-                if attempt < max_attempts:
-                    _finish_checkpoint(event, "retrying", started)
-                    continue
-                _finish_checkpoint(event, "failed", started)
-                raise WorkflowFailure(
-                    _exception_reason(exc), failure_type="technical"
-                )
-        return state
+        started = perf_counter()
+        event = _checkpoint(state, node_name, 1)
+        try:
+            result = func(state)
+            _finish_checkpoint(event, "completed", started)
+            if node_name == "persist_artifact":
+                _refresh_persisted_answer_package(result)
+            return result
+        except WorkflowFailure as exc:
+            event["failure_type"] = exc.failure_type
+            event["reason"] = _exception_reason(exc)
+            _finish_checkpoint(event, "failed", started)
+            raise
+        except Exception as exc:
+            event["failure_type"] = "technical"
+            event["reason"] = _exception_reason(exc)
+            _finish_checkpoint(event, "failed", started)
+            raise WorkflowFailure(
+                _exception_reason(exc), failure_type="technical"
+            ) from exc
 
     return run
 
@@ -546,37 +532,55 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
             "business_intent_contract_invalid:answer_contract",
             failure_type="llm_contract",
         )
-    pattern_family = _normalize_pattern_family(output.get("pattern_family"), request)
-    pattern_params = _normalize_pattern_params(request, output, pattern_family)
-    pattern_family, pattern_params = _repair_pattern_family_and_params(
-        pattern_family,
-        pattern_params,
-    )
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    material = _material_business_intent_values(request, output, registry)
+    pattern_family = str(material["pattern_family"])
+    pattern_params = _normalize_pattern_params(
+        request,
+        output,
+        pattern_family,
+        allow_question_inference=not _production_like_request(request),
+    )
+    if _production_like_request(request):
+        if pattern_family == "weekly" and not _weekly_pattern_has_weekday_target(
+            pattern_params
+        ):
+            raise WorkflowFailure(
+                "business_intent_contract_invalid:pattern_params",
+                failure_type="llm_contract",
+            )
+    else:
+        pattern_family, pattern_params = _repair_pattern_family_and_params(
+            pattern_family,
+            pattern_params,
+        )
     material_requirements = _validated_business_intent_requirements(
         output.get("analysis_requirements"), registry
     )
+    production_like = _production_like_request(request)
+    baseline_candidates = _validated_business_intent_baseline_candidates(
+        output.get("baseline_candidates"),
+        production_like=production_like,
+    )
+    sub_intents = _validated_business_intent_sequence(
+        output.get("sub_intents"),
+        field="sub_intents",
+    )
+    ambiguous_slots = _validated_business_intent_sequence(
+        output.get("ambiguous_slots"),
+        field="ambiguous_slots",
+    )
     intent = _normalize_question_families({
-        "question_family": output.get("question_family") or "pattern_explanation",
-        "target_metric": _normalize_target_metric(
-            request.get("target_metric")
-            or output.get("target_metric")
-            or "paid_amount"
-        ),
+        "question_family": material["question_family"],
+        "target_metric": material["target_metric"],
         "pattern_family": pattern_family,
         "pattern_params": pattern_params,
-        "scope": _normalize_scope(
-            request.get("scope") or output.get("scope") or "full_sample"
-        ),
-        "time_window": request.get("time_window")
-        or output.get("time_window")
-        or "2024-01..2026-05",
-        "target_claim": _normalize_target_claim(
-            output.get("target_claim", "pattern_explanation")
-        ),
-        "baseline_candidates": list(output.get("baseline_candidates") or []),
-        "sub_intents": list(output.get("sub_intents") or []),
-        "ambiguous_slots": list(output.get("ambiguous_slots") or []),
+        "scope": material["scope"],
+        "time_window": material["time_window"],
+        "target_claim": material["target_claim"],
+        "baseline_candidates": baseline_candidates,
+        "sub_intents": sub_intents,
+        "ambiguous_slots": ambiguous_slots,
         "answer_contract": dict(answer_contract),
         "baseline": request.get("baseline") or output.get("baseline") or {},
         "target": request.get("target") or output.get("target") or {},
@@ -597,6 +601,153 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
     _validate_context_family_axis(intent, registry)
     state["intent"] = intent
     return state
+
+
+def _production_like_request(request: Mapping[str, Any]) -> bool:
+    return str(request.get("run_mode") or "") in {"live", "production"}
+
+
+def _validated_business_intent_sequence(
+    raw: Any,
+    *,
+    field: str,
+    required: bool = False,
+) -> list[Any]:
+    if raw is None:
+        if not required:
+            return []
+        raise WorkflowFailure(
+            f"business_intent_contract_invalid:{field}",
+            failure_type="llm_contract",
+        )
+    if (
+        not isinstance(raw, Sequence)
+        or isinstance(raw, (str, bytes, bytearray))
+        or isinstance(raw, Mapping)
+    ):
+        raise WorkflowFailure(
+            f"business_intent_contract_invalid:{field}",
+            failure_type="llm_contract",
+        )
+    return list(raw)
+
+
+def _validated_business_intent_baseline_candidates(
+    raw: Any,
+    *,
+    production_like: bool,
+) -> list[Any]:
+    candidates = _validated_business_intent_sequence(
+        raw,
+        field="baseline_candidates",
+        required=production_like,
+    )
+    if not production_like:
+        return candidates
+
+    canonical: list[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, (str, Mapping)):
+            raise WorkflowFailure(
+                "business_intent_contract_invalid:baseline_candidates",
+                failure_type="llm_contract",
+            )
+        try:
+            candidate_ids = canonical_baseline_ids(candidate)
+        except BaselineSemanticError as exc:
+            raise WorkflowFailure(
+                "business_intent_contract_invalid:baseline_candidates",
+                failure_type="llm_contract",
+            ) from exc
+        if len(candidate_ids) != 1 or candidate_ids[0] in canonical:
+            raise WorkflowFailure(
+                "business_intent_contract_invalid:baseline_candidates",
+                failure_type="llm_contract",
+            )
+        canonical.append(candidate_ids[0])
+    return canonical
+
+
+def _material_business_intent_values(
+    request: Mapping[str, Any],
+    output: Mapping[str, Any],
+    registry: RuntimeContractRegistry,
+) -> dict[str, Any]:
+    defaults = {
+        "question_family": "pattern_explanation",
+        "target_metric": "paid_amount",
+        "pattern_family": "intra_period",
+        "scope": "full_sample",
+        "time_window": "2024-01..2026-05",
+        "target_claim": "pattern_explanation",
+    }
+    production_like = _production_like_request(request)
+    if production_like:
+        values = {
+            axis: request[axis] if axis in request else output.get(axis)
+            for axis in defaults
+        }
+    else:
+        values = {
+            "question_family": output.get("question_family"),
+            "target_metric": request.get("target_metric")
+            or output.get("target_metric"),
+            "pattern_family": request.get("pattern_family")
+            or output.get("pattern_family"),
+            "scope": request.get("scope") or output.get("scope"),
+            "time_window": request.get("time_window")
+            or output.get("time_window"),
+            "target_claim": output.get("target_claim"),
+        }
+    if production_like:
+        for axis, value in values.items():
+            scalar_axis = axis in {
+                "question_family",
+                "target_metric",
+                "pattern_family",
+                "target_claim",
+            }
+            if (
+                scalar_axis
+                and (not isinstance(value, str) or not value.strip())
+            ) or (
+                not scalar_axis
+                and _empty_business_context_value(value)
+            ):
+                raise WorkflowFailure(
+                    f"business_intent_contract_invalid:{axis}",
+                    failure_type="llm_contract",
+                )
+    else:
+        values = {
+            axis: value if not _empty_business_context_value(value) else defaults[axis]
+            for axis, value in values.items()
+        }
+
+    normalized_metric = _normalize_target_metric(values["target_metric"])
+    if production_like and normalized_metric not in set(registry.metric_ids):
+        raise WorkflowFailure(
+            "business_intent_contract_invalid:target_metric",
+            failure_type="llm_contract",
+        )
+    pattern_family = _normalize_pattern_family(
+        values["pattern_family"],
+        request,
+        strict=production_like,
+    )
+    scope = _normalize_scope(values["scope"], strict=production_like)
+    time_window = values["time_window"]
+    if production_like:
+        time_window = _validated_material_time_window(time_window)
+    return {
+        **values,
+        "question_family": str(values["question_family"]).strip(),
+        "target_metric": normalized_metric,
+        "pattern_family": pattern_family,
+        "scope": scope,
+        "time_window": time_window,
+        "target_claim": _normalize_target_claim(values["target_claim"]),
+    }
 
 
 def _bind_clarification_resume_intent(
@@ -750,7 +901,7 @@ def _validate_resume_material_consistency(
     proposal = {
         "question_families": _ordered_resume_question_families(original),
         "target_metrics": tuple(persisted.get("target_metrics") or ()),
-        "scope": persisted.get("scope"),
+        "scope": persisted.get("scope") or "full_sample",
         "accepted_degradation_choice": accepted_choice,
         "accepted_terminal_gap_authority": raw_authority,
         "resume_thread_id": request.get("thread_id"),
@@ -839,6 +990,7 @@ def _validate_resume_material_consistency(
             source_run_id=str(authority.get("source_run_id") or ""),
             thread_id=str(authority.get("thread_id") or ""),
             topic_id=str(authority.get("topic_id") or ""),
+            require_execution_material=True,
         )
         candidate_authority = build_material_authority(
             source_run_id=str(authority.get("source_run_id") or ""),
@@ -846,6 +998,7 @@ def _validate_resume_material_consistency(
             topic_id=str(authority.get("topic_id") or ""),
             original_intent=original,
             material_slots=persisted,
+            runtime_material=material_authority["execution_material"],
         )
     except (KeyError, TypeError, ValueError) as exc:
         axis = _material_authority_failure_axis(exc)
@@ -902,6 +1055,10 @@ def _validate_resume_material_consistency(
         "secondary_question_families": list(canonical_families[1:]),
         "target_metric": intent_material["primary_target_metric"],
         "scope": intent_material["scope"],
+        "time_window": intent_material["time_window"],
+        "baseline_candidates": list(
+            material_authority["route_material_slots"]["baselines"]
+        ),
         "_validated_obligation_rejection_history": list(
             material_authority["route_control"][
                 "obligation_rejection_history"
@@ -920,7 +1077,8 @@ def _validate_nonterminal_resume_material(
         "context_sources": list(original.get("context_sources") or ()),
         "claim_intents": list(original.get("claim_intents") or ()),
         "baselines": _canonical_baseline_ids(
-            original.get("baseline_candidates")
+            original.get("baseline_candidates"),
+            strict=True,
         ),
     }
     for axis, source_values in original_values.items():
@@ -952,7 +1110,9 @@ def _material_authority_failure_axis(exc: BaseException) -> str:
         "context_sources",
         "claim_intents",
         "scope",
+        "time_window",
         "diagnostic_tags",
+        "execution_material",
     ):
         if axis in reason:
             return axis
@@ -985,6 +1145,8 @@ def _material_authority_conflict_axis(
             return axis
     if candidate_intent["scope"] != authority_intent["scope"]:
         return "scope"
+    if candidate_intent["time_window"] != authority_intent["time_window"]:
+        return "time_window"
     candidate_route = candidate["route_material_slots"]
     authority_route = authority["route_material_slots"]
     for axis in (*MATERIAL_AUTHORITY_LIST_AXES, "diagnostic_tags"):
@@ -992,6 +1154,10 @@ def _material_authority_conflict_axis(
             return axis
     if candidate_route["scope"] != authority_route["scope"]:
         return "scope"
+    if candidate.get("execution_material") != authority.get(
+        "execution_material"
+    ):
+        return "execution_material"
     return ""
 
 
@@ -1046,53 +1212,6 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
     }
     if context:
         payload["bound_business_context"] = context
-    feedback = request.get("node_retry_feedback") or {}
-    if (
-        isinstance(feedback, Mapping)
-        and feedback.get("node") == "understand_business_intent"
-    ):
-        reason = str(feedback.get("reason") or "")
-        correction = ""
-        if reason.startswith("context_family_axis_missing:"):
-            parts = reason.split(":")
-            dimension_id = parts[2] if len(parts) == 4 and parts[1] == "dimension" else ""
-            source_id = parts[-1]
-            candidates = [
-                family
-                for family in registry.question_family_ids
-                if _question_family_supports_context_dataset(
-                    family, source_id, registry
-                )
-            ]
-            correction = (
-                f"For context source {source_id}, choose primary_question_family or "
-                f"secondary_question_families from these exact compatible candidates: "
-                f"{candidates}. Current selected families are "
-                f"{request.get('_retry_selected_families') or []}. Preserve the "
-                f"typed analysis requirements and do not invent family ids. Typed "
-                f"dimension requiring this family is {dimension_id or 'none'}."
-            )
-        elif reason.startswith(
-            "business_intent_contract_invalid:analysis_requirements:"
-        ):
-            correction = (
-                "Return the exact typed analysis_requirements schema, copy ids only "
-                "from the supplied allowed lists, and use only "
-                "allowed_context_source_ids for context_sources."
-            )
-        elif reason == "business_intent_contract_invalid:answer_contract":
-            correction = (
-                "answer_contract must be a JSON object when present. Omit "
-                "answer_contract or use {} when no answer contract is needed."
-            )
-        if correction:
-            payload["node_retry_feedback"] = {
-                "failure_type": str(
-                    feedback.get("failure_type") or "llm_contract"
-                ),
-                "reason": reason,
-                "correction": correction,
-            }
     return payload
 
 
@@ -1417,13 +1536,38 @@ def _normalize_question_families(intent: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _normalize_scope(scope: Any) -> str:
+def _normalize_scope(scope: Any, *, strict: bool = False) -> str:
     if isinstance(scope, Mapping):
-        scope = (
-            scope.get("value")
-            or scope.get("type")
-            or scope.get("label")
-            or scope.get("scope")
+        meaningful = {
+            str(key): value
+            for key, value in scope.items()
+            if value not in (None, "", {}, [])
+        }
+        token_keys = {"value", "type", "label", "scope"}
+        if strict and (not meaningful or set(meaningful) - token_keys):
+            raise WorkflowFailure(
+                "business_intent_contract_invalid:scope",
+                failure_type="llm_contract",
+            )
+        tokens = [
+            str(meaningful[key]).strip()
+            for key in ("value", "type", "label", "scope")
+            if key in meaningful
+        ]
+        if strict and (
+            not tokens
+            or any(not token for token in tokens)
+            or len({_normalize_scope(token) for token in tokens}) != 1
+        ):
+            raise WorkflowFailure(
+                "business_intent_contract_invalid:scope",
+                failure_type="llm_contract",
+            )
+        scope = tokens[0] if tokens else None
+    if strict and (not isinstance(scope, str) or not scope.strip()):
+        raise WorkflowFailure(
+            "business_intent_contract_invalid:scope",
+            failure_type="llm_contract",
         )
     value = str(scope or "").strip()
     aliases = {
@@ -1450,6 +1594,33 @@ def _normalize_scope(scope: Any) -> str:
     if value.lower() in aliases:
         return "full_sample"
     return value or "full_sample"
+
+
+def _validated_material_time_window(time_window: Any) -> Any:
+    """Accept explicit JSON business semantics without inventing a window."""
+
+    def valid(value: Any) -> bool:
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, bool) or value is None:
+            return False
+        if isinstance(value, (int, float)):
+            return True
+        if isinstance(value, Mapping):
+            return bool(value) and all(
+                isinstance(key, str) and key.strip() and valid(item)
+                for key, item in value.items()
+            )
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return bool(value) and all(valid(item) for item in value)
+        return False
+
+    if not valid(time_window):
+        raise WorkflowFailure(
+            "business_intent_contract_invalid:time_window",
+            failure_type="llm_contract",
+        )
+    return time_window
 
 
 def _material_scope_signature(scope: Any) -> tuple[str, str] | None:
@@ -1507,7 +1678,12 @@ def _normalize_target_metric(metric: Any) -> str:
     return value or "paid_amount"
 
 
-def _normalize_pattern_family(pattern_family: Any, request: Mapping[str, Any]) -> str:
+def _normalize_pattern_family(
+    pattern_family: Any,
+    request: Mapping[str, Any],
+    *,
+    strict: bool = False,
+) -> str:
     supported = {
         "intra_period",
         "weekly",
@@ -1522,6 +1698,11 @@ def _normalize_pattern_family(pattern_family: Any, request: Mapping[str, Any]) -
     value = str(pattern_family or "").strip().lower()
     if value in supported:
         return value
+    if strict:
+        raise WorkflowFailure(
+            "business_intent_contract_invalid:pattern_family",
+            failure_type="llm_contract",
+        )
     return "intra_period"
 
 
@@ -1529,22 +1710,35 @@ def _normalize_pattern_params(
     request: Mapping[str, Any],
     output: Mapping[str, Any],
     pattern_family: str,
+    *,
+    allow_question_inference: bool = True,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
     output_params = output.get("pattern_params")
     if isinstance(output_params, Mapping):
         params.update(dict(output_params))
+    elif output_params not in (None, "", {}, []):
+        raise WorkflowFailure(
+            "business_intent_contract_invalid:pattern_params",
+            failure_type="llm_contract",
+        )
     request_params = request.get("pattern_params")
     if isinstance(request_params, Mapping):
         params.update(dict(request_params))
+    elif "pattern_params" in request and request_params not in (None, "", {}, []):
+        raise WorkflowFailure(
+            "business_intent_contract_invalid:pattern_params",
+            failure_type="llm_contract",
+        )
 
-    question = str(request.get("question") or "")
-    if pattern_family == "weekly" and "周末" in question:
-        params.setdefault("weekday_key", "weekday")
-        params.setdefault("target_weekdays", [6, 7])
-        params.setdefault("baseline_weekdays", [1, 2, 3, 4, 5])
-    if pattern_family == "intra_period" and "月初" in question:
-        params.setdefault("target_phase", "start")
+    if allow_question_inference:
+        question = str(request.get("question") or "")
+        if pattern_family == "weekly" and "周末" in question:
+            params.setdefault("weekday_key", "weekday")
+            params.setdefault("target_weekdays", [6, 7])
+            params.setdefault("baseline_weekdays", [1, 2, 3, 4, 5])
+        if pattern_family == "intra_period" and "月初" in question:
+            params.setdefault("target_phase", "start")
     return params
 
 
@@ -1775,58 +1969,9 @@ def _generate_clarification(state: WorkflowState) -> WorkflowState:
         "intent": state.get("intent", {}),
         "boundary_decision": state.get("boundary_decision", {}),
         "clarification_choice": choice,
-        "retry_context": state.get("request", {}).get(
-            "node_retry_feedback",
-            {},
-        ),
     }
     raw_output = _invoke_llm(state, "clarification_question", clarification_payload)
-    try:
-        output = _normalize_general_clarification_output(raw_output)
-    except WorkflowFailure as exc:
-        if str(exc) != "general_clarification_contract_invalid:recommended_option":
-            raise
-        questions = raw_output.get("questions") or ()
-        if isinstance(questions, Mapping):
-            questions = (questions,)
-        raw_options = (
-            questions[0].get("options") or questions[0].get("choices") or ()
-            if questions and isinstance(questions[0], Mapping)
-            else ()
-        )
-        business_options = [
-            label
-            for item in raw_options
-            if (
-                label := str(
-                    item.get("label") if isinstance(item, Mapping) else item
-                ).strip()
-            )
-            and label.lower() != "tell the agent to do differently"
-        ]
-        repair = _invoke_llm(
-            state,
-            "query_gap_recommendation_repair",
-            {"business_options": business_options},
-        )
-        option_index = repair.get("option_index")
-        if (
-            type(option_index) is not int
-            or option_index < 0
-            or option_index >= len(business_options)
-        ):
-            raise WorkflowFailure(
-                "general_clarification_recommendation_repair_invalid:option_index",
-                failure_type="llm_contract",
-            )
-        raw_output = {
-            **dict(raw_output),
-            "recommended_assumption": {
-                "option": business_options[option_index]
-            },
-            "recommendation_reason": str(repair.get("brief_reason") or "").strip(),
-        }
-        output = _normalize_general_clarification_output(raw_output)
+    output = _normalize_general_clarification_output(raw_output)
     state["clarification_outcome"] = {
         "status": "user_selected" if choice else "question_tool_opened",
         "boundary_status": "needs_question"
@@ -1949,6 +2094,7 @@ def _persist_clarification(state: WorkflowState) -> WorkflowState:
             "analysis_requirements": material_slots,
         },
         "analysis_contract": {},
+        "execution_material": None,
         "original_intent": to_jsonable(state.get("intent") or {}),
         "material_slots": to_jsonable(material_slots),
     }
@@ -1993,21 +2139,16 @@ def _intent_material_slots(intent: Mapping[str, Any]) -> dict[str, Any]:
     return slots
 
 
-def _canonical_baseline_ids(raw: Any) -> list[str]:
-    values = raw if isinstance(raw, (list, tuple)) else ()
-    output: list[str] = []
-    for item in values:
-        candidate = item if isinstance(item, str) else next(
-            (
-                item.get(key)
-                for key in ("baseline_id", "id", "value")
-                if isinstance(item, Mapping) and isinstance(item.get(key), str)
-            ),
-            "",
-        )
-        if candidate in CURRENT_DATA_BASELINES and candidate not in output:
-            output.append(candidate)
-    return output
+def _canonical_baseline_ids(raw: Any, *, strict: bool = False) -> list[str]:
+    try:
+        return list(canonical_baseline_ids(raw))
+    except BaselineSemanticError as exc:
+        if strict:
+            raise WorkflowFailure(
+                "clarification_resume_material_slots_conflict:baselines",
+                failure_type="contract",
+            ) from exc
+        return []
 
 
 def _local_clarification_question_output(state: WorkflowState) -> dict[str, Any]:
@@ -2166,21 +2307,6 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         "allowed_baseline_ids": allowed_baseline_ids,
         "budget_state": budget.to_llm_summary(),
     }
-    feedback = state.get("request", {}).get("node_retry_feedback") or {}
-    if isinstance(feedback, Mapping) and feedback.get("node") == "design_analysis_route":
-        route_payload["node_retry_feedback"] = {
-            "reason": str(feedback.get("reason") or ""),
-            "allowed_baseline_ids": allowed_baseline_ids,
-            "correction": (
-                "Return registered unique typed ids. context_sources must use only "
-                "allowed_context_source_ids. An empty context_sources array is valid "
-                "when no business-context source is requested. Metric-only datasets "
-                "belong in dataset_requirements, target_metrics, or source selection. "
-                "Every baselines item must be copied exactly from allowed_baseline_ids. "
-                "Do not invent, translate, or alias baseline ids. "
-                "Preserve confirmed material axes."
-            ),
-        }
     output = _invoke_llm(state, "analysis_route", route_payload)
     output, material_conflicts = _merge_confirmed_material_requirements(
         output,
@@ -3030,6 +3156,20 @@ def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
     if analysis_runtime is not None:
         runtime_request = _analysis_runtime_request(state)
         analysis_outcome = analysis_runtime.compile(runtime_request)
+        _record_execution_material(
+            state,
+            runtime_request,
+            analysis_runtime,
+            analysis_outcome.analysis_contract,
+            analysis_outcome.query_contracts,
+            analysis_outcome.capability_plans,
+        )
+        _validate_terminal_compile_result(
+            state,
+            analysis_outcome.analysis_contract,
+            analysis_outcome.query_contracts,
+            accepted_graph=runtime_request.accepted_graph,
+        )
         state["analysis_compile_outcome"] = analysis_outcome
         state["request"]["analysis_compile_outcome"] = analysis_outcome
         state["request"]["analysis_contract"] = analysis_outcome.analysis_contract
@@ -3163,6 +3303,89 @@ def _typed_clarification_compiled_graph(
     )
 
 
+def _record_execution_material(
+    state: WorkflowState,
+    runtime_request: AnalysisRuntimeRequest,
+    analysis_runtime: Any,
+    analysis_contract: Any,
+    query_contracts: Iterable[Any],
+    capability_execution_plans: Iterable[Any],
+) -> None:
+    registry = analysis_runtime.registry
+    state["execution_material"] = build_execution_material(
+        proposal=runtime_request.proposal,
+        accepted_graph=runtime_request.accepted_graph,
+        as_of=runtime_request.as_of,
+        permission_scope=runtime_request.permission_scope,
+        run_mode=runtime_request.run_mode,
+        runtime_contract_version=registry.contract_version,
+        runtime_registry_digest=registry.source_payload_digest,
+        analysis_contract=analysis_contract,
+        query_contracts=query_contracts,
+        capability_execution_plans=capability_execution_plans,
+    )
+
+
+def _terminal_material_authority_from_state(
+    state: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    request = state.get("request") or {}
+    choice = request.get("accepted_degradation_choice") or {}
+    if not isinstance(choice, Mapping) or str(
+        choice.get("action_kind") or ""
+    ) not in {"omit_unavailable_context", "continue_with_boundary_only"}:
+        return None
+    authority = request.get("accepted_terminal_gap_authority")
+    if not isinstance(authority, Mapping):
+        raise WorkflowFailure(
+            "accepted_terminal_gap_authority_shape_invalid",
+            failure_type="contract",
+        )
+    try:
+        return validate_material_authority(
+            authority.get("material_authority"),
+            source_run_id=str(authority.get("source_run_id") or ""),
+            thread_id=str(authority.get("thread_id") or ""),
+            topic_id=str(authority.get("topic_id") or ""),
+            require_execution_material=True,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise WorkflowFailure(
+            _exception_reason(exc),
+            failure_type="contract",
+        ) from exc
+
+
+def _validate_terminal_compile_result(
+    state: Mapping[str, Any],
+    analysis_contract: Any,
+    query_contracts: Iterable[Any],
+    *,
+    accepted_graph: Iterable[str],
+) -> None:
+    material_authority = _terminal_material_authority_from_state(state)
+    if material_authority is None:
+        return
+    try:
+        validate_terminal_compile_overlap(
+            material_authority,
+            analysis_contract=analysis_contract,
+            query_contracts=query_contracts,
+            accepted_graph=accepted_graph,
+            accepted_choice=(
+                state.get("request", {}).get(
+                    "accepted_degradation_choice"
+                )
+                or {}
+            ),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise WorkflowFailure(
+            _exception_reason(exc),
+            failure_type="contract",
+        ) from exc
+
+
 def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
     request = state.get("request") or {}
     route = state.get("analysis_route") or {}
@@ -3175,17 +3398,7 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
         )
     if proposal.get("context_sources") and not proposal.get("requested_context_sources"):
         proposal["requested_context_sources"] = proposal["context_sources"]
-    proposal.setdefault(
-        "question_families",
-        tuple(intent.get("question_families") or (intent.get("question_family"),)),
-    )
-    proposal.setdefault("target_metrics", (intent.get("target_metric"),))
-    proposal.setdefault("requested_components", ())
-    proposal.setdefault("requested_dimensions", ())
-    proposal.setdefault("baselines", tuple(intent.get("baselines") or ("previous_day",)))
-    proposal.setdefault("claim_intents", tuple(intent.get("claim_intents") or ()))
-    proposal.setdefault("scope", intent.get("scope") or {"type": "full_sample"})
-    proposal.setdefault("target_semantic", intent.get("target_semantic") or "yesterday")
+    candidate_proposal = dict(proposal)
     accepted_choice = request.get("accepted_degradation_choice") or {}
     terminal_material_authority: Mapping[str, Any] | None = None
     terminal_action = (
@@ -3193,41 +3406,42 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
         and str(accepted_choice.get("action_kind") or "")
         in {"omit_unavailable_context", "continue_with_boundary_only"}
     )
+    authority: Mapping[str, Any] | None = None
     if isinstance(accepted_choice, Mapping) and accepted_choice:
-        proposal["accepted_degradation_choice"] = dict(accepted_choice)
-        authority = request.get("accepted_terminal_gap_authority")
+        raw_authority = request.get("accepted_terminal_gap_authority")
         if terminal_action and authority is None:
+            authority = raw_authority if isinstance(raw_authority, Mapping) else None
+        if terminal_action and raw_authority is None:
             raise WorkflowFailure(
                 "accepted_terminal_gap_authority_missing",
                 failure_type="contract",
             )
-        if terminal_action and not isinstance(authority, Mapping):
+        if terminal_action and not isinstance(raw_authority, Mapping):
             raise WorkflowFailure(
                 "accepted_terminal_gap_authority_shape_invalid",
                 failure_type="contract",
             )
-        if terminal_action and not authority:
+        if terminal_action and not raw_authority:
             raise WorkflowFailure(
                 "accepted_terminal_gap_authority_shape_invalid",
                 failure_type="contract",
             )
-        if terminal_action and set(authority) != _TERMINAL_GAP_AUTHORITY_KEYS:
+        if terminal_action and set(raw_authority) != _TERMINAL_GAP_AUTHORITY_KEYS:
             raise WorkflowFailure(
                 "accepted_terminal_gap_authority_shape_invalid",
                 failure_type="contract",
             )
-        if isinstance(authority, Mapping) and authority:
-            proposal["accepted_terminal_gap_authority"] = dict(authority)
-            proposal["resume_thread_id"] = str(request.get("thread_id") or "")
-            proposal["resume_topic_id"] = str(request.get("topic_id") or "")
-            raw_material_authority = authority.get("material_authority")
+        if isinstance(raw_authority, Mapping) and raw_authority:
+            authority = raw_authority
+            raw_material_authority = raw_authority.get("material_authority")
             if terminal_action:
                 try:
                     terminal_material_authority = validate_material_authority(
                         raw_material_authority,
-                        source_run_id=str(authority.get("source_run_id") or ""),
+                        source_run_id=str(raw_authority.get("source_run_id") or ""),
                         thread_id=str(request.get("thread_id") or ""),
                         topic_id=str(request.get("topic_id") or ""),
+                        require_execution_material=True,
                     )
                 except (KeyError, TypeError, ValueError) as exc:
                     raise WorkflowFailure(
@@ -3235,7 +3449,48 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
                         failure_type="contract",
                     ) from exc
     choice = request.get("clarification_choice") or {}
-    if isinstance(choice, Mapping):
+    if terminal_material_authority is not None:
+        try:
+            if isinstance(choice, Mapping):
+                validate_terminal_clarification_choice_overlap(
+                    terminal_material_authority,
+                    choice,
+                )
+            proposal = bind_terminal_resume_proposal_material(
+                terminal_material_authority,
+                candidate_proposal,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise WorkflowFailure(
+                _exception_reason(exc),
+                failure_type="contract",
+            ) from exc
+    else:
+        proposal = dict(candidate_proposal)
+        proposal.setdefault(
+            "question_families",
+            tuple(
+                intent.get("question_families")
+                or (intent.get("question_family"),)
+            ),
+        )
+        proposal.setdefault("target_metrics", (intent.get("target_metric"),))
+        proposal.setdefault("requested_components", ())
+        proposal.setdefault("requested_dimensions", ())
+        proposal.setdefault(
+            "baselines",
+            tuple(intent.get("baselines") or ("previous_day",)),
+        )
+        proposal.setdefault(
+            "claim_intents", tuple(intent.get("claim_intents") or ())
+        )
+        proposal.setdefault(
+            "scope", intent.get("scope") or {"type": "full_sample"}
+        )
+        proposal.setdefault(
+            "target_semantic", intent.get("target_semantic") or "yesterday"
+        )
+    if isinstance(choice, Mapping) and terminal_material_authority is None:
         for key in (
             "target_semantic",
             "baselines",
@@ -3247,22 +3502,12 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
                 proposal[key] = choice[key]
         if choice.get("target_window"):
             proposal["target_semantic"] = str(choice["target_window"])
-    if terminal_material_authority is not None:
-        try:
-            if isinstance(choice, Mapping):
-                validate_terminal_clarification_choice_overlap(
-                    terminal_material_authority,
-                    choice,
-                )
-            validate_terminal_resume_proposal_overlap(
-                terminal_material_authority,
-                proposal,
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise WorkflowFailure(
-                _exception_reason(exc),
-                failure_type="contract",
-            ) from exc
+    if isinstance(accepted_choice, Mapping) and accepted_choice:
+        proposal["accepted_degradation_choice"] = dict(accepted_choice)
+    if authority is not None:
+        proposal["accepted_terminal_gap_authority"] = dict(authority)
+        proposal["resume_thread_id"] = str(request.get("thread_id") or "")
+        proposal["resume_topic_id"] = str(request.get("topic_id") or "")
     proposal["baselines"] = _canonical_baselines(
         proposal.get("baselines") or ()
     )
@@ -3272,21 +3517,58 @@ def _analysis_runtime_request(state: WorkflowState) -> AnalysisRuntimeRequest:
     if not as_of and isinstance(resume_context, Mapping):
         analysis_context = resume_context.get("analysis_context") or {}
         as_of = analysis_context.get("as_of")
-    fixed_window_bounds = _fixed_window_bounds(analysis_context)
-    if fixed_window_bounds:
-        proposal["fixed_window_bounds"] = fixed_window_bounds
-    if not as_of:
-        as_of = datetime.now(timezone.utc)
+    accepted_graph = tuple(
+        state.get("analysis_route", {}).get("requested_nodes") or ()
+    )
+    permission_scope = runtime_permission_scope_from_request(request)
+    run_mode = str(request.get("run_mode") or "production")
+    if terminal_material_authority is not None:
+        registry = (
+            request.get("analysis_runtime").registry
+            if getattr(request.get("analysis_runtime"), "registry", None)
+            is not None
+            else RuntimeContractRegistry.from_path(
+                CANONICAL_RUNTIME_BINDINGS_PATH
+            )
+        )
+        try:
+            execution_material = validate_terminal_runtime_context_overlap(
+                terminal_material_authority,
+                analysis_context=(
+                    analysis_context
+                    if isinstance(analysis_context, Mapping)
+                    else {}
+                ),
+                permission_scope=permission_scope,
+                accepted_graph=accepted_graph,
+                accepted_choice=accepted_choice,
+                run_mode=run_mode,
+                runtime_contract_version=registry.contract_version,
+                runtime_registry_digest=registry.source_payload_digest,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise WorkflowFailure(
+                _exception_reason(exc),
+                failure_type="contract",
+            ) from exc
+        as_of = execution_material["as_of"]
+        permission_scope = execution_material["permission_scope"]
+    else:
+        fixed_window_bounds = _fixed_window_bounds(analysis_context)
+        if fixed_window_bounds:
+            proposal["fixed_window_bounds"] = fixed_window_bounds
+        if not as_of:
+            as_of = datetime.now(timezone.utc)
     return AnalysisRuntimeRequest.create(
         run_id=str(state.get("run_id") or request.get("run_id") or ""),
         topic_id=str(request.get("topic_id") or ""),
         proposal=proposal,
-        accepted_graph=tuple(state.get("analysis_route", {}).get("requested_nodes") or ()),
+        accepted_graph=accepted_graph,
         as_of=as_of,
-        permission_scope=str(request.get("role") or "analyst"),
+        permission_scope=permission_scope,
         reuse_candidates=tuple(request.get("reuse_candidates") or ()),
         attempted_signatures=tuple(request.get("attempted_query_signatures") or ()),
-        run_mode=str(request.get("run_mode") or "production"),
+        run_mode=run_mode,
     )
 
 
@@ -3316,48 +3598,22 @@ def _fixed_window_bounds(
 
 
 def _canonical_baselines(values: Sequence[Any]) -> tuple[str, ...]:
-    aliases = {
-        "rolling_7d_avg": "rolling_7_day_baseline",
-        "rolling_7_day_mean": "rolling_7_day_baseline",
-        "近7日均值": "rolling_7_day_baseline",
-        "same_day_last_week": "same_weekday_last_week",
-        "same_weekday_previous_week": "same_weekday_last_week",
-        "上周同日": "same_weekday_last_week",
-        "前一天": "previous_day",
-    }
-    if isinstance(values, (str, bytes, bytearray)):
-        values = (values,)
-    return tuple(
-        dict.fromkeys(
-            _canonical_baseline(str(value), aliases)
-            for value in values
-            if str(value)
-        )
+    items = (
+        tuple(values)
+        if isinstance(values, Sequence)
+        and not isinstance(values, (str, bytes, bytearray))
+        else (values,)
     )
-
-
-def _canonical_baseline(value: str, aliases: Mapping[str, str]) -> str:
-    if value in aliases:
-        return aliases[value]
-    compact = value.replace(" ", "")
-    if "上周同日" in compact or "上周同期" in compact:
-        return "same_weekday_last_week"
-    if "7" in compact and any(
-        marker in compact for marker in ("日均", "天均", "均值", "平均")
-    ):
-        return "rolling_7_day_baseline"
-    if any(
-        marker in compact
-        for marker in (
-            "前日",
-            "前一日",
-            "前一天",
-            "前天",
-            "前一个完整业务日",
-        )
-    ):
-        return "previous_day"
-    return value
+    output: list[str] = []
+    for value in items:
+        try:
+            canonical = canonical_baseline_ids(value)
+        except BaselineSemanticError:
+            canonical = (str(value),) if str(value) else ()
+        for item in canonical:
+            if item not in output:
+                output.append(item)
+    return tuple(output)
 
 
 def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
@@ -3466,7 +3722,22 @@ def _fetch_runtime_rows(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "fetch_runtime_rows")
     analysis_runtime = state.get("request", {}).get("analysis_runtime")
     if analysis_runtime is not None:
-        result = analysis_runtime.execute(_analysis_runtime_request(state))
+        runtime_request = _analysis_runtime_request(state)
+        result = analysis_runtime.execute(runtime_request)
+        _record_execution_material(
+            state,
+            runtime_request,
+            analysis_runtime,
+            result.analysis_contract,
+            result.query_contracts,
+            result.capability_plans,
+        )
+        _validate_terminal_compile_result(
+            state,
+            result.analysis_contract,
+            result.query_contracts,
+            accepted_graph=runtime_request.accepted_graph,
+        )
         state["analysis_runtime_result"] = result
         payload = result.to_workflow_payload()
         state["request"].update(payload)
@@ -3784,6 +4055,35 @@ def _generate_query_gap_clarification(state: WorkflowState) -> WorkflowState:
         state["query_gap_no_feasible_action"] = True
         state["workflow_status"] = "blocked"
         return state
+    selected_actions, staged_actions = _group_query_gap_actions(
+        [
+            dict(action)
+            for gap in business_gaps
+            for action in gap.get("allowed_actions") or ()
+            if isinstance(action, Mapping)
+        ]
+    )
+    if not 1 <= len(selected_actions) <= 2:
+        raise WorkflowFailure(
+            f"query_gap_action_contract_invalid:action_count:{len(selected_actions)}",
+            failure_type="contract",
+        )
+    state["staged_query_gap_actions"] = staged_actions
+    forced_ready_sibling_option = ""
+    if _has_authority_ready_independent_capability(result, typed_gaps):
+        forced_ready_sibling_option = next(
+            (
+                str(action.get("business_semantics") or "")
+                for action in selected_actions
+                if action.get("action_kind") == "omit_unavailable_context"
+            ),
+            "",
+        )
+        if not forced_ready_sibling_option:
+            raise WorkflowFailure(
+                "query_gap_ready_sibling_action_missing",
+                failure_type="contract",
+            )
     output = _invoke_llm(
         state,
         "query_gap_clarification",
@@ -3792,16 +4092,17 @@ def _generate_query_gap_clarification(state: WorkflowState) -> WorkflowState:
             "repair_statuses": _business_query_repair_statuses(
                 state.get("query_repair_decisions") or (),
             ),
-            "retry_feedback": _query_gap_retry_feedback(
-                state.get("request", {}).get("node_retry_feedback")
-            ),
             "business_labels": {
                 "metric": state.get("intent", {}).get("target_metric"),
                 "time_window": state.get("intent", {}).get("time_window"),
             },
+            "allowed_business_options": [
+                str(action["business_semantics"])
+                for action in selected_actions
+            ],
+            "recommended_business_option": forced_ready_sibling_option,
         },
     )
-    output = _normalize_query_gap_clarification_output(output)
     questions = output.get("questions")
     if not isinstance(questions, Sequence) or isinstance(questions, (str, bytes)):
         raise WorkflowFailure(
@@ -3830,65 +4131,23 @@ def _generate_query_gap_clarification(state: WorkflowState) -> WorkflowState:
     options, choice_actions = _render_query_gap_actions(
         state,
         business_gaps,
-        typed_gaps,
+        output=output,
     )
     first_question["options"] = options
     output["questions"] = [first_question]
     output["choice_actions"] = choice_actions
-    forced_ready_sibling_option = ""
-    if _has_authority_ready_independent_capability(result, typed_gaps):
-        forced_ready_sibling_option = next(
-            (
-                str(action.get("business_label") or "")
-                for action in choice_actions
-                if action.get("action_kind") == "omit_unavailable_context"
-            ),
-            "",
-        )
-        if not forced_ready_sibling_option:
-            raise WorkflowFailure(
-                "query_gap_ready_sibling_action_missing",
-                failure_type="contract",
-            )
     recommended = output.get("recommended_assumption") or {}
-    recommended_option = str(
-        recommended.get("option") if isinstance(recommended, Mapping) else ""
-    ).strip()
-    if forced_ready_sibling_option:
-        recommended_option = forced_ready_sibling_option
-        output["recommended_assumption"] = {"option": recommended_option}
-        output["recommendation_reason"] = (
-            "保留已有权威绑定的可执行分析，仅省略当前不可用的独立背景能力。"
+    recommended_option = (
+        recommended.get("option") if isinstance(recommended, Mapping) else None
+    )
+    if (
+        forced_ready_sibling_option
+        and recommended_option != forced_ready_sibling_option
+    ):
+        raise WorkflowFailure(
+            "query_gap_clarification_contract_invalid:recommended_option",
+            failure_type="llm_contract",
         )
-    elif not recommended_option or recommended_option not in options:
-        business_options = [
-            option
-            for option in options
-            if "tell the agent to do differently" not in option.lower()
-        ]
-        if not 1 <= len(business_options) <= 2:
-            raise WorkflowFailure(
-                "query_gap_recommendation_repair_invalid:business_option_count",
-                failure_type="llm_contract",
-            )
-        repair = _invoke_llm(
-            state,
-            "query_gap_recommendation_repair",
-            {"business_options": business_options},
-        )
-        option_index = repair.get("option_index")
-        if (
-            type(option_index) is not int
-            or option_index < 0
-            or option_index >= len(business_options)
-        ):
-            raise WorkflowFailure(
-                "query_gap_recommendation_repair_invalid:option_index",
-                failure_type="llm_contract",
-            )
-        recommended_option = business_options[option_index]
-        output["recommended_assumption"] = {"option": recommended_option}
-        output["recommendation_reason"] = str(repair.get("brief_reason") or "").strip()
     state["query_gap_clarification"] = output
     state["workflow_status"] = "waiting_for_clarification"
     return state
@@ -3953,7 +4212,8 @@ def _query_gap_prompt_business_gaps(
 def _render_query_gap_actions(
     state: WorkflowState,
     business_gaps: Sequence[Mapping[str, Any]],
-    typed_gaps: Sequence[Mapping[str, Any]],
+    *,
+    output: Mapping[str, Any],
 ) -> tuple[list[str], list[dict[str, Any]]]:
     raw_actions: list[dict[str, Any]] = []
     for gap in business_gaps:
@@ -3963,73 +4223,77 @@ def _render_query_gap_actions(
             raw_actions.append(dict(action))
     grouped_actions, staged_actions = _group_query_gap_actions(raw_actions)
     state["staged_query_gap_actions"] = staged_actions
-    action_contracts = {
-        str(action["choice_id"]): action for action in grouped_actions
-    }
-    sanitized_actions = [
-        {
-            "choice_id": action["choice_id"],
-            "action_kind": action["action_kind"],
-            "business_semantics": action["business_semantics"],
-        }
-        for action in grouped_actions
-    ]
-    if not 1 <= len(sanitized_actions) <= 2:
+    if not 1 <= len(grouped_actions) <= 2:
         raise WorkflowFailure(
-            f"query_gap_action_render_contract_invalid:action_count:{len(sanitized_actions)}",
+            f"query_gap_action_contract_invalid:action_count:{len(grouped_actions)}",
             failure_type="contract",
         )
-    rendered = _invoke_llm(
-        state,
-        "query_gap_action_render",
-        {"allowed_actions": sanitized_actions},
-    )
-    rendered_actions = rendered.get("rendered_actions")
-    if not isinstance(rendered_actions, Sequence) or isinstance(
-        rendered_actions, (str, bytes)
+    questions = output.get("questions") or ()
+    if (
+        not isinstance(questions, Sequence)
+        or isinstance(questions, (str, bytes))
+        or len(questions) != 1
+        or not isinstance(questions[0], Mapping)
     ):
         raise WorkflowFailure(
-            "query_gap_action_render_invalid:shape",
+            "query_gap_action_binding_invalid:questions",
             failure_type="llm_contract",
         )
-    bound_by_id: dict[str, dict[str, Any]] = {}
-    labels = set()
-    for item in rendered_actions:
-        if not isinstance(item, Mapping):
-            raise WorkflowFailure(
-                "query_gap_action_render_invalid:item",
-                failure_type="llm_contract",
-            )
-        choice_id = str(item.get("choice_id") or "").strip()
-        label = str(item.get("label") or "").strip()
-        if (
-            choice_id not in action_contracts
-            or choice_id in bound_by_id
-            or not label
-            or label in labels
-        ):
-            raise WorkflowFailure(
-                "query_gap_action_render_invalid:binding",
-                failure_type="llm_contract",
-            )
-        bound_by_id[choice_id] = {
-            **action_contracts[choice_id],
-            "business_label": label,
-            "business_reason": str(item.get("reason") or "").strip(),
-        }
-        labels.add(label)
-    if set(bound_by_id) != set(action_contracts):
+    raw_options = questions[0].get("options") or ()
+    if (
+        not isinstance(raw_options, Sequence)
+        or isinstance(raw_options, (str, bytes))
+        or any(not isinstance(option, str) for option in raw_options)
+    ):
         raise WorkflowFailure(
-            "query_gap_action_render_invalid:cardinality",
+            "query_gap_action_binding_invalid:options",
             failure_type="llm_contract",
         )
-    if _query_gap_clarification_internal_authority_leaks(rendered, typed_gaps):
-        raise WorkflowFailure(
-            "query_gap_action_render_internal_authority_leak",
-            failure_type="llm_contract",
-        )
-    bound = [bound_by_id[action["choice_id"]] for action in sanitized_actions]
+    options = list(raw_options)
     escape = "tell the agent to do differently"
+    expected_business_options = tuple(
+        str(action["business_semantics"]) for action in grouped_actions
+    )
+    if (
+        len(options) != len(expected_business_options) + 1
+        or tuple(options[:-1]) != expected_business_options
+        or options[-1] != escape
+    ):
+        raise WorkflowFailure(
+            "query_gap_action_binding_invalid:options",
+            failure_type="llm_contract",
+        )
+    recommendation_reason = str(output.get("recommendation_reason") or "").strip()
+    if not recommendation_reason:
+        raise WorkflowFailure(
+            "query_gap_action_binding_invalid:recommendation_reason",
+            failure_type="llm_contract",
+        )
+    recommended = output.get("recommended_assumption") or {}
+    recommended_option = (
+        recommended.get("option") if isinstance(recommended, Mapping) else None
+    )
+    if (
+        not isinstance(recommended_option, str)
+        or recommended_option not in expected_business_options
+    ):
+        raise WorkflowFailure(
+            "query_gap_action_binding_invalid:recommended_option",
+            failure_type="llm_contract",
+        )
+    actions_by_semantics = {
+        str(action["business_semantics"]): action for action in grouped_actions
+    }
+    bound = [
+        {
+            **actions_by_semantics[option],
+            "business_label": option,
+            "business_reason": recommendation_reason
+            if option == recommended_option
+            else "",
+        }
+        for option in expected_business_options
+    ]
     bound.append(
         {
             "choice_id": "user_redirect",
@@ -4039,7 +4303,7 @@ def _render_query_gap_actions(
             "affected_capabilities": [],
         }
     )
-    return [*(item["business_label"] for item in bound[:-1]), escape], bound
+    return [*expected_business_options, escape], bound
 
 
 def _group_query_gap_actions(
@@ -4250,16 +4514,6 @@ def _business_query_repair_gap(
     return {}
 
 
-def _query_gap_retry_feedback(feedback: Any) -> Mapping[str, str] | None:
-    if not isinstance(feedback, Mapping):
-        return None
-    reason = str(feedback.get("reason") or "").partition(":")[0]
-    if reason.startswith("query_gap_clarification_"):
-        return {"error_code": reason}
-    failure_type = str(feedback.get("failure_type") or "").strip()
-    return {"error_code": failure_type} if failure_type else None
-
-
 def _query_gap_clarification_internal_authority_leaks(
     output: Mapping[str, Any],
     typed_gaps: Sequence[Mapping[str, Any]],
@@ -4283,130 +4537,6 @@ def _query_gap_clarification_internal_authority_leaks(
     return any(value and value in rendered for value in forbidden)
 
 
-def _normalize_query_gap_clarification_output(
-    output: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Normalize presentation variants while preserving the LLM's business choices."""
-
-    def option_text(raw_option: Any) -> str:
-        if isinstance(raw_option, str):
-            return raw_option.strip()
-        if not isinstance(raw_option, Mapping):
-            return ""
-        selected = (
-            raw_option.get("label")
-            or raw_option.get("option")
-            or raw_option.get("choice")
-            or raw_option.get("recommended_option")
-            or raw_option.get("selected_option")
-            or raw_option.get("title")
-            or raw_option.get("text")
-            or raw_option.get("name")
-            or raw_option.get("value")
-            or raw_option.get("description")
-            or ""
-        )
-        if isinstance(selected, Mapping):
-            return option_text(selected)
-        label = str(selected).strip()
-        raw_description = str(raw_option.get("description") or "").strip()
-        description = "" if raw_description == label else raw_description
-        return "：".join(item for item in (label, description) if item)
-
-    def option_values(raw_options: Any) -> list[Any]:
-        if isinstance(raw_options, Mapping):
-            return list(raw_options.values())
-        if isinstance(raw_options, Sequence) and not isinstance(
-            raw_options, (str, bytes)
-        ):
-            return list(raw_options)
-        return []
-
-    questions = output.get("questions")
-    if isinstance(questions, Mapping):
-        questions = (questions,)
-    if not isinstance(questions, Sequence) or isinstance(questions, (str, bytes)):
-        return dict(output)
-    normalized_questions: list[dict[str, Any]] = []
-    for raw_question in questions:
-        if not isinstance(raw_question, Mapping):
-            continue
-        question = str(
-            raw_question.get("question")
-            or raw_question.get("question_text")
-            or raw_question.get("prompt")
-            or raw_question.get("text")
-            or ""
-        ).strip()
-        options: list[str] = []
-        raw_options = raw_question.get("options") or raw_question.get("choices") or ()
-        for raw_option in option_values(raw_options):
-            option = option_text(raw_option)
-            if option and option not in options:
-                options.append(option)
-        escape = "tell the agent to do differently（告诉分析助手换一种处理方式）"
-        has_escape = any(
-            "tell the agent to do differently" in item.lower() for item in options
-        )
-        if not has_escape and options:
-            options = options[:2]
-            options.append(escape)
-        if question and options:
-            normalized_questions.append(
-                {**dict(raw_question), "question": question, "options": options[:3]}
-            )
-    if not normalized_questions:
-        question = str(
-            output.get("question") or output.get("question_text") or ""
-        ).strip()
-        options = [
-            option
-            for raw_option in option_values(output.get("options") or output.get("choices"))
-            if (option := option_text(raw_option))
-        ]
-        recommended = option_text(output.get("recommended_assumption"))
-        if recommended and recommended not in options:
-            options.append(recommended)
-        if question and options:
-            escape = "tell the agent to do differently（告诉分析助手换一种处理方式）"
-            if not any(
-                "tell the agent to do differently" in item.lower() for item in options
-            ):
-                options = [*options[:2], escape]
-            normalized_questions.append({"question": question, "options": options[:3]})
-    selected_questions = normalized_questions[:1]
-    selected_options = (
-        list(selected_questions[0].get("options") or ())
-        if selected_questions
-        else []
-    )
-    raw_recommended = output.get("recommended_assumption")
-    recommended_text = option_text(raw_recommended)
-    recommended_matches = [
-        option
-        for option in selected_options
-        if "tell the agent to do differently" not in option.lower()
-        and (
-            option == recommended_text
-            or option.startswith(f"{recommended_text}：")
-            or (len(option) >= 4 and option in recommended_text)
-        )
-    ] if recommended_text else []
-    recommended_option = (
-        recommended_matches[0] if len(recommended_matches) == 1 else ""
-    )
-    recommended_assumption = (
-        {"option": recommended_option}
-        if recommended_option
-        else {"assumption": recommended_text}
-    )
-    return {
-        **dict(output),
-        "questions": selected_questions,
-        "recommended_assumption": recommended_assumption,
-    }
-
-
 def _persist_query_gap_clarification(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "persist_query_gap_clarification")
     result = state.get("analysis_runtime_result")
@@ -4422,6 +4552,9 @@ def _persist_query_gap_clarification(state: WorkflowState) -> WorkflowState:
         ),
         "analysis_contract": (
             result.analysis_contract.to_dict() if result is not None else {}
+        ),
+        "execution_material": to_jsonable(
+            state.get("execution_material")
         ),
         "query_contracts": (
             [item.to_dict() for item in result.query_contracts] if result is not None else []
@@ -5627,9 +5760,7 @@ def _compiler_bound_context(state: WorkflowState) -> dict[str, Any]:
             )
     elif request.get("as_of") not in (None, ""):
         context["as_of"] = str(request.get("as_of"))
-    permission_role = request.get("role") or (
-        request.get("permission_context") or {}
-    ).get("role")
+    permission_role = runtime_permission_scope_from_request(request)
     if permission_role:
         context["permission_scope"] = str(permission_role)
     if isinstance(request.get("contract_versions"), Mapping):
@@ -6409,23 +6540,8 @@ def _invoke_terminal_explanation(
     payload: Mapping[str, Any],
     status: str,
 ) -> dict[str, Any]:
-    current_payload = dict(payload)
-    for attempt in range(1, 4):
-        output = _invoke_llm(state, task, current_payload)
-        try:
-            return _sanitize_terminal_explanation(output, state, status)
-        except WorkflowFailure as exc:
-            if attempt >= 3:
-                raise
-            current_payload = {
-                **dict(payload),
-                "retry_context": _retry_context(
-                    task,
-                    "llm_output_validation",
-                    str(exc),
-                ),
-            }
-    raise AssertionError("terminal_explanation_retry_unreachable")
+    output = _invoke_llm(state, task, dict(payload))
+    return _sanitize_terminal_explanation(output, state, status)
 
 
 def _ensure_blocked_boundary_audit(state: WorkflowState) -> None:
@@ -6633,31 +6749,21 @@ def _coverage_block_reason_text(coverage: Mapping[str, Any]) -> str:
 
 def _final_business_summary(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "final_business_summary")
-    retry_instruction = ""
-    for attempt in range(1, 4):
-        summary_payload = _final_business_summary_payload(
-            state,
-            retry_instruction=retry_instruction,
+    summary_payload = _final_business_summary_payload(state)
+    try:
+        output = _invoke_llm(state, "final_business_summary", summary_payload)
+    except WorkflowFailure as exc:
+        raise WorkflowFailure(
+            f"final_business_summary_provider_failed:{exc}",
+            failure_type="llm",
+        ) from exc
+    _apply_final_business_summary_output(state, output)
+    if not str(state.get("final_business_summary") or "").strip():
+        raise WorkflowFailure(
+            "final_business_summary_contract_invalid:summary_text",
+            failure_type="llm_contract",
         )
-        try:
-            output = _invoke_llm(state, "final_business_summary", summary_payload)
-        except WorkflowFailure as exc:
-            raise WorkflowFailure(
-                f"final_business_summary_provider_failed:{exc}",
-                failure_type="llm",
-            ) from exc
-        _apply_final_business_summary_output(state, output)
-        if str(state.get("final_business_summary") or "").strip():
-            return state
-        retry_instruction = (
-            "上一次输出为空，无法形成用户可见答案。"
-            "请基于输入中的证据、限制和合同缺口输出完整中文业务答案；"
-            f"这是第 {attempt + 1} 次尝试。"
-        )
-    raise WorkflowFailure(
-        "final_business_summary_empty_after_3_attempts",
-        failure_type="llm",
-    )
+    return state
 
 
 def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
@@ -6794,9 +6900,7 @@ def _delivery_reverify_with_answer_repair(state: WorkflowState) -> dict[str, Any
 
     authority_package = _build_answer_package_from_state(state)
     delivered = verify(authority_package)
-    attempts = 0
-    while str(delivered.get("status") or "") == "failed" and attempts < 2:
-        attempts += 1
+    if str(delivered.get("status") or "") == "failed":
         errors = tuple(
             str(item.get("code") or "")
             for item in delivered.get("admin_audit", {}).get("verifier", {}).get("errors", ())
@@ -7277,7 +7381,7 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         contract_gap_diagnostics=contract_gap_diagnostics,
         row_query_plan=state.get("row_query_plan", {}),
         snapshot_id=str(context_manifest.get("snapshot_version") or request.get("snapshot_id") or ""),
-        permission_scope=str(request.get("role") or ""),
+        permission_scope=runtime_permission_scope_from_request(request),
         analysis_contract=request.get("analysis_contract"),
         query_contracts=request.get("query_contracts") or (),
         query_results=request.get("query_results") or (),
@@ -7688,8 +7792,6 @@ def normalize_final_answer_audit(output: Mapping[str, Any]) -> dict[str, Any]:
 
 def _final_business_summary_payload(
     state: WorkflowState,
-    *,
-    retry_instruction: str = "",
 ) -> dict[str, Any]:
     contract_gap_diagnostics = _refresh_contract_gap_diagnostics(state)
     available_evidence_brief = build_available_evidence_brief(
@@ -7725,7 +7827,6 @@ def _final_business_summary_payload(
         "contract_gap_diagnostics": contract_gap_diagnostics,
         "checkpoint_summary": _checkpoint_summary(state),
         "business_threads": _business_threads(state),
-        "final_answer_retry_instruction": retry_instruction,
         "accepted_degradation_choice": dict(
             state.get("request", {}).get("accepted_degradation_choice") or {}
         ),
@@ -7831,26 +7932,6 @@ def _contract_gap_next_actions(gap: Mapping[str, Any]) -> tuple[str, ...]:
     )
 
 
-def _final_summary_retry_instruction(
-    final_answer_audit: Mapping[str, Any],
-    *,
-    attempt: int,
-) -> str:
-    warnings = ", ".join(str(item) for item in final_answer_audit.get("repairable_warnings", ()) if item)
-    base = str(final_answer_audit.get("retry_instruction") or "")
-    instruction = base
-    if warnings:
-        instruction = f"{instruction}\n需要修复的问题：{warnings}。".strip()
-    if attempt >= 2:
-        instruction = (
-            f"{instruction}\n"
-            "这是第二次修复，请输出完整中文业务答案，必须包含："
-            "我对问题的理解是、分析脉络、关键发现、最终结论、需要注意。"
-            "不要只返回状态说明。"
-        ).strip()
-    return instruction
-
-
 def _with_local_final_summary_repair_warnings(
     audit: Mapping[str, Any],
     state: WorkflowState,
@@ -7894,7 +7975,17 @@ def _apply_final_business_summary_output(
 
 
 def _final_business_summary_text(output: Mapping[str, Any]) -> str:
-    text = str(output.get("summary_text") or "").strip()
+    raw_text = output.get("summary_text")
+    if (
+        not isinstance(raw_text, str)
+        or not raw_text.strip()
+        or raw_text != raw_text.strip()
+    ):
+        raise WorkflowFailure(
+            "final_business_summary_contract_invalid:summary_text",
+            failure_type="llm_contract",
+        )
+    text = raw_text
     sections = [
         ("我对问题的理解是：", ("我对问题的理解是", "我对问题的理解是：")),
         ("分析脉络：", ("分析脉络", "分析脉络：")),
@@ -9227,10 +9318,27 @@ def _sanitize_terminal_explanation(
     state: WorkflowState,
     status: str,
 ) -> dict[str, Any]:
+    if not isinstance(explanation, Mapping):
+        raise WorkflowFailure(
+            f"{status}_explanation_rejected:object_invalid",
+            failure_type="llm",
+        )
     value = dict(explanation or {})
     value["status"] = status
+    for key in ("explanation", "owner", "repair_path"):
+        raw = value.get(key)
+        if isinstance(raw, str) and not raw.strip():
+            raise WorkflowFailure(
+                f"{status}_explanation_rejected:{key}_missing",
+                failure_type="llm",
+            )
+        if not isinstance(raw, str) or raw != raw.strip():
+            raise WorkflowFailure(
+                f"{status}_explanation_rejected:{key}_invalid",
+                failure_type="llm",
+            )
     visible_text = " ".join(
-        str(value.get(key, "")) for key in ("explanation", "owner", "repair_path")
+        value[key] for key in ("explanation", "owner", "repair_path")
     )
     if status == "blocked" and _blocked_terminal_text_contradicts_status(visible_text):
         raise WorkflowFailure(f"{status}_explanation_rejected:contradicts_status", failure_type="llm")
@@ -9250,18 +9358,28 @@ def _sanitize_terminal_explanation(
             f"{status}_explanation_rejected:target_metric_drift",
             failure_type="llm",
         )
-    owner = str(value.get("owner") or "")
-    if (
-        not owner
-        or _has_internal_visible_token(owner)
-        or _owner_drifts_to_data_quality(owner, state, status)
-    ):
-        value["owner"] = _terminal_owner(state, status)
-    repair_path = str(value.get("repair_path") or "")
-    if not repair_path or _has_internal_visible_token(repair_path):
-        value["repair_path"] = _terminal_repair_path(state, status)
+    owner = value["owner"]
+    if _has_internal_visible_token(owner):
+        raise WorkflowFailure(
+            f"{status}_explanation_rejected:owner_internal_tokens",
+            failure_type="llm",
+        )
+    if _owner_drifts_to_data_quality(owner, state, status):
+        raise WorkflowFailure(
+            f"{status}_explanation_rejected:owner_drift",
+            failure_type="llm",
+        )
+    repair_path = value["repair_path"]
+    if _has_internal_visible_token(repair_path):
+        raise WorkflowFailure(
+            f"{status}_explanation_rejected:repair_path_internal_tokens",
+            failure_type="llm",
+        )
     if _repair_path_invents_fixed_future_window(repair_path):
-        value["repair_path"] = _terminal_repair_path(state, status)
+        raise WorkflowFailure(
+            f"{status}_explanation_rejected:repair_path_future_window",
+            failure_type="llm",
+        )
     gap_ids = [
         str(item.get("gap_id"))
         for item in state.get("contract_gap_diagnostics") or ()
@@ -9400,30 +9518,6 @@ def _owner_drifts_to_data_quality(owner: str, state: WorkflowState, status: str)
         any(token in owner for token in ("数据质量", "数据工程", "数据治理", "数据运营"))
         and _terminal_owner(state, status) == "业务分析负责人"
     )
-
-
-def _terminal_explanation_fallback(state: WorkflowState, status: str) -> dict[str, Any]:
-    return {
-        "status": status,
-        "explanation": _terminal_explanation_text(state, status),
-        "owner": _terminal_owner(state, status),
-        "repair_path": _terminal_repair_path(state, status),
-    }
-
-
-def _terminal_explanation_text(state: WorkflowState, status: str) -> str:
-    if state.get("clarification_outcome", {}).get("boundary_status") == "needs_question":
-        return "当前不能发布业务结论。主要原因：需要先确认会影响答案的业务口径。"
-    if status == "blocked":
-        reasons = _business_validator_reasons(state.get("validator_results", ()))
-        if not reasons:
-            reasons = ("当前存在权限、合同、数据覆盖或问题边界硬限制",)
-        return "当前不能发布业务结论。主要原因：" + "；".join(reasons) + "。"
-    limitations = tuple(state.get("evidence_brief", {}).get("limitations", ()))
-    reasons = _business_limitation_reasons(limitations)
-    if not reasons:
-        reasons = ("当前证据强度不足，不能支撑主业务结论",)
-    return "当前降级处理，不能发布主业务结论。主要原因：" + "；".join(reasons) + "。"
 
 
 def _business_limitation_reasons(limitations: tuple[str, ...]) -> tuple[str, ...]:

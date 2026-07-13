@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bi_agent.conversation.agent_core import ConversationAgentCore
+from bi_agent.conversation.models import validate_result_reuse_candidate
 from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
     ObligationResolution,
@@ -51,6 +52,7 @@ from bi_agent.runtime.coverage_audit import audit_existing_data_coverage
 from bi_agent.runtime.evidence_authority import (
     CapabilityBindingRecord,
     EvidenceIntegrityError,
+    QueryExecutionRecord,
     RowsPayloadLoader,
     RuntimeEvidenceResolver,
     canonical_value,
@@ -257,6 +259,8 @@ def review_case_obligations(
     evidence_resolver: Any = None,
     rows_loader: Any = None,
     release_resolver: Any = None,
+    conversation_store: Any = None,
+    case_lineage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Review executable obligations without constraining answer wording."""
     scenario = turn_record.get("scenario") or {}
@@ -434,11 +438,33 @@ def review_case_obligations(
         and turn_record.get("resumed_topic_id") == turn_record.get("topic_id")
     )
     reuse_required = scenario.get("reuse") == "required"
+    reuse_review = (
+        _review_required_reuse(
+            authority,
+            scenario.get("expected_reuse") or {},
+            registry=registry,
+            evidence_resolver=evidence_resolver,
+            rows_loader=rows_loader,
+            release_resolver=release_resolver,
+            conversation_store=conversation_store,
+            case_lineage=case_lineage,
+        )
+        if reuse_required
+        else {
+            "passed": True,
+            "errors": [],
+            "source_result_ref": "",
+            "current_result_ref": "",
+            "query_contract_ref": "",
+            "capability_id": "",
+            "dataset_ids": [],
+        }
+    )
     reuse_passed = (
         not reuse_required
         or bool(turn_record.get("prior_topic_id"))
         and turn_record.get("topic_id") == turn_record.get("prior_topic_id")
-        and _has_exact_reuse_decision(authority)
+        and reuse_review["passed"] is True
     )
     hard_passed = (
         family_authority_status in {"matched", "mismatch"}
@@ -527,6 +553,7 @@ def review_case_obligations(
         "terminal_outcome": terminal_review["outcome"],
         "terminal_boundary_passed": terminal_review["passed"],
         "clarification_resume_passed": clarification_passed,
+        "reuse_review": reuse_review,
         "reuse_passed": reuse_passed,
         "hard_acceptance_passed": hard_passed,
     }
@@ -2207,11 +2234,699 @@ def _review_terminal_boundary(
     }
 
 
-def _has_exact_reuse_decision(authority: Mapping[str, Any]) -> bool:
-    return any(
-        item.get("decision") == "reuse"
-        for item in _mapping_items_for_keys(authority, {"reuse_decisions"})
+def _review_required_reuse(
+    authority: Mapping[str, Any],
+    expected: Any,
+    *,
+    registry: RuntimeContractRegistry,
+    evidence_resolver: Any,
+    rows_loader: Any,
+    release_resolver: Any,
+    conversation_store: Any = None,
+    case_lineage: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    empty_review = {
+        "passed": False,
+        "errors": [],
+        "source_result_ref": "",
+        "current_result_ref": "",
+        "query_contract_ref": "",
+        "capability_id": "",
+        "dataset_ids": [],
+    }
+    expected_tuple = _expected_reuse_tuple(expected)
+    if expected_tuple is None:
+        return {**empty_review, "errors": ["expected_reuse_schema_invalid"]}
+    expected_capability, expected_datasets = expected_tuple
+    admin = authority.get("admin_audit")
+    if not isinstance(admin, Mapping):
+        return {**empty_review, "errors": ["run_matched_reuse_authority_missing"]}
+    raw_decisions = admin.get("reuse_decisions")
+    if not isinstance(raw_decisions, (list, tuple)):
+        return {**empty_review, "errors": ["admin_reuse_decision_missing"]}
+    decisions = tuple(
+        item
+        for item in raw_decisions
+        if isinstance(item, Mapping) and item.get("decision") == "reuse"
     )
+    if not decisions:
+        return {**empty_review, "errors": ["admin_reuse_decision_missing"]}
+
+    candidates: list[dict[str, Any]] = []
+    for decision in decisions:
+        candidate_authority = {
+            **authority,
+            "admin_audit": {**admin, "reuse_decisions": [decision]},
+        }
+        candidate = _review_required_reuse_candidate(
+            candidate_authority,
+            {
+                "capability_id": expected_capability,
+                "dataset_ids": sorted(expected_datasets),
+            },
+            registry=registry,
+            evidence_resolver=evidence_resolver,
+            rows_loader=rows_loader,
+            release_resolver=release_resolver,
+            conversation_store=conversation_store,
+            case_lineage=case_lineage,
+        )
+        if candidate.get("capability_id") == expected_capability:
+            candidates.append(candidate)
+    if len(candidates) > 1:
+        return {**empty_review, "errors": ["expected_reuse_tuple_ambiguous"]}
+    if not candidates:
+        return {**empty_review, "errors": ["reuse_current_result_mismatch"]}
+    return candidates[0]
+
+
+def _expected_reuse_tuple(value: Any) -> tuple[str, frozenset[str]] | None:
+    if not isinstance(value, Mapping) or set(value) != {
+        "capability_id",
+        "dataset_ids",
+    }:
+        return None
+    capability_id = value.get("capability_id")
+    dataset_ids = value.get("dataset_ids")
+    if (
+        not isinstance(capability_id, str)
+        or not capability_id.strip()
+        or capability_id != capability_id.strip()
+        or not isinstance(dataset_ids, list)
+        or not dataset_ids
+        or any(
+            not isinstance(dataset_id, str)
+            or not dataset_id.strip()
+            or dataset_id != dataset_id.strip()
+            for dataset_id in dataset_ids
+        )
+        or len(set(dataset_ids)) != len(dataset_ids)
+    ):
+        return None
+    return capability_id, frozenset(dataset_ids)
+
+
+def _normalized_reuse_case_lineage(
+    value: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    thread_id = value.get("thread_id")
+    current_run_id = value.get("current_run_id")
+    current_topic_id = value.get("current_topic_id")
+    raw_prior = value.get("prior_runs")
+    if (
+        not isinstance(thread_id, str)
+        or not thread_id
+        or not isinstance(current_run_id, str)
+        or not current_run_id
+        or not isinstance(current_topic_id, str)
+        or not current_topic_id
+        or not isinstance(raw_prior, (list, tuple))
+    ):
+        return None
+    prior_runs: list[dict[str, str]] = []
+    for item in raw_prior:
+        if not isinstance(item, Mapping):
+            return None
+        normalized = {
+            key: item.get(key)
+            for key in ("run_id", "thread_id", "topic_id", "status")
+        }
+        if any(not isinstance(field, str) or not field for field in normalized.values()):
+            return None
+        prior_runs.append({key: str(field) for key, field in normalized.items()})
+    if len({item["run_id"] for item in prior_runs}) != len(prior_runs):
+        return None
+    return {
+        "thread_id": thread_id,
+        "current_run_id": current_run_id,
+        "current_topic_id": current_topic_id,
+        "prior_runs": prior_runs,
+    }
+
+
+def _review_published_source_candidate(
+    *,
+    source_ref: str,
+    expected_capability: str,
+    current_analysis_contract_ref: str,
+    registry: RuntimeContractRegistry,
+    evidence_resolver: RuntimeEvidenceResolver,
+    rows_loader: RowsPayloadLoader,
+    release_resolver: Any,
+    conversation_store: Any,
+    case_lineage: Mapping[str, Any] | None,
+    decision_candidate_signature: str,
+    current_candidate_signature: str,
+) -> tuple[QueryExecutionRecord | None, list[str]]:
+    errors: list[str] = []
+    lineage = _normalized_reuse_case_lineage(case_lineage)
+    if lineage is None:
+        return None, ["reuse_case_lineage_invalid"]
+    resolver_method = getattr(
+        conversation_store,
+        "resolve_result_candidate_authority",
+        None,
+    )
+    if not callable(resolver_method):
+        return None, ["reuse_source_candidate_authority_invalid"]
+    try:
+        source_authority = resolver_method(
+            result_ref=source_ref,
+            topic_id=lineage["current_topic_id"],
+        )
+    except Exception:
+        return None, ["reuse_source_candidate_authority_invalid"]
+    if not isinstance(source_authority, Mapping):
+        return None, ["reuse_source_candidate_authority_invalid"]
+    result_ref_record = source_authority.get("result_ref_record")
+    if not isinstance(result_ref_record, Mapping):
+        return None, ["reuse_source_candidate_authority_invalid"]
+    try:
+        candidate = validate_result_reuse_candidate(
+            result_ref_record.get("payload") or {}
+        )
+    except (EvidenceIntegrityError, TypeError, ValueError):
+        return None, ["reuse_source_candidate_authority_invalid"]
+    signed_candidate_signature = str(candidate.get("candidate_signature") or "")
+    if (
+        not signed_candidate_signature
+        or decision_candidate_signature != signed_candidate_signature
+        or current_candidate_signature != signed_candidate_signature
+    ):
+        errors.append("reuse_candidate_signature_lineage_mismatch")
+
+    source_run_id = str(source_authority.get("source_run_id") or "")
+    if source_run_id == lineage["current_run_id"]:
+        errors.append("reuse_source_run_not_prior")
+    prior_matches = tuple(
+        item
+        for item in lineage["prior_runs"]
+        if item["run_id"] == source_run_id
+        and item["thread_id"] == lineage["thread_id"]
+        and item["topic_id"] == lineage["current_topic_id"]
+        and item["status"] == "completed"
+    )
+    if len(prior_matches) != 1:
+        errors.append("reuse_source_run_not_prior")
+    if (
+        source_run_id != str(candidate.get("source_run_id") or "")
+        or str(source_authority.get("run_thread_id") or "")
+        != lineage["thread_id"]
+        or str(source_authority.get("run_topic_id") or "")
+        != lineage["current_topic_id"]
+        or str(source_authority.get("run_status") or "") != "completed"
+    ):
+        errors.append("reuse_source_candidate_owner_invalid")
+    if (
+        str(result_ref_record.get("topic_id") or "")
+        != lineage["current_topic_id"]
+        or str(result_ref_record.get("result_ref") or "") != source_ref
+        or str(candidate.get("result_ref") or "") != source_ref
+        or str(result_ref_record.get("snapshot_id") or "")
+        != str(candidate.get("runtime_snapshot_id") or "")
+        or str(result_ref_record.get("contract_version") or "")
+        != str(candidate.get("runtime_contract_version") or "")
+        or str(result_ref_record.get("permission_scope") or "")
+        != str(candidate.get("permission_scope") or "")
+        or str(result_ref_record.get("semantic_scope") or "")
+        != str(candidate.get("semantic_scope_signature") or "")
+    ):
+        errors.append("reuse_source_candidate_index_invalid")
+
+    source_contract = source_authority.get("analysis_contract")
+    if not isinstance(source_contract, Mapping):
+        errors.append("reuse_source_candidate_contract_invalid")
+        return None, list(dict.fromkeys(errors))
+    try:
+        computed_source_signature = analysis_contract_signature(source_contract)
+    except (KeyError, TypeError, ValueError):
+        errors.append("reuse_source_candidate_contract_invalid")
+        return None, list(dict.fromkeys(errors))
+    source_contract_ref = str(source_contract.get("analysis_contract_id") or "")
+    if (
+        source_contract_ref != str(candidate.get("analysis_contract_ref") or "")
+        or source_contract_ref == current_analysis_contract_ref
+        or str(source_authority.get("stored_analysis_contract_signature") or "")
+        != computed_source_signature
+        or str(candidate.get("analysis_contract_signature") or "")
+        != computed_source_signature
+        or str(candidate.get("semantic_scope_signature") or "")
+        != f"analysis-contract:sha256:{computed_source_signature}"
+    ):
+        errors.append("reuse_source_candidate_contract_invalid")
+
+    source_request = source_authority.get("source_run_request")
+    context_manifest = (
+        source_request.get("context_manifest")
+        if isinstance(source_request, Mapping)
+        else None
+    )
+    contract_versions = (
+        context_manifest.get("contract_versions")
+        if isinstance(context_manifest, Mapping)
+        else None
+    )
+    if (
+        not isinstance(context_manifest, Mapping)
+        or not isinstance(contract_versions, Mapping)
+        or str(context_manifest.get("snapshot_version") or "")
+        != str(candidate.get("runtime_snapshot_id") or "")
+        or str(contract_versions.get("runtime") or "")
+        != str(candidate.get("runtime_contract_version") or "")
+    ):
+        errors.append("reuse_source_candidate_runtime_context_invalid")
+
+    try:
+        query_by_record = evidence_resolver.resolve_query_execution_record(
+            str(candidate["query_execution_record_ref"])
+        )
+        query_by_result = evidence_resolver.resolve_query_execution(source_ref)
+    except Exception:
+        query_by_record = None
+        query_by_result = None
+    if (
+        type(query_by_record) is not QueryExecutionRecord
+        or type(query_by_result) is not QueryExecutionRecord
+        or query_by_record.record_ref != query_by_result.record_ref
+        or runtime_evidence_record_integrity_errors(query_by_record)
+        or query_by_record.record_digest
+        != str(candidate.get("query_execution_record_digest") or "")
+        or query_by_record.query_contract_ref
+        != str(candidate.get("query_contract_ref") or "")
+        or query_by_record.contract_signature
+        != str(candidate.get("query_contract_signature") or "")
+        or query_by_record.contract.analysis_contract_ref != source_contract_ref
+        or query_by_record.result_ref != source_ref
+        or query_by_record.rows_ref != str(candidate.get("rows_ref") or "")
+        or query_by_record.completeness_report_ref
+        != str(candidate.get("completeness_report_ref") or "")
+    ):
+        errors.append("reuse_source_candidate_query_invalid")
+        return None, list(dict.fromkeys(errors))
+    source_record = query_by_record
+
+    try:
+        rows_by_record = evidence_resolver.resolve_rows_record(
+            str(candidate["rows_record_ref"])
+        )
+        rows_by_ref = evidence_resolver.resolve_rows(str(candidate["rows_ref"]))
+    except Exception:
+        rows_by_record = None
+        rows_by_ref = None
+    if (
+        rows_by_record is None
+        or rows_by_ref is None
+        or rows_by_record.record_ref != rows_by_ref.record_ref
+        or runtime_evidence_record_integrity_errors(rows_by_record)
+        or rows_by_record.record_digest
+        != str(candidate.get("rows_record_digest") or "")
+        or rows_by_record.rows_ref != str(candidate.get("rows_ref") or "")
+        or rows_by_record.rows_content_hash
+        != str(candidate.get("rows_content_hash") or "")
+        or rows_by_record.row_count != source_record.row_count
+    ):
+        errors.append("reuse_source_candidate_rows_invalid")
+
+    snapshot_refs = tuple(candidate.get("source_snapshot_refs") or ())
+    if (
+        snapshot_refs != source_record.source_snapshot_refs
+        or tuple(candidate.get("source_snapshot_record_refs") or ())
+        != source_record.source_snapshot_record_refs
+        or tuple(candidate.get("source_snapshot_record_digests") or ())
+        != source_record.source_snapshot_record_digests
+    ):
+        errors.append("reuse_source_candidate_snapshot_invalid")
+    release_method = getattr(release_resolver, "resolve_dataset_release", None)
+    for index, snapshot_ref in enumerate(snapshot_refs):
+        try:
+            snapshot = evidence_resolver.resolve_snapshot(snapshot_ref)
+            release = (
+                release_method(snapshot.snapshot.release_ref)
+                if snapshot is not None and callable(release_method)
+                else None
+            )
+        except Exception:
+            snapshot = None
+            release = None
+        if (
+            snapshot is None
+            or runtime_evidence_record_integrity_errors(snapshot)
+            or snapshot.record_ref
+            != candidate["source_snapshot_record_refs"][index]
+            or snapshot.record_digest
+            != candidate["source_snapshot_record_digests"][index]
+            or snapshot.snapshot.release_ref != candidate["source_release_refs"][index]
+            or snapshot.snapshot.authority_record_ref
+            != candidate["source_release_authority_refs"][index]
+            or snapshot.snapshot.schema_fingerprint
+            != candidate["source_schema_fingerprints"][index]
+            or release is None
+            or release.authority_record_ref
+            != candidate["source_release_authority_refs"][index]
+            or release.integrity_errors
+            or snapshot_ref not in release.snapshot_refs
+        ):
+            errors.append("reuse_source_candidate_snapshot_invalid")
+            break
+
+    candidate_completeness: dict[str, Any] = {}
+    for record_ref, record_digest in zip(
+        candidate.get("completeness_record_refs") or (),
+        candidate.get("completeness_record_digests") or (),
+    ):
+        try:
+            record = evidence_resolver.resolve_completeness(str(record_ref))
+        except Exception:
+            record = None
+        if (
+            record is None
+            or runtime_evidence_record_integrity_errors(record)
+            or record.report_digest != str(record_digest)
+        ):
+            errors.append("reuse_source_candidate_completeness_invalid")
+            continue
+        candidate_completeness[record.record_ref] = record
+
+    matching_chains = []
+    for binding_ref, binding_digest in zip(
+        candidate.get("binding_record_refs") or (),
+        candidate.get("binding_record_digests") or (),
+    ):
+        try:
+            binding = evidence_resolver.resolve_capability_binding(str(binding_ref))
+        except Exception:
+            binding = None
+        if (
+            type(binding) is not CapabilityBindingRecord
+            or binding.record_ref != str(binding_ref)
+            or binding.binding_digest != str(binding_digest)
+            or runtime_evidence_record_integrity_errors(binding)
+            or binding.analysis_contract_ref != source_contract_ref
+        ):
+            errors.append("reuse_source_candidate_binding_invalid")
+            continue
+        try:
+            chain = validate_authoritative_query_chain(
+                binding,
+                resolver=evidence_resolver,
+                rows_loader=rows_loader,
+                runtime_registry=registry,
+                release_resolver=release_resolver,
+            )
+        except (AuthoritativeQueryChainError, EvidenceIntegrityError, TypeError, ValueError):
+            errors.append("reuse_source_authoritative_query_chain_invalid")
+            continue
+        chain_reports = (*chain.primary_reports, *chain.validation_reports)
+        if binding.status != "ready" or any(
+            report.completeness_status != "complete"
+            or report.analysis_readiness != "ready"
+            for report in chain_reports
+        ):
+            errors.append("reuse_source_chain_not_claim_ready")
+        if (
+            binding.capability_id == expected_capability
+            and source_ref in (*binding.result_refs, *binding.validation_result_refs)
+            and source_ref in chain.query_records
+        ):
+            matching_chains.append((binding, chain))
+    if len(matching_chains) != 1:
+        errors.append("reuse_source_candidate_binding_invalid")
+    else:
+        _, source_chain = matching_chains[0]
+        source_reports = (*source_chain.primary_reports, *source_chain.validation_reports)
+        source_results = (*source_chain.primary_results, *source_chain.validation_results)
+        matching_report = next(
+            (
+                report
+                for result, report in zip(source_results, source_reports)
+                if result.result_ref == source_ref
+            ),
+            None,
+        )
+        if (
+            matching_report is None
+            or matching_report.completeness_status != "complete"
+            or matching_report.analysis_readiness != "ready"
+            or not any(
+                record.result_ref == source_ref
+                and record.report_ref == matching_report.report_ref
+                for record in candidate_completeness.values()
+            )
+        ):
+            errors.append("reuse_source_chain_not_claim_ready")
+    return source_record, list(dict.fromkeys(errors))
+
+
+def _review_required_reuse_candidate(
+    authority: Mapping[str, Any],
+    expected: Mapping[str, Any],
+    *,
+    registry: RuntimeContractRegistry,
+    evidence_resolver: Any,
+    rows_loader: Any,
+    release_resolver: Any,
+    conversation_store: Any,
+    case_lineage: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    review: dict[str, Any] = {
+        "passed": False,
+        "errors": [],
+        "source_result_ref": "",
+        "current_result_ref": "",
+        "query_contract_ref": "",
+        "capability_id": "",
+        "dataset_ids": [],
+    }
+    errors: list[str] = review["errors"]
+    expected_capability = str(expected.get("capability_id") or "")
+    expected_datasets = frozenset(
+        str(dataset_id) for dataset_id in expected.get("dataset_ids") or ()
+    )
+    if not expected_capability or not expected_datasets:
+        errors.append("expected_reuse_provenance_missing")
+        return review
+    accepted_contract = _run_matched_accepted_analysis_contract(authority)
+    admin = authority.get("admin_audit")
+    if accepted_contract is None or not isinstance(admin, Mapping):
+        errors.append("run_matched_reuse_authority_missing")
+        return review
+    normalized_lineage = _normalized_reuse_case_lineage(case_lineage)
+    if normalized_lineage is None:
+        errors.append("reuse_case_lineage_invalid")
+        return review
+    if str(authority.get("run_id") or "") != normalized_lineage["current_run_id"]:
+        errors.append("reuse_current_case_lineage_mismatch")
+    current_run_resolver = getattr(conversation_store, "get_run_request", None)
+    try:
+        current_run_request = (
+            current_run_resolver(normalized_lineage["current_run_id"])
+            if callable(current_run_resolver)
+            else None
+        )
+    except Exception:
+        current_run_request = None
+    if (
+        not isinstance(current_run_request, Mapping)
+        or str(current_run_request.get("thread_id") or "")
+        != normalized_lineage["thread_id"]
+        or str(current_run_request.get("topic_id") or "")
+        != normalized_lineage["current_topic_id"]
+    ):
+        errors.append("reuse_current_run_owner_invalid")
+    raw_decisions = admin.get("reuse_decisions")
+    if not isinstance(raw_decisions, (list, tuple)):
+        errors.append("admin_reuse_decision_missing")
+        return review
+    decisions = tuple(
+        item
+        for item in raw_decisions
+        if isinstance(item, Mapping) and item.get("decision") == "reuse"
+    )
+    if len(decisions) != 1:
+        errors.append(
+            "admin_reuse_decision_missing"
+            if not decisions
+            else "admin_reuse_decision_ambiguous"
+        )
+        return review
+    if not isinstance(evidence_resolver, RuntimeEvidenceResolver):
+        errors.append("runtime_evidence_resolver_invalid")
+        return review
+    if not isinstance(rows_loader, RowsPayloadLoader):
+        errors.append("rows_payload_loader_invalid")
+        return review
+
+    decision = decisions[0]
+    source_ref = str(decision.get("source_ref") or "")
+    current_ref = str(decision.get("result_ref") or "")
+    query_ref = str(decision.get("query_contract_ref") or "")
+    review.update(
+        source_result_ref=source_ref,
+        current_result_ref=current_ref,
+        query_contract_ref=query_ref,
+    )
+    if not source_ref or not current_ref or source_ref == current_ref:
+        errors.append("reuse_source_current_result_alias")
+    if str(decision.get("reason") or "") != "validated_authoritative_query_chain":
+        errors.append("reuse_decision_reason_invalid")
+    if (
+        decision.get("can_support_claim") is not True
+        or decision.get("requires_rerun") is not False
+    ):
+        errors.append("reuse_decision_flags_invalid")
+    evidence_items = tuple(
+        item
+        for section in authority.get("sections") or ()
+        if isinstance(section, Mapping)
+        for payload in (section.get("payload"),)
+        if isinstance(payload, Mapping)
+        for item in payload.get("evidence") or ()
+        if isinstance(item, Mapping)
+    )
+    bindings_by_ref: dict[str, CapabilityBindingRecord] = {}
+    for evidence in evidence_items:
+        binding_ref = str(evidence.get("binding_manifest_ref") or "")
+        if not binding_ref:
+            continue
+        try:
+            binding = evidence_resolver.resolve_capability_binding(binding_ref)
+        except Exception:
+            continue
+        if type(binding) is not CapabilityBindingRecord:
+            continue
+        if (
+            binding.record_ref == binding_ref
+            and binding.binding_digest
+            == str(evidence.get("binding_manifest_digest") or "")
+            and binding.capability_id == expected_capability
+            and current_ref
+            in (*binding.result_refs, *binding.validation_result_refs)
+            and current_ref
+            in {
+                str(ref) for ref in evidence.get("result_refs") or () if ref
+            }
+        ):
+            bindings_by_ref[binding.record_ref] = binding
+    bindings = tuple(bindings_by_ref.values())
+    if bindings:
+        review["capability_id"] = expected_capability
+    if len(bindings) != 1:
+        errors.append(
+            "reuse_current_result_mismatch"
+            if not bindings
+            else "reuse_current_binding_ambiguous"
+        )
+        return review
+    binding = bindings[0]
+    review["capability_id"] = binding.capability_id
+    if binding.analysis_contract_ref != accepted_contract.analysis_contract_id:
+        errors.append("reuse_binding_run_owner_mismatch")
+    if binding.status != "ready" or any(
+        status != "complete" for status in binding.input_completeness_statuses
+    ):
+        errors.append("reuse_current_chain_not_claim_ready")
+        return review
+    try:
+        chain = validate_authoritative_query_chain(
+            binding,
+            resolver=evidence_resolver,
+            rows_loader=rows_loader,
+            runtime_registry=registry,
+            release_resolver=release_resolver,
+        )
+    except (AuthoritativeQueryChainError, EvidenceIntegrityError, TypeError, ValueError):
+        errors.append("reuse_current_authoritative_query_chain_invalid")
+        return review
+    current_record = chain.query_records.get(current_ref)
+    if type(current_record) is not QueryExecutionRecord:
+        errors.append("reuse_current_result_mismatch")
+        return review
+    current_reports = (*chain.primary_reports, *chain.validation_reports)
+    if any(
+        record.contract.analysis_contract_ref
+        != accepted_contract.analysis_contract_id
+        or str(record.query_contract.get("analysis_contract_ref") or "")
+        != accepted_contract.analysis_contract_id
+        for record in chain.query_records.values()
+    ):
+        errors.append("reuse_current_query_contract_owner_invalid")
+    if (
+        current_record.execution_status != "succeeded"
+        or any(
+            report.completeness_status != "complete"
+            or report.analysis_readiness != "ready"
+            for report in current_reports
+        )
+    ):
+        errors.append("reuse_current_chain_not_claim_ready")
+        return review
+    if current_record.query_contract_ref != query_ref:
+        errors.append("reuse_query_contract_mismatch")
+    stats = current_record.result_payload.get("provider_stats") or {}
+    if not isinstance(stats, Mapping):
+        stats = {}
+    if (
+        stats.get("cache_hit") is not True
+        or stats.get("cache_source") != "validated_authoritative_query_chain"
+        or str(stats.get("source_result_ref") or "") != source_ref
+    ):
+        errors.append("reuse_source_result_mismatch")
+    source_record, source_candidate_errors = _review_published_source_candidate(
+        source_ref=source_ref,
+        expected_capability=expected_capability,
+        current_analysis_contract_ref=accepted_contract.analysis_contract_id,
+        registry=registry,
+        evidence_resolver=evidence_resolver,
+        rows_loader=rows_loader,
+        release_resolver=release_resolver,
+        conversation_store=conversation_store,
+        case_lineage=normalized_lineage,
+        decision_candidate_signature=str(
+            decision.get("candidate_signature") or ""
+        ),
+        current_candidate_signature=str(stats.get("candidate_signature") or ""),
+    )
+    errors.extend(source_candidate_errors)
+    if (
+        type(source_record) is not QueryExecutionRecord
+        or source_record.result_ref != source_ref
+        or runtime_evidence_record_integrity_errors(source_record)
+        or source_record.execution_status != "succeeded"
+    ):
+        errors.append("reuse_source_result_authority_invalid")
+    else:
+        if (
+            source_record.contract_signature != current_record.contract_signature
+            or source_record.query_hash != current_record.query_hash
+            or source_record.source_snapshot_refs
+            != current_record.source_snapshot_refs
+            or source_record.contract.permission_scope
+            != current_record.contract.permission_scope
+        ):
+            errors.append("reuse_source_query_material_mismatch")
+        if (
+            source_record.rows_content_hash != current_record.rows_content_hash
+            or source_record.row_count != current_record.row_count
+        ):
+            errors.append("reuse_source_rows_mismatch")
+    dataset_ids: list[str] = []
+    for snapshot_ref in current_record.source_snapshot_refs:
+        try:
+            snapshot = evidence_resolver.resolve_snapshot(snapshot_ref)
+        except Exception:
+            snapshot = None
+        if snapshot is None:
+            errors.append("reuse_snapshot_authority_missing")
+            continue
+        dataset_ids.append(str(snapshot.snapshot.dataset_id or ""))
+    review["dataset_ids"] = sorted(dict.fromkeys(dataset_ids))
+    if frozenset(review["dataset_ids"]) != expected_datasets:
+        errors.append("reuse_dataset_provenance_mismatch")
+    review["errors"] = list(dict.fromkeys(errors))
+    review["passed"] = not review["errors"]
+    return review
 
 
 def _expectation_review(
@@ -3471,7 +4186,6 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
                 and (turn.get("obligation_review") or {}).get("reuse_passed") is True
                 and bool(turn.get("prior_topic_id"))
                 and turn.get("topic_id") == turn.get("prior_topic_id")
-                and _has_exact_reuse_decision(turn.get("runtime_authority") or {})
                 for turn in turns
             ),
         },
@@ -3582,6 +4296,7 @@ def run_case(
             raise RuntimeError("eval_coverage_authority_unavailable") from exc
     required_datasets = tuple(case.get("required_datasets") or ())
     turns: list[dict[str, Any]] = []
+    prior_run_lineage: list[dict[str, str]] = []
     prior_topic_id: str | None = None
     for index, turn in enumerate(case["turns"], start=1):
         result = core.run_message(
@@ -3592,6 +4307,7 @@ def run_case(
         )
         turn_record = {
             "index": index,
+            "thread_id": thread_id,
             "user": turn["user"],
             "status": result["status"],
             "run_id": result["run_id"],
@@ -3673,11 +4389,24 @@ def run_case(
                 evidence_resolver=getattr(core, "evidence_resolver", None),
                 rows_loader=getattr(core, "rows_loader", None),
                 release_resolver=getattr(core, "release_resolver", None),
+                conversation_store=getattr(core, "store", None),
+                case_lineage={
+                    "thread_id": thread_id,
+                    "current_run_id": str(effective.get("run_id") or ""),
+                    "current_topic_id": str(effective.get("topic_id") or ""),
+                    "prior_runs": list(prior_run_lineage),
+                },
             )
         turn_record["strict_quality_failed"] = bool(
             strict_quality and _strict_quality_failed(turn_record)
         )
         turns.append(turn_record)
+        prior_run_lineage.append({
+            "run_id": str(effective.get("run_id") or ""),
+            "thread_id": thread_id,
+            "topic_id": str(effective.get("topic_id") or ""),
+            "status": str(effective.get("status") or ""),
+        })
         prior_topic_id = _effective_result(turn_record).get("topic_id")
         _write_case_artifact(
             artifact_dir,

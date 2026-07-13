@@ -5,7 +5,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-13.v39"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v41"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 
 
@@ -61,10 +61,9 @@ TASK_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
     "query_gap_clarification": (
         "questions",
         "recommended_assumption",
+        "recommendation_reason",
         "decision_summary",
     ),
-    "query_gap_action_render": ("rendered_actions",),
-    "query_gap_recommendation_repair": ("option_index", "brief_reason"),
     "route_repair": ("requested_nodes", "repair_summary", "decision_summary"),
     "data_coverage_interpretation": (
         "coverage_status",
@@ -396,9 +395,10 @@ def _task_rules(task: str) -> str:
             "Turn the supplied business gap projections and business labels into one concise "
             "business clarification. This task is called only after local policy has decided "
             "that user clarification is required, so questions must never be empty. Return "
-            "exactly one question with 2-3 draft options grounded in "
-            "allowed_actions.business_semantics, then add one tell "
-            "the agent to do differently escape option. Never invent or paraphrase an action. "
+            "exactly one question. Copy every item from allowed_business_options "
+            "character-for-character and in the supplied order, then add one tell "
+            "the agent to do differently escape option. Never invent, omit, combine, "
+            "or paraphrase an action. "
             "Do not return an answer or status in place of the "
             "question. The business options cover the user decision "
             "when the choice changes the target date, baseline, grain, permission "
@@ -406,11 +406,11 @@ def _task_rules(task: str) -> str:
             "recommended_assumption and a decision_summary. Every package must include "
             "a tell the agent to do differently option so the user can redirect the "
             "same run. recommended_assumption must contain only an option key whose value "
-            "is copied character-for-character from one of the two business options you "
-            "return. An assumption key, a generic default-assumption phrase, a paraphrase, "
-            "or the escape option is invalid. When retry_feedback reports "
-            "query_gap_clarification_recommendation_unbound, correct only this field by "
-            "copying one returned business option exactly. Describe sources in business language; never "
+            "is copied character-for-character from allowed_business_options. Return a "
+            "non-empty recommendation_reason with a concise Chinese business explanation. "
+            "An assumption key, a generic default-assumption phrase, a paraphrase, "
+            "or the escape option is invalid. When recommended_business_option is non-empty, "
+            "copy that exact option as the recommendation. Describe sources in business language; never "
             "invent technical source details beyond the supplied business projection. "
             "Never expose dataset ids, snapshot ids, provider fields, UTC diagnostics, or any "
             "future availability timestamp that was not visible at the analysis clock. "
@@ -420,22 +420,9 @@ def _task_rules(task: str) -> str:
             "supplied business choices): {\"questions\":[{\"question\":\"需要确认按哪个业务口径继续？\","
             "\"options\":[\"业务选项A\",\"业务选项B\",\"tell the agent to do differently\"]}],"
             "\"recommended_assumption\":{\"option\":\"业务选项A\"},"
+            "\"recommendation_reason\":\"该处理方式符合当前业务证据边界。\","
             "\"decision_summary\":\"该选择会影响业务结论。\","
             "\"display_summary\":\"等待用户确认业务口径。\"}."
-        ),
-        "query_gap_recommendation_repair": (
-            "Choose exactly one of the one or two supplied business options. Return "
-            "option_index as a zero-based integer within the supplied list and a concise "
-            "Simplified Chinese brief_reason. Do not copy, "
-            "rewrite, combine, or add an option. Do not choose an escape path. The caller "
-            "will map the index back to the exact option text."
-        ),
-        "query_gap_action_render": (
-            "Render one concise Simplified Chinese business label and reason for every "
-            "supplied allowed action. Return rendered_actions as an array of objects with "
-            "exactly choice_id, label, and reason. Copy each supplied choice_id exactly once; "
-            "do not omit, duplicate, combine, or invent actions. Labels must be mutually "
-            "exclusive and must describe only the supplied business_semantics."
         ),
         "route_repair": (
             "Repair only the rejected or incomplete part of the route. Preserve valid "
@@ -627,11 +614,7 @@ def _task_rules(task: str) -> str:
             "scope, time window, claim strength, and evidence boundary. Use "
             "bounded_insight_guidance to write one useful bounded insight even when "
             "evidence is limited: what the current evidence narrows down, what it rules "
-            "out, and the smallest next check. "
-            "answer, if final_answer_retry_instruction is supplied, treat it as one "
-            "targeted rewrite instruction for this pass and keep the rest of the answer "
-            "stable unless the supplied evidence requires a broader boundary correction. "
-            "Do not answer the retry instruction as a meta comment. In the final "
+            "out, and the smallest next check. In the final "
             "answer, include a natural business insight using this wording when it is "
             "supported by the supplied claims: 当前证据能把排查方向收敛到... "
             "After the five paragraphs, provide exactly three natural follow-up question "

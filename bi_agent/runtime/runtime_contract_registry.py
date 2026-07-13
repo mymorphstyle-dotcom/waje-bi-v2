@@ -174,6 +174,12 @@ class RuntimeContractRegistry:
         return str(self._payload["contract_version"])
 
     @property
+    def source_payload_digest(self) -> str:
+        if not self._source_payload_digest:
+            raise ValueError("runtime_contract_registry_digest_unavailable")
+        return self._source_payload_digest
+
+    @property
     def metric_ids(self) -> tuple[str, ...]:
         return tuple(sorted(str(item) for item in self._payload["metrics"]))
 

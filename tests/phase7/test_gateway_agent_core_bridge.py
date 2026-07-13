@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class GatewayAgentCoreBridgeTest(unittest.TestCase):
     def test_message_route_invokes_python_agent_core_command(self):
         helper = (ROOT / "app" / "api" / "_agentCore.ts").read_text(encoding="utf-8")
+        store = (ROOT / "app" / "api" / "_conversationStore.ts").read_text(encoding="utf-8")
         source = (
             ROOT
             / "app"
@@ -23,6 +24,16 @@ class GatewayAgentCoreBridgeTest(unittest.TestCase):
         self.assertIn("bi_agent.conversation.agent_core", helper)
         self.assertIn("WAJE_AGENT_CORE_COMMAND", helper)
         self.assertIn("agentCore", source)
+        self.assertIn("resolveGatewayRole", source)
+        self.assertIn("filterAgentCoreForRole", source)
+        self.assertIn("roleDecision.displayRole", source)
+        self.assertIn(
+            "runtimePermissionScope: roleDecision.runtimePermissionScope",
+            source,
+        )
+        self.assertIn("agentCore: visibleAgentCore", source)
+        self.assertIn("export function filterAgentCoreForRole", store)
+        self.assertNotIn("body.role", source)
 
     def test_artifact_continue_route_invokes_shared_agent_core_command(self):
         helper = ROOT / "app" / "api" / "_agentCore.ts"

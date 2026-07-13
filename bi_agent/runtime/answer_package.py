@@ -365,6 +365,7 @@ def build_answer_package(
         "completeness_reports": canonical_value(completeness_reports),
         "capability_execution_plans": canonical_value(capability_execution_plans),
         "repair_attempts": canonical_value(repair_attempts),
+        "reuse_decisions": canonical_value(reuse_decisions),
         "context_manifest": verified_manifest,
         "verified_claims": canonical_value(published_claims),
         "trusted_claim_provenance_records": canonical_value(trusted_records),

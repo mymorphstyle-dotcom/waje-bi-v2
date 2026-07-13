@@ -103,7 +103,16 @@ hard acceptance. Quality scores remain advisory.
 The runtime view includes both the ClickHouse review and obligation review for
 every turn. Clarification coverage counts only declared clarification cases
 that complete on the original topic. Reuse coverage additionally requires an
-exact persisted `reuse` decision and inherited topic continuity.
+exact persisted `reuse` decision and inherited topic continuity. The decision
+must come from the run-matched internal `admin_audit`; nested claim or section
+markers do not count. The reviewer resolves the current capability binding and
+query chain, then verifies distinct exact source/current result refs, the
+current QueryContract, the authoritative cache-source marker, and the
+scenario's expected capability and dataset provenance. The positive platform
+case uses `market_health_compare` on `market_dashboard` with identical metric,
+scope, permission, release membership, and fixed-window membership across both
+turns; only baseline priority changes. The unavailable-as-of
+`paid_order_success` / `compare_periods` path remains a typed blocker.
 
 Review either artifact and optionally compare it with a baseline:
 

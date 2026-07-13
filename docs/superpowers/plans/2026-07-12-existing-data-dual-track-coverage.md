@@ -16,7 +16,8 @@
 - Do not synthesize `payment_attempt`, `internal_operation_event`, user-level cross-source joins, or a historical evaluation artifact.
 - Do not add a rule for one evaluation sentence, case id, or observed LLM response. Business-language triggers must represent a stable intent class and compile through versioned contracts.
 - High-value business intent, route, explanation, answer synthesis, and final audit nodes use the real LLM. Do not add local narrative, business-intent, or claim fallbacks.
-- Provider subprocess retry stays centralized at three attempts. Only an explicit positive `WAJE_LLM_TIMEOUT_SECONDS` permits a kill; use `300` seconds for real evaluation. Do not set `max_tokens`.
+- Provider subprocess retry stays centralized at three attempts. LangGraph node wrappers and business-node implementations do not retry an LLM task; each business node invokes the shared client once. A typed verifier repair may invoke one explicit repair task and hard-verify once, without a surrounding node retry. Only an explicit positive `WAJE_LLM_TIMEOUT_SECONDS` permits a kill; use `300` seconds for real evaluation. Do not set `max_tokens`.
+- The shared LLM client may normalize reviewed terminology but must not fill missing, empty, wrong-typed, or unlocalized high-value narrative fields with local templates. Production/live intent binding accepts explicit request-bound material or valid real-LLM material only; missing/illegal family, metric, pattern family, scope, time window, or target claim fails typed instead of receiving a local default. Fixture helpers stay explicitly outside the production/live path.
 - Permission, SQL safety, contract legality, query completeness, claim provenance, and the evidence verifier remain hard boundaries. Final LLM audit wording and style findings remain warning-only.
 - ClickHouse stores analytical facts. PostgreSQL stores contracts, snapshots, releases, runs, evidence, provenance, assets, and audit records. Do not add a PostgreSQL product page.
 - Every supportable claim requires a ContextManifest, ReuseDecision, evidence ref, result ref, artifact ref, memory ref, and persisted trusted provenance.
@@ -820,7 +821,8 @@ git commit -m "feat: close current data query coverage"
 - Produces a typed `available_evidence_brief` containing verified claims, unresolved obligations, scoped gaps, omitted factors, and next actions.
 - Preserves verified claim provenance and exact ReuseDecision refs through final delivery.
 - Persists an accepted degraded-route decision so the same source gap does not reopen clarification in the resumed topic.
-- Persists a signed source-material authority envelope in the source run request and resolves it with the immutable AnalysisContract and clarification outcome. The envelope preserves ordered families and targets plus explicit components, dimensions, baselines, context sources, claim intents, and scope without reverse-engineering compiler dependency closure.
+- Persists a signed source-material authority envelope in the source run request and resolves it with the immutable AnalysisContract and clarification outcome. The envelope preserves ordered families and targets plus explicit components, dimensions, context sources, claim intents, scope, and canonicalized time-window material without reverse-engineering compiler dependency closure. Explicit canonical intent baselines remain separate from reviewed route baselines; terminal and nonterminal resume share one closed canonicalizer for stable aliases and typed shapes. Mixed candidates retain every mapped route baseline independent of input order. Previous-day narratives accept exact aliases and closed metric-suffix labels only; bare ranges, conjunctions, alternatives, and other composites cannot imply a canonical baseline. Typed window and lag parameters are binding and cannot be masked by a direct id. When selected time-window baselines and candidates coexist, every selected id must be a subset of the authoritative candidate list. Unknown, contradictory, partially overlapping, or unreviewed forms fail closed. Terminal resume rejects signed time-window or canonical-baseline drift and overwrites mutable baseline candidates with reviewed signed route ids, preserving route expansion without relabeling it as original intent. The source AnalysisContract projects exact target-day semantics, canonical `as_of`, business timezone, permission scope, and every resolved fixed-window bound into the signed envelope; narrative `time_window` is never used to guess compiler target material. Before AnalysisRuntime compilation, resume exact-validates every repeated signed material axis and rebuilds the final proposal from signed families, targets, components, dimensions, reviewed route baselines, context-source roles, claim intents, diagnostic tags, scope, target, clock, and permission material. It rejects role elevation, role reduction, and caller drift in `as_of`, target, previous-day, rolling-seven-day, same-weekday, pattern-history, or anomaly-history bounds. Current LLM and clarification payloads may contribute only non-material suggestions.
+- Persists a closed execution-material projection from the actual source AnalysisRuntimeRequest, runtime registry, AnalysisContract, QueryContracts, and CapabilityExecutionPlans. It signs filters, grain, explicit dataset requirements, metric/dimension dataset overrides, requested-context-source aliases, source accepted graph, registry version/digest, run-mode authority class, QueryContract semantic signatures, snapshot membership, and exact query-owner capability ids derived from required, optional, and validation query refs. Resume rebuilds those compiler inputs exactly; the accepted graph may differ only for capabilities named by the signed degradation choice. Compile and execute each require the current query signature/snapshot set to equal the signed source set projected through the validated current ready graph. A shared query remains required while any signed owner remains. Mapping-like or scalar values cannot be reinterpreted as exact sequence axes. The signed projection and source compiler use the same strict grain semantics, so leading/trailing whitespace fails before source compilation and cannot be normalized only while signing. Reuse candidates and attempted signatures stay unsigned run metadata and grant no material authority.
 - Publishes successful verified result refs as non-authoritative conversation
   candidates, then lets AnalysisRuntime validate the persisted query, rows,
   snapshots/releases, permission, windows, schema fingerprint, completeness,
@@ -865,6 +867,28 @@ current AnalysisContract, binding, claim, and answer, and never reuse the prior
 claim itself. A changed required-window set is a negative rerun case. Normalize
 stable full-sample business aliases before compiling the signature, without
 adding case-id or sentence-specific rules.
+
+Bind that positive eval to `market_health_compare` on the existing
+`market_dashboard` release. Both turns declare the same metric, full-sample
+scope, permission, release membership, and fixed-window set, with baseline
+priority reversed. Keep the unavailable-as-of `paid_order_success` /
+`compare_periods` route as an explicit typed blocker. Required reuse passes only
+when the run-matched internal `admin_audit` contains one exact ReuseDecision and
+the conversation store resolves its source result to a signed published
+candidate owned by a completed earlier run in the same evaluated thread and
+topic. The reviewer validates that candidate's result-ref record and signature,
+the source authoritative query chain, and a distinct current AnalysisContract
+whose binding is ready and whose reports are complete and analysis-ready. It
+also proves one candidate signature across the signed candidate, ReuseDecision,
+and current QueryExecutionRecord cache metadata; resolves the current run owner
+from the store against the evaluated run/thread/topic; and requires every
+current QueryContract to be owned by the accepted current AnalysisContract. It
+then proves the current result, capability binding, expected dataset provenance,
+row hash/count, release, and permission identity. Add rejection tests for a
+nested or unpublished marker, same-run/cross-topic/non-prior lineage, each
+candidate-signature layer, current store-owner drift, integrity-clean current
+QueryContract-owner drift, degraded current binding, non-ready current
+completeness, and each tampered ref.
 
 - [x] **Step 2: Run tests and confirm red**
 
@@ -945,6 +969,24 @@ ordered targets, and material scope must match the signed material envelope in
 the shared authority validator and compiler defense-in-depth path. Add separate
 negative tests for each mismatch while retaining the dependency-closure and
 dual-role positive cases above.
+
+For the execution query projection, add general RED cases for two signed source
+queries becoming zero or one current query while both owners remain ready, plus
+the exact two-query positive case. Sign `owner_capability_ids` by resolving every
+source CapabilityExecutionPlan required/optional slot and validation ref back to
+its QueryContract id. Reject unknown refs, ownerless queries, and owners outside
+the source accepted graph. At resume, require every query with at least one
+retained owner and allow deletion only when all owners were removed by the
+validated signed degradation choice. Cover a shared-query owner case. Also
+reject `dict` and mapping-proxy values on dataset-requirement and requested-
+context-source sequence axes so iterable keys never become authority.
+
+Execution-material canonicalization must be identical to the compiler's source
+semantics. Add a RED case for `grain=" window_id "`: the source compile must
+reject it before dimension binding rather than producing an unsupported-grain
+gap that the signing layer later strips away. Use one strict canonicalizer at
+the compiler entry and signing projection; never repair this only in the signed
+envelope.
 
 Apply the same ordered family, ordered target, and material-scope validation to
 the current terminal-resume proposal. Reject a terminal clarification payload
@@ -1308,6 +1350,35 @@ The final audit records:
 - excluded input gaps with owner/impact/next action;
 - any new runtime capability gap with a general contract-level repair; and
 - confirmation that artifacts remain untracked.
+
+- [ ] **Step 6a: Close the production/live LLM runtime policy review**
+
+Add general failure-class tests, then enforce all of these as one runtime
+boundary:
+
+- high-value narrative and claim fields are never filled from
+  `NARRATIVE_FALLBACKS` or another local template;
+- production/live material intent cannot silently default or rewrite family,
+  metric, pattern family, scope, time window, or target claim;
+- production/live baseline candidates must be an explicit sequence whose items
+  resolve one-by-one through the shared baseline semantic registry, with
+  duplicate, unknown, conflicting, and wrong-container values failing before
+  storing the canonicalized input priority order; advisory intent lists also
+  reject container coercion;
+- each workflow business node calls the shared LLM client once, while the
+  provider retains the sole three-attempt retry loop; and
+- provider subprocess IPC must be received and drained before child join, with
+  success/error/abnormal-exit cleanup, a bounded receiver cleanup join, one
+  receive-and-join deadline, and child termination only after expiry of an
+  explicitly configured positive timeout; and
+- terminal explanation and final-summary validation fail typed after that one
+  node call, while delivery verifier repair has at most one explicit repair
+  call followed by one hard re-verification.
+
+Run focused RED/GREEN tests, the complete LLM workflow suite, provider-client
+tests, and the affected conversation and obligation regressions. This repair
+must cover runtime classes and cannot key on an eval sentence, case id, or one
+provider response.
 
 - [ ] **Step 7: Final independent code and artifact review**
 

@@ -3,9 +3,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { runAgentCore } from "../../../_agentCore";
 import {
   addUserMessage,
+  filterAgentCoreForRole,
   jsonError,
   recordClarificationOutcome,
   requireRun,
+  resolveGatewayRole,
 } from "../../../_conversationStore";
 
 export const dynamic = "force-dynamic";
@@ -28,28 +30,38 @@ export async function POST(request: NextRequest, context: RouteContext) {
       source: "user" as const,
     };
     const clarification = await recordClarificationOutcome(clarificationPayload);
+    const roleDecision = resolveGatewayRole(
+      process.env.WAJE_GATEWAY_ROLE,
+      process.env.NODE_ENV,
+    );
     const agentCore = await runAgentCore(
       run.threadId,
       runId,
       answer,
-      process.env.WAJE_GATEWAY_ROLE || "analyst",
+      roleDecision.displayRole,
       {
+        runtimePermissionScope: roleDecision.runtimePermissionScope,
         clarification: clarificationPayload,
         forceInline: true,
       },
     );
-    const resumed = agentCore.result && typeof agentCore.result === "object"
-      ? agentCore.result as Record<string, unknown>
+    const visibleAgentCore = filterAgentCoreForRole(
+      agentCore as unknown as Record<string, unknown>,
+      roleDecision.displayRole,
+    );
+    const visibleResult = visibleAgentCore.result && typeof visibleAgentCore.result === "object"
+      ? visibleAgentCore.result as Record<string, unknown>
       : {};
+    const answerPackagePreview = visibleResult.answer_package ?? null;
     return NextResponse.json({
       runId,
-      resumedRunId: resumed.run_id ?? runId,
-      topicId: resumed.topic_id ?? null,
-      status: resumed.status ?? agentCore.status,
-      answerPackagePreview: resumed.answer_package ?? null,
+      resumedRunId: visibleResult.run_id ?? runId,
+      topicId: visibleResult.topic_id ?? null,
+      status: visibleAgentCore.status,
+      answerPackagePreview,
       message,
       clarification,
-      agentCore,
+      agentCore: visibleAgentCore,
       eventsUrl: `/api/runs/${run.id}/events`,
     });
   } catch (error) {

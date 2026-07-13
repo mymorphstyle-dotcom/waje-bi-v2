@@ -13,8 +13,8 @@ class FakeLLMClient:
             output = _default_analysis_route(messages, override)
         else:
             output = (
-                _default_query_gap_action_render(messages)
-                if task == "query_gap_action_render" and task not in self.overrides
+                _default_query_gap_clarification(messages)
+                if task == "query_gap_clarification" and task not in self.overrides
                 else _default_final_business_summary(messages)
                 if task == "final_business_summary" and task not in self.overrides
                 else dict(DEFAULT_OUTPUTS.get(task, {}))
@@ -50,18 +50,24 @@ class FakeLLMResult:
         self.audit = audit
 
 
-def _default_query_gap_action_render(messages):
+def _default_query_gap_clarification(messages):
     payload = _input_payload(messages)
+    options = [
+        str(option)
+        for option in payload.get("allowed_business_options") or ()
+        if str(option)
+    ]
+    recommended = str(payload.get("recommended_business_option") or "")
+    if not recommended and options:
+        recommended = options[0]
     return {
-        "rendered_actions": [
-            {
-                "choice_id": action.get("choice_id"),
-                "label": action.get("business_semantics"),
-                "reason": "该处理方式符合当前业务证据边界。",
-            }
-            for action in payload.get("allowed_actions") or ()
-            if isinstance(action, dict)
-        ]
+        "questions": [{
+            "question": "需要确认按哪个业务口径继续？",
+            "options": [*options, "tell the agent to do differently"],
+        }],
+        "recommended_assumption": {"option": recommended},
+        "recommendation_reason": "该处理方式符合当前业务证据边界。",
+        "decision_summary": "该选择会影响业务结论。",
     }
 
 
@@ -118,7 +124,7 @@ DEFAULT_OUTPUTS = {
         "scope": "full_sample",
         "time_window": "2024-01..2026-05",
         "target_claim": "recurring_pattern_existence",
-        "baseline_candidates": ["same_period_phase_baseline"],
+        "baseline_candidates": [],
         "analysis_requirements": {
             "context_sources": [],
             "claim_intents": [],
@@ -172,10 +178,6 @@ DEFAULT_OUTPUTS = {
             "option": "等待相关业务数据可用后继续",
         },
         "decision_summary": "目标窗口会改变结论，需要用户确认。",
-    },
-    "query_gap_recommendation_repair": {
-        "option_index": 0,
-        "brief_reason": "优先保持当前业务口径。",
     },
     "route_repair": {
         "requested_nodes": ["pattern_scan"],

@@ -5,7 +5,7 @@ import unittest
 
 import yaml
 
-from bi_agent.conversation.runtime import ConversationRuntime
+from bi_agent.conversation.runtime import ConversationRuntime, _can_read_scope
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.evidence_authority import canonical_digest
 
@@ -130,6 +130,112 @@ class ConversationRuntimeTest(unittest.TestCase):
         ]
         self.assertTrue(stale_result_items[0].expired)
         self.assertEqual(stale_result_items[0].claim_use, "context_only")
+
+    def test_business_reader_can_follow_viewer_artifact_and_reuse_viewer_candidate(self):
+        store = InMemoryConversationStore()
+        runtime = ConversationRuntime(store)
+        store.create_thread("thread-viewer-alias", owner_id="reader-1")
+        topic = store.create_topic(
+            "thread-viewer-alias",
+            title="付费金额变化",
+            summary="已验证的付费金额变化分析。",
+        )
+        store.set_current_topic("thread-viewer-alias", topic.topic_id)
+        candidate = _result_candidate_payload("result:viewer-candidate")
+        candidate.pop("candidate_signature")
+        candidate["permission_scope"] = "viewer"
+        candidate["candidate_signature"] = canonical_digest(candidate)
+        store.add_result_ref(
+            topic.topic_id,
+            result_ref="result:viewer-candidate",
+            snapshot_id="2026H1",
+            contract_version="contracts-v1",
+            permission_scope="viewer",
+            semantic_scope="analysis-contract:sha256:analysis-signature",
+            payload=candidate,
+        )
+        store.add_artifact(
+            artifact_id="artifact:viewer-visible",
+            topic_id=topic.topic_id,
+            follow_up_context="viewer scope 的已验证结果。",
+            snapshot_id="2026H1",
+            permission_scope="viewer",
+        )
+
+        result = runtime.handle_message(
+            "thread-viewer-alias",
+            "基于这个结果继续分析昨天付费金额变化。",
+            role="business_reader",
+            current_snapshot="2026H1",
+        )
+
+        self.assertEqual(result.reuse_decisions[0].decision, "candidate")
+        self.assertEqual(
+            result.run_request.to_dict()["reuse_candidates"],
+            [candidate],
+        )
+        artifact = next(
+            item
+            for item in result.context_manifest.items
+            if item.source_ref == "artifact:viewer-visible"
+        )
+        self.assertTrue(artifact.can_support_claims)
+        self.assertFalse(artifact.expired)
+
+    def test_business_reader_cannot_follow_admin_or_unknown_scope(self):
+        for protected_scope in ("admin", "unknown_scope"):
+            with self.subTest(protected_scope=protected_scope):
+                store = InMemoryConversationStore()
+                runtime = ConversationRuntime(store)
+                thread_id = f"thread-protected-{protected_scope}"
+                store.create_thread(thread_id, owner_id="reader-1")
+                topic = store.create_topic(
+                    thread_id,
+                    title="受限分析",
+                    summary="受限分析结果。",
+                )
+                store.set_current_topic(thread_id, topic.topic_id)
+                candidate = _result_candidate_payload(
+                    f"result:{protected_scope}-candidate"
+                )
+                candidate.pop("candidate_signature")
+                candidate["permission_scope"] = protected_scope
+                candidate["candidate_signature"] = canonical_digest(candidate)
+                store.add_result_ref(
+                    topic.topic_id,
+                    result_ref=f"result:{protected_scope}-candidate",
+                    snapshot_id="2026H1",
+                    contract_version="contracts-v1",
+                    permission_scope=protected_scope,
+                    semantic_scope="analysis-contract:sha256:analysis-signature",
+                    payload=candidate,
+                )
+                store.add_artifact(
+                    artifact_id=f"artifact:{protected_scope}-protected",
+                    topic_id=topic.topic_id,
+                    follow_up_context="受限结果。",
+                    snapshot_id="2026H1",
+                    permission_scope=protected_scope,
+                )
+
+                result = runtime.handle_message(
+                    thread_id,
+                    "基于这个结果继续分析昨天付费金额变化。",
+                    role="business_reader",
+                    current_snapshot="2026H1",
+                )
+
+                self.assertEqual(result.reuse_decisions[0].decision, "blocked")
+                artifact = next(
+                    item
+                    for item in result.context_manifest.items
+                    if item.source_ref == f"artifact:{protected_scope}-protected"
+                )
+                self.assertFalse(artifact.can_support_claims)
+                self.assertTrue(artifact.expired)
+
+        self.assertFalse(_can_read_scope("data_owner_admin", "unknown_scope"))
+        self.assertFalse(_can_read_scope("unknown_role", "business_reader"))
 
     def test_in_memory_result_candidates_are_newest_first(self):
         store = InMemoryConversationStore()
@@ -650,7 +756,21 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(result.turn_intent.decision_source, "local_conversation_orchestrator_guard")
         self.assertIsNone(result.run_request)
 
-    def test_invalid_llm_orchestration_falls_back_to_local_precheck(self):
+    def test_llm_orchestrator_provider_failure_fails_closed_without_local_intent(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-llm-provider-failure", owner_id="analyst-1")
+        runtime = ConversationRuntime(store, llm_client=FailingConversationLLM())
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "conversation_orchestrator_provider_failed",
+        ):
+            runtime.handle_message(
+                "thread-llm-provider-failure",
+                "刚才那个具体是哪个 topic？",
+            )
+
+    def test_invalid_llm_orchestration_fails_closed_without_local_intent(self):
         store = InMemoryConversationStore()
         store.create_thread("thread-llm-fallback", owner_id="analyst-1")
         fake = FakeConversationLLM(
@@ -663,11 +783,53 @@ class ConversationRuntimeTest(unittest.TestCase):
         )
         runtime = ConversationRuntime(store, llm_client=fake)
 
-        result = runtime.handle_message("thread-llm-fallback", "刚才那个具体是哪个 topic？")
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "conversation_orchestrator_output_invalid",
+        ):
+            runtime.handle_message(
+                "thread-llm-fallback",
+                "刚才那个具体是哪个 topic？",
+            )
 
-        self.assertEqual(result.turn_intent.intent, "follow_up")
-        self.assertEqual(result.topic_relation, "ask_topic_choice")
-        self.assertEqual(result.turn_intent.decision_source, "local_conversation_orchestrator_fallback")
+    def test_non_mapping_llm_orchestration_fails_closed_without_local_intent(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-llm-shape", owner_id="analyst-1")
+        runtime = ConversationRuntime(
+            store,
+            llm_client=RawConversationLLM(["not", "an", "intent"]),
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "conversation_orchestrator_output_invalid",
+        ):
+            runtime.handle_message(
+                "thread-llm-shape",
+                "刚才那个具体是哪个 topic？",
+            )
+
+    def test_llm_orchestration_requires_nonempty_business_summary(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-llm-summary", owner_id="analyst-1")
+        fake = FakeConversationLLM(
+            {
+                "intent": "follow_up",
+                "topic_relation": "ask_topic_choice",
+                "business_summary": "",
+                "confidence": 0.91,
+            }
+        )
+        runtime = ConversationRuntime(store, llm_client=fake)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "conversation_orchestrator_business_summary_invalid",
+        ):
+            runtime.handle_message(
+                "thread-llm-summary",
+                "刚才那个具体是哪个 topic？",
+            )
 
 
 def _seed_runtime() -> ConversationRuntime:
@@ -825,6 +987,19 @@ class FakeConversationLLM:
                 "structured_output": output,
             },
         )
+
+
+class FailingConversationLLM:
+    def invoke_json(self, **_kwargs):
+        raise RuntimeError("provider unavailable")
+
+
+class RawConversationLLM:
+    def __init__(self, output):
+        self.output = output
+
+    def invoke_json(self, **_kwargs):
+        return SimpleNamespace(output=self.output, audit={"provider": "fake"})
 
 
 if __name__ == "__main__":

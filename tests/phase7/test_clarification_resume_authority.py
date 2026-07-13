@@ -2,6 +2,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime
 import json
+from types import MappingProxyType
 
 import pytest
 
@@ -760,10 +761,12 @@ def test_material_authority_builds_versioned_exact_signed_intent_and_route_slots
         "topic_id",
         "intent_material",
         "route_material_slots",
+        "execution_material",
         "route_control",
         "material_authority_signature",
     }
-    assert envelope["schema_version"] == "1"
+    assert envelope["schema_version"] == "3"
+    assert envelope["execution_material"] is None
     assert envelope["intent_material"] == {
         "primary_question_family": "business_object_impact_review",
         "question_families": [
@@ -778,6 +781,7 @@ def test_material_authority_builds_versioned_exact_signed_intent_and_route_slots
         "context_sources": [],
         "claim_intents": ["comparative_change"],
         "scope": "full_sample",
+        "time_window": None,
     }
     assert envelope["route_material_slots"] == route_slots
     assert envelope["route_control"] == {
@@ -795,6 +799,860 @@ def test_material_authority_builds_versioned_exact_signed_intent_and_route_slots
         thread_id="thread-source",
         topic_id="topic-source",
     ) == envelope
+
+
+@pytest.mark.parametrize(
+    ("time_window", "baseline_candidates", "canonical_baseline"),
+    [
+        (
+            {"target": "yesterday", "baseline": "past 7 days"},
+            [
+                {
+                    "description": "近7日均值",
+                    "type": "rolling_average",
+                    "window": 7,
+                }
+            ],
+            "rolling_7_day_baseline",
+        ),
+        (
+            {
+                "target": "latest complete day",
+                "baseline": {"description": "上周同日"},
+            },
+            [{"description": "上周同日", "ref": "last_week_same_day"}],
+            "same_weekday_last_week",
+        ),
+    ],
+)
+def test_material_authority_uses_reviewed_route_baselines_over_narrative_intent(
+    time_window, baseline_candidates, canonical_baseline
+):
+    from bi_agent.conversation.clarification_authority import (
+        build_material_authority,
+    )
+
+    material = build_material_authority(
+        source_run_id="run-source",
+        thread_id="thread-source",
+        topic_id="topic-source",
+        original_intent={
+            "question_family": "custom_baseline_comparison",
+            "question_families": ["custom_baseline_comparison"],
+            "primary_question_family": "custom_baseline_comparison",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+            "time_window": time_window,
+            "baseline_candidates": baseline_candidates,
+            "requested_components": [],
+            "requested_dimensions": [],
+            "context_sources": [],
+            "claim_intents": ["comparative_change"],
+            "scope": "full_sample",
+        },
+        material_slots={
+            **_complete_material_slots(
+                baselines=[canonical_baseline],
+                claim_intents=["comparative_change"],
+            ),
+            "diagnostic_tags": [],
+            "scope": "full_sample",
+        },
+    )
+
+    assert material["intent_material"]["baselines"] == [canonical_baseline]
+    assert material["route_material_slots"]["baselines"] == [
+        canonical_baseline
+    ]
+
+
+def test_material_authority_signature_ignores_narrative_baseline_variants():
+    from bi_agent.conversation.clarification_authority import (
+        build_material_authority,
+    )
+
+    def build(baseline_candidates):
+        return build_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-source",
+            topic_id="topic-source",
+            original_intent={
+                "question_family": "custom_baseline_comparison",
+                "question_families": ["custom_baseline_comparison"],
+                "primary_question_family": "custom_baseline_comparison",
+                "secondary_question_families": [],
+                "target_metric": "paid_amount",
+                "time_window": {
+                    "target": "yesterday",
+                    "baseline": "previous business day",
+                },
+                "baseline_candidates": baseline_candidates,
+                "requested_components": [],
+                "requested_dimensions": [],
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "scope": "full_sample",
+            },
+            material_slots={
+                **_complete_material_slots(
+                    baselines=["previous_day"],
+                    claim_intents=["comparative_change"],
+                ),
+                "diagnostic_tags": [],
+                "scope": "full_sample",
+            },
+        )
+
+    narrative = build(["前日"])
+    machine_shaped = build([{"baseline_id": "previous_day"}])
+
+    assert narrative == machine_shaped
+
+
+@pytest.mark.parametrize(
+    "route_baselines",
+    [
+        [],
+        ["previous_day"],
+        ["previous_day", "same_weekday_last_week"],
+    ],
+)
+def test_material_authority_rejects_ambiguous_narrative_baseline_translation(
+    route_baselines,
+):
+    from bi_agent.conversation.clarification_authority import (
+        build_material_authority,
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="material_authority_baselines_invalid",
+    ):
+        build_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-source",
+            topic_id="topic-source",
+            original_intent={
+                "question_family": "custom_baseline_comparison",
+                "question_families": ["custom_baseline_comparison"],
+                "primary_question_family": "custom_baseline_comparison",
+                "secondary_question_families": [],
+                "target_metric": "paid_amount",
+                "time_window": "latest_complete_day",
+                "baseline_candidates": [
+                    {"description": "自定义业务对照窗口"}
+                ],
+                "requested_components": [],
+                "requested_dimensions": [],
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "scope": "full_sample",
+            },
+            material_slots={
+                **_complete_material_slots(
+                    baselines=route_baselines,
+                    claim_intents=["comparative_change"],
+                ),
+                "diagnostic_tags": [],
+                "scope": "full_sample",
+            },
+        )
+
+
+def test_material_authority_rejects_conflicting_ids_in_one_baseline_structure():
+    from bi_agent.conversation.clarification_authority import (
+        build_material_authority,
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="material_authority_baselines_invalid",
+    ):
+        build_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-source",
+            topic_id="topic-source",
+            original_intent={
+                "question_family": "custom_baseline_comparison",
+                "question_families": ["custom_baseline_comparison"],
+                "primary_question_family": "custom_baseline_comparison",
+                "secondary_question_families": [],
+                "target_metric": "paid_amount",
+                "time_window": "latest_complete_day",
+                "baseline_candidates": [{
+                    "baseline_id": "previous_day",
+                    "ref": "last_week_same_day",
+                }],
+                "requested_components": [],
+                "requested_dimensions": [],
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "scope": "full_sample",
+            },
+            material_slots={
+                **_complete_material_slots(
+                    baselines=[
+                        "previous_day",
+                        "same_weekday_last_week",
+                    ],
+                    claim_intents=["comparative_change"],
+                ),
+                "diagnostic_tags": [],
+                "scope": "full_sample",
+            },
+        )
+
+
+def test_material_authority_rejects_mapped_candidate_outside_reviewed_route():
+    from bi_agent.conversation.clarification_authority import (
+        build_material_authority,
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="material_authority_baselines_invalid",
+    ):
+        build_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-source",
+            topic_id="topic-source",
+            original_intent={
+                "question_family": "custom_baseline_comparison",
+                "question_families": ["custom_baseline_comparison"],
+                "primary_question_family": "custom_baseline_comparison",
+                "secondary_question_families": [],
+                "target_metric": "paid_amount",
+                "time_window": "latest_complete_day",
+                "baseline_candidates": [
+                    "previous_day",
+                    {"ref": "last_week_same_day"},
+                ],
+                "requested_components": [],
+                "requested_dimensions": [],
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "scope": "full_sample",
+            },
+            material_slots={
+                **_complete_material_slots(
+                    baselines=["previous_day"],
+                    claim_intents=["comparative_change"],
+                ),
+                "diagnostic_tags": [],
+                "scope": "full_sample",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("axis", "tampered_value"),
+    [
+        ("baseline_candidates", ["same_weekday_last_week"]),
+        (
+            "time_window",
+            {"target": "today", "baseline": "previous business day"},
+        ),
+    ],
+)
+def test_terminal_resume_rejects_mutable_baseline_or_time_window_tamper(
+    axis, tampered_value
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": ["previous_day"],
+        "time_window": {
+            "target": "yesterday",
+            "baseline": "previous business day",
+        },
+        "context_sources": [],
+        "claim_intents": ["comparative_change"],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "scope": "full_sample",
+        "question": "source question",
+    }
+    material = {
+        **_complete_material_slots(
+            baselines=["previous_day"],
+            claim_intents=["comparative_change"],
+        ),
+        "diagnostic_tags": [],
+        "scope": "full_sample",
+    }
+    contract = _source_contract_with_window("previous_day", role="baseline")
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    request = _resume_request(
+        original,
+        material,
+        analysis_contract=_typed_contract_payload(contract),
+        authority_contract=contract,
+    )
+    request["clarification_resume_context"]["original_intent"][axis] = (
+        tampered_value
+    )
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match=f"clarification_resume_material_slots_conflict:{'baselines' if axis == 'baseline_candidates' else 'time_window'}",
+    ):
+        workflow._bind_clarification_resume_intent(
+            {},
+            request,
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+
+def test_terminal_resume_keeps_explicit_intent_baseline_separate_from_route_expansion():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": ["previous_day"],
+        "time_window": {
+            "target": "yesterday",
+            "baseline": "previous business day",
+        },
+        "context_sources": [],
+        "claim_intents": ["comparative_change"],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "scope": "full_sample",
+        "question": "source question",
+    }
+    route_baselines = ["previous_day", "rolling_7_day_baseline"]
+    material = {
+        **_complete_material_slots(
+            baselines=route_baselines,
+            claim_intents=["comparative_change"],
+        ),
+        "diagnostic_tags": [],
+        "scope": "full_sample",
+    }
+    contract = _source_contract_with_window("previous_day", role="baseline")
+    rolling = deepcopy(contract["resolved_windows"][-1])
+    rolling["window_id"] = "rolling_7_day_baseline"
+    contract["resolved_windows"].append(rolling)
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    request = _resume_request(
+        original,
+        material,
+        analysis_contract=_typed_contract_payload(contract),
+        authority_contract=contract,
+    )
+
+    signed = request["accepted_terminal_gap_authority"]["material_authority"]
+    assert signed["intent_material"]["baselines"] == ["previous_day"]
+    assert signed["route_material_slots"]["baselines"] == route_baselines
+
+    bound = workflow._bind_clarification_resume_intent(
+        {},
+        request,
+        RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+    )
+    assert bound["baseline_candidates"] == route_baselines
+
+
+@pytest.mark.parametrize(
+    ("time_window", "baseline_candidates", "canonical_baseline"),
+    [
+        (
+            {"target": "yesterday", "baseline": "past 7 days"},
+            [
+                {
+                    "description": "近7日均值",
+                    "type": "rolling_average",
+                    "window": 7,
+                }
+            ],
+            "rolling_7_day_baseline",
+        ),
+        (
+            "latest_complete_day",
+            [{"description": "上周同日", "ref": "last_week_same_day"}],
+            "same_weekday_last_week",
+        ),
+    ],
+)
+def test_terminal_resume_binds_real_llm_baseline_shapes_to_reviewed_route(
+    time_window, baseline_candidates, canonical_baseline
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": baseline_candidates,
+        "time_window": time_window,
+        "context_sources": [],
+        "claim_intents": ["comparative_change"],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "scope": "full_sample",
+        "question": "source question",
+    }
+    material = {
+        **_complete_material_slots(
+            baselines=[canonical_baseline],
+            claim_intents=["comparative_change"],
+        ),
+        "diagnostic_tags": [],
+        "scope": "full_sample",
+    }
+    contract = _source_contract_with_window(canonical_baseline, role="baseline")
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    request = _resume_request(
+        original,
+        material,
+        analysis_contract=_typed_contract_payload(contract),
+        authority_contract=contract,
+    )
+
+    bound = workflow._bind_clarification_resume_intent(
+        {},
+        request,
+        RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+    )
+
+    assert bound["baseline_candidates"] == [canonical_baseline]
+    assert bound["time_window"] == time_window
+
+
+def test_terminal_resume_binds_multi_baseline_llm_structures_as_reviewed_set():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    route_baselines = [
+        "rolling_7_day_baseline",
+        "same_weekday_last_week",
+    ]
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": [
+            {
+                "description": "近7日均值",
+                "type": "rolling_average",
+                "window": 7,
+            },
+            {"description": "上周同日", "ref": "last_week_same_day"},
+        ],
+        "time_window": "latest_complete_day",
+        "context_sources": [],
+        "claim_intents": ["comparative_change"],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "scope": "full_sample",
+        "question": "source question",
+    }
+    material = {
+        **_complete_material_slots(
+            baselines=route_baselines,
+            claim_intents=["comparative_change"],
+        ),
+        "diagnostic_tags": [],
+        "scope": "full_sample",
+    }
+    contract = _source_contract_with_window(
+        "rolling_7_day_baseline",
+        role="baseline",
+    )
+    same_weekday = deepcopy(contract["resolved_windows"][-1])
+    same_weekday["window_id"] = "same_weekday_last_week"
+    contract["resolved_windows"].append(same_weekday)
+    contract["contract_signature"] = analysis_contract_signature(contract)
+
+    request = _resume_request(
+        original,
+        material,
+        analysis_contract=_typed_contract_payload(contract),
+        authority_contract=contract,
+    )
+    signed = request["accepted_terminal_gap_authority"]["material_authority"]
+    assert signed["intent_material"]["baselines"] == route_baselines
+
+    bound = workflow._bind_clarification_resume_intent(
+        {},
+        request,
+        RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+    )
+    assert bound["baseline_candidates"] == route_baselines
+
+
+def test_material_authority_preserves_mixed_canonical_and_typed_baselines_order_independently():
+    from bi_agent.conversation.clarification_authority import (
+        build_material_authority,
+    )
+
+    typed = {
+        "description": "近7日均值",
+        "type": "rolling_average",
+        "window": 7,
+    }
+    route_baselines = ["previous_day", "rolling_7_day_baseline"]
+
+    def build(candidates):
+        return build_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-source",
+            topic_id="topic-source",
+            original_intent={
+                "question_family": "custom_baseline_comparison",
+                "question_families": ["custom_baseline_comparison"],
+                "primary_question_family": "custom_baseline_comparison",
+                "secondary_question_families": [],
+                "target_metric": "paid_amount",
+                "time_window": "latest_complete_day",
+                "baseline_candidates": candidates,
+                "requested_components": [],
+                "requested_dimensions": [],
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "scope": "full_sample",
+            },
+            material_slots={
+                **_complete_material_slots(
+                    baselines=route_baselines,
+                    claim_intents=["comparative_change"],
+                ),
+                "diagnostic_tags": [],
+                "scope": "full_sample",
+            },
+        )
+
+    original_order = build(["previous_day", typed])
+    reversed_order = build([typed, "previous_day"])
+
+    assert original_order["intent_material"]["baselines"] == route_baselines
+    assert reversed_order == original_order
+
+
+def test_terminal_resume_rejects_removing_one_mixed_explicit_baseline():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    typed = {
+        "description": "近7日均值",
+        "type": "rolling_average",
+        "window": 7,
+    }
+    route_baselines = ["previous_day", "rolling_7_day_baseline"]
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": ["previous_day", typed],
+        "time_window": "latest_complete_day",
+        "context_sources": [],
+        "claim_intents": ["comparative_change"],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "scope": "full_sample",
+        "question": "source question",
+    }
+    material = {
+        **_complete_material_slots(
+            baselines=route_baselines,
+            claim_intents=["comparative_change"],
+        ),
+        "diagnostic_tags": [],
+        "scope": "full_sample",
+    }
+    contract = _source_contract_with_window("previous_day", role="baseline")
+    rolling = deepcopy(contract["resolved_windows"][-1])
+    rolling["window_id"] = "rolling_7_day_baseline"
+    contract["resolved_windows"].append(rolling)
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    request = _resume_request(
+        original,
+        material,
+        analysis_contract=_typed_contract_payload(contract),
+        authority_contract=contract,
+    )
+    request["clarification_resume_context"]["original_intent"][
+        "baseline_candidates"
+    ] = ["previous_day"]
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="clarification_resume_material_slots_conflict:baselines",
+    ):
+        workflow._bind_clarification_resume_intent(
+            {},
+            request,
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+
+def test_material_authority_flattens_two_item_time_window_baseline_list():
+    from bi_agent.conversation.clarification_authority import (
+        build_material_authority,
+    )
+
+    route_baselines = [
+        "rolling_7_day_baseline",
+        "same_weekday_last_week",
+    ]
+    material = build_material_authority(
+        source_run_id="run-source",
+        thread_id="thread-source",
+        topic_id="topic-source",
+        original_intent={
+            "question_family": "custom_baseline_comparison",
+            "question_families": ["custom_baseline_comparison"],
+            "primary_question_family": "custom_baseline_comparison",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+            "time_window": {
+                "target": "yesterday",
+                "baseline": [
+                    {"type": "rolling_average", "window": 7},
+                    {"ref": "last_week_same_day"},
+                ],
+            },
+            "baseline_candidates": [],
+            "requested_components": [],
+            "requested_dimensions": [],
+            "context_sources": [],
+            "claim_intents": ["comparative_change"],
+            "scope": "full_sample",
+        },
+        material_slots={
+            **_complete_material_slots(
+                baselines=route_baselines,
+                claim_intents=["comparative_change"],
+            ),
+            "diagnostic_tags": [],
+            "scope": "full_sample",
+        },
+    )
+
+    assert material["intent_material"]["baselines"] == route_baselines
+
+
+@pytest.mark.parametrize(
+    ("narrative", "route_baseline"),
+    [
+        ("previous business day", "previous_day"),
+        ("past 7 days", "rolling_7_day_baseline"),
+        ("近7日", "rolling_7_day_baseline"),
+        ("上周同期", "same_weekday_last_week"),
+    ],
+)
+def test_material_authority_rejects_ambiguous_untyped_baseline_aliases(
+    narrative, route_baseline
+):
+    from bi_agent.conversation.clarification_authority import (
+        build_material_authority,
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="material_authority_baselines_invalid",
+    ):
+        build_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-source",
+            topic_id="topic-source",
+            original_intent={
+                "question_family": "custom_baseline_comparison",
+                "question_families": ["custom_baseline_comparison"],
+                "primary_question_family": "custom_baseline_comparison",
+                "secondary_question_families": [],
+                "target_metric": "paid_amount",
+                "time_window": "latest_complete_day",
+                "baseline_candidates": [narrative],
+                "requested_components": [],
+                "requested_dimensions": [],
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "scope": "full_sample",
+            },
+            material_slots={
+                **_complete_material_slots(
+                    baselines=[route_baseline],
+                    claim_intents=["comparative_change"],
+                ),
+                "diagnostic_tags": [],
+                "scope": "full_sample",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "narrative",
+    [
+        "前一天或近7日均值",
+        "前一日和上周同日",
+    ],
+)
+def test_material_authority_rejects_composite_previous_day_narratives(
+    narrative,
+):
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="material_authority_baselines_invalid",
+    ):
+        _signed_material_authority(
+            {"baseline_candidates": [narrative]},
+            {"baselines": ["previous_day"]},
+        )
+
+
+def test_material_authority_accepts_closed_previous_day_metric_suffix_label():
+    material = _signed_material_authority(
+        {"baseline_candidates": ["前日付费金额"]},
+        {"baselines": ["previous_day"]},
+    )
+
+    assert material["intent_material"]["baselines"] == ["previous_day"]
+
+
+@pytest.mark.parametrize(
+    ("candidate", "route_baseline"),
+    [
+        (
+            {
+                "type": "rolling_average",
+                "window": 30,
+                "baseline_id": "rolling_7_day_baseline",
+            },
+            "rolling_7_day_baseline",
+        ),
+        (
+            {
+                "type": "same_weekday",
+                "lag_weeks": 2,
+                "ref": "last_week_same_day",
+            },
+            "same_weekday_last_week",
+        ),
+        (
+            {
+                "type": "same_weekday",
+                "lag_weeks": 0,
+                "ref": "last_week_same_day",
+            },
+            "same_weekday_last_week",
+        ),
+        (
+            {
+                "type": "custom_window",
+                "window": 7,
+                "baseline_id": "rolling_7_day_baseline",
+            },
+            "rolling_7_day_baseline",
+        ),
+        (
+            {
+                "type": 0,
+                "baseline_id": "previous_day",
+            },
+            "previous_day",
+        ),
+    ],
+)
+def test_material_authority_rejects_typed_constraint_conflicts(
+    candidate,
+    route_baseline,
+):
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="material_authority_baselines_invalid",
+    ):
+        _signed_material_authority(
+            {"baseline_candidates": [candidate]},
+            {"baselines": [route_baseline]},
+        )
+
+
+def test_material_authority_rejects_partially_overlapping_selected_candidates():
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="material_authority_baselines_invalid",
+    ):
+        _signed_material_authority(
+            {
+                "time_window": {
+                    "target": "yesterday",
+                    "baseline": [
+                        "previous_day",
+                        {"ref": "last_week_same_day"},
+                    ],
+                },
+                "baseline_candidates": [
+                    "previous_day",
+                    {"type": "rolling_average", "window": 7},
+                ],
+            },
+            {
+                "baselines": [
+                    "previous_day",
+                    "rolling_7_day_baseline",
+                    "same_weekday_last_week",
+                ]
+            },
+        )
+
+
+def test_material_authority_accepts_selected_subset_of_candidate_authority():
+    material = _signed_material_authority(
+        {
+            "time_window": {
+                "target": "yesterday",
+                "baseline": "previous_day",
+            },
+            "baseline_candidates": [
+                "previous_day",
+                {"type": "rolling_average", "window": 7},
+            ],
+        },
+        {
+            "baselines": [
+                "previous_day",
+                "rolling_7_day_baseline",
+            ]
+        },
+    )
+
+    assert material["intent_material"]["baselines"] == [
+        "previous_day",
+        "rolling_7_day_baseline",
+    ]
+
+
+def test_terminal_and_nonterminal_baseline_canonicalization_have_parity():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    candidates = [
+        {"type": "rolling_average", "window": 7},
+        {"ref": "last_week_same_day"},
+    ]
+    assert workflow._canonical_baseline_ids(candidates) == [
+        "rolling_7_day_baseline",
+        "same_weekday_last_week",
+    ]
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="clarification_resume_material_slots_conflict:baselines",
+    ):
+        workflow._validate_nonterminal_resume_material(
+            {
+                "target_metric": "paid_amount",
+                "baseline_candidates": ["past 7 days"],
+                "requested_components": [],
+                "requested_dimensions": [],
+                "context_sources": [],
+                "claim_intents": [],
+            },
+            _complete_material_slots(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -853,7 +1711,7 @@ def test_material_authority_exact_shape_version_signature_and_owner_fail_closed(
             deepcopy(rejection),
         ]
     elif mutation == "version":
-        envelope["schema_version"] = "2"
+        envelope["schema_version"] = "1"
     elif mutation == "signature":
         envelope["material_authority_signature"] = "tampered"
     elif mutation == "owner":
@@ -924,6 +1782,7 @@ def test_resume_authority_rejects_independently_signed_overlap_mismatch(
             "diagnostic_tags": [],
             "scope": scope,
         },
+        runtime_material=_runtime_material_for_contract(contract),
     )
     if axis == "route_target_metrics":
         from bi_agent.runtime.analysis_contracts import stable_contract_signature
@@ -1018,6 +1877,7 @@ def test_resume_authority_preserves_ordered_multi_target_overlap(
             "diagnostic_tags": [],
             "scope": "full_sample",
         },
+        runtime_material=_runtime_material_for_contract(contract),
     )
 
     if accepted:
@@ -1037,6 +1897,7 @@ def test_resume_authority_rejects_nonunique_contract_target_ref(failure):
     )
 
     contract = _source_contract()
+    runtime_contract = deepcopy(contract)
     if failure == "unresolvable":
         contract["target_metric_refs"] = ["contract:metric:missing"]
     else:
@@ -1069,6 +1930,7 @@ def test_resume_authority_rejects_nonunique_contract_target_ref(failure):
             "diagnostic_tags": [],
             "scope": "full_sample",
         },
+        runtime_material=_runtime_material_for_contract(runtime_contract),
     )
 
     with pytest.raises(
@@ -1106,6 +1968,7 @@ def test_resume_authority_normalizes_default_material_scope(material_scope):
             "diagnostic_tags": [],
             "scope": material_scope,
         },
+        runtime_material=_runtime_material_for_contract(_source_contract()),
     )
 
     _validate_signed_authority_pair(_source_contract(), material)
@@ -1142,6 +2005,7 @@ def test_resume_authority_rejects_nested_material_scope_drift():
             "diagnostic_tags": [],
             "scope": nested_scope,
         },
+        runtime_material=_runtime_material_for_contract(_source_contract()),
     )
 
     with pytest.raises(
@@ -1149,6 +2013,206 @@ def test_resume_authority_rejects_nested_material_scope_drift():
         match="material_authority_contract_scope_mismatch",
     ):
         _validate_signed_authority_pair(_source_contract(), material)
+
+
+def _terminal_runtime_material():
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    return {
+        "schema_version": "1",
+        "target_semantic": "2026-06-02",
+        "as_of": "2026-06-03T12:00:00+01:00",
+        "business_timezone": "Africa/Lagos",
+        "permission_scope": "analyst",
+        "fixed_window_bounds": {
+            "target_day": ["2026-06-02", "2026-06-02"],
+            "previous_day": ["2026-06-01", "2026-06-01"],
+            "rolling_7_day_baseline": ["2026-05-26", "2026-06-01"],
+            "same_weekday_last_week": ["2026-05-26", "2026-05-26"],
+            "pattern_history": ["2026-01-01", "2026-06-02"],
+            "anomaly_history": ["2026-05-03", "2026-06-01"],
+        },
+        "filters": [],
+        "grain": "window_id",
+        "dataset_requirements": [],
+        "metric_dataset_overrides": {},
+        "dimension_dataset_overrides": {},
+        "requested_context_sources": ["market_dashboard"],
+        "accepted_graph": ["compare_periods"],
+        "runtime_contract_version": registry.contract_version,
+        "runtime_registry_digest": registry.source_payload_digest,
+        "run_mode_class": "authoritative",
+        "source_query_contracts": [],
+    }
+
+
+def _terminal_material_axis_authority():
+    return _signed_material_authority(
+        original_intent={
+            "question_family": "business_object_impact_review",
+            "question_families": ["business_object_impact_review"],
+            "target_metric": "paid_amount",
+            "requested_components": ["paid_users"],
+            "requested_dimensions": ["channel"],
+            "baseline_candidates": ["previous_day"],
+            "context_sources": ["market_dashboard"],
+            "claim_intents": ["comparative_change"],
+            "scope": "full_sample",
+            "time_window": {
+                "target": "yesterday",
+                "baseline": "previous_day",
+            },
+        },
+        material_slots={
+            "target_metrics": ["paid_amount"],
+            "requested_components": ["paid_users"],
+            "requested_dimensions": ["channel"],
+            "baselines": ["previous_day", "rolling_7_day_baseline"],
+            "context_sources": ["market_dashboard"],
+            "claim_intents": ["comparative_change"],
+            "diagnostic_tags": ["event_impact"],
+            "scope": "full_sample",
+        },
+        runtime_material=_terminal_runtime_material(),
+    )
+
+
+def _exact_terminal_material_proposal():
+    return {
+        "question_families": ["business_object_impact_review"],
+        "target_metrics": ["paid_amount"],
+        "requested_components": ["paid_users"],
+        "requested_dimensions": ["channel"],
+        "baselines": ["previous_day", "rolling_7_day_baseline"],
+        "context_sources": ["market_dashboard"],
+        "requested_context_sources": ["market_dashboard"],
+        "claim_intents": ["comparative_change"],
+        "diagnostic_tags": ["event_impact"],
+        "scope": "full_sample",
+        "time_window": {
+            "target": "yesterday",
+            "baseline": "previous_day",
+        },
+        "target_semantic": "2026-06-02",
+        "fixed_window_bounds": _terminal_runtime_material()[
+            "fixed_window_bounds"
+        ],
+        "filters": [],
+        "grain": "window_id",
+        "dataset_requirements": [],
+        "metric_dataset_overrides": {},
+        "dimension_dataset_overrides": {},
+    }
+
+
+@pytest.mark.parametrize(
+    ("axis", "drift", "reason_axis"),
+    [
+        ("question_families", ["pattern_explanation"], "question_families"),
+        ("target_metrics", ["active_users"], "target_metrics"),
+        ("requested_components", ["paid_orders"], "requested_components"),
+        ("requested_dimensions", ["game"], "requested_dimensions"),
+        ("baselines", ["same_weekday_last_week"], "baselines"),
+        ("context_sources", ["external_event"], "context_sources"),
+        (
+            "requested_context_sources",
+            ["external_event"],
+            "context_sources",
+        ),
+        ("claim_intents", ["candidate_mechanism"], "claim_intents"),
+        ("diagnostic_tags", ["anomaly"], "diagnostic_tags"),
+        ("scope", "custom_segment", "scope"),
+        (
+            "time_window",
+            {"target": "today", "baseline": "previous_day"},
+            "time_window",
+        ),
+        ("target_semantic", "today", "time_window"),
+        (
+            "fixed_window_bounds",
+            {"target_day": ["2027-01-01", "2027-01-01"]},
+            "fixed_window_bounds",
+        ),
+    ],
+)
+def test_terminal_resume_proposal_rejects_every_signed_material_axis_drift(
+    axis, drift, reason_axis
+):
+    from bi_agent.conversation.clarification_authority import (
+        validate_terminal_resume_proposal_overlap,
+    )
+
+    proposal = _exact_terminal_material_proposal()
+    proposal[axis] = drift
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match=f"terminal_resume_proposal_{reason_axis}_mismatch",
+    ):
+        validate_terminal_resume_proposal_overlap(
+            _terminal_material_axis_authority(),
+            proposal,
+        )
+
+
+@pytest.mark.parametrize(
+    ("choice", "reason_axis"),
+    [
+        ({"requested_components": ["paid_orders"]}, "requested_components"),
+        ({"requested_dimensions": ["game"]}, "requested_dimensions"),
+        ({"baselines": ["same_weekday_last_week"]}, "baselines"),
+        ({"baseline_candidates": ["same_weekday_last_week"]}, "baselines"),
+        ({"context_sources": ["external_event"]}, "context_sources"),
+        (
+            {"requested_context_sources": ["external_event"]},
+            "context_sources",
+        ),
+        ({"claim_intents": ["candidate_mechanism"]}, "claim_intents"),
+        ({"diagnostic_tags": ["anomaly"]}, "diagnostic_tags"),
+        (
+            {"time_window": {"target": "today"}},
+            "time_window",
+        ),
+        ({"target_semantic": "today"}, "time_window"),
+        ({"target_window": "today"}, "time_window"),
+    ],
+)
+def test_terminal_resume_choice_rejects_every_signed_material_axis_drift(
+    choice, reason_axis
+):
+    from bi_agent.conversation.clarification_authority import (
+        validate_terminal_clarification_choice_overlap,
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match=f"terminal_resume_proposal_{reason_axis}_mismatch",
+    ):
+        validate_terminal_clarification_choice_overlap(
+            _terminal_material_axis_authority(),
+            choice,
+        )
+
+
+def test_terminal_resume_rebuilds_runtime_material_from_signed_route_authority():
+    from bi_agent.conversation.clarification_authority import (
+        bind_terminal_resume_proposal_material,
+    )
+
+    bound = bind_terminal_resume_proposal_material(
+        _terminal_material_axis_authority(),
+        {
+            "accepted_degradation_choice": {"choice_id": "continue"},
+            "non_material_suggestion": "explain limitations first",
+        },
+    )
+
+    assert bound == {
+        "accepted_degradation_choice": {"choice_id": "continue"},
+        "non_material_suggestion": "explain limitations first",
+        **_exact_terminal_material_proposal(),
+    }
 
 
 def test_resume_carries_signed_route_rejection_once_and_ignores_mutable_injection():
@@ -2188,7 +3252,7 @@ def test_resume_accepts_contract_authorized_baseline_expansion():
 
     original = {
         "target_metric": "paid_amount",
-        "baseline_candidates": ["前日", "上周同日"],
+        "baseline_candidates": ["上周同日"],
         "context_sources": [],
         "claim_intents": [],
         "requested_dimensions": [],
@@ -2196,12 +3260,15 @@ def test_resume_accepts_contract_authorized_baseline_expansion():
         "question": "source question",
     }
     material = _complete_material_slots(
-        baselines=["same_weekday_last_week"],
+        baselines=["same_weekday_last_week", "previous_day"],
         claim_intents=["comparative_change"],
     )
     contract = _source_contract_with_window(
         "same_weekday_last_week", role="baseline"
     )
+    previous = deepcopy(contract["resolved_windows"][-1])
+    previous["window_id"] = "previous_day"
+    contract["resolved_windows"].append(previous)
     contract["contract_signature"] = analysis_contract_signature(contract)
 
     workflow._bind_clarification_resume_intent(
@@ -2507,6 +3574,297 @@ def _complete_material_slots(
     }
 
 
+def _runtime_material_for_contract(
+    contract,
+    *,
+    proposal=None,
+    accepted_graph=(),
+    query_contracts=(),
+    capability_execution_plans=(),
+):
+    from bi_agent.conversation.clarification_authority import (
+        build_execution_material,
+    )
+
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    return build_execution_material(
+        proposal=proposal or {},
+        accepted_graph=accepted_graph,
+        as_of=contract["as_of"],
+        permission_scope=contract["permission_scope"],
+        run_mode="production",
+        runtime_contract_version=registry.contract_version,
+        runtime_registry_digest=registry.source_payload_digest,
+        analysis_contract=contract,
+        query_contracts=query_contracts,
+        capability_execution_plans=capability_execution_plans,
+    )
+
+
+def _material_query_contract(query_id, query_intent, snapshot_ref):
+    from bi_agent.runtime.analysis_contracts import query_contract_signature
+
+    contract = {
+        "query_contract_id": query_id,
+        "analysis_contract_ref": "analysis:run-source:1",
+        "query_intent": query_intent,
+        "dataset_snapshot_refs": [snapshot_ref],
+        "metric_bindings": [],
+        "dimension_bindings": [],
+        "window_refs": ["target_day"],
+        "resolved_windows": [],
+        "filters": [],
+        "result_shape": {
+            "required_fields": ["window_id", "value"],
+            "unique_key": ["window_id"],
+            "grain": ["window_id"],
+            "required_window_ids": ["target_day"],
+            "result_semantics": "complete_aggregate",
+            "dimension_presence_policy": "paired_required",
+        },
+        "completeness_assertions": ["target_window_present"],
+        "permission_scope": "analyst",
+        "workload_class": "interactive",
+        "query_parameters": {},
+        "query_role_ref": "",
+        "reconciliation_binding": None,
+        "join_expectation": None,
+    }
+    contract["contract_signature"] = query_contract_signature(contract)
+    return contract
+
+
+def _material_capability_plan(capability_id, *query_contract_refs):
+    return {
+        "capability_id": capability_id,
+        "required_input_slots": [
+            {
+                "query_contract_refs": list(query_contract_refs),
+                "validation_query_contract_refs": [],
+            }
+        ],
+        "optional_input_slots": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("accepted_graph", "capability_execution_plans"),
+    [
+        (
+            ("compare_periods",),
+            (
+                _material_capability_plan(
+                    "compare_periods", "query:source:unknown"
+                ),
+            ),
+        ),
+        (
+            ("compare_periods",),
+            (_material_capability_plan("compare_periods"),),
+        ),
+        (
+            ("compare_periods",),
+            (
+                _material_capability_plan(
+                    "answer_verify", "query:source:owned"
+                ),
+            ),
+        ),
+    ],
+    ids=(
+        "unknown-plan-query-ref",
+        "ownerless-source-query",
+        "plan-owner-outside-accepted-graph",
+    ),
+)
+def test_execution_material_rejects_invalid_source_query_owner_projection(
+    accepted_graph, capability_execution_plans
+):
+    """Post-fix characterization: the prior schema did not read plan ownership."""
+    source_query = _material_query_contract(
+        "query:source:owned",
+        "compare_periods",
+        "snapshot:paid:source",
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="execution_material_source_query_contracts_invalid",
+    ):
+        _runtime_material_for_contract(
+            _source_contract(),
+            accepted_graph=accepted_graph,
+            query_contracts=(source_query,),
+            capability_execution_plans=capability_execution_plans,
+        )
+
+
+def _two_query_material_authority():
+    query_contracts = (
+        _material_query_contract(
+            "query:source:compare",
+            "compare_periods",
+            "snapshot:paid:source",
+        ),
+        _material_query_contract(
+            "query:source:verify",
+            "verify_answer_inputs",
+            "snapshot:paid:source",
+        ),
+    )
+    runtime_material = _runtime_material_for_contract(
+        _source_contract(),
+        accepted_graph=("compare_periods", "answer_verify"),
+        query_contracts=query_contracts,
+        capability_execution_plans=(
+            _material_capability_plan(
+                "compare_periods", "query:source:compare"
+            ),
+            _material_capability_plan(
+                "answer_verify", "query:source:verify"
+            ),
+        ),
+    )
+    return _signed_material_authority(runtime_material=runtime_material), query_contracts
+
+
+def test_terminal_compile_rejects_deleting_all_signed_source_queries():
+    from bi_agent.conversation.clarification_authority import (
+        validate_terminal_compile_overlap,
+    )
+
+    authority, _ = _two_query_material_authority()
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="terminal_resume_compile_query_contract_projection_mismatch",
+    ):
+        validate_terminal_compile_overlap(
+            authority,
+            analysis_contract=_source_contract(),
+            query_contracts=(),
+            accepted_graph=("compare_periods", "answer_verify"),
+            accepted_choice={"affected_capabilities": []},
+        )
+
+
+def test_terminal_compile_rejects_deleting_one_signed_source_query():
+    from bi_agent.conversation.clarification_authority import (
+        validate_terminal_compile_overlap,
+    )
+
+    authority, query_contracts = _two_query_material_authority()
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="terminal_resume_compile_query_contract_projection_mismatch",
+    ):
+        validate_terminal_compile_overlap(
+            authority,
+            analysis_contract=_source_contract(),
+            query_contracts=query_contracts[:1],
+            accepted_graph=("compare_periods", "answer_verify"),
+            accepted_choice={"affected_capabilities": []},
+        )
+
+
+def test_terminal_compile_accepts_complete_signed_source_query_projection():
+    from bi_agent.conversation.clarification_authority import (
+        validate_terminal_compile_overlap,
+    )
+
+    authority, query_contracts = _two_query_material_authority()
+
+    validate_terminal_compile_overlap(
+        authority,
+        analysis_contract=_source_contract(),
+        query_contracts=query_contracts,
+        accepted_graph=("compare_periods", "answer_verify"),
+        accepted_choice={"affected_capabilities": []},
+    )
+
+
+def test_terminal_compile_allows_query_deletion_for_legally_removed_owner():
+    from bi_agent.conversation.clarification_authority import (
+        validate_terminal_compile_overlap,
+    )
+
+    authority, query_contracts = _two_query_material_authority()
+
+    validate_terminal_compile_overlap(
+        authority,
+        analysis_contract=_source_contract(),
+        query_contracts=query_contracts[:1],
+        accepted_graph=("compare_periods",),
+        accepted_choice={"affected_capabilities": ["answer_verify"]},
+    )
+
+
+def test_terminal_compile_keeps_shared_query_when_one_owner_remains():
+    from bi_agent.conversation.clarification_authority import (
+        validate_terminal_compile_overlap,
+    )
+
+    shared_query = _material_query_contract(
+        "query:source:shared",
+        "shared_observation",
+        "snapshot:paid:source",
+    )
+    runtime_material = _runtime_material_for_contract(
+        _source_contract(),
+        accepted_graph=("compare_periods", "answer_verify"),
+        query_contracts=(shared_query,),
+        capability_execution_plans=(
+            _material_capability_plan(
+                "compare_periods", "query:source:shared"
+            ),
+            _material_capability_plan(
+                "answer_verify", "query:source:shared"
+            ),
+        ),
+    )
+    authority = _signed_material_authority(
+        runtime_material=runtime_material
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="terminal_resume_compile_query_contract_projection_mismatch",
+    ):
+        validate_terminal_compile_overlap(
+            authority,
+            analysis_contract=_source_contract(),
+            query_contracts=(),
+            accepted_graph=("compare_periods",),
+            accepted_choice={"affected_capabilities": ["answer_verify"]},
+        )
+
+
+@pytest.mark.parametrize(
+    "axis",
+    ["dataset_requirements", "requested_context_sources"],
+)
+@pytest.mark.parametrize(
+    "mapping_value",
+    [
+        {"paid_order_success": True},
+        MappingProxyType({"paid_order_success": True}),
+    ],
+)
+def test_execution_material_sequence_axes_reject_mapping_values(
+    axis, mapping_value
+):
+    reason = f"execution_material_{axis}_invalid"
+
+    with pytest.raises(EvidenceIntegrityError, match=reason):
+        _runtime_material_for_contract(
+            _source_contract(),
+            proposal={axis: mapping_value},
+        )
+
+
 def _signed_material_authority(
     original_intent=None,
     material_slots=None,
@@ -2515,8 +3873,11 @@ def _signed_material_authority(
     thread_id="thread-source",
     topic_id="topic-source",
     obligation_rejection_history=(),
+    runtime_material=None,
 ):
-    from bi_agent.runtime.analysis_contracts import stable_contract_signature
+    from bi_agent.conversation.clarification_authority import (
+        build_material_authority,
+    )
 
     original = deepcopy(original_intent or {})
     families = list(
@@ -2538,38 +3899,38 @@ def _signed_material_authority(
         original.get("target_metric")
         or next(iter(slots["target_metrics"]), "paid_amount")
     )
-    body = {
-        "schema_version": "1",
-        "source_run_id": source_run_id,
-        "thread_id": thread_id,
-        "topic_id": topic_id,
-        "intent_material": {
-            "primary_question_family": primary_family,
+    original.update(
+        {
+            "question_family": primary_family,
             "question_families": families,
-            "primary_target_metric": primary_target,
-            "target_metrics": list(slots["target_metrics"]),
+            "primary_question_family": primary_family,
+            "secondary_question_families": families[1:],
+            "target_metric": primary_target,
             "requested_components": list(
                 original.get("requested_components") or ()
             ),
             "requested_dimensions": list(
                 original.get("requested_dimensions") or ()
             ),
-            "baselines": list(original.get("baseline_candidates") or ()),
+            "baseline_candidates": list(
+                original.get("baseline_candidates") or ()
+            ),
             "context_sources": list(original.get("context_sources") or ()),
             "claim_intents": list(original.get("claim_intents") or ()),
             "scope": original.get("scope", "full_sample"),
-        },
-        "route_material_slots": slots,
-        "route_control": {
-            "obligation_rejection_history": list(
-                deepcopy(obligation_rejection_history)
-            )
-        },
-    }
-    return {
-        **body,
-        "material_authority_signature": stable_contract_signature(body),
-    }
+        }
+    )
+    if runtime_material is None:
+        runtime_material = _runtime_material_for_contract(_source_contract())
+    return build_material_authority(
+        source_run_id=source_run_id,
+        thread_id=thread_id,
+        topic_id=topic_id,
+        original_intent=original,
+        material_slots=slots,
+        runtime_material=runtime_material,
+        obligation_rejection_history=obligation_rejection_history,
+    )
 
 
 def _resume_request(
@@ -2651,6 +4012,12 @@ def _resume_request(
                 material_slots
                 if authority_material_slots is None
                 else authority_material_slots
+            ),
+            runtime_material=_runtime_material_for_contract(
+                authority_contract,
+                accepted_graph=authority_contract.get(
+                    "capability_requirements", ()
+                ),
             ),
             obligation_rejection_history=(
                 authority_obligation_rejection_history
@@ -3011,6 +4378,9 @@ def test_postgres_outcome_record_locks_and_requires_waiting_source_run():
 
 def test_agent_core_resume_injects_authority_resolved_from_persisted_source_bundle():
     from tests.phase7.test_analysis_runtime_persistence import _authority_bundle
+    from bi_agent.conversation.clarification_authority import (
+        build_execution_material,
+    )
 
     calls = []
 
@@ -3023,6 +4393,33 @@ def test_agent_core_resume_injects_authority_resolved_from_persisted_source_bund
                 topic_id=request["topic_id"],
                 analysis_contract_ref=f"analysis:{request['run_id']}:1",
             )
+            registry = RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            )
+            execution_material = build_execution_material(
+                proposal={
+                    "question_families": [
+                        "segment_or_factor_attribution"
+                    ],
+                    "target_metrics": ["paid_amount"],
+                    "requested_dimensions": ["channel"],
+                    "claim_intents": [
+                        "segment_contribution_or_mix_shift"
+                    ],
+                },
+                accepted_graph=("segment_contribution",),
+                as_of=records["analysis_contract"]["as_of"],
+                permission_scope="analyst",
+                run_mode="production",
+                runtime_contract_version=registry.contract_version,
+                runtime_registry_digest=registry.source_payload_digest,
+                analysis_contract=records["analysis_contract"],
+                query_contracts=records["query_contracts"],
+                capability_execution_plans=tuple(
+                    binding.plan_payload
+                    for binding in records["capability_binding_records"]
+                ),
+            )
             return WorkflowRunResult(
                 status="waiting_for_clarification",
                 run_id=request["run_id"],
@@ -3030,6 +4427,7 @@ def test_agent_core_resume_injects_authority_resolved_from_persisted_source_bund
                     "status": "waiting_for_clarification",
                     "accepted_graph": ["segment_contribution"],
                     "analysis_contract": records["analysis_contract"],
+                    "execution_material": execution_material,
                     "analysis_route": {
                         "requested_nodes": ["segment_contribution"],
                         "obligation_resolution": {
@@ -3116,7 +4514,10 @@ def test_agent_core_resume_injects_authority_resolved_from_persisted_source_bund
     persisted_material_authority = store.runs["run-authority-source"][
         "request"
     ]["material_authority"]
-    assert persisted_material_authority["schema_version"] == "1"
+    assert persisted_material_authority["schema_version"] == "3"
+    assert persisted_material_authority["execution_material"][
+        "target_semantic"
+    ] == "2026-06-02"
     assert persisted_material_authority["source_run_id"] == (
         "run-authority-source"
     )
@@ -3196,13 +4597,22 @@ def test_agent_core_resume_closes_every_nonready_obligation_from_authority():
             "analysis_contract": contract,
             "original_intent": original_intent,
             "material_slots": material_slots,
-            "material_authority": _signed_material_authority(
+                "material_authority": _signed_material_authority(
                 original_intent,
                 material_slots,
-                source_run_id="run-segment-source",
-                thread_id="thread-segment-closure",
-                topic_id=topic.topic_id,
-            ),
+                    source_run_id="run-segment-source",
+                    thread_id="thread-segment-closure",
+                    topic_id=topic.topic_id,
+                    runtime_material=_runtime_material_for_contract(
+                        contract,
+                        proposal={
+                            "requested_context_sources": ["gameplay"],
+                        },
+                        accepted_graph=contract[
+                            "capability_requirements"
+                        ],
+                    ),
+                ),
             "clarification": {
                 "questions": [{
                     "question": "缺口怎么处理？",
