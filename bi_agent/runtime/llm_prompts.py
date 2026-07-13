@@ -7,10 +7,18 @@ from typing import Any, Mapping, Sequence
 from bi_agent.conversation.models import CLARIFICATION_ESCAPE_OPTION
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v47"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v49"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 CLARIFICATION_PROMPT_TASKS = frozenset(
     {"boundary_decision", "clarification_question", "query_gap_clarification"}
+)
+BUSINESS_INTENT_PATTERN_FAMILIES = (
+    "intra_period",
+    "weekly",
+    "event_relative",
+    "rolling",
+    "lag_recovery",
+    "custom_baseline",
 )
 
 
@@ -33,6 +41,7 @@ TASK_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
         "question_family",
         "target_metric",
         "pattern_family",
+        "pattern_params",
         "scope",
         "time_window",
         "target_claim",
@@ -182,8 +191,10 @@ def _task_prompt(task: str, payload: Mapping[str, Any]) -> str:
         )
     missing_evidence_rule = (
         "For missing evidence-derived facts, use null, an empty array, or a "
-        "degraded status instead of inventing facts. Required material fields "
-        "must never use null or an empty value."
+        "degraded status instead of inventing facts. Required material fields must "
+        "never use null. The six scalar/time material fields must also never use an "
+        "empty value. pattern_params follows its per-family object rule and may be {} "
+        "only for a family whose schema permits an empty object."
         if task == "business_intent"
         else (
             "If evidence is missing, use null, an empty array, or a degraded "
@@ -203,6 +214,7 @@ def _task_prompt(task: str, payload: Mapping[str, Any]) -> str:
 
 
 def _task_rules(task: str) -> str:
+    pattern_families = ", ".join(BUSINESS_INTENT_PATTERN_FAMILIES)
     rules = {
         "conversation_orchestrator": (
             "Classify one user message inside a BI investigation thread. Decide the "
@@ -251,17 +263,19 @@ def _task_rules(task: str) -> str:
             "prior_baselines, baseline, target, pattern family, or pattern params that "
             "are already known business "
             "constraints. Treat them as context for the run, not as a family label. "
-            "Return every required material axis with a non-null, non-empty value. When "
+            "Return every required scalar/time material axis with a non-null, non-empty "
+            "value. When "
             "bound_business_context supplies a material axis and the current question "
             "does not explicitly replace that axis, copy its exact canonical value into "
             "the corresponding output field. When the current question explicitly "
             "replaces that axis, return the new canonical value and keep the output "
-            "complete. The required material fields are question_family, target_metric, "
-            "pattern_family, scope, time_window, and target_claim. "
+            "complete. The required scalar/time material fields are question_family, "
+            "target_metric, pattern_family, scope, time_window, and target_claim. "
             "reviewed_time_window_recommendation is a reviewed planning input, "
             "not evidence. When the user delegates the time-window choice to the agent "
             "and does not name a replacement, copy its time_window value exactly into "
-            "time_window. Required material fields must never use null or an empty value; "
+            "time_window. Required scalar/time material fields must never use null or an "
+            "empty value; "
             "if no reviewed recommendation is supplied, propose a concrete business "
             "time window for later boundary review. Do not choose pattern_explanation "
             "solely because pattern_family "
@@ -293,6 +307,20 @@ def _task_rules(task: str) -> str:
             "requested_dimensions, and requested_components arrays. Copy only ids from "
             "the corresponding allowed_* lists in the input; use empty arrays when a "
             "material axis was not requested. "
+            "After choosing question_family, pattern_family must be exactly one of: "
+            f"{pattern_families}. Never return null, none, or an invented pattern family. "
+            "pattern_params must be a JSON object for every business intent. For weekly, "
+            "target_weekday must be a non-empty string or number scalar, or target_weekdays "
+            "must be a non-empty flat sequence containing only non-empty string or number "
+            "scalars. Never use booleans, objects, or nested sequences as weekday targets. "
+            "For intra_period, pattern_params must include a non-empty string or number "
+            "target_phase or target_group. Other non-weekly families may use {} when no "
+            "additional parameter is needed. "
+            "For a single bounded observation window with no repeated time shape, choose "
+            "the canonical family that represents the business shape: custom_baseline "
+            "for a one-off comparison, rolling for a continuous observation window, "
+            "event_relative for an event window, and intra_period only for a phase inside "
+            "a period. "
             "After choosing question_family, "
             "set pattern_family from the business shape: weekly for weekday repeats, "
             "intra_period for phases inside a period, rolling for rolling windows, "

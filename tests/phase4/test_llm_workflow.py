@@ -101,6 +101,76 @@ from tests.phase4.fake_llm import FakeLLMClient
 from tests.phase4.fake_llm import FakeLLMResult
 
 
+class _SequencedJSONCompletions:
+    def __init__(self, outputs):
+        self.outputs = [dict(output) for output in outputs]
+        self.attempt_count = 0
+
+    def create(self, **kwargs):
+        index = min(self.attempt_count, len(self.outputs) - 1)
+        output = self.outputs[index]
+        self.attempt_count += 1
+        message = type(
+            "SequencedMessage",
+            (),
+            {"content": json.dumps(output, ensure_ascii=False)},
+        )()
+        choice = type("SequencedChoice", (), {"message": message})()
+        return type(
+            "SequencedResponse",
+            (),
+            {
+                "id": f"sequenced-response-{self.attempt_count}",
+                "choices": [choice],
+                "usage": None,
+            },
+        )()
+
+
+def _provider_client_with_outputs(outputs):
+    completions = _SequencedJSONCompletions(outputs)
+    client = OpenAICompatibleLLMClient(
+        provider="openai_compatible",
+        model="pattern-contract-model",
+        api_key="test-key",
+    )
+    client._client = type(
+        "SequencedClient",
+        (),
+        {
+            "chat": type(
+                "SequencedChat",
+                (),
+                {"completions": completions},
+            )()
+        },
+    )()
+    return client, completions
+
+
+def _provider_business_intent_output(**overrides):
+    output = {
+        "question_family": "revenue_health_review",
+        "target_metric": "paid_amount",
+        "pattern_family": "rolling",
+        "pattern_params": {},
+        "scope": "full_sample",
+        "time_window": "2026-06-02",
+        "target_claim": "检查当前付费金额经营表现",
+        "baseline_candidates": [],
+        "analysis_requirements": {
+            "context_sources": [],
+            "claim_intents": [],
+            "requested_dimensions": [],
+            "requested_components": [],
+        },
+        "status_message": "已完成业务意图识别。",
+        "display_summary": "已绑定业务问题与分析窗口。",
+    }
+    output.update(overrides)
+    return output
+
+
 def _test_terminal_execution_material():
     from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
@@ -5897,6 +5967,33 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("evidence-derived facts", text)
         self.assertNotIn("If evidence is missing, use null", text)
 
+    def test_business_intent_prompt_requires_canonical_pattern_contract(self):
+        spec = build_prompt(
+            "business_intent",
+            {"question": "检查一个有界业务窗口的经营表现。"},
+        )
+        text = "\n".join(message["content"] for message in spec.messages)
+
+        self.assertIn("pattern_params", spec.required_keys)
+        for family in (
+            "intra_period",
+            "weekly",
+            "event_relative",
+            "rolling",
+            "lag_recovery",
+            "custom_baseline",
+        ):
+            with self.subTest(family=family):
+                self.assertIn(family, text)
+        self.assertIn("Never return null, none, or an invented pattern family", text)
+        self.assertIn("single bounded observation window", text)
+        self.assertIn("target_weekday", text)
+        self.assertIn("target_weekdays", text)
+        self.assertIn("non-empty flat sequence", text)
+        self.assertIn("target_phase", text)
+        self.assertIn("target_group", text)
+        self.assertIn("pattern_params must be a JSON object", text)
+
     def test_capabilities_select_runtime_rows_by_query_intent(self):
         state = {
             "request": {
@@ -7800,6 +7897,206 @@ class LLMWorkflowTest(unittest.TestCase):
                     raised.exception.audit["failure_code"],
                     f"invalid_llm_output_material:{field}",
                 )
+
+    def test_llm_client_runs_cross_field_output_validator_inside_retry_loop(self):
+        client, completions = _provider_client_with_outputs(
+            ({"marker": "invalid"}, {"marker": "invalid"}, {"marker": "valid"})
+        )
+
+        def validate_output(output):
+            if output["marker"] != "valid":
+                raise LLMOutputError("cross_field_output_invalid:marker")
+
+        result = client.invoke_json(
+            task="business_intent",
+            prompt_version="test",
+            messages=[{"role": "user", "content": "{}"}],
+            required_keys=["marker"],
+            output_validator=validate_output,
+        )
+
+        self.assertEqual(result.output, {"marker": "valid"})
+        self.assertEqual(completions.attempt_count, 3)
+        self.assertEqual(result.audit["attempt_count"], 3)
+
+    def test_business_intent_provider_retries_invalid_pattern_family_with_audit(self):
+        for pattern_family in (None, "none", "invented_pattern"):
+            with self.subTest(pattern_family=pattern_family):
+                output = _provider_business_intent_output(
+                    pattern_family=pattern_family,
+                )
+                client, completions = _provider_client_with_outputs((output, output, output))
+                state = {
+                    "request": {
+                        "question": "检查当前经营表现。",
+                        "run_mode": "production",
+                    },
+                    "llm_client": client,
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                with self.assertRaises(WorkflowFailure):
+                    _understand_business_intent(state)
+
+                self.assertEqual(completions.attempt_count, 3)
+                self.assertEqual(state["llm_calls"][-1]["attempt_count"], 3)
+                self.assertEqual(state["llm_calls"][-1]["status"], "failed")
+                self.assertIn(
+                    "pattern_family",
+                    state["llm_calls"][-1]["failure_code"],
+                )
+
+    def test_business_intent_provider_requires_pattern_params_mapping(self):
+        missing = object()
+        for pattern_params in (missing, None, [], "rolling"):
+            with self.subTest(pattern_params=pattern_params):
+                output = _provider_business_intent_output()
+                if pattern_params is missing:
+                    output.pop("pattern_params")
+                else:
+                    output["pattern_params"] = pattern_params
+                client, completions = _provider_client_with_outputs((output, output, output))
+                state = {
+                    "request": {
+                        "question": "检查当前经营表现。",
+                        "run_mode": "production",
+                    },
+                    "llm_client": client,
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                with self.assertRaises(WorkflowFailure):
+                    _understand_business_intent(state)
+
+                self.assertEqual(completions.attempt_count, 3)
+                self.assertEqual(state["llm_calls"][-1]["attempt_count"], 3)
+                self.assertIn(
+                    "pattern_params",
+                    state["llm_calls"][-1]["failure_code"],
+                )
+
+    def test_business_intent_provider_retries_invalid_weekly_target_selector(self):
+        for pattern_params in (
+            {},
+            {"baseline_weekdays": [1, 2, 3, 4, 5]},
+            {"target_weekdays": []},
+            {"target_weekdays": [""]},
+            {"target_weekdays": [{"day": 6}]},
+            {"target_weekdays": [[]]},
+            {"target_weekday": True},
+            {"target_weekday": {"day": 6}},
+        ):
+            with self.subTest(pattern_params=pattern_params):
+                output = _provider_business_intent_output(
+                    pattern_family="weekly",
+                    pattern_params=pattern_params,
+                )
+                client, completions = _provider_client_with_outputs((output, output, output))
+                state = {
+                    "request": {
+                        "question": "检查重复的星期形状。",
+                        "run_mode": "production",
+                    },
+                    "llm_client": client,
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                with self.assertRaises(WorkflowFailure):
+                    _understand_business_intent(state)
+
+                self.assertEqual(completions.attempt_count, 3)
+                self.assertEqual(state["llm_calls"][-1]["attempt_count"], 3)
+                self.assertEqual(
+                    state["llm_calls"][-1]["failure_code"],
+                    "invalid_llm_output_material:pattern_params:weekly_target_required",
+                )
+
+    def test_business_intent_provider_retries_intra_period_without_target_selector(self):
+        for pattern_params in (
+            {},
+            {"target_phase": ""},
+            {"target_phase": True},
+            {"target_group": None},
+            {"target_group": []},
+        ):
+            with self.subTest(pattern_params=pattern_params):
+                output = _provider_business_intent_output(
+                    pattern_family="intra_period",
+                    pattern_params=pattern_params,
+                )
+                client, completions = _provider_client_with_outputs((output, output, output))
+                state = {
+                    "request": {
+                        "question": "检查周期内阶段变化。",
+                        "run_mode": "production",
+                    },
+                    "llm_client": client,
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                with self.assertRaises(WorkflowFailure):
+                    _understand_business_intent(state)
+
+                self.assertEqual(completions.attempt_count, 3)
+                self.assertEqual(state["llm_calls"][-1]["attempt_count"], 3)
+                self.assertEqual(
+                    state["llm_calls"][-1]["failure_code"],
+                    "invalid_llm_output_material:pattern_params:intra_period_target_required",
+                )
+
+    def test_business_intent_provider_accepts_valid_pattern_contracts(self):
+        valid_patterns = (
+            ("intra_period", {"target_phase": "start"}),
+            ("intra_period", {"target_group": "target"}),
+            ("rolling", {}),
+            ("weekly", {"target_weekday": 6}),
+            ("weekly", {"target_weekday": "saturday"}),
+            ("weekly", {"target_weekdays": [6, 7]}),
+            ("weekly", {"target_weekdays": [6, "sunday"]}),
+        )
+        for pattern_family, pattern_params in valid_patterns:
+            with self.subTest(
+                pattern_family=pattern_family,
+                pattern_params=pattern_params,
+            ):
+                output = _provider_business_intent_output(
+                    pattern_family=pattern_family,
+                    pattern_params=pattern_params,
+                )
+                client, completions = _provider_client_with_outputs((output,))
+                state = {
+                    "request": {
+                        "question": "检查当前经营表现。",
+                        "run_mode": "production",
+                    },
+                    "llm_client": client,
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                _understand_business_intent(state)
+
+                self.assertEqual(completions.attempt_count, 1)
+                self.assertEqual(state["intent"]["pattern_family"], pattern_family)
+                self.assertEqual(state["intent"]["pattern_params"], pattern_params)
+
+    def test_pattern_output_contract_does_not_apply_to_other_tasks(self):
+        output = {"pattern_family": "none", "pattern_params": None}
+        client, completions = _provider_client_with_outputs((output,))
+
+        result = client.invoke_json(
+            task="answer_synthesis",
+            prompt_version="test",
+            messages=[{"role": "user", "content": "{}"}],
+            required_keys=["pattern_family", "pattern_params"],
+        )
+
+        self.assertEqual(result.output, output)
+        self.assertEqual(completions.attempt_count, 1)
 
     def test_llm_client_accepts_structured_business_time_window(self):
         class StructuredWindowCompletions:
@@ -10684,6 +10981,70 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertTrue(
             any(item.get("capability_id") == "data_quality_profile" for item in evidence)
         )
+
+    def test_production_execution_does_not_insert_intra_period_target_phase(self):
+        from types import SimpleNamespace
+
+        for run_mode in ("production", "live"):
+            with self.subTest(run_mode=run_mode):
+                compared_params = []
+                scanned_params = []
+
+                def execute(request):
+                    compared_params.append(dict(request.params))
+                    return {
+                        "evidence_ref": f"{request.capability_id}:evidence",
+                        "capability_id": request.capability_id,
+                        "typed_payload": {},
+                        "result_refs": (),
+                    }
+
+                def scan(rows, **params):
+                    scanned_params.append(dict(params))
+                    return {
+                        "evidence_ref": "pattern_scan:evidence",
+                        "capability_id": "pattern_scan",
+                        "typed_payload": {},
+                        "result_refs": (),
+                    }
+
+                state = {
+                    "request": {
+                        "run_mode": run_mode,
+                        "role": "analyst",
+                    },
+                    "run_id": f"no-intra-period-default-{run_mode}",
+                    "sql_hash": "",
+                    "budget_state": default_budget("ordinary"),
+                    "compiled_graph": SimpleNamespace(
+                        mutations=SimpleNamespace(
+                            accepted_graph=("compare_period_phases", "pattern_scan")
+                        )
+                    ),
+                    "intent": {
+                        "question_family": "pattern_explanation",
+                        "target_metric": "paid_amount",
+                        "pattern_family": "intra_period",
+                        "pattern_params": {},
+                        "scope": "full_sample",
+                        "time_window": "2026-06-02",
+                        "target_claim": "检查周期内阶段变化",
+                    },
+                }
+
+                with patch(
+                    "bi_agent.runtime.langgraph_workflow.execute_capability",
+                    side_effect=execute,
+                ), patch(
+                    "bi_agent.runtime.langgraph_workflow.scan_pattern",
+                    side_effect=scan,
+                ):
+                    _execute_capabilities(state)
+
+                self.assertEqual(len(compared_params), 1)
+                self.assertEqual(len(scanned_params), 1)
+                self.assertNotIn("target_phase", compared_params[0])
+                self.assertNotIn("target_phase", scanned_params[0])
 
     def test_execute_capabilities_dispatches_reviewed_runtime_bound_capability(self):
         from types import SimpleNamespace

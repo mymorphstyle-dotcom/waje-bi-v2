@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from time import perf_counter
 import warnings
-from typing import Any, Iterable, Mapping, Optional, Sequence, TypedDict
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, TypedDict
 
 from langchain_core._api.deprecation import LangChainPendingDeprecationWarning
 
@@ -101,8 +101,11 @@ from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     canonical_value,
 )
-from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
-from bi_agent.runtime.llm_prompts import build_prompt
+from bi_agent.runtime.llm_client import LLMOutputError, OpenAICompatibleLLMClient
+from bi_agent.runtime.llm_prompts import (
+    BUSINESS_INTENT_PATTERN_FAMILIES,
+    build_prompt,
+)
 from bi_agent.runtime.models import (
     CompiledGraph,
     GraphNode,
@@ -141,6 +144,7 @@ _PRIOR_TOPIC_PRIVATE_MATERIAL_AXES = (
     "baseline",
     "baseline_candidates",
 )
+_SUPPORTED_PATTERN_FAMILIES = frozenset(BUSINESS_INTENT_PATTERN_FAMILIES)
 ROUTE_BLOCKED_CAPABILITY_IDS = frozenset(
     {
         "evidence_reduce",
@@ -591,7 +595,12 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
             ),
         }
     )
-    output = _invoke_llm(state, "business_intent", intent_payload)
+    output = _invoke_llm(
+        state,
+        "business_intent",
+        intent_payload,
+        output_validator=_validate_business_intent_pattern_output,
+    )
     answer_contract = output.get("answer_contract", {})
     if not isinstance(answer_contract, Mapping):
         raise WorkflowFailure(
@@ -601,14 +610,23 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
     material = _material_business_intent_values(request, output, registry)
     pattern_family = str(material["pattern_family"])
+    production_like = _production_like_request(request)
     pattern_params = _normalize_pattern_params(
         request,
         output,
         pattern_family,
-        allow_question_inference=not _production_like_request(request),
+        allow_question_inference=not production_like,
+        require_output_mapping=production_like,
     )
-    if _production_like_request(request):
+    if production_like:
         if pattern_family == "weekly" and not _weekly_pattern_has_weekday_target(
+            pattern_params
+        ):
+            raise WorkflowFailure(
+                "business_intent_contract_invalid:pattern_params",
+                failure_type="llm_contract",
+            )
+        if pattern_family == "intra_period" and not _intra_period_has_target(
             pattern_params
         ):
             raise WorkflowFailure(
@@ -623,7 +641,6 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
     material_requirements = _validated_business_intent_requirements(
         output.get("analysis_requirements"), registry
     )
-    production_like = _production_like_request(request)
     baseline_candidates = _validated_business_intent_baseline_candidates(
         output.get("baseline_candidates"),
         production_like=production_like,
@@ -1836,25 +1853,41 @@ def _normalize_target_metric(metric: Any) -> str:
     return value or "paid_amount"
 
 
+def _validate_business_intent_pattern_output(output: Mapping[str, Any]) -> None:
+    pattern_family = output.get("pattern_family")
+    if (
+        not isinstance(pattern_family, str)
+        or pattern_family not in _SUPPORTED_PATTERN_FAMILIES
+    ):
+        raise LLMOutputError("invalid_llm_output_material:pattern_family")
+    pattern_params = output.get("pattern_params")
+    if not isinstance(pattern_params, Mapping):
+        raise LLMOutputError("invalid_llm_output_material:pattern_params")
+    if pattern_family == "weekly" and not _weekly_pattern_has_weekday_target(
+        pattern_params
+    ):
+        raise LLMOutputError(
+            "invalid_llm_output_material:pattern_params:weekly_target_required"
+        )
+    if pattern_family == "intra_period" and not _intra_period_has_target(
+        pattern_params
+    ):
+        raise LLMOutputError(
+            "invalid_llm_output_material:pattern_params:intra_period_target_required"
+        )
+
+
 def _normalize_pattern_family(
     pattern_family: Any,
     request: Mapping[str, Any],
     *,
     strict: bool = False,
 ) -> str:
-    supported = {
-        "intra_period",
-        "weekly",
-        "event_relative",
-        "rolling",
-        "lag_recovery",
-        "custom_baseline",
-    }
     request_value = str(request.get("pattern_family") or "").strip().lower()
-    if request_value in supported:
+    if request_value in _SUPPORTED_PATTERN_FAMILIES:
         return request_value
     value = str(pattern_family or "").strip().lower()
-    if value in supported:
+    if value in _SUPPORTED_PATTERN_FAMILIES:
         return value
     if strict:
         raise WorkflowFailure(
@@ -1870,12 +1903,13 @@ def _normalize_pattern_params(
     pattern_family: str,
     *,
     allow_question_inference: bool = True,
+    require_output_mapping: bool = False,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
     output_params = output.get("pattern_params")
     if isinstance(output_params, Mapping):
         params.update(dict(output_params))
-    elif output_params not in (None, "", {}, []):
+    elif require_output_mapping or output_params not in (None, "", {}, []):
         raise WorkflowFailure(
             "business_intent_contract_invalid:pattern_params",
             failure_type="llm_contract",
@@ -1911,9 +1945,31 @@ def _repair_pattern_family_and_params(
 
 
 def _weekly_pattern_has_weekday_target(pattern_params: Mapping[str, Any]) -> bool:
-    return bool(
-        pattern_params.get("target_weekdays")
-        or pattern_params.get("target_weekday")
+    return _valid_pattern_selector_scalar(
+        pattern_params.get("target_weekday")
+    ) or _valid_pattern_selector_sequence(pattern_params.get("target_weekdays"))
+
+
+def _intra_period_has_target(pattern_params: Mapping[str, Any]) -> bool:
+    return _valid_pattern_selector_scalar(
+        pattern_params.get("target_phase")
+    ) or _valid_pattern_selector_scalar(pattern_params.get("target_group"))
+
+
+def _valid_pattern_selector_scalar(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return isinstance(value, (int, float))
+
+
+def _valid_pattern_selector_sequence(value: Any) -> bool:
+    return (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes))
+        and bool(value)
+        and all(_valid_pattern_selector_scalar(item) for item in value)
     )
 
 
@@ -4998,7 +5054,9 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
     ):
         pattern_family = state["intent"]["pattern_family"]
         pattern_params = dict(state["intent"].get("pattern_params", {}))
-        if pattern_family == "intra_period":
+        if pattern_family == "intra_period" and not _production_like_request(
+            state["request"]
+        ):
             pattern_params.setdefault("target_phase", "start")
         capability_rows, pattern_params = _comparison_rows_and_params(
             state,
@@ -5065,7 +5123,9 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
     if "pattern_scan" in capabilities:
         pattern_family = state["intent"]["pattern_family"]
         pattern_params = dict(state["intent"].get("pattern_params", {}))
-        if pattern_family == "intra_period":
+        if pattern_family == "intra_period" and not _production_like_request(
+            state["request"]
+        ):
             pattern_params.setdefault("target_phase", "start")
         capability_rows, pattern_params = _comparison_rows_and_params(
             state,
@@ -8348,14 +8408,28 @@ def _local_final_answer_hard_blockers(state: WorkflowState) -> list[str]:
     return blockers
 
 
-def _invoke_llm(state: WorkflowState, task: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _invoke_llm(
+    state: WorkflowState,
+    task: str,
+    payload: dict[str, Any],
+    *,
+    output_validator: Callable[[Mapping[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     spec = build_prompt(task, payload)
     try:
-        result = state["llm_client"].invoke_json(
-            task=spec.task,
-            prompt_version=spec.prompt_version,
-            messages=spec.messages,
-            required_keys=spec.required_keys,
+        client = state["llm_client"]
+        invoke_kwargs: dict[str, Any] = {
+            "task": spec.task,
+            "prompt_version": spec.prompt_version,
+            "messages": spec.messages,
+            "required_keys": spec.required_keys,
+        }
+        if output_validator is not None and bool(
+            getattr(client, "supports_output_validator", False)
+        ):
+            invoke_kwargs["output_validator"] = output_validator
+        result = client.invoke_json(
+            **invoke_kwargs,
         )
     except Exception as exc:
         failure_audit = getattr(exc, "audit", None)

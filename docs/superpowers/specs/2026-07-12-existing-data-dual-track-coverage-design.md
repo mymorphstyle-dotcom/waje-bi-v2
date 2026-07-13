@@ -528,6 +528,33 @@ carries a safe failure audit with task, provider, model, prompt version, attempt
 count, response ids, and validation codes; workflow failure artifacts persist
 that audit without raw failed response content or secrets.
 
+Pattern intent is one cross-field provider output contract. `pattern_family`
+must be exactly one of `intra_period`, `weekly`, `event_relative`, `rolling`,
+`lag_recovery`, or `custom_baseline`; `null`, `none`, and invented families are
+invalid provider material. `pattern_params` is a required JSON object for every
+business intent. Non-weekly families may use `{}` when no additional pattern
+parameter is needed. A weekly family must carry a non-empty `target_weekday` or
+`target_weekdays` value in that object. A weekday target accepts a non-empty
+string or number scalar, or a non-empty flat sequence made only of those
+scalars; booleans, mappings, nested sequences, and empty values are invalid.
+An `intra_period` family must carry a non-empty `target_phase` or
+`target_group`. Production and live execution preserve that provider-bound
+target exactly and never insert a default phase; fixture-only compatibility may
+retain question inference. For a bounded single-window question without a
+repeated time shape, the provider still selects the canonical family that
+represents the business shape, such as `custom_baseline` for a one-off
+comparison or `rolling` for a continuous observation window; it never emits a
+sentinel family.
+
+Cross-field output validation is supplied to the shared provider client as a
+pure callback. The client invokes it after parsing each provider response and
+inside the same three-attempt loop, while the LangGraph business node still
+invokes the LLM task once. This keeps registry-backed and workflow-owned
+semantics out of the provider transport and leaves one composable boundary for
+later context-family coherence checks. Test doubles that do not advertise this
+retry capability continue through their existing one-shot workflow validation.
+No path fills or rewrites provider intent locally after a real output failure.
+
 The reviewed clarification escape `tell the agent to do differently` is a
 machine contract token even though it is displayed inside a user-facing options
 array. Conversation orchestration, boundary decision, general clarification,

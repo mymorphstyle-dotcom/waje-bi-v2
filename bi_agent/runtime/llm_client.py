@@ -59,6 +59,8 @@ class LLMTimeoutError(RuntimeError):
 
 
 class OpenAICompatibleLLMClient:
+    supports_output_validator = True
+
     def __init__(
         self,
         *,
@@ -122,6 +124,7 @@ class OpenAICompatibleLLMClient:
         prompt_version: str,
         messages: Sequence[Mapping[str, str]],
         required_keys: Sequence[str],
+        output_validator: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> LLMResult:
         started = perf_counter()
         started_at = _utc_now()
@@ -158,6 +161,8 @@ class OpenAICompatibleLLMClient:
                     raise LLMOutputError(
                         "invalid_llm_output_material:" + ",".join(invalid_material)
                     )
+                if output_validator is not None:
+                    output_validator(output)
                 break
             except Exception as exc:
                 failure_code = _safe_retry_failure_code(exc)

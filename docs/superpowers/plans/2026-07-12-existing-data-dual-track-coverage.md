@@ -1484,6 +1484,25 @@ boundary:
   recursive time-window structures retry inside the centralized three-attempt
   loop. Exhaustion raises a typed error carrying a safe failed-call audit, which
   is persisted in workflow `llm_calls` without raw failed output or secrets;
+- `pattern_params` is a required mapping and `pattern_family` is restricted to
+  `intra_period`, `weekly`, `event_relative`, `rolling`, `lag_recovery`, or
+  `custom_baseline`. `null`, `none`, invented families, non-mapping params, and
+  weekly params without a valid `target_weekday` or `target_weekdays` fail
+  inside the shared provider's three-attempt loop and retain its safe exhaustion
+  audit. A valid target is a non-empty string or number scalar, or a non-empty
+  flat sequence of those scalars; booleans, mappings, nested sequences, and
+  empty values fail the same provider loop. `intra_period` requires a non-empty
+  `target_phase` or `target_group`; production and live execution must preserve
+  the provider-bound target without inserting `start`, while fixture-only
+  compatibility may retain question inference. Other non-weekly intent may use
+  `{}`. Questions without a repeated shape still use the canonical family for
+  their bounded business window, never a sentinel;
+- cross-field LLM output validation enters the shared client through a pure,
+  optional callback executed once per provider response inside that client.
+  Registry and workflow semantics stay outside `llm_client.py`; a business node
+  still calls the client once, and legacy test doubles retain their existing
+  one-shot workflow validation. The callback remains composable for subsequent
+  context-family coherence validation without adding another retry loop;
 - production/live business-intent input and prompt expose the shared baseline
   registry's closed `allowed_baseline_ids` plus business labels and semantics;
   baseline candidates must be an explicit array of exact string ids copied from

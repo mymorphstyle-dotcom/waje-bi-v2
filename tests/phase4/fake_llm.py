@@ -121,6 +121,7 @@ DEFAULT_OUTPUTS = {
         "question_family": "pattern_explanation",
         "target_metric": "paid_amount",
         "pattern_family": "intra_period",
+        "pattern_params": {"target_phase": "start"},
         "scope": "full_sample",
         "time_window": "2024-01..2026-05",
         "target_claim": "recurring_pattern_existence",
