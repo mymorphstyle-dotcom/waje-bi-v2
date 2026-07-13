@@ -505,6 +505,7 @@ def _preflight_result_row_keys(
     duplicate_keys = set()
     keys_seen = set()
     for row in rows:
+        _canonical_value(row)
         missing = tuple(field for field in key_fields if field not in row)
         if missing:
             missing_key_fields.update(missing)

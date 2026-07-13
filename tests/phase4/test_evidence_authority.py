@@ -1383,7 +1383,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             contract_signature=query_contract_signature(contract),
         )
         snapshot = paid_snapshot()
-        for invalid_key in ({"nested": "date"}, math.nan):
+        for invalid_key in ({"nested": "date"}, ["nested", "date"]):
             with self.subTest(invalid_key=invalid_key):
                 rows = (
                     {
@@ -1437,6 +1437,76 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
                     authority.resolve_query_execution(results[0].result_ref),
                     authority.resolve_query_execution(results[1].result_ref),
                 )
+
+    def test_non_finite_numbers_fail_idempotently_across_executor_order(self):
+        contract = baseline_contract(metric=reviewed_metric())
+        contract = replace(
+            contract,
+            contract_signature=query_contract_signature(contract),
+        )
+        snapshot = paid_snapshot()
+        non_finite_values = (
+            math.nan,
+            math.inf,
+            -math.inf,
+            Decimal("NaN"),
+            Decimal("Infinity"),
+            Decimal("-Infinity"),
+        )
+        for index, non_finite in enumerate(non_finite_values):
+            for field in ("observation_key", "paid_amount"):
+                with self.subTest(index=index, field=field):
+                    invalid_row = {
+                        "window_id": "target_day",
+                        "window_role": "target",
+                        "observation_key": "2026-06-02",
+                        "paid_amount": 1.0,
+                    }
+                    invalid_row[field] = non_finite
+                    rows = (
+                        invalid_row,
+                        {
+                            "window_id": "previous_day",
+                            "window_role": "baseline",
+                            "observation_key": "2026-06-01",
+                            "paid_amount": 2.0,
+                        },
+                    )
+                    authority = RuntimeEvidenceAuthority()
+                    results = tuple(
+                        ClickHouseQueryExecutor(
+                            _RowsRuntime(ordered_rows),
+                            evidence_authority=authority,
+                            release_resolver=_PAID_RELEASE_RESOLVER,
+                        ).execute(
+                            contract,
+                            {snapshot.snapshot_ref: snapshot},
+                            execution_attempt_ref=(
+                                "attempt:test:non-finite-number:"
+                                f"{index}:{field}"
+                            ),
+                        )
+                        for ordered_rows in (rows, tuple(reversed(rows)))
+                    )
+
+                    self.assertEqual(
+                        tuple(result.execution_status for result in results),
+                        ("failed", "failed"),
+                    )
+                    self.assertEqual(results[0].result_ref, results[1].result_ref)
+                    self.assertEqual(results[0].rows_ref, results[1].rows_ref)
+                    self.assertEqual(
+                        results[0].failure_reason,
+                        results[1].failure_reason,
+                    )
+                    self.assertEqual(
+                        results[0].failure_reason,
+                        "invalid_result_rows:canonical_number_not_finite",
+                    )
+                    self.assertEqual(
+                        authority.resolve_query_execution(results[0].result_ref),
+                        authority.resolve_query_execution(results[1].result_ref),
+                    )
 
     def test_canonical_projection_collision_fails_closed_across_executor_order(self):
         contract = baseline_contract(metric=reviewed_metric())
