@@ -748,6 +748,397 @@ def test_route_requirements_keep_metric_dataset_outside_context_sources():
         )
 
 
+def test_initial_route_preserves_all_authoritative_material_axes_in_contract(
+    monkeypatch,
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+    from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
+    from bi_agent.runtime.dataset_catalog import DatasetCatalog
+
+    monkeypatch.setattr(
+        workflow,
+        "_invoke_llm",
+        lambda state, node, payload: {
+            "requested_nodes": ["data_quality_profile"],
+            "analysis_requirements": {
+                "target_metrics": ["paid_amount"],
+                "requested_components": [],
+                "requested_dimensions": [],
+                "baselines": [],
+                "context_sources": [],
+                "claim_intents": [],
+                "scope": "full_sample",
+            },
+        },
+    )
+    state = {
+        "run_id": "run-route-material-closure",
+        "intent": {
+            "question_family": "data_quality_or_evidence_review",
+            "question_families": ["data_quality_or_evidence_review"],
+            "primary_question_family": "data_quality_or_evidence_review",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+            "requested_components": ["active_users"],
+            "requested_dimensions": ["channel"],
+            "baseline_candidates": ["previous_day"],
+            "context_sources": ["external_event"],
+            "claim_intents": ["contract_coverage_and_trust_boundary"],
+            "scope": "full_sample",
+        },
+        "confirmed_understanding": {},
+        "request": {},
+    }
+
+    workflow._design_analysis_route(state)
+
+    requirements = state["analysis_route"]["analysis_requirements"]
+    assert requirements["target_metrics"] == ["paid_amount"]
+    assert requirements["requested_components"] == ["active_users"]
+    assert requirements["requested_dimensions"] == ["channel"]
+    assert requirements["baselines"] == ["previous_day"]
+    assert requirements["context_sources"] == ["external_event"]
+    assert requirements["claim_intents"] == [
+        "contract_coverage_and_trust_boundary"
+    ]
+
+    outcome = compile_analysis_contract(
+        run_id=state["run_id"],
+        proposal={
+            **requirements,
+            "question_families": state["intent"]["question_families"],
+        },
+        accepted_capabilities=state["analysis_route"]["requested_nodes"],
+        catalog=DatasetCatalog(()),
+        registry=_registry(),
+        as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+        permission_scope="analyst",
+    )
+    contract = outcome.analysis_contract
+    assert {"paid_amount", "active_users"} <= set(
+        contract.scope["requested_metric_ids"]
+    )
+    assert "channel" in contract.scope["requested_dimension_ids"]
+    assert contract.claim_intents == ("contract_coverage_and_trust_boundary",)
+    assert any(
+        gap.diagnostic_context.get("item_kind") == "dimension"
+        and gap.diagnostic_context.get("item_id") == "channel"
+        for gap in contract.contract_gaps
+    )
+
+
+def test_resume_route_merges_authoritative_material_before_validation():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    state = {
+        "run_id": "run-resume-route-material",
+        "intent": {
+            "question_family": "data_quality_or_evidence_review",
+            "question_families": ["data_quality_or_evidence_review"],
+            "primary_question_family": "data_quality_or_evidence_review",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+        },
+        "confirmed_understanding": {},
+        "request": {
+            "clarification_resume_context": {
+                "accepted_graph": ["data_quality_profile"],
+                "analysis_route": {
+                    "requested_nodes": ["data_quality_profile"],
+                    "analysis_requirements": {
+                        "target_metrics": ["paid_amount"],
+                        "requested_components": [],
+                        "requested_dimensions": [],
+                        "baselines": [],
+                        "context_sources": [],
+                        "claim_intents": [],
+                        "scope": "full_sample",
+                    },
+                },
+                "analysis_contract": {
+                    "question_families": ["data_quality_or_evidence_review"]
+                },
+                "material_slots": {
+                    "target_metrics": ["paid_amount"],
+                    "requested_components": ["active_users"],
+                    "requested_dimensions": ["channel"],
+                    "baselines": ["previous_day"],
+                    "context_sources": ["external_event"],
+                    "claim_intents": ["contract_coverage_and_trust_boundary"],
+                    "scope": "full_sample",
+                },
+            }
+        },
+    }
+
+    workflow._design_analysis_route(state)
+
+    requirements = state["analysis_route"]["analysis_requirements"]
+    assert requirements["requested_components"] == ["active_users"]
+    assert requirements["requested_dimensions"] == ["channel"]
+    assert requirements["baselines"] == ["previous_day"]
+    assert requirements["context_sources"] == ["external_event"]
+    assert requirements["claim_intents"] == [
+        "contract_coverage_and_trust_boundary"
+    ]
+
+
+@pytest.mark.parametrize(
+    "axis,prior_values,persisted_values",
+    [
+        ("target_metrics", ["active_users"], ["paid_amount"]),
+        ("requested_components", ["paid_users"], ["active_users"]),
+        ("requested_dimensions", ["channel"], ["gameplay"]),
+        ("baselines", ["rolling_7_day_baseline"], ["previous_day"]),
+        ("context_sources", ["external_event"], ["gameplay"]),
+        (
+            "claim_intents",
+            ["comparative_change"],
+            ["contract_coverage_and_trust_boundary"],
+        ),
+    ],
+)
+def test_resume_route_rejects_material_axis_drift(
+    axis, prior_values, persisted_values
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    prior_requirements = {"target_metrics": ["paid_amount"]}
+    prior_requirements[axis] = prior_values
+    material_slots = {"target_metrics": ["paid_amount"]}
+    material_slots[axis] = persisted_values
+    state = {
+        "run_id": "run-resume-route-material-drift",
+        "intent": {
+            "question_family": "business_object_impact_review",
+            "question_families": ["business_object_impact_review"],
+            "primary_question_family": "business_object_impact_review",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+        },
+        "confirmed_understanding": {},
+        "request": {
+            "clarification_resume_context": {
+                "accepted_graph": ["gameplay_activity_context"],
+                "analysis_route": {
+                    "requested_nodes": ["gameplay_activity_context"],
+                    "analysis_requirements": prior_requirements,
+                },
+                "analysis_contract": {
+                    "question_families": ["business_object_impact_review"]
+                },
+                "material_slots": material_slots,
+            }
+        },
+    }
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match=f"clarification_resume_material_slots_conflict:{axis}",
+    ) as exc:
+        workflow._design_analysis_route(state)
+
+    assert exc.value.failure_type == "contract"
+
+
+@pytest.mark.parametrize(
+    "axis,prior_values",
+    [
+        ("target_metrics", ["paid_amount"]),
+        ("requested_components", ["active_users"]),
+        ("requested_dimensions", ["channel"]),
+        ("baselines", ["previous_day"]),
+        ("context_sources", ["external_event"]),
+        ("claim_intents", ["contract_coverage_and_trust_boundary"]),
+    ],
+)
+def test_resume_route_rejects_material_axis_missing_from_authority(
+    axis, prior_values
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    prior_requirements = {"target_metrics": ["paid_amount"]}
+    prior_requirements[axis] = prior_values
+    material_slots = (
+        {} if axis == "target_metrics" else {"target_metrics": ["paid_amount"]}
+    )
+    state = {
+        "run_id": "run-resume-route-material-missing",
+        "intent": {
+            "question_family": "business_object_impact_review",
+            "question_families": ["business_object_impact_review"],
+            "primary_question_family": "business_object_impact_review",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+        },
+        "confirmed_understanding": {},
+        "request": {
+            "clarification_resume_context": {
+                "accepted_graph": ["gameplay_activity_context"],
+                "analysis_route": {
+                    "requested_nodes": ["gameplay_activity_context"],
+                    "analysis_requirements": prior_requirements,
+                },
+                "analysis_contract": {
+                    "question_families": ["business_object_impact_review"]
+                },
+                "material_slots": material_slots,
+            }
+        },
+    }
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match=f"clarification_resume_material_slots_conflict:{axis}",
+    ) as exc:
+        workflow._design_analysis_route(state)
+
+    assert exc.value.failure_type == "contract"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("target_metrics", [{}]),
+        ("requested_dimensions", [["channel"]]),
+    ],
+)
+def test_route_typed_lists_reject_nested_values_as_llm_contract(field, value):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match=f"analysis_route_contract_invalid:analysis_requirements:{field}",
+    ) as exc:
+        workflow._validate_route_analysis_requirements(
+            {"analysis_requirements": {field: value}},
+            _registry(),
+        )
+
+    assert exc.value.failure_type == "llm_contract"
+
+
+@pytest.mark.parametrize(
+    "invalid_requirements",
+    [
+        {
+            "target_metrics": ["paid_amount"],
+            "requested_dimensions": [{}],
+        },
+        {
+            "target_metrics": ["paid_amount", "paid_amount"],
+            "requested_dimensions": [],
+        },
+    ],
+)
+def test_route_typed_list_failure_retries_once_and_accepts_repair(
+    monkeypatch, invalid_requirements
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    outputs = [
+        invalid_requirements,
+        {
+            "target_metrics": ["paid_amount"],
+            "requested_dimensions": ["channel"],
+        },
+    ]
+    payloads = []
+
+    def invoke(state, node, payload):
+        payloads.append(payload)
+        return {
+            "requested_nodes": ["data_quality_profile"],
+            "analysis_requirements": outputs.pop(0),
+        }
+
+    monkeypatch.setattr(workflow, "_invoke_llm", invoke)
+    state = {
+        "run_id": "run-route-typed-repair",
+        "intent": {
+            "question_family": "data_quality_or_evidence_review",
+            "question_families": ["data_quality_or_evidence_review"],
+            "primary_question_family": "data_quality_or_evidence_review",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+        },
+        "confirmed_understanding": {},
+        "request": {},
+        "checkpoint_events": [],
+    }
+
+    workflow._retrying_node(
+        "design_analysis_route", workflow._design_analysis_route
+    )(state)
+
+    assert payloads[1]["node_retry_feedback"]["reason"].startswith(
+        "analysis_route_contract_invalid:analysis_requirements:"
+    )
+    assert state["checkpoint_events"][0]["failure_type"] == "llm_contract"
+    assert [event["status"] for event in state["checkpoint_events"]] == [
+        "retrying",
+        "completed",
+    ]
+    assert state["analysis_route"]["analysis_requirements"][
+        "requested_dimensions"
+    ] == ["channel"]
+
+
+@pytest.mark.parametrize(
+    "invalid_requirements",
+    [
+        {
+            "target_metrics": ["paid_amount"],
+            "requested_dimensions": [["channel"]],
+        },
+        {
+            "target_metrics": ["paid_amount", "paid_amount"],
+            "requested_dimensions": [],
+        },
+    ],
+)
+def test_route_typed_list_failure_exhaustion_fails_closed(
+    monkeypatch, invalid_requirements
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    monkeypatch.setattr(
+        workflow,
+        "_invoke_llm",
+        lambda state, node, payload: {
+            "requested_nodes": ["data_quality_profile"],
+            "analysis_requirements": invalid_requirements,
+        },
+    )
+    state = {
+        "run_id": "run-route-typed-failed",
+        "intent": {
+            "question_family": "data_quality_or_evidence_review",
+            "question_families": ["data_quality_or_evidence_review"],
+            "primary_question_family": "data_quality_or_evidence_review",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+        },
+        "confirmed_understanding": {},
+        "request": {},
+        "checkpoint_events": [],
+    }
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="analysis_route_contract_invalid:analysis_requirements:",
+    ) as exc:
+        workflow._retrying_node(
+            "design_analysis_route", workflow._design_analysis_route
+        )(state)
+
+    assert exc.value.failure_type == "llm_contract"
+    assert [event["status"] for event in state["checkpoint_events"]] == [
+        "retrying",
+        "failed",
+    ]
+
+
 def test_normalized_question_families_preserve_secondary_analysis_axis():
     from bi_agent.runtime import langgraph_workflow as workflow
 

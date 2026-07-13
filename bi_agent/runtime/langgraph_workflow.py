@@ -1793,16 +1793,26 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
     prior_route = resume.get("analysis_route") or {}
     prior_graph = tuple(resume.get("accepted_graph") or ())
     if isinstance(prior_route, Mapping) and prior_route and prior_graph:
-        _validate_route_analysis_requirements(
-            prior_route,
-            RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+        registry = RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
         )
         requested = _requested_node_ids(
             prior_graph,
             excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
         )
         output = _align_route_output_to_requested(dict(prior_route), requested)
-        output = _normalize_route_claim_intents(output)
+        output, material_conflicts = _merge_confirmed_material_requirements(
+            output,
+            state,
+            strict_resume_authority=True,
+        )
+        _validate_route_analysis_requirements(output, registry)
+        if material_conflicts:
+            raise WorkflowFailure(
+                "clarification_resume_material_slots_conflict:"
+                + ",".join(material_conflicts),
+                failure_type="contract",
+            )
         prior_contract = resume.get("analysis_contract") or {}
         prior_families = tuple(
             str(family)
@@ -1824,14 +1834,14 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             requested,
             output,
             state["intent"],
-            RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+            registry,
         )
         _consume_obligation_route_conflict(state, output)
         requested, output = _apply_query_gap_action_to_route(
             requested,
             output,
             resume.get("selected_query_gap_action") or {},
-            RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+            registry,
         )
         accepted_choice = dict(resume.get("accepted_degradation_choice") or {})
         if accepted_choice:
@@ -1867,11 +1877,11 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             ),
         }
     output = _invoke_llm(state, "analysis_route", route_payload)
-    _validate_route_analysis_requirements(output, registry)
     output, material_conflicts = _merge_confirmed_material_requirements(
         output,
         state,
     )
+    _validate_route_analysis_requirements(output, registry)
     state["route_material_conflicts"] = material_conflicts
     if material_conflicts:
         state["boundary_decision"] = {
@@ -1941,8 +1951,12 @@ def _validate_route_analysis_requirements(
         values = raw[key]
         if (
             not isinstance(values, (list, tuple))
+            or any(
+                not isinstance(item, str) or not item.strip()
+                for item in values
+            )
             or len(values) != len(set(values))
-            or any(not isinstance(item, str) or item not in allowed for item in values)
+            or any(item not in allowed for item in values)
         ):
             raise WorkflowFailure(
                 f"analysis_route_contract_invalid:analysis_requirements:{key}",
@@ -1952,6 +1966,11 @@ def _validate_route_analysis_requirements(
         baseline_values = raw["baselines"]
         if (
             not isinstance(baseline_values, (list, tuple))
+            or any(
+                not isinstance(item, str) or not item.strip()
+                for item in baseline_values
+            )
+            or len(baseline_values) != len(set(baseline_values))
             or _canonical_baseline_ids(baseline_values) != list(baseline_values)
         ):
             raise WorkflowFailure(
@@ -1963,20 +1982,39 @@ def _validate_route_analysis_requirements(
 def _merge_confirmed_material_requirements(
     route: Mapping[str, Any],
     state: WorkflowState,
+    *,
+    strict_resume_authority: bool = False,
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
     output = dict(route)
-    proposed = dict(output.get("analysis_requirements") or {})
-    confirmed = _intent_material_slots(state.get("intent") or {})
+    raw_proposed = output.get("analysis_requirements")
+    if not isinstance(raw_proposed, Mapping):
+        return output, ()
+    proposed = dict(raw_proposed)
+    confirmed = (
+        {}
+        if strict_resume_authority
+        else _intent_material_slots(state.get("intent") or {})
+    )
     resume = state.get("request", {}).get("clarification_resume_context") or {}
     persisted = resume.get("material_slots") if isinstance(resume, Mapping) else {}
+    authoritative: dict[str, Any] = {}
     if isinstance(persisted, Mapping):
         for key, value in persisted.items():
             if value not in (None, "", (), [], {}):
                 confirmed[key] = value
+                authoritative[key] = value
     conflicts: list[str] = []
-    confirmed_targets = tuple(confirmed.get("target_metrics") or ())
-    proposed_targets = tuple(proposed.get("target_metrics") or ())
-    if proposed_targets and any(item not in proposed_targets for item in confirmed_targets):
+    confirmed_targets = _typed_material_axis_values(
+        confirmed.get("target_metrics")
+    )
+    proposed_targets = _typed_material_axis_values(
+        proposed.get("target_metrics")
+    )
+    if (
+        confirmed_targets
+        and proposed_targets
+        and any(item not in proposed_targets for item in confirmed_targets)
+    ):
         conflicts.append("target_metrics")
     confirmed_scope = confirmed.get("scope")
     if (
@@ -1985,37 +2023,65 @@ def _merge_confirmed_material_requirements(
         and proposed.get("scope") != confirmed_scope
     ):
         conflicts.append("scope")
-    for key in ("target_metrics", "baselines", "context_sources"):
-        values = [
-            *list(confirmed.get(key) or ()),
-            *list(proposed.get(key) or ()),
+    for key in (
+        "target_metrics",
+        "requested_components",
+        "requested_dimensions",
+        "baselines",
+        "context_sources",
+        "claim_intents",
+    ):
+        proposed_values = _typed_material_axis_values(proposed.get(key))
+        if strict_resume_authority and proposed_values:
+            authoritative_values = _typed_material_axis_values(
+                authoritative.get(key)
+            )
+            if (
+                key not in authoritative
+                or authoritative_values is None
+                or set(proposed_values) != set(authoritative_values)
+            ):
+                conflicts.append(key)
+        confirmed_values = _typed_material_axis_values(confirmed.get(key))
+        if confirmed_values is None:
+            if key in confirmed:
+                proposed[key] = confirmed[key]
+            continue
+        if not confirmed_values:
+            continue
+        if proposed_values is None:
+            if key not in proposed:
+                proposed[key] = list(confirmed_values)
+            continue
+        if len(confirmed_values) != len(set(confirmed_values)):
+            proposed[key] = list(confirmed_values)
+            continue
+        if len(proposed_values) != len(set(proposed_values)):
+            proposed[key] = list(proposed_values)
+            continue
+        confirmed_set = set(confirmed_values)
+        proposed[key] = [
+            *confirmed_values,
+            *(
+                item
+                for item in proposed_values
+                if item not in confirmed_set
+            ),
         ]
-        if values:
-            proposed[key] = list(dict.fromkeys(str(item) for item in values if item))
-    claim_intents = _claim_intent_values(
-        confirmed.get("claim_intents"),
-        proposed.get("claim_intents"),
-    )
-    if claim_intents or "claim_intents" in confirmed or "claim_intents" in proposed:
-        proposed["claim_intents"] = list(claim_intents)
     if confirmed_scope not in (None, "", {}, []):
         proposed["scope"] = confirmed_scope
     output["analysis_requirements"] = proposed
     return output, tuple(dict.fromkeys(conflicts))
 
 
-def _normalize_route_claim_intents(route: Mapping[str, Any]) -> dict[str, Any]:
-    output = dict(route)
-    raw_requirements = output.get("analysis_requirements")
-    if not isinstance(raw_requirements, Mapping):
-        return output
-    requirements = dict(raw_requirements)
-    if "claim_intents" in requirements:
-        requirements["claim_intents"] = list(
-            _claim_intent_values(requirements.get("claim_intents"))
-        )
-    output["analysis_requirements"] = requirements
-    return output
+def _typed_material_axis_values(value: Any) -> tuple[str, ...] | None:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        return None
+    return tuple(value)
 
 
 def _claim_intent_values(*values: Any) -> tuple[str, ...]:

@@ -3884,20 +3884,23 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(set(conflicts), {"target_metrics", "scope"})
 
-    def test_route_requirements_normalize_typed_claim_intent_proposals(self):
+    def test_route_requirements_preserve_nested_claims_for_typed_rejection(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        nested_claims = [
+            ["contract_coverage_and_trust_boundary"],
+            {
+                "capability_id": "weekday_calendar_compare",
+                "claim_types": ["recurring_pattern_existence"],
+            },
+            "comparative_change",
+            "['serialized_claim_is_not_an_id']",
+            "业务结论描述",
+        ]
         merged, conflicts = _merge_confirmed_material_requirements(
             {
                 "analysis_requirements": {
-                    "claim_intents": [
-                        ["contract_coverage_and_trust_boundary"],
-                        {
-                            "capability_id": "weekday_calendar_compare",
-                            "claim_types": ["recurring_pattern_existence"],
-                        },
-                        "comparative_change",
-                        "['serialized_claim_is_not_an_id']",
-                        "业务结论描述",
-                    ]
+                    "claim_intents": nested_claims,
                 }
             },
             {"intent": {}, "request": {}},
@@ -3905,13 +3908,19 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertEqual(conflicts, ())
         self.assertEqual(
-            merged["analysis_requirements"]["claim_intents"],
-            [
-                "contract_coverage_and_trust_boundary",
-                "recurring_pattern_existence",
-                "comparative_change",
-            ],
+            merged["analysis_requirements"]["claim_intents"], nested_claims
         )
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "analysis_route_contract_invalid:analysis_requirements:claim_intents",
+        ) as raised:
+            workflow_module._validate_route_analysis_requirements(
+                merged,
+                RuntimeContractRegistry.from_path(
+                    "contracts/runtime/clickhouse-analysis-bindings.yaml"
+                ),
+            )
+        self.assertEqual(raised.exception.failure_type, "llm_contract")
 
     def test_analysis_runtime_request_normalizes_carried_typed_claim_intents(self):
         runtime_request = _analysis_runtime_request(
