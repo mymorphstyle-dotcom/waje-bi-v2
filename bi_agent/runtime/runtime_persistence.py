@@ -37,6 +37,7 @@ from bi_agent.runtime.evidence_authority import (
     RowsRecord,
     RuntimeEvidenceResolver,
     SnapshotRecord,
+    canonical_result_rows_hash_matches,
     canonical_rows_hash,
     canonical_rows_storage_ref,
     canonical_value,
@@ -1365,10 +1366,14 @@ class ClickHouseArtifactRowsPayloadLoader:
         if len(rows) != record.row_count:
             raise EvidenceIntegrityError("rows_payload_count_mismatch")
         try:
-            digest = canonical_rows_hash(rows, record.unique_key_fields)
+            hash_matches = canonical_result_rows_hash_matches(
+                rows,
+                record.unique_key_fields,
+                record.rows_content_hash,
+            )
         except EvidenceIntegrityError as exc:
             raise EvidenceIntegrityError(f"rows_payload_unique_key_invalid:{exc}") from exc
-        if digest != record.rows_content_hash:
+        if not hash_matches:
             raise EvidenceIntegrityError("rows_payload_hash_mismatch")
         return rows
 

@@ -2826,6 +2826,11 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
         self.assertIn("ORDER BY c.created_at DESC", sql)
 
     def test_rows_payload_loader_keeps_payload_out_of_postgres_and_validates_artifact(self):
+        from bi_agent.runtime.evidence_authority import (
+            RowsRecord,
+            canonical_digest,
+            canonical_result_rows,
+        )
         from bi_agent.runtime.runtime_persistence import ClickHouseArtifactRowsPayloadLoader
 
         bundle = _authority_bundle()
@@ -2847,6 +2852,40 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             path.write_text(json.dumps(list(payload)), encoding="utf-8")
             loader = ClickHouseArtifactRowsPayloadLoader(artifact_root=tmp)
             self.assertEqual(loader.load_rows_record(record), payload)
+            legacy_hash = canonical_digest(
+                canonical_result_rows(payload, record.unique_key_fields)
+            )
+
+            def record_with_hash(rows_content_hash):
+                rows_ref = record.rows_ref.rsplit(":", 1)[0] + ":" + rows_content_hash
+                metadata = {
+                    "rows_ref": rows_ref,
+                    "rows_content_hash": rows_content_hash,
+                    "row_count": record.row_count,
+                    "unique_key_fields": record.unique_key_fields,
+                    "storage_ref": record.storage_ref,
+                }
+                record_digest = canonical_digest(metadata)
+                return RowsRecord(
+                    record_ref=f"rows-record:{rows_ref}:{record_digest}",
+                    record_digest=record_digest,
+                    rows_ref=rows_ref,
+                    rows_content_hash=rows_content_hash,
+                    row_count=record.row_count,
+                    unique_key_fields=record.unique_key_fields,
+                    storage_ref=record.storage_ref,
+                    metadata_payload=metadata,
+                )
+
+            self.assertEqual(
+                loader.load_rows_record(record_with_hash(legacy_hash)),
+                payload,
+            )
+            with self.assertRaisesRegex(
+                EvidenceIntegrityError,
+                "rows_payload_hash_mismatch",
+            ):
+                loader.load_rows_record(record_with_hash("f" * 64))
             path.write_text(json.dumps([*payload, dict(payload[0])]), encoding="utf-8")
             with self.assertRaisesRegex(EvidenceIntegrityError, "rows_payload_(storage_hash|count|hash|unique_key)"):
                 loader.load_rows_record(record)

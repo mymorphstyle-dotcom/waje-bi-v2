@@ -22,6 +22,9 @@ from bi_agent.runtime.dataset_catalog import DatasetSnapshot
 from bi_agent.runtime.query_audit import query_audit_refs
 
 
+RESULT_ROWS_CANONICALIZATION_VERSION = "result-rows-typed-order-v2"
+
+
 class EvidenceIntegrityError(ValueError):
     pass
 
@@ -547,7 +550,32 @@ def canonical_result_rows_hash(
     rows: Sequence[Mapping[str, Any]],
     unique_key_fields: Sequence[str],
 ) -> str:
-    return canonical_digest(canonical_result_rows(rows, unique_key_fields))
+    ordered_rows = canonical_result_rows(rows, unique_key_fields)
+    return _versioned_result_rows_hash(ordered_rows)
+
+
+def _versioned_result_rows_hash(
+    ordered_rows: Sequence[Mapping[str, Any]],
+) -> str:
+    return canonical_digest(
+        {
+            "canonicalization_version": RESULT_ROWS_CANONICALIZATION_VERSION,
+            "rows": ordered_rows,
+        }
+    )
+
+
+def canonical_result_rows_hash_matches(
+    rows: Sequence[Mapping[str, Any]],
+    unique_key_fields: Sequence[str],
+    rows_content_hash: Any,
+) -> bool:
+    ordered_rows = canonical_result_rows(rows, unique_key_fields)
+    versioned_hash = _versioned_result_rows_hash(ordered_rows)
+    legacy_hash = canonical_digest(ordered_rows)
+    return isinstance(rows_content_hash, str) and (
+        rows_content_hash == versioned_hash or rows_content_hash == legacy_hash
+    )
 
 
 def canonical_rows_storage_ref(rows: Sequence[Mapping[str, Any]]) -> str:
@@ -608,7 +636,14 @@ def _write_query_execution(
         result.rows,
         contract.result_shape.unique_key,
     )
-    rows_hash = canonical_digest(ordered_rows)
+    rows_hash = (
+        canonical_result_rows_hash(
+            result.rows,
+            contract.result_shape.unique_key,
+        )
+        if result.execution_status == "succeeded"
+        else canonical_digest(ordered_rows)
+    )
     expected = query_audit_refs(
         result.query_hash,
         contract.contract_signature,

@@ -26,9 +26,9 @@ from bi_agent.runtime.evidence_authority import (
     canonical_rows_hash,
     runtime_evidence_record_integrity_errors,
 )
-from bi_agent.runtime.query_audit import query_audit_refs
+from bi_agent.runtime.query_audit import query_audit_refs, query_rows_ref
 from bi_agent.runtime.query_completeness import validate_query_result
-from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
+from bi_agent.runtime.query_executor import AggregateRowsStore, ClickHouseQueryExecutor
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from tests.phase4.test_clickhouse_query_compiler import metric as reviewed_metric
 from tests.phase4.test_query_completeness import (
@@ -990,6 +990,153 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             canonical_rows_hash(tuple(reversed(rows)), ("window_id", "channel")),
         )
 
+    def test_result_rows_hash_versions_typed_ordered_rows_without_changing_legacy_hash(self):
+        rows = (
+            {
+                "id": "b",
+                "day": date(2026, 6, 2),
+                "at": datetime(2026, 6, 2, tzinfo=timezone.utc),
+                "amount": Decimal("2.00"),
+            },
+            {
+                "id": "a",
+                "day": date(2026, 6, 1),
+                "at": datetime(2026, 6, 1, tzinfo=timezone.utc),
+                "amount": Decimal("1.00"),
+            },
+        )
+        unique_key_fields = ("id",)
+        ordered_rows = evidence_authority_module.canonical_result_rows(
+            rows,
+            unique_key_fields,
+        )
+        legacy_hash = canonical_digest(ordered_rows)
+        version = evidence_authority_module.RESULT_ROWS_CANONICALIZATION_VERSION
+        versioned_hash = evidence_authority_module.canonical_result_rows_hash(
+            rows,
+            unique_key_fields,
+        )
+
+        self.assertIsInstance(version, str)
+        self.assertEqual(version, "result-rows-typed-order-v2")
+        self.assertEqual(
+            versioned_hash,
+            canonical_digest(
+                {
+                    "canonicalization_version": version,
+                    "rows": ordered_rows,
+                }
+            ),
+        )
+        self.assertNotEqual(versioned_hash, legacy_hash)
+        self.assertEqual(
+            versioned_hash,
+            evidence_authority_module.canonical_result_rows_hash(
+                tuple(reversed(rows)),
+                unique_key_fields,
+            ),
+        )
+        self.assertEqual(
+            canonical_rows_hash(rows, unique_key_fields),
+            legacy_hash,
+        )
+        self.assertTrue(
+            evidence_authority_module.canonical_result_rows_hash_matches(
+                rows,
+                unique_key_fields,
+                versioned_hash,
+            )
+        )
+        self.assertTrue(
+            evidence_authority_module.canonical_result_rows_hash_matches(
+                rows,
+                unique_key_fields,
+                legacy_hash,
+            )
+        )
+        self.assertFalse(
+            evidence_authority_module.canonical_result_rows_hash_matches(
+                rows,
+                unique_key_fields,
+                "f" * 64,
+            )
+        )
+        self.assertFalse(
+            evidence_authority_module.canonical_result_rows_hash_matches(
+                rows,
+                unique_key_fields,
+                [],
+            )
+        )
+
+    def test_executor_writer_versioned_rows_hash_preserves_preexisting_legacy_ref(self):
+        class FixedHashRuntime(_RowsRuntime):
+            def aggregate(self, sql, query_id, **kwargs):
+                return ClickHouseQueryResult(
+                    ok=True,
+                    rows=self.rows,
+                    query_hash="hash:fixed-result-rows-version",
+                    query_id=query_id,
+                )
+
+            bounded_context = aggregate
+
+        contract = baseline_contract(metric=reviewed_metric())
+        contract = replace(
+            contract,
+            contract_signature=query_contract_signature(contract),
+        )
+        snapshot = paid_snapshot()
+        rows = complete_rows()
+        ordered_rows = evidence_authority_module.canonical_result_rows(
+            rows,
+            contract.result_shape.unique_key,
+        )
+        legacy_hash = canonical_digest(ordered_rows)
+        legacy_rows_ref = query_rows_ref(
+            "hash:fixed-result-rows-version",
+            contract.contract_signature,
+            contract.dataset_snapshot_refs,
+            legacy_hash,
+        )
+        rows_store = AggregateRowsStore(
+            _rows={legacy_rows_ref: ordered_rows},
+        )
+        authority = RuntimeEvidenceAuthority()
+
+        result = ClickHouseQueryExecutor(
+            FixedHashRuntime(rows),
+            rows_store=rows_store,
+            evidence_authority=authority,
+            release_resolver=_PAID_RELEASE_RESOLVER,
+        ).execute(
+            contract,
+            {snapshot.snapshot_ref: snapshot},
+            execution_attempt_ref="attempt:test:result-rows-version",
+        )
+        execution_record = authority.resolve_query_execution(result.result_ref)
+        rows_record = authority.resolve_rows(result.rows_ref)
+        versioned_hash = evidence_authority_module.canonical_result_rows_hash(
+            rows,
+            contract.result_shape.unique_key,
+        )
+
+        self.assertEqual(result.execution_status, "succeeded")
+        self.assertEqual(execution_record.rows_content_hash, versioned_hash)
+        self.assertEqual(rows_record.rows_content_hash, versioned_hash)
+        self.assertEqual(
+            result.rows_ref,
+            query_rows_ref(
+                result.query_hash,
+                contract.contract_signature,
+                contract.dataset_snapshot_refs,
+                versioned_hash,
+            ),
+        )
+        self.assertNotEqual(result.rows_ref, legacy_rows_ref)
+        self.assertEqual(rows_store.get(legacy_rows_ref), ordered_rows)
+        self.assertEqual(rows_store.get(result.rows_ref), rows)
+
     def test_query_execution_rows_are_idempotent_across_executor_result_order(self):
         contract = baseline_contract(metric=reviewed_metric())
         contract = replace(
@@ -1284,7 +1431,14 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
                         rows,
                         unique_key_fields,
                     ),
-                    canonical_digest(ordered),
+                    canonical_digest(
+                        {
+                            "canonicalization_version": (
+                                evidence_authority_module.RESULT_ROWS_CANONICALIZATION_VERSION
+                            ),
+                            "rows": ordered,
+                        }
+                    ),
                 )
         missing_key_rows = cases[-1][0]
         self.assertEqual(

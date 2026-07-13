@@ -21,7 +21,7 @@ from bi_agent.runtime.evidence_authority import (
     RowsPayloadLoader,
     RuntimeEvidenceResolver,
     canonical_digest,
-    canonical_rows_hash,
+    canonical_result_rows_hash_matches,
     canonical_rows_storage_ref,
     runtime_evidence_record_integrity_errors,
 )
@@ -242,13 +242,14 @@ def _resolve_group(
         if len(rows) != query.row_count:
             raise AuthoritativeQueryChainError("rows_payload_count_mismatch")
         try:
-            actual_hash = canonical_rows_hash(
+            hash_matches = canonical_result_rows_hash_matches(
                 rows,
                 query.contract.result_shape.unique_key,
+                rows_hash,
             )
         except EvidenceIntegrityError as exc:
             raise AuthoritativeQueryChainError(f"rows_payload_invalid:{exc}") from exc
-        if actual_hash != rows_hash:
+        if not hash_matches:
             raise AuthoritativeQueryChainError("rows_payload_hash_mismatch")
         if canonical_rows_storage_ref(rows) != rows_record.storage_ref:
             raise AuthoritativeQueryChainError("rows_storage_ref_content_mismatch")

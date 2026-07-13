@@ -25,7 +25,7 @@ from bi_agent.runtime.evidence_authority import (
     _record_capability_binding,
     canonical_value,
     canonical_digest,
-    canonical_rows_hash,
+    canonical_result_rows_hash_matches,
     legacy_fixture_enabled,
     runtime_evidence_record_integrity_errors,
 )
@@ -443,8 +443,11 @@ def _resolve_authoritative_inputs(
             raise EvidenceIntegrityError(f"rows_payload_missing:{query_ref}")
         if (
             len(rows) != rows_record.row_count
-            or canonical_rows_hash(rows, rows_record.unique_key_fields)
-            != rows_record.rows_content_hash
+            or not canonical_result_rows_hash_matches(
+                rows,
+                rows_record.unique_key_fields,
+                rows_record.rows_content_hash,
+            )
         ):
             raise EvidenceIntegrityError(f"rows_payload_invalid:{query_ref}")
         result = QueryResultEnvelope(
