@@ -367,6 +367,7 @@ class ConversationRunRequest:
     clarification_resume_context: Mapping[str, Any] = field(default_factory=dict)
     prior_analysis_assets: tuple[Mapping[str, Any], ...] = ()
     reuse_candidates: tuple[Mapping[str, Any], ...] = ()
+    prior_topic_material_context: Mapping[str, Any] = field(default_factory=dict)
     requested_nodes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -374,6 +375,9 @@ class ConversationRunRequest:
         data["reuse_candidates"] = [
             canonical_value(candidate) for candidate in self.reuse_candidates
         ]
+        data["prior_topic_material_context"] = canonical_value(
+            self.prior_topic_material_context
+        )
         return data
 
 

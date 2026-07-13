@@ -17,7 +17,11 @@ from bi_agent.runtime.baseline_semantics import (
     CANONICAL_BASELINE_IDS,
     canonical_baseline_ids,
 )
-from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_value
+from bi_agent.runtime.evidence_authority import (
+    EvidenceIntegrityError,
+    canonical_digest,
+    canonical_value,
+)
 
 
 _MATERIAL_AUTHORITY_KEYS = frozenset(
@@ -121,6 +125,46 @@ _ANALYSIS_CONTEXT_WINDOW_FIELDS = {
     "pattern_history_start": ("pattern_history", 0),
     "anomaly_history_start": ("anomaly_history", 0),
 }
+_COMPLETED_MATERIAL_AUTHORITY_RECORD_KEYS = frozenset(
+    {
+        "schema_version",
+        "source_run_id",
+        "thread_id",
+        "topic_id",
+        "analysis_contract_ref",
+        "analysis_contract_signature",
+        "analysis_contract_digest",
+        "material_authority",
+        "material_authority_digest",
+        "record_digest",
+    }
+)
+_RESOLVED_COMPLETED_MATERIAL_AUTHORITY_KEYS = frozenset(
+    {
+        "source_run_id",
+        "thread_id",
+        "topic_id",
+        "analysis_contract",
+        "analysis_contract_signature",
+        "material_authority",
+    }
+)
+_PRIOR_TOPIC_MATERIAL_CONTEXT_KEYS = frozenset(
+    {
+        "schema_version",
+        "thread_id",
+        "topic_id",
+        "source_run_ids",
+        "source_result_refs",
+        "permission_scope",
+        "material_projection",
+        "authorities",
+        "context_digest",
+    }
+)
+_PRIOR_TOPIC_MATERIAL_PROJECTION_KEYS = frozenset(
+    {"intent_material", "route_material_slots"}
+)
 
 
 def build_material_authority(
@@ -672,6 +716,383 @@ def validate_material_authority_contract_overlap(
         raise EvidenceIntegrityError(
             "material_authority_contract_accepted_graph_mismatch"
         )
+
+
+def validate_completed_followup_authority(
+    *,
+    source_run_id: str,
+    thread_id: str,
+    topic_id: str,
+    analysis_contract: Mapping[str, Any],
+    stored_contract_signature: str,
+    analysis_run_id: str,
+    run_status: str,
+    run_thread_id: str,
+    run_topic_id: str,
+    request_analysis_contract: Mapping[str, Any],
+    material_authority: Mapping[str, Any],
+    authority_record: Mapping[str, Any],
+    authority_event_ref: str,
+    authority_event_run_id: str,
+    authority_event_thread_id: str,
+    authority_event_topic_id: str,
+) -> dict[str, Any]:
+    if analysis_run_id != source_run_id:
+        raise EvidenceIntegrityError("completed_followup_source_run_mismatch")
+    if run_status != "completed":
+        raise EvidenceIntegrityError("completed_followup_source_run_not_complete")
+    if (run_thread_id, run_topic_id) != (thread_id, topic_id):
+        raise EvidenceIntegrityError("completed_followup_owner_mismatch")
+    if not isinstance(material_authority, Mapping):
+        raise EvidenceIntegrityError("completed_followup_material_authority_missing")
+    validated_material = validate_material_authority(
+        material_authority,
+        source_run_id=source_run_id,
+        thread_id=thread_id,
+        topic_id=topic_id,
+        require_execution_material=True,
+    )
+    if not isinstance(analysis_contract, Mapping):
+        raise EvidenceIntegrityError("completed_followup_contract_payload_invalid")
+    contract_payload = dict(analysis_contract)
+    embedded_signature = str(contract_payload.pop("contract_signature", "") or "")
+    try:
+        typed_contract = analysis_contract_from_dict(contract_payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise EvidenceIntegrityError(
+            "completed_followup_contract_payload_invalid"
+        ) from exc
+    expected_signature = analysis_contract_signature(typed_contract)
+    if (
+        not stored_contract_signature
+        or expected_signature != stored_contract_signature
+        or not embedded_signature
+        or embedded_signature != stored_contract_signature
+    ):
+        raise EvidenceIntegrityError(
+            "completed_followup_contract_signature_invalid"
+        )
+    if typed_contract.analysis_contract_id != f"analysis:{source_run_id}:1":
+        raise EvidenceIntegrityError("completed_followup_contract_run_mismatch")
+    authoritative_copy = {
+        **typed_contract.to_dict(),
+        "contract_signature": stored_contract_signature,
+    }
+    if (
+        not isinstance(request_analysis_contract, Mapping)
+        or canonical_value(request_analysis_contract)
+        != canonical_value(authoritative_copy)
+    ):
+        raise EvidenceIntegrityError("completed_followup_request_contract_mismatch")
+    validate_material_authority_contract_overlap(
+        validated_material,
+        typed_contract,
+    )
+    validate_completed_material_authority_record(
+        authority_record,
+        source_run_id=source_run_id,
+        thread_id=thread_id,
+        topic_id=topic_id,
+        analysis_contract=authoritative_copy,
+        material_authority=validated_material,
+        event_ref=authority_event_ref,
+        event_run_id=authority_event_run_id,
+        event_thread_id=authority_event_thread_id,
+        event_topic_id=authority_event_topic_id,
+    )
+    return {
+        "source_run_id": source_run_id,
+        "thread_id": thread_id,
+        "topic_id": topic_id,
+        "analysis_contract": typed_contract.to_dict(),
+        "analysis_contract_signature": stored_contract_signature,
+        "material_authority": validated_material,
+    }
+
+
+def build_completed_material_authority_record(
+    *,
+    source_run_id: str,
+    thread_id: str,
+    topic_id: str,
+    analysis_contract: Mapping[str, Any],
+    material_authority: Mapping[str, Any],
+) -> dict[str, Any]:
+    contract = canonical_value(analysis_contract)
+    material = canonical_value(material_authority)
+    body = {
+        "schema_version": "completed-material-authority.v1",
+        "source_run_id": source_run_id,
+        "thread_id": thread_id,
+        "topic_id": topic_id,
+        "analysis_contract_ref": str(contract.get("analysis_contract_id") or ""),
+        "analysis_contract_signature": str(contract.get("contract_signature") or ""),
+        "analysis_contract_digest": canonical_digest(contract),
+        "material_authority": material,
+        "material_authority_digest": canonical_digest(material),
+    }
+    record = {**body, "record_digest": canonical_digest(body)}
+    validate_completed_material_authority_record(
+        record,
+        source_run_id=source_run_id,
+        thread_id=thread_id,
+        topic_id=topic_id,
+        analysis_contract=contract,
+        material_authority=material,
+        event_ref=f"completed-material-authority:{source_run_id}",
+        event_run_id=source_run_id,
+        event_thread_id=thread_id,
+        event_topic_id=topic_id,
+    )
+    return record
+
+
+def validate_completed_material_authority_record(
+    value: Mapping[str, Any],
+    *,
+    source_run_id: str,
+    thread_id: str,
+    topic_id: str,
+    analysis_contract: Mapping[str, Any],
+    material_authority: Mapping[str, Any],
+    event_ref: str,
+    event_run_id: str,
+    event_thread_id: str,
+    event_topic_id: str,
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _COMPLETED_MATERIAL_AUTHORITY_RECORD_KEYS
+        or value.get("schema_version") != "completed-material-authority.v1"
+    ):
+        raise EvidenceIntegrityError("completed_followup_authority_record_mismatch")
+    owners = (
+        str(value.get("source_run_id") or ""),
+        str(value.get("thread_id") or ""),
+        str(value.get("topic_id") or ""),
+        event_run_id,
+        event_thread_id,
+        event_topic_id,
+    )
+    if owners != (
+        source_run_id,
+        thread_id,
+        topic_id,
+        source_run_id,
+        thread_id,
+        topic_id,
+    ):
+        raise EvidenceIntegrityError("completed_followup_authority_record_mismatch")
+    if event_ref != f"completed-material-authority:{source_run_id}":
+        raise EvidenceIntegrityError("completed_followup_authority_record_mismatch")
+    contract = canonical_value(analysis_contract)
+    material = canonical_value(material_authority)
+    body = {
+        key: canonical_value(item)
+        for key, item in value.items()
+        if key != "record_digest"
+    }
+    if (
+        value.get("analysis_contract_ref")
+        != contract.get("analysis_contract_id")
+        or value.get("analysis_contract_signature")
+        != contract.get("contract_signature")
+        or value.get("analysis_contract_digest") != canonical_digest(contract)
+        or canonical_value(value.get("material_authority")) != material
+        or value.get("material_authority_digest") != canonical_digest(material)
+        or value.get("record_digest") != canonical_digest(body)
+    ):
+        raise EvidenceIntegrityError("completed_followup_authority_record_mismatch")
+    return {**body, "record_digest": str(value["record_digest"])}
+
+
+def validate_resolved_completed_material_authority(
+    value: Mapping[str, Any],
+    *,
+    source_run_id: str,
+    thread_id: str,
+    topic_id: str,
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _RESOLVED_COMPLETED_MATERIAL_AUTHORITY_KEYS
+    ):
+        raise EvidenceIntegrityError(
+            "prior_topic_completed_authority_shape_invalid"
+        )
+    if (
+        str(value.get("source_run_id") or "") != source_run_id
+        or str(value.get("thread_id") or "") != thread_id
+        or str(value.get("topic_id") or "") != topic_id
+    ):
+        raise EvidenceIntegrityError(
+            "prior_topic_completed_authority_owner_mismatch"
+        )
+    material = validate_material_authority(
+        value.get("material_authority"),
+        source_run_id=source_run_id,
+        thread_id=thread_id,
+        topic_id=topic_id,
+        require_execution_material=True,
+    )
+    contract_payload = value.get("analysis_contract")
+    if not isinstance(contract_payload, Mapping):
+        raise EvidenceIntegrityError(
+            "prior_topic_completed_authority_contract_invalid"
+        )
+    signature = str(value.get("analysis_contract_signature") or "")
+    try:
+        typed_contract = analysis_contract_from_dict(contract_payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise EvidenceIntegrityError(
+            "prior_topic_completed_authority_contract_invalid"
+        ) from exc
+    if (
+        not signature
+        or analysis_contract_signature(typed_contract) != signature
+        or typed_contract.analysis_contract_id
+        != f"analysis:{source_run_id}:1"
+    ):
+        raise EvidenceIntegrityError(
+            "prior_topic_completed_authority_contract_invalid"
+        )
+    validate_material_authority_contract_overlap(material, typed_contract)
+    return canonical_value(
+        {
+            "source_run_id": source_run_id,
+            "thread_id": thread_id,
+            "topic_id": topic_id,
+            "analysis_contract": typed_contract.to_dict(),
+            "analysis_contract_signature": signature,
+            "material_authority": material,
+        }
+    )
+
+
+def build_prior_topic_material_context(
+    *,
+    thread_id: str,
+    topic_id: str,
+    source_result_refs: Iterable[str],
+    authorities: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    authority_values = tuple(authorities)
+    if any(
+        not isinstance(authority, Mapping)
+        for authority in authority_values
+    ):
+        raise EvidenceIntegrityError(
+            "prior_topic_completed_authority_shape_invalid"
+        )
+    validated = tuple(
+        sorted(
+            (
+                validate_resolved_completed_material_authority(
+                    authority,
+                    source_run_id=str(
+                        authority.get("source_run_id") or ""
+                    ),
+                    thread_id=thread_id,
+                    topic_id=topic_id,
+                )
+                for authority in authority_values
+            ),
+            key=lambda item: item["source_run_id"],
+        )
+    )
+    if not validated:
+        raise EvidenceIntegrityError("prior_topic_material_context_empty")
+    source_run_ids = [item["source_run_id"] for item in validated]
+    if len(set(source_run_ids)) != len(source_run_ids):
+        raise EvidenceIntegrityError(
+            "prior_topic_completed_authority_duplicate"
+        )
+    projections = tuple(
+        canonical_value(
+            {
+                "intent_material": item["material_authority"][
+                    "intent_material"
+                ],
+                "route_material_slots": item["material_authority"][
+                    "route_material_slots"
+                ],
+            }
+        )
+        for item in validated
+    )
+    if any(projection != projections[0] for projection in projections[1:]):
+        raise EvidenceIntegrityError("prior_topic_material_conflict")
+    permission_scopes = {
+        str(item["analysis_contract"].get("permission_scope") or "")
+        for item in validated
+    }
+    permission_scopes.update(
+        str(
+            item["material_authority"]["execution_material"].get(
+                "permission_scope"
+            )
+            or ""
+        )
+        for item in validated
+    )
+    if len(permission_scopes) != 1 or "" in permission_scopes:
+        raise EvidenceIntegrityError(
+            "prior_topic_permission_scope_mismatch"
+        )
+    result_refs = sorted({str(ref) for ref in source_result_refs if str(ref)})
+    if not result_refs:
+        raise EvidenceIntegrityError("prior_topic_result_refs_missing")
+    body = {
+        "schema_version": "prior-topic-material.v1",
+        "thread_id": thread_id,
+        "topic_id": topic_id,
+        "source_run_ids": source_run_ids,
+        "source_result_refs": result_refs,
+        "permission_scope": next(iter(permission_scopes)),
+        "material_projection": projections[0],
+        "authorities": list(validated),
+    }
+    return {**body, "context_digest": canonical_digest(body)}
+
+
+def validate_prior_topic_material_context(
+    value: Mapping[str, Any],
+    *,
+    thread_id: str,
+    topic_id: str,
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _PRIOR_TOPIC_MATERIAL_CONTEXT_KEYS
+        or value.get("schema_version") != "prior-topic-material.v1"
+        or value.get("thread_id") != thread_id
+        or value.get("topic_id") != topic_id
+    ):
+        raise EvidenceIntegrityError(
+            "prior_topic_material_context_shape_invalid"
+        )
+    authorities = value.get("authorities")
+    result_refs = value.get("source_result_refs")
+    if not isinstance(authorities, list) or not isinstance(result_refs, list):
+        raise EvidenceIntegrityError(
+            "prior_topic_material_context_shape_invalid"
+        )
+    rebuilt = build_prior_topic_material_context(
+        thread_id=thread_id,
+        topic_id=topic_id,
+        source_result_refs=result_refs,
+        authorities=authorities,
+    )
+    projection = value.get("material_projection")
+    if (
+        not isinstance(projection, Mapping)
+        or set(projection) != _PRIOR_TOPIC_MATERIAL_PROJECTION_KEYS
+        or canonical_value(value) != rebuilt
+    ):
+        raise EvidenceIntegrityError(
+            "prior_topic_material_context_mismatch"
+        )
+    return rebuilt
 
 
 def validate_terminal_resume_proposal_overlap(

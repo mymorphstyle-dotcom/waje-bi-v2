@@ -793,7 +793,24 @@ class ConversationAgentCore:
             and evidence.get("binding_manifest_ref")
         )
         persisted_context_manifest = None
+        result_candidate_records: Mapping[str, Any] | None = None
         try:
+            completed_material_authority = getattr(
+                result,
+                "completed_material_authority",
+                None,
+            )
+            if (
+                (
+                    getattr(result, "analysis_runtime_result", None)
+                    is not None
+                    or result.analysis_runtime_records is not None
+                )
+                and not isinstance(completed_material_authority, Mapping)
+            ):
+                raise ValueError(
+                    "completed_material_authority_missing_or_invalid"
+                )
             if result.analysis_runtime_records is None:
                 if summary_claims or authority_evidence:
                     raise ValueError("analysis_runtime_records_missing")
@@ -852,13 +869,7 @@ class ConversationAgentCore:
                     result.artifact_path,
                 ):
                     raise ValueError("analysis_runtime_artifact_sync_failed")
-                _publish_result_reuse_candidates(
-                    self.store,
-                    topic_id=turn.topic_id or "",
-                    run_id=run_id,
-                    request=request,
-                    records=records,
-                )
+                result_candidate_records = records
         except Exception as exc:
             _record_workflow_failure_llm_audits(
                 self.store,
@@ -919,14 +930,113 @@ class ConversationAgentCore:
                     release_resolver=self.release_resolver,
                 ),
             )
-        self.store.upsert_run(
-            run_id,
-            thread_id=thread_id,
-            turn_id=turn.turn_id,
-            topic_id=turn.topic_id or "",
-            status="completed",
-            request=_persistable_request(request),
-        )
+        try:
+            if isinstance(completed_material_authority, Mapping):
+                self.store.finalize_completed_material_authority(
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    topic_id=turn.topic_id or "",
+                    request=_persistable_request(request),
+                    material_authority=completed_material_authority,
+                )
+            else:
+                self.store.upsert_run(
+                    run_id,
+                    thread_id=thread_id,
+                    turn_id=turn.turn_id,
+                    topic_id=turn.topic_id or "",
+                    status="completed",
+                    request=_persistable_request(request),
+                )
+        except Exception as exc:
+            _record_workflow_failure_llm_audits(
+                self.store,
+                thread_id=thread_id,
+                topic_id=turn.topic_id or "",
+                run_id=run_id,
+                llm_calls=workflow_llm_calls,
+            )
+            self.store.upsert_run(
+                run_id,
+                thread_id=thread_id,
+                turn_id=turn.turn_id,
+                topic_id=turn.topic_id or "",
+                status="failed",
+                request={
+                    **_persistable_request(request),
+                    "failure_reason": "analysis_runtime_persistence_failed",
+                },
+            )
+            self.store.add_audit_event(
+                "analysis_runtime_persistence_failed",
+                thread_id=thread_id,
+                topic_id=turn.topic_id or "",
+                run_id=run_id,
+                ref=run_id,
+                payload={
+                    "reason": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return {
+                "status": "failed",
+                "run_id": run_id,
+                "turn_id": turn.turn_id,
+                "topic_id": turn.topic_id,
+                "intent": turn.turn_intent.intent,
+                "topic_relation": turn.topic_relation,
+                "context_manifest": context_manifest,
+                "failure_reason": "analysis_runtime_persistence_failed",
+                "llm_calls": list(workflow_llm_calls),
+            }
+        followup_index_failure: dict[str, str] | None = None
+        if result_candidate_records is not None:
+            try:
+                _publish_result_reuse_candidates(
+                    self.store,
+                    topic_id=turn.topic_id or "",
+                    run_id=run_id,
+                    request=request,
+                    records=result_candidate_records,
+                )
+            except Exception as exc:
+                followup_index_failure = {
+                    "status": "failed",
+                    "failure_reason": "followup_index_publication_failed",
+                    "reason": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+                try:
+                    self.store.recover_after_write_failure()
+                except Exception as recovery_exc:
+                    followup_index_failure.update(
+                        {
+                            "recovery_status": "failed",
+                            "recovery_reason": str(recovery_exc),
+                            "recovery_error_type": type(recovery_exc).__name__,
+                        }
+                    )
+                else:
+                    followup_index_failure["recovery_status"] = "recovered"
+                try:
+                    self.store.add_audit_event(
+                        "followup_index_publication_failed",
+                        thread_id=thread_id,
+                        topic_id=turn.topic_id or "",
+                        run_id=run_id,
+                        ref=run_id,
+                        payload=dict(followup_index_failure),
+                    )
+                except Exception as audit_exc:
+                    followup_index_failure.update(
+                        {
+                            "audit_status": "failed",
+                            "audit_reason": str(audit_exc),
+                            "audit_error_type": type(audit_exc).__name__,
+                        }
+                    )
+                else:
+                    followup_index_failure["audit_status"] = "recorded"
         return {
             "status": "completed",
             "run_id": run_id,
@@ -940,6 +1050,11 @@ class ConversationAgentCore:
             "accepted_graph": accepted_graph,
             "llm_calls": list(workflow_llm_calls),
             "quality_review": package.get("quality_gate") or package.get("admin_audit"),
+            **(
+                {"followup_index": followup_index_failure}
+                if followup_index_failure is not None
+                else {}
+            ),
         }
 
     @classmethod

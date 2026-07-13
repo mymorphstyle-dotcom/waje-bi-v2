@@ -56,6 +56,9 @@ class InMemoryConversationStore:
     def audit_events(self) -> list[dict]:
         return deepcopy(self._audit_events)
 
+    def recover_after_write_failure(self) -> None:
+        return None
+
     def create_thread(self, thread_id: Optional[str] = None, *, owner_id: str = "user") -> ThreadState:
         thread_id = thread_id or f"thread-{uuid4().hex[:12]}"
         thread = ThreadState(thread_id=thread_id, owner_id=owner_id)
@@ -253,6 +256,197 @@ class InMemoryConversationStore:
             outcome_topic_id=str(event.get("topic_id") or ""),
             material_authority=material_authority,
         )
+
+    def resolve_completed_material_authority(
+        self,
+        *,
+        source_run_id: str,
+        thread_id: str,
+        topic_id: str,
+    ) -> dict[str, Any]:
+        from bi_agent.conversation.clarification_authority import (
+            validate_completed_followup_authority,
+        )
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        run = self.runs.get(source_run_id)
+        if not run:
+            raise EvidenceIntegrityError("completed_followup_source_run_missing")
+        contract_ref = f"analysis:{source_run_id}:1"
+        contract = self.analysis_runtime_authority["analysis_contract"].get(
+            contract_ref
+        )
+        if not isinstance(contract, Mapping):
+            raise EvidenceIntegrityError("completed_followup_contract_missing")
+        request = run.get("request") or {}
+        if not isinstance(request, Mapping):
+            raise EvidenceIntegrityError("completed_followup_request_invalid")
+        events = tuple(
+            event
+            for event in self._audit_events
+            if event.get("event_type")
+            == "completed_material_authority_recorded"
+            and event.get("run_id") == source_run_id
+        )
+        if not events:
+            raise EvidenceIntegrityError(
+                "completed_followup_authority_record_missing"
+            )
+        if len(events) != 1:
+            raise EvidenceIntegrityError(
+                "completed_followup_authority_record_ambiguous"
+            )
+        event = events[0]
+        return validate_completed_followup_authority(
+            source_run_id=source_run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+            analysis_contract=contract,
+            stored_contract_signature=str(contract.get("contract_signature") or ""),
+            analysis_run_id=source_run_id,
+            run_status=str(run.get("status") or ""),
+            run_thread_id=str(run.get("thread_id") or ""),
+            run_topic_id=str(run.get("topic_id") or ""),
+            request_analysis_contract=request.get("analysis_contract"),
+            material_authority=request.get("material_authority"),
+            authority_record=event.get("payload") or {},
+            authority_event_ref=str(event.get("ref") or ""),
+            authority_event_run_id=str(event.get("run_id") or ""),
+            authority_event_thread_id=str(event.get("thread_id") or ""),
+            authority_event_topic_id=str(event.get("topic_id") or ""),
+        )
+
+    def finalize_completed_material_authority(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        topic_id: str,
+        request: Mapping[str, Any],
+        material_authority: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        from bi_agent.conversation.clarification_authority import (
+            build_completed_material_authority_record,
+            validate_completed_followup_authority,
+        )
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        run = self.runs.get(run_id)
+        if not run:
+            raise EvidenceIntegrityError("completed_followup_source_run_missing")
+        if (
+            str(run.get("thread_id") or "") != thread_id
+            or str(run.get("topic_id") or "") != topic_id
+        ):
+            raise EvidenceIntegrityError("completed_followup_owner_mismatch")
+        run_status = str(run.get("status") or "")
+        contract = self.analysis_runtime_authority["analysis_contract"].get(
+            f"analysis:{run_id}:1"
+        )
+        if not isinstance(contract, Mapping):
+            raise EvidenceIntegrityError("completed_followup_contract_missing")
+        finalized_request = canonical_value(
+            {
+                **dict(request),
+                "analysis_contract": contract,
+                "material_authority": material_authority,
+            }
+        )
+        record = build_completed_material_authority_record(
+            source_run_id=run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+            analysis_contract=contract,
+            material_authority=material_authority,
+        )
+        validate_completed_followup_authority(
+            source_run_id=run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+            analysis_contract=contract,
+            stored_contract_signature=str(contract.get("contract_signature") or ""),
+            analysis_run_id=run_id,
+            run_status="completed",
+            run_thread_id=thread_id,
+            run_topic_id=topic_id,
+            request_analysis_contract=finalized_request["analysis_contract"],
+            material_authority=finalized_request["material_authority"],
+            authority_record=record,
+            authority_event_ref=f"completed-material-authority:{run_id}",
+            authority_event_run_id=run_id,
+            authority_event_thread_id=thread_id,
+            authority_event_topic_id=topic_id,
+        )
+        existing = tuple(
+            event
+            for event in self._audit_events
+            if event.get("event_type")
+            == "completed_material_authority_recorded"
+            and event.get("run_id") == run_id
+        )
+        if run_status == "completed":
+            if not existing:
+                raise EvidenceIntegrityError(
+                    "completed_followup_source_run_not_finalizable"
+                )
+            if (
+                len(existing) != 1
+                or canonical_value(existing[0].get("payload") or {}) != record
+                or str(existing[0].get("ref") or "")
+                != f"completed-material-authority:{run_id}"
+                or str(existing[0].get("run_id") or "") != run_id
+                or str(existing[0].get("thread_id") or "") != thread_id
+                or str(existing[0].get("topic_id") or "") != topic_id
+                or canonical_value(run.get("request") or {}) != finalized_request
+                or str(run.get("status") or "") != "completed"
+            ):
+                raise EvidenceIntegrityError(
+                    "completed_followup_authority_record_conflict"
+                )
+            return deepcopy(finalized_request)
+        if run_status != "running_workflow":
+            raise EvidenceIntegrityError(
+                "completed_followup_source_run_not_finalizable"
+            )
+        if existing:
+            raise EvidenceIntegrityError(
+                "completed_followup_authority_record_conflict"
+            )
+        staged_runs = deepcopy(self.runs)
+        staged_events = deepcopy(self._audit_events)
+        staged_runs[run_id] = {
+            **run,
+            "status": "completed",
+            "request": finalized_request,
+        }
+        self._append_staged_audit_event(
+            staged_events,
+            {
+                "event_type": "run_status_changed",
+                "thread_id": thread_id,
+                "topic_id": topic_id,
+                "run_id": run_id,
+                "ref": run_id,
+                "payload": {"status": "completed"},
+            },
+        )
+        self._append_staged_audit_event(
+            staged_events,
+            {
+                "event_type": "completed_material_authority_recorded",
+                "thread_id": thread_id,
+                "topic_id": topic_id,
+                "run_id": run_id,
+                "ref": f"completed-material-authority:{run_id}",
+                "payload": record,
+            },
+        )
+        self.runs = staged_runs
+        self._audit_events = staged_events
+        return deepcopy(finalized_request)
 
     def record_context_manifest(self, manifest: dict) -> None:
         self.save_context_manifest(manifest)
@@ -621,16 +815,24 @@ class InMemoryConversationStore:
         ref: str = "",
         payload: dict | None = None,
     ) -> None:
-        self._audit_events.append(
+        self._append_staged_audit_event(
+            self._audit_events,
             {
                 "event_type": event_type,
                 "thread_id": thread_id,
                 "topic_id": topic_id,
                 "run_id": run_id,
                 "ref": ref,
-                "payload": deepcopy(payload) if payload is not None else {},
-            }
+                "payload": payload or {},
+            },
         )
+
+    def _append_staged_audit_event(
+        self,
+        events: list[dict],
+        event: Mapping[str, Any],
+    ) -> None:
+        events.append(deepcopy(dict(event)))
 
     def add_result_ref(
         self,

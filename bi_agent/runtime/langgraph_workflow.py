@@ -26,6 +26,7 @@ from bi_agent.conversation.clarification_authority import (
     bind_terminal_resume_proposal_material,
     build_execution_material,
     build_material_authority,
+    validate_prior_topic_material_context,
     validate_material_authority,
     validate_terminal_compile_overlap,
     validate_terminal_clarification_choice_overlap,
@@ -81,7 +82,10 @@ from bi_agent.runtime.capability_execution import (
     validate_bound_capability_input,
 )
 from bi_agent.runtime.capability_registry import llm_capability_cards
-from bi_agent.runtime.permission_roles import runtime_permission_scope_from_request
+from bi_agent.runtime.permission_roles import (
+    can_read_scope,
+    runtime_permission_scope_from_request,
+)
 from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.analysis_obligations import (
     ObligationRequest,
@@ -93,6 +97,10 @@ from bi_agent.runtime.data_contract_diagnostics import (
     diagnose_contract_gaps,
 )
 from bi_agent.runtime.exploration_budget import default_budget, record_capability_call
+from bi_agent.runtime.evidence_authority import (
+    EvidenceIntegrityError,
+    canonical_value,
+)
 from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
 from bi_agent.runtime.llm_prompts import build_prompt
 from bi_agent.runtime.models import (
@@ -120,6 +128,18 @@ LLM_REQUIRED_TASKS = (
     "causal_audit",
     "answer_synthesis",
     "semantic_audit",
+)
+_PRIOR_TOPIC_PRIVATE_MATERIAL_AXES = (
+    "question_family",
+    "pattern_family",
+    "pattern_params",
+    "target_claim",
+    "target",
+    "target_metric",
+    "scope",
+    "time_window",
+    "baseline",
+    "baseline_candidates",
 )
 ROUTE_BLOCKED_CAPABILITY_IDS = frozenset(
     {
@@ -196,6 +216,7 @@ class WorkflowState(TypedDict, total=False):
     contract_gap_diagnostics: tuple[dict[str, Any], ...]
     analysis_compile_outcome: Any
     analysis_runtime_result: Any
+    execution_material: dict[str, Any]
     query_repair_decisions: tuple[dict[str, Any], ...]
     query_gap_clarification: dict[str, Any]
     workflow_status: str
@@ -213,6 +234,7 @@ class WorkflowRunResult:
     llm_calls: tuple[dict[str, Any], ...] = ()
     analysis_runtime_records: Optional[Mapping[str, Any]] = None
     analysis_runtime_result: Any = None
+    completed_material_authority: Optional[Mapping[str, Any]] = None
 
 
 class WorkflowFailure(Exception):
@@ -291,6 +313,46 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
             llm_calls=tuple(state["llm_calls"]),
         )
 
+    completed_material_authority = None
+    if (
+        str(output.get("workflow_status") or "draft") == "draft"
+        and isinstance(output.get("execution_material"), Mapping)
+        and str(request.get("thread_id") or "")
+        and str(request.get("topic_id") or "")
+    ):
+        route = output.get("analysis_route") or {}
+        resolution = (
+            route.get("obligation_resolution") or {}
+            if isinstance(route, Mapping)
+            else {}
+        )
+        try:
+            completed_material_authority = build_material_authority(
+                source_run_id=str(output["run_id"]),
+                thread_id=str(request["thread_id"]),
+                topic_id=str(request["topic_id"]),
+                original_intent=output.get("intent") or {},
+                material_slots=_clarification_material_slots(output),
+                runtime_material=output["execution_material"],
+                obligation_rejection_history=(
+                    resolution.get("mutation_history") or ()
+                    if isinstance(resolution, Mapping)
+                    else ()
+                ),
+            )
+        except Exception as exc:
+            return WorkflowRunResult(
+                status="failed",
+                run_id=str(output["run_id"]),
+                failure_reason=(
+                    "completed_material_authority_build_failed:"
+                    f"{_exception_reason(exc)}"
+                ),
+                checkpoint_events=tuple(
+                    output.get("checkpoint_events") or ()
+                ),
+                llm_calls=tuple(output.get("llm_calls") or ()),
+            )
     return WorkflowRunResult(
         status=str(output.get("workflow_status") or "draft"),
         run_id=output["run_id"],
@@ -305,6 +367,7 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
             else None
         ),
         analysis_runtime_result=output.get("analysis_runtime_result"),
+        completed_material_authority=completed_material_authority,
     )
 
 
@@ -1222,6 +1285,65 @@ def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:
         )
         if key in request and not _empty_business_context_value(request[key])
     }
+    raw_prior_context = request.get("prior_topic_material_context")
+    if raw_prior_context:
+        repeated_axes = tuple(
+            key
+            for key in _PRIOR_TOPIC_PRIVATE_MATERIAL_AXES
+            if key in request
+            and not _empty_business_context_value(request[key])
+        )
+        if repeated_axes:
+            raise WorkflowFailure(
+                "prior_topic_material_context_request_axis_conflict:"
+                + ",".join(repeated_axes),
+                failure_type="contract",
+            )
+        try:
+            validated_prior = validate_prior_topic_material_context(
+                raw_prior_context,
+                thread_id=str(request.get("thread_id") or ""),
+                topic_id=str(request.get("topic_id") or ""),
+            )
+        except EvidenceIntegrityError as exc:
+            raise WorkflowFailure(
+                "prior_topic_material_context_invalid:"
+                f"{_exception_reason(exc)}",
+                failure_type="contract",
+            ) from exc
+        try:
+            current_permission_scope = runtime_permission_scope_from_request(
+                request
+            )
+        except (PermissionError, ValueError) as exc:
+            raise WorkflowFailure(
+                "prior_topic_material_context_permission_invalid:"
+                f"{_exception_reason(exc)}",
+                failure_type="permission",
+            ) from exc
+        if not can_read_scope(
+            current_permission_scope,
+            validated_prior["permission_scope"],
+        ):
+            raise WorkflowFailure(
+                "prior_topic_material_context_permission_denied",
+                failure_type="permission",
+            )
+        projection = validated_prior["material_projection"]
+        intent_material = projection["intent_material"]
+        context.update(
+            {
+                "target_metric": intent_material["primary_target_metric"],
+                "scope": canonical_value(intent_material["scope"]),
+                "prior_baselines": list(intent_material["baselines"]),
+            }
+        )
+        if not _empty_business_context_value(
+            intent_material.get("time_window")
+        ):
+            context["time_window"] = canonical_value(
+                intent_material["time_window"]
+            )
     if context:
         payload["bound_business_context"] = context
     return payload

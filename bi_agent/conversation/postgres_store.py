@@ -58,6 +58,9 @@ class PostgresConversationStore:
         self.connection.execute(CONVERSATION_SCHEMA_SQL)
         self.connection.commit()
 
+    def recover_after_write_failure(self) -> None:
+        self.connection.rollback()
+
     def create_thread(self, thread_id: Optional[str] = None, *, owner_id: str = "user") -> ThreadState:
         thread_id = thread_id or f"thread-{uuid4().hex[:12]}"
         self._execute(
@@ -444,6 +447,326 @@ class PostgresConversationStore:
                 else None
             ),
         )
+
+    def resolve_completed_material_authority(
+        self,
+        *,
+        source_run_id: str,
+        thread_id: str,
+        topic_id: str,
+    ) -> dict[str, Any]:
+        from bi_agent.conversation.clarification_authority import (
+            validate_completed_followup_authority,
+        )
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        rows = self._fetchall(
+            """
+            /* completed_material_authority */
+            SELECT ac.analysis_contract_id,
+                   ac.run_id AS analysis_run_id,
+                   ac.contract_signature AS stored_contract_signature,
+                   ac.payload AS contract_payload,
+                   r.status AS run_status,
+                   r.thread_id AS run_thread_id,
+                   r.topic_id AS run_topic_id,
+                   r.request AS run_request,
+                   e.payload AS authority_record_payload,
+                   e.ref AS authority_record_ref,
+                   e.run_id AS authority_event_run_id,
+                   e.thread_id AS authority_event_thread_id,
+                   e.topic_id AS authority_event_topic_id
+            FROM waje_runtime.analysis_runs r
+            LEFT JOIN waje_runtime.analysis_contracts ac
+              ON ac.run_id = r.run_id
+             AND ac.analysis_contract_id = %(analysis_contract_id)s
+            LEFT JOIN waje_runtime.audit_events e
+              ON e.run_id = r.run_id
+             AND e.event_type = 'completed_material_authority_recorded'
+            WHERE r.run_id = %(source_run_id)s
+            """,
+            {
+                "source_run_id": source_run_id,
+                "analysis_contract_id": f"analysis:{source_run_id}:1",
+            },
+        )
+        if not rows:
+            raise EvidenceIntegrityError(
+                "completed_followup_source_run_missing"
+            )
+        if not str(_field(rows[0], "analysis_run_id", 1) or ""):
+            raise EvidenceIntegrityError("completed_followup_contract_missing")
+        event_rows = [
+            row
+            for row in rows
+            if str(_field(row, "authority_event_run_id", 10) or "")
+        ]
+        if not event_rows:
+            raise EvidenceIntegrityError(
+                "completed_followup_authority_record_missing"
+            )
+        if len(event_rows) != 1:
+            raise EvidenceIntegrityError(
+                "completed_followup_authority_record_ambiguous"
+            )
+        row = event_rows[0]
+        request = _json_value(_field(row, "run_request", 7)) or {}
+        return validate_completed_followup_authority(
+            source_run_id=source_run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+            analysis_contract=_json_value(_field(row, "contract_payload", 3)) or {},
+            stored_contract_signature=str(
+                _field(row, "stored_contract_signature", 2) or ""
+            ),
+            analysis_run_id=str(_field(row, "analysis_run_id", 1) or ""),
+            run_status=str(_field(row, "run_status", 4) or ""),
+            run_thread_id=str(_field(row, "run_thread_id", 5) or ""),
+            run_topic_id=str(_field(row, "run_topic_id", 6) or ""),
+            request_analysis_contract=(
+                request.get("analysis_contract")
+                if isinstance(request, Mapping)
+                else None
+            ),
+            material_authority=(
+                request.get("material_authority")
+                if isinstance(request, Mapping)
+                else None
+            ),
+            authority_record=(
+                _json_value(_field(row, "authority_record_payload", 8)) or {}
+            ),
+            authority_event_ref=str(
+                _field(row, "authority_record_ref", 9) or ""
+            ),
+            authority_event_run_id=str(
+                _field(row, "authority_event_run_id", 10) or ""
+            ),
+            authority_event_thread_id=str(
+                _field(row, "authority_event_thread_id", 11) or ""
+            ),
+            authority_event_topic_id=str(
+                _field(row, "authority_event_topic_id", 12) or ""
+            ),
+        )
+
+    def finalize_completed_material_authority(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        topic_id: str,
+        request: Mapping[str, Any],
+        material_authority: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        from bi_agent.conversation.clarification_authority import (
+            build_completed_material_authority_record,
+            validate_completed_followup_authority,
+        )
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        try:
+            run_row = self._fetchone(
+                """
+                /* completed_material_authority_finalization_run_lock */
+                SELECT r.status AS run_status,
+                       r.thread_id AS run_thread_id,
+                       r.topic_id AS run_topic_id,
+                       r.request AS run_request
+                FROM waje_runtime.analysis_runs r
+                WHERE r.run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                {"run_id": run_id},
+            )
+            if run_row is None:
+                raise EvidenceIntegrityError(
+                    "completed_followup_source_run_missing"
+                )
+            contract_row = self._fetchone(
+                """
+                /* completed_material_authority_finalization_contract_lock */
+                SELECT ac.run_id AS analysis_run_id,
+                       ac.contract_signature AS stored_contract_signature,
+                       ac.payload AS contract_payload
+                FROM waje_runtime.analysis_contracts ac
+                WHERE ac.run_id = %(run_id)s
+                  AND ac.analysis_contract_id = %(analysis_contract_id)s
+                FOR UPDATE
+                """,
+                {
+                    "run_id": run_id,
+                    "analysis_contract_id": f"analysis:{run_id}:1",
+                },
+            )
+            if (
+                contract_row is None
+                or not str(
+                    _field(contract_row, "analysis_run_id", 0) or ""
+                )
+            ):
+                raise EvidenceIntegrityError(
+                    "completed_followup_contract_missing"
+                )
+            run_status = str(_field(run_row, "run_status", 0) or "")
+            run_thread_id = str(
+                _field(run_row, "run_thread_id", 1) or ""
+            )
+            run_topic_id = str(_field(run_row, "run_topic_id", 2) or "")
+            if (run_thread_id, run_topic_id) != (thread_id, topic_id):
+                raise EvidenceIntegrityError(
+                    "completed_followup_owner_mismatch"
+                )
+            stored_signature = str(
+                _field(
+                    contract_row,
+                    "stored_contract_signature",
+                    1,
+                )
+                or ""
+            )
+            contract = (
+                _json_value(_field(contract_row, "contract_payload", 2))
+                or {}
+            )
+            if not isinstance(contract, Mapping):
+                raise EvidenceIntegrityError(
+                    "completed_followup_contract_payload_invalid"
+                )
+            embedded_signature = str(
+                contract.get("contract_signature") or ""
+            )
+            if (
+                not embedded_signature
+                or embedded_signature != stored_signature
+            ):
+                raise EvidenceIntegrityError(
+                    "completed_followup_contract_signature_invalid"
+                )
+            authoritative_contract = canonical_value(
+                {
+                    **dict(contract),
+                    "contract_signature": embedded_signature,
+                }
+            )
+            finalized_request = canonical_value(
+                {
+                    **dict(request),
+                    "analysis_contract": authoritative_contract,
+                    "material_authority": material_authority,
+                }
+            )
+            record = build_completed_material_authority_record(
+                source_run_id=run_id,
+                thread_id=thread_id,
+                topic_id=topic_id,
+                analysis_contract=authoritative_contract,
+                material_authority=material_authority,
+            )
+            validate_completed_followup_authority(
+                source_run_id=run_id,
+                thread_id=thread_id,
+                topic_id=topic_id,
+                analysis_contract=authoritative_contract,
+                stored_contract_signature=stored_signature,
+                analysis_run_id=str(
+                    _field(contract_row, "analysis_run_id", 0) or ""
+                ),
+                run_status="completed",
+                run_thread_id=thread_id,
+                run_topic_id=topic_id,
+                request_analysis_contract=authoritative_contract,
+                material_authority=material_authority,
+                authority_record=record,
+                authority_event_ref=f"completed-material-authority:{run_id}",
+                authority_event_run_id=run_id,
+                authority_event_thread_id=thread_id,
+                authority_event_topic_id=topic_id,
+            )
+            existing = self._fetchall(
+                """
+                /* completed_material_authority_existing_events */
+                SELECT payload, ref, run_id, thread_id, topic_id
+                FROM waje_runtime.audit_events
+                WHERE event_type = 'completed_material_authority_recorded'
+                  AND run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                {"run_id": run_id},
+            )
+            if run_status == "completed":
+                stored_request = (
+                    _json_value(_field(run_row, "run_request", 3)) or {}
+                )
+                if not existing:
+                    raise EvidenceIntegrityError(
+                        "completed_followup_source_run_not_finalizable"
+                    )
+                event = existing[0]
+                if (
+                    len(existing) != 1
+                    or canonical_value(
+                        _json_value(_field(event, "payload", 0)) or {}
+                    )
+                    != record
+                    or str(_field(event, "ref", 1) or "")
+                    != f"completed-material-authority:{run_id}"
+                    or str(_field(event, "run_id", 2) or "") != run_id
+                    or str(_field(event, "thread_id", 3) or "")
+                    != thread_id
+                    or str(_field(event, "topic_id", 4) or "") != topic_id
+                    or canonical_value(stored_request) != finalized_request
+                ):
+                    raise EvidenceIntegrityError(
+                        "completed_followup_authority_record_conflict"
+                    )
+                self.connection.rollback()
+                return finalized_request
+            if run_status != "running_workflow":
+                raise EvidenceIntegrityError(
+                    "completed_followup_source_run_not_finalizable"
+                )
+            if existing:
+                raise EvidenceIntegrityError(
+                    "completed_followup_authority_record_conflict"
+                )
+            self._execute(
+                """
+                UPDATE waje_runtime.analysis_runs
+                SET status = 'completed',
+                    request = %(request)s::jsonb,
+                    updated_at = now()
+                WHERE run_id = %(run_id)s
+                """,
+                {"run_id": run_id, "request": _json(finalized_request)},
+                commit=False,
+            )
+            self._audit(
+                "run_status_changed",
+                thread_id=thread_id,
+                topic_id=topic_id,
+                run_id=run_id,
+                ref=run_id,
+                payload={"status": "completed"},
+                commit=False,
+            )
+            self._audit(
+                "completed_material_authority_recorded",
+                thread_id=thread_id,
+                topic_id=topic_id,
+                run_id=run_id,
+                ref=f"completed-material-authority:{run_id}",
+                payload=record,
+                commit=False,
+            )
+            self.connection.commit()
+            return finalized_request
+        except Exception:
+            self.connection.rollback()
+            raise
 
     def record_context_manifest(self, manifest: dict[str, Any]) -> None:
         self.save_context_manifest(manifest)

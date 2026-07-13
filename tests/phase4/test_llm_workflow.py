@@ -197,6 +197,35 @@ def _llm_input_payload(answer_package, task):
 
 
 class LLMWorkflowTest(unittest.TestCase):
+    def test_query_gap_execution_material_survives_langgraph_node_boundary(self):
+        from langgraph.graph import END, StateGraph
+
+        material = _test_terminal_execution_material()
+        graph = StateGraph(workflow_module.WorkflowState)
+
+        def compile_runtime(_state):
+            return {"execution_material": material}
+
+        def persist_query_gap(state):
+            return {
+                "answer_package": {
+                    "execution_material": state.get("execution_material")
+                }
+            }
+
+        graph.add_node("compile_runtime", compile_runtime)
+        graph.add_node("persist_query_gap", persist_query_gap)
+        graph.set_entry_point("compile_runtime")
+        graph.add_edge("compile_runtime", "persist_query_gap")
+        graph.add_edge("persist_query_gap", END)
+
+        result = graph.compile().invoke({})
+
+        self.assertEqual(
+            result["answer_package"]["execution_material"],
+            material,
+        )
+
     def test_question_family_normalization_uses_bound_primary_for_supported_diagnostic(self):
         normalized = workflow_module._normalize_question_families(
             {
@@ -755,6 +784,245 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertEqual(payload["allowed_scope_types"], ["full_sample"])
+
+    def test_prior_topic_material_projects_only_verified_bound_business_context(self):
+        from tests.phase7.test_conversation_runtime import _seed_runtime
+
+        turn = _seed_runtime().handle_message(
+            "thread-phase7",
+            "继续看刚才的渠道贡献。",
+        )
+        request = turn.run_request.to_dict()
+        payload = workflow_module._business_intent_payload(request)
+        intent_material = request["prior_topic_material_context"][
+            "material_projection"
+        ]["intent_material"]
+
+        self.assertEqual(
+            payload["bound_business_context"],
+            {
+                "target_metric": intent_material["primary_target_metric"],
+                "scope": intent_material["scope"],
+                "time_window": intent_material["time_window"],
+                "prior_baselines": intent_material["baselines"],
+            },
+        )
+        for axis in (
+            "target_metric",
+            "scope",
+            "time_window",
+            "baseline",
+            "baseline_candidates",
+        ):
+            self.assertNotIn(axis, request)
+
+    def test_prior_topic_material_invalid_or_unauthorized_fails_before_provider(self):
+        from tests.phase7.test_conversation_runtime import _seed_runtime
+
+        turn = _seed_runtime().handle_message(
+            "thread-phase7",
+            "继续看刚才的渠道贡献。",
+        )
+        base_request = turn.run_request.to_dict()
+        variants = {
+            "digest": lambda request: request[
+                "prior_topic_material_context"
+            ].__setitem__("context_digest", "tampered"),
+            "role": lambda request: request.__setitem__(
+                "permission_context", {"role": "business_reader"}
+            ),
+            "runtime_scope": lambda request: request.__setitem__(
+                "runtime_permission_scope", "admin"
+            ),
+        }
+        for axis, mutate in variants.items():
+            with self.subTest(axis=axis):
+                request = deepcopy(base_request)
+                mutate(request)
+                llm = FakeLLMClient()
+                state = {
+                    "request": request,
+                    "llm_client": llm,
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                with self.assertRaisesRegex(
+                    WorkflowFailure,
+                    "prior_topic_material_context_",
+                ):
+                    _understand_business_intent(state)
+
+                self.assertEqual(llm.calls, [])
+
+    def test_prior_topic_non_mapping_authority_fails_as_contract_before_provider(self):
+        from tests.phase7.test_conversation_runtime import _seed_runtime
+
+        turn = _seed_runtime().handle_message(
+            "thread-phase7",
+            "继续看刚才的渠道贡献。",
+        )
+        request = turn.run_request.to_dict()
+        request["prior_topic_material_context"]["authorities"] = [None]
+        llm = FakeLLMClient()
+        state = {
+            "request": request,
+            "llm_client": llm,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            (
+                "^prior_topic_material_context_invalid:"
+                "prior_topic_completed_authority_shape_invalid$"
+            ),
+        ) as raised:
+            _understand_business_intent(state)
+
+        self.assertEqual(raised.exception.failure_type, "contract")
+        self.assertEqual(llm.calls, [])
+
+    def test_private_prior_material_rejects_every_top_level_material_axis_before_provider(self):
+        from tests.phase7.test_conversation_runtime import _seed_runtime
+
+        turn = _seed_runtime().handle_message(
+            "thread-phase7",
+            "继续看刚才的渠道贡献。",
+        )
+        base_request = turn.run_request.to_dict()
+        axis_values = {
+            "question_family": "custom_baseline_comparison",
+            "pattern_family": "weekly",
+            "pattern_params": {"weekdays": ["monday"]},
+            "target_claim": "comparative_change",
+            "target": {"date": "2026-06-02"},
+            "target_metric": "paid_amount",
+            "scope": "full_sample",
+            "time_window": {"target": "yesterday"},
+            "baseline": "previous_day",
+            "baseline_candidates": ["previous_day"],
+        }
+
+        for axis, value in axis_values.items():
+            with self.subTest(axis=axis):
+                request = deepcopy(base_request)
+                request[axis] = value
+                llm = FakeLLMClient()
+                state = {
+                    "request": request,
+                    "llm_client": llm,
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                with self.assertRaisesRegex(
+                    WorkflowFailure,
+                    (
+                        "^prior_topic_material_context_request_axis_conflict:"
+                        f"{axis}$"
+                    ),
+                ) as raised:
+                    _understand_business_intent(state)
+
+                self.assertEqual(raised.exception.failure_type, "contract")
+                self.assertEqual(llm.calls, [])
+
+    def test_topic_summary_does_not_create_prior_business_material_fallback(self):
+        payload = workflow_module._business_intent_payload(
+            {
+                "question": "继续分析",
+                "context_manifest": {
+                    "items": [
+                        {
+                            "source_type": "topic",
+                            "summary": "上一轮比较前一天与七日均值。",
+                        }
+                    ]
+                },
+            }
+        )
+
+        self.assertNotIn("bound_business_context", payload)
+
+    def test_two_turn_followup_preserves_reversed_prior_baseline_order_for_provider(self):
+        from bi_agent.conversation.runtime import ConversationRuntime
+        from bi_agent.conversation.store import InMemoryConversationStore
+        from tests.phase7.test_conversation_runtime import (
+            _add_authoritative_result_candidate,
+        )
+
+        store = InMemoryConversationStore()
+        store.create_thread("thread-reversed-baselines", owner_id="analyst-1")
+        topic = store.create_topic(
+            "thread-reversed-baselines",
+            title="付费金额基线比较",
+            summary="上一轮完成了多基线比较。",
+        )
+        store.set_current_topic("thread-reversed-baselines", topic.topic_id)
+        _add_authoritative_result_candidate(
+            store,
+            topic_id=topic.topic_id,
+            result_ref="result:reversed-baselines",
+            source_run_id="run-reversed-baselines",
+            baselines=("same_weekday_last_week", "previous_day"),
+        )
+        second_turn = ConversationRuntime(store).handle_message(
+            "thread-reversed-baselines",
+            "继续分析这个结论。",
+        )
+
+        class CapturingIntentLLM(FakeLLMClient):
+            def __init__(self):
+                super().__init__()
+                self.messages = []
+
+            def invoke_json(
+                self,
+                *,
+                task,
+                prompt_version,
+                messages,
+                required_keys,
+            ):
+                self.messages = [dict(message) for message in messages]
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
+
+        llm = CapturingIntentLLM()
+        state = {
+            "request": second_turn.run_request.to_dict(),
+            "llm_client": llm,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        _understand_business_intent(state)
+
+        user_prompt = next(
+            message["content"]
+            for message in llm.messages
+            if message["role"] == "user"
+        )
+        prompt_payload = json.loads(
+            user_prompt.split("<input_json>", 1)[1]
+            .split("</input_json>", 1)[0]
+            .strip()
+        )
+        self.assertEqual(
+            prompt_payload["bound_business_context"]["prior_baselines"],
+            ["same_weekday_last_week", "previous_day"],
+        )
+        self.assertEqual(
+            second_turn.run_request.to_dict()["prior_topic_material_context"]
+            ["material_projection"]["intent_material"]["baselines"],
+            ["same_weekday_last_week", "previous_day"],
+        )
 
     def test_natural_business_baselines_reach_intent_as_exact_registry_ids(self):
         class CapturingIntentLLM(FakeLLMClient):

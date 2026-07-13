@@ -289,6 +289,109 @@ contradictory business axes. This cross-check does not extend to explicit
 components, dimensions, or context roles whose compiled representation may
 contain dependency closure or lose the original request role.
 
+Ordinary `inherit_current` follow-up turns may carry prior-topic business
+material only from signed result reuse candidates whose source run is
+`completed`. After delivery verification and successful runtime-record
+persistence, the source run stores both its signed material-authority envelope
+and an exact copy of the authoritative signed AnalysisContract in the existing
+PostgreSQL `analysis_runs.request` JSON. Failed, waiting, incomplete, or
+owner-mismatched runs cannot provide follow-up context. The InMemory and
+PostgreSQL stores expose the same completed-authority resolver; it joins the
+existing run and AnalysisContract authority, verifies run/thread/topic owners,
+the stored request copy, contract and material signatures, and the reversible
+material/contract overlap, without a schema migration.
+
+Completion finalization also writes exactly one immutable
+`completed_material_authority_recorded` audit event in the same store operation.
+Its canonical payload binds the complete material authority, contract ref,
+contract signature, and contract/material digests to the run/thread/topic
+owner. Finalization is idempotent only when the existing event, request copy,
+material, and contract projection are exactly equal. A conflicting event or
+more than one event fails closed. The completed resolver requires the unique
+event and exact event/request/authority equality, so rewriting request material
+and recomputing its standalone signature cannot replace finalized authority.
+The first authority publication is allowed only while the run is
+`running_workflow`; a historical `completed` run with no authority event cannot
+be backfilled. A `completed` run is accepted only as an exact idempotent replay
+of its unique existing event and request. The same atomic completion operation
+also preserves the existing `run_status_changed` audit contract with an explicit
+`completed` status; exact replay adds neither event again.
+
+The InMemory finalizer stages deep-copied run and audit state and publishes both
+with one swap only after every validation and audit append succeeds. An injected
+audit failure therefore leaves status, request authority, and audit history
+unchanged. The PostgreSQL finalizer locks the run, AnalysisContract, and existing
+authority-event rows with separate `SELECT ... FOR UPDATE` statements and writes
+the request copy, status, and two audit events in that same transaction. It does
+not lock a nullable side of a `LEFT JOIN`. Both stores report the same typed
+missing-run, missing-contract, missing-event, and duplicate-event failures. The
+embedded contract copy must contain a signature and it must equal the
+authoritative contract column exactly; the column cannot backfill a missing
+embedded signature, and a separately valid material signature cannot mask
+embedded contract drift.
+
+`WorkflowRunResult` carries the completed material authority privately from the
+workflow boundary to ConversationAgentCore. Any successful result that exposes
+an AnalysisRuntime result or persisted runtime records must provide this carrier.
+AgentCore validates and finalizes it only after delivery, Answer Package, asset,
+and runtime-record persistence boundaries succeed. A missing or malformed
+carrier fails the run and cannot establish a completed source authority.
+
+Result reuse candidates are a follow-up index derived from that completed claim
+authority. AgentCore publishes them only after completed-authority finalization
+succeeds, so a finalizer failure leaves no failed-run result refs. If index
+publication fails after finalization, the completed run and claim authority stay
+completed. The store first recovers its write transaction, then records a typed
+`followup_index_publication_failed` audit. Recovery or audit failure is caught as
+a best-effort warning on the completed response with exact error type and detail;
+it cannot roll the run back or turn verified claims into a failed analysis.
+The shared recovery contract is a no-op for the InMemory store and an explicit
+transaction rollback for PostgreSQL, so an aborted PostgreSQL write never blocks
+the typed audit write that follows.
+
+ConversationRuntime accepts prior-topic material only when every forwarded
+reuse candidate first passes its existing candidate validation and the store's
+indexed candidate-authority resolver, then matches that canonical store record
+exactly before the completed-authority resolver runs. Candidate, authoritative
+AnalysisContract, and execution material permission scopes must agree, and the
+current role must be allowed to read that scope before provider invocation.
+Every completed-authority value is preflighted as an exact Mapping before any
+field access; a scalar, sequence, or null value fails with the stable
+`prior_topic_completed_authority_shape_invalid` integrity contract.
+Multiple refs from one source run collapse to one authority only after every
+ref validates; one bad ref fails the whole source-run context. Multiple
+completed source runs may be
+combined only when their canonical business-material projections are exactly
+equal; a conflict fails with one typed, order-independent integrity error and
+never chooses the latest run. The private prior-topic material context is
+recorded in ContextManifest as a `context_only` material ref with
+`can_support_claims=false`; it cannot itself authorize a claim or a result
+reuse decision.
+
+Immediately before the `business_intent` provider call, Workflow validates the
+source authority and AnalysisContract again, then projects target metric,
+scope, time window, and ordered prior baselines into
+`bound_business_context`. The provider still returns a complete intent and the
+normal intent validator remains authoritative over that response. Prior-topic
+material is never copied onto the workflow request's public top-level business
+axes, never overwrites provider output locally, and never falls back to topic
+summary text or local intent inference. If a follow-up has no completed
+authority, existing no-context behavior remains; malformed, drifted, or
+conflicting authority fails typed before provider invocation.
+When private prior-topic material exists, any non-empty top-level
+`question_family`, `pattern_family`, `pattern_params`, `target_claim`, `target`,
+`target_metric`, `scope`, `time_window`, `baseline`, or `baseline_candidates`
+is a closed conflict and fails before the provider call. This gate prevents a
+caller-owned request axis from shadowing the provider's complete intent output.
+
+`execution_material` is an explicit WorkflowState channel. The compiler/runtime
+node writes the already validated execution projection once, and later
+query-gap persistence reads that same value when building the waiting Answer
+Package. LangGraph must preserve this authority between nodes. A missing or
+tampered value still fails the existing material-authority validator; no node
+may reconstruct it from AnalysisContract fields, narrative time text, or a
+topic summary.
+
 The same reversible-axis check applies to the current terminal-resume proposal
 before compilation. A clarification payload may repeat the signed family,
 target, or scope, but it cannot replace any of them while carrying the prior

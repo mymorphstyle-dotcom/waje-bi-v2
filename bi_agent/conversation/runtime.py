@@ -22,8 +22,15 @@ from bi_agent.conversation.models import (
     validate_result_reuse_candidate,
 )
 from bi_agent.conversation.store import InMemoryConversationStore
+from bi_agent.conversation.clarification_authority import (
+    build_prior_topic_material_context,
+)
 from bi_agent.runtime.analysis_assets import merge_analysis_assets
 from bi_agent.runtime.compiler import suggest_revenue_diagnostic_nodes
+from bi_agent.runtime.evidence_authority import (
+    EvidenceIntegrityError,
+    canonical_value,
+)
 from bi_agent.runtime.permission_roles import can_read_scope as _can_read_permission_scope
 
 
@@ -165,6 +172,20 @@ class ConversationRuntime:
             contract_version,
         )
         reuse_candidates = self._reuse_candidate_payloads(topic, reuse_decisions)
+        prior_topic_material_context: dict[str, Any] = {}
+        if (
+            topic_relation == "inherit_current"
+            and topic is not None
+            and reuse_candidates
+        ):
+            prior_topic_material_context = (
+                self._validated_prior_topic_material_context(
+                    thread_id=thread_id,
+                    topic=topic,
+                    role=role,
+                    candidates=reuse_candidates,
+                )
+            )
         topic_assets = self._topic_analysis_assets(thread_id, topic)
         combined_prior_assets = merge_analysis_assets(topic_assets, prior_analysis_assets)
         manifest = self._context_manifest(
@@ -179,6 +200,7 @@ class ConversationRuntime:
             owner_scope,
             combined_prior_assets,
             pending_clarification_id if intent_name == "clarification_answer" else "",
+            prior_topic_material_context=prior_topic_material_context,
             accepted_assumptions=(
                 (accepted_degradation_choice,)
                 if isinstance(accepted_degradation_choice, Mapping)
@@ -259,6 +281,7 @@ class ConversationRuntime:
                 clarification_resume_context=clarification_resume_context,
                 prior_analysis_assets=combined_prior_assets,
                 reuse_candidates=reuse_candidates,
+                prior_topic_material_context=prior_topic_material_context,
                 requested_nodes=_requested_nodes(user_message, intent_name),
             )
         audit_events = (
@@ -522,6 +545,145 @@ class ConversationRuntime:
             if record.result_ref in candidate_refs and record.payload
         )
 
+    def _validated_prior_topic_material_context(
+        self,
+        *,
+        thread_id: str,
+        topic: TopicState,
+        role: str,
+        candidates: tuple[Mapping[str, Any], ...],
+    ) -> dict[str, Any]:
+        resolve_candidate = getattr(
+            self.store,
+            "resolve_result_candidate_authority",
+            None,
+        )
+        resolve_completed = getattr(
+            self.store,
+            "resolve_completed_material_authority",
+            None,
+        )
+        if not callable(resolve_candidate) or not callable(resolve_completed):
+            raise EvidenceIntegrityError(
+                "prior_topic_authority_resolver_missing"
+            )
+        authorities_by_run: dict[str, dict[str, Any]] = {}
+        result_refs: list[str] = []
+        for raw_candidate in candidates:
+            candidate = validate_result_reuse_candidate(raw_candidate)
+            result_ref = candidate["result_ref"]
+            indexed = resolve_candidate(
+                result_ref=result_ref,
+                topic_id=topic.topic_id,
+            )
+            indexed_record = indexed.get("result_ref_record")
+            expected_indexed_record = {
+                "topic_id": topic.topic_id,
+                "result_ref": result_ref,
+                "snapshot_id": candidate["runtime_snapshot_id"],
+                "contract_version": candidate["runtime_contract_version"],
+                "permission_scope": candidate["permission_scope"],
+                "semantic_scope": candidate["semantic_scope_signature"],
+                "payload": candidate,
+            }
+            if (
+                not isinstance(indexed_record, Mapping)
+                or canonical_value(indexed_record)
+                != canonical_value(expected_indexed_record)
+            ):
+                raise EvidenceIntegrityError(
+                    "prior_topic_result_candidate_authority_mismatch"
+                )
+            source_run_id = candidate["source_run_id"]
+            if (
+                str(indexed.get("source_run_id") or "") != source_run_id
+                or str(indexed.get("run_status") or "") != "completed"
+                or str(indexed.get("run_thread_id") or "") != thread_id
+                or str(indexed.get("run_topic_id") or "")
+                != topic.topic_id
+            ):
+                raise EvidenceIntegrityError(
+                    "prior_topic_result_candidate_source_invalid"
+                )
+            completed = resolve_completed(
+                source_run_id=source_run_id,
+                thread_id=thread_id,
+                topic_id=topic.topic_id,
+            )
+            contract = completed.get("analysis_contract")
+            indexed_contract = indexed.get("analysis_contract")
+            material = completed.get("material_authority")
+            execution_material = (
+                material.get("execution_material")
+                if isinstance(material, Mapping)
+                else None
+            )
+            indexed_contract_payload = (
+                dict(indexed_contract)
+                if isinstance(indexed_contract, Mapping)
+                else {}
+            )
+            indexed_embedded_signature = str(
+                indexed_contract_payload.pop("contract_signature", "") or ""
+            )
+            if not isinstance(contract, Mapping) or not isinstance(
+                execution_material,
+                Mapping,
+            ):
+                raise EvidenceIntegrityError(
+                    "prior_topic_result_candidate_contract_mismatch"
+                )
+            permission_scopes = {
+                candidate["permission_scope"],
+                str(indexed_record.get("permission_scope") or ""),
+                str(contract.get("permission_scope") or ""),
+                str(execution_material.get("permission_scope") or ""),
+            }
+            if len(permission_scopes) != 1 or "" in permission_scopes:
+                raise EvidenceIntegrityError(
+                    "prior_topic_permission_scope_mismatch"
+                )
+            permission_scope = next(iter(permission_scopes))
+            if not _can_read_scope(role, permission_scope):
+                raise EvidenceIntegrityError(
+                    "prior_topic_permission_scope_denied"
+                )
+            if (
+                not indexed_contract_payload
+                or canonical_value(indexed_contract_payload)
+                != canonical_value(contract)
+                or candidate["analysis_contract_ref"]
+                != str(contract.get("analysis_contract_id") or "")
+                or candidate["analysis_contract_signature"]
+                != str(completed.get("analysis_contract_signature") or "")
+                or candidate["analysis_contract_signature"]
+                != str(
+                    indexed.get("stored_analysis_contract_signature") or ""
+                )
+                or (
+                    indexed_embedded_signature
+                    and indexed_embedded_signature
+                    != candidate["analysis_contract_signature"]
+                )
+            ):
+                raise EvidenceIntegrityError(
+                    "prior_topic_result_candidate_contract_mismatch"
+                )
+            canonical_completed = canonical_value(completed)
+            existing = authorities_by_run.get(source_run_id)
+            if existing is not None and existing != canonical_completed:
+                raise EvidenceIntegrityError(
+                    "prior_topic_completed_authority_conflict"
+                )
+            authorities_by_run[source_run_id] = canonical_completed
+            result_refs.append(result_ref)
+        return build_prior_topic_material_context(
+            thread_id=thread_id,
+            topic_id=topic.topic_id,
+            source_result_refs=result_refs,
+            authorities=authorities_by_run.values(),
+        )
+
     def _context_manifest(
         self,
         thread_id: str,
@@ -535,6 +697,7 @@ class ConversationRuntime:
         owner_scope: str,
         analysis_assets: tuple[dict[str, Any], ...],
         pending_clarification_id: str = "",
+        prior_topic_material_context: Mapping[str, Any] | None = None,
         accepted_assumptions: tuple[Mapping[str, Any], ...] = (),
     ) -> ContextManifest:
         items: list[ContextItem] = []
@@ -561,6 +724,33 @@ class ConversationRuntime:
                     reason="topic_context_only",
                     permission_scope=role,
                     source_version=contract_version,
+                    claim_use="context_only",
+                )
+            )
+        for authority in (
+            prior_topic_material_context or {}
+        ).get("authorities", ()):
+            if not isinstance(authority, Mapping):
+                continue
+            source_run_id = str(authority.get("source_run_id") or "")
+            items.append(
+                ContextItem(
+                    source_type="material_authority",
+                    source_ref=(
+                        f"completed-material-authority:{source_run_id}"
+                    ),
+                    summary="已验证的上一轮业务分析物料，仅用于续问意图绑定。",
+                    can_support_claims=False,
+                    reason="prior_topic_material_context",
+                    permission_scope=str(
+                        (prior_topic_material_context or {}).get(
+                            "permission_scope"
+                        )
+                        or ""
+                    ),
+                    source_version=str(
+                        authority.get("analysis_contract_signature") or ""
+                    ),
                     claim_use="context_only",
                 )
             )

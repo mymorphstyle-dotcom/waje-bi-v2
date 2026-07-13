@@ -970,6 +970,93 @@ the shared authority validator and compiler defense-in-depth path. Add separate
 negative tests for each mismatch while retaining the dependency-closure and
 dual-role positive cases above.
 
+For ordinary `inherit_current` follow-ups, persist a completed source run's
+signed material-authority envelope and the exact authoritative signed
+AnalysisContract copy in the existing `analysis_runs.request` JSON only after
+delivery verification and runtime-record persistence both succeed. Add matching
+InMemory/PostgreSQL completed-authority resolvers with no migration. They must
+reject failed or waiting runs, owner/status drift, mutable request-copy drift,
+invalid contract or material signatures, and material/contract overlap drift.
+The completion finalizer must atomically add exactly one immutable
+`completed_material_authority_recorded` audit event whose canonical payload
+binds the full material authority plus contract ref/signature and both digests.
+Exact replay is idempotent; duplicate or conflicting events fail closed. The
+resolver requires one event and exact event/request/authority equality,
+including when request material was altered and re-signed.
+Permit first publication only from `running_workflow`; reject a historical
+`completed` row that lacks the immutable event. A `completed` row may enter the
+finalizer only for unique exact replay. Preserve one explicit
+`run_status_changed(status=completed)` audit event in the same InMemory update
+or PostgreSQL transaction, and prove replay adds neither audit event again.
+
+Stage deep-copied run and audit state in the InMemory finalizer and swap only
+after all validation and event appends succeed; inject an audit-append failure
+and prove no partial state escapes. In PostgreSQL, lock run, AnalysisContract,
+and authority-event rows with separate `SELECT ... FOR UPDATE` statements so a
+nullable `LEFT JOIN` side is never locked, then persist request authority,
+status, and both events in that transaction. Require InMemory/PostgreSQL typed
+missing-reason parity and reject an embedded contract signature that differs
+from the authoritative contract column. The embedded signature is mandatory;
+reject a missing value instead of filling it from the column. Add exact replay,
+duplicate-event, and second-audit-write rollback tests for PostgreSQL.
+
+Carry completed material authority privately on `WorkflowRunResult`. Require
+the carrier for every successful result containing an AnalysisRuntime result or
+persisted runtime records, and finalize it only after delivery, Answer Package,
+asset, and runtime-record persistence have crossed their existing boundaries.
+A missing or malformed carrier must fail the run and must not create completed
+follow-up authority.
+
+Publish result reuse candidates only after completed-authority finalization
+succeeds. Add a RED proving finalizer failure with authoritative runtime records
+and a valid carrier leaves zero result refs. Treat candidate publication as a
+derived follow-up index: a post-finalizer index failure must preserve the
+completed run and claim authority, recover the store write transaction before a
+typed `followup_index_publication_failed` audit, and return a best-effort warning
+with exact recovery/audit error detail if either reporting boundary is
+unavailable. Add order, recovery-failure, and audit-failure tests; do not weaken
+ConversationRuntime's one-bad-ref fail-closed rule to hide orphan candidates.
+Expose one store recovery method: InMemory implements a no-op and PostgreSQL
+calls `rollback()` so the typed audit can run after an aborted write.
+
+ConversationRuntime may derive private `prior_topic_material_context` only from
+already validated result reuse candidates whose completed source authorities
+also pass the store resolver. Validate every ref, collapse duplicate refs from
+one run, and merge multiple source runs only when their canonical material
+projections are identical. Conflicts fail typed independent of candidate order;
+latest-wins is prohibited. Add a ContextManifest material ref as
+`context_only`, `can_support_claims=false`.
+For each forwarded ref, require canonical equality with the store's indexed
+candidate authority before using its source run. Cross-check candidate,
+AnalysisContract, and execution-material permission scopes and authorize the
+current role before provider invocation. One invalid ref invalidates the whole
+same-run group. Preflight every completed-authority value as a Mapping before
+any field access and preserve
+`prior_topic_completed_authority_shape_invalid` for all non-Mapping values.
+
+At Workflow entry, revalidate that private context and its signed contract
+before invoking `business_intent`. Project target metric, scope, time window,
+and ordered prior baselines only into the prompt's `bound_business_context`.
+Keep the provider's complete intent output mandatory: do not copy those axes to
+the public request, overwrite provider output, infer them from topic summaries,
+or add a local narrative/intent fallback. Cover completed persistence,
+failed/waiting rejection, InMemory/PostgreSQL parity, tamper/owner/status and
+contract drift, multiple refs for one run, identical/conflicting multi-run
+order independence, provider-preflight failure, absence of topic-summary
+fallback, and a two-turn reversed-baseline follow-up.
+With private prior context present, fail closed before provider invocation when
+the request repeats any non-empty top-level material axis: `question_family`,
+`pattern_family`, `pattern_params`, `target_claim`, `target`, `target_metric`,
+`scope`, `time_window`, `baseline`, or `baseline_candidates`. Assert zero
+provider calls and the stable contract failure type for representative axes.
+
+Declare `execution_material: dict[str, Any]` as a first-class WorkflowState
+channel so the validated compile/runtime projection survives LangGraph node
+boundaries into query-gap persistence. Add a cross-node RED proving the waiting
+package receives the non-empty value and retain negative resume tests for
+missing or tampered execution material. Do not infer or rebuild it from the
+AnalysisContract and do not relax `require_execution_material=True`.
+
 For the execution query projection, add general RED cases for two signed source
 queries becoming zero or one current query while both owners remain ready, plus
 the exact two-query positive case. Sign `owner_capability_ids` by resolving every
@@ -1351,7 +1438,7 @@ The final audit records:
 - any new runtime capability gap with a general contract-level repair; and
 - confirmation that artifacts remain untracked.
 
-- [ ] **Step 6a: Close the production/live LLM runtime policy review**
+- [x] **Step 6a: Close the production/live LLM runtime policy review**
 
 Add general failure-class tests, then enforce all of these as one runtime
 boundary:

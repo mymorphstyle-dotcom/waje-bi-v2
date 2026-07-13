@@ -9,7 +9,10 @@ from bi_agent.conversation import models as conversation_models
 from bi_agent.conversation.runtime import ConversationRuntime, _can_read_scope
 from bi_agent.conversation.runtime import _build_clarification
 from bi_agent.conversation.store import InMemoryConversationStore
-from bi_agent.runtime.evidence_authority import canonical_digest
+from bi_agent.runtime.evidence_authority import (
+    EvidenceIntegrityError,
+    canonical_digest,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -133,8 +136,24 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertFalse(reusable.reuse_decisions[0].can_support_claim)
         self.assertEqual(
             reusable.run_request.to_dict()["reuse_candidates"],
-            [_result_candidate_payload("result:q2-q1:paid_amount")],
+            [
+                runtime.store.results_for_topic(reusable.topic_id)[0].payload
+            ],
         )
+        prior_material = reusable.run_request.to_dict()[
+            "prior_topic_material_context"
+        ]
+        self.assertEqual(
+            prior_material["source_run_ids"],
+            ["run-candidate"],
+        )
+        material_item = next(
+            item
+            for item in reusable.context_manifest.items
+            if item.source_type == "material_authority"
+        )
+        self.assertFalse(material_item.can_support_claims)
+        self.assertEqual(material_item.claim_use, "context_only")
 
         blocked = runtime.handle_message(
             "thread-phase7",
@@ -174,18 +193,12 @@ class ConversationRuntimeTest(unittest.TestCase):
             summary="已验证的付费金额变化分析。",
         )
         store.set_current_topic("thread-viewer-alias", topic.topic_id)
-        candidate = _result_candidate_payload("result:viewer-candidate")
-        candidate.pop("candidate_signature")
-        candidate["permission_scope"] = "viewer"
-        candidate["candidate_signature"] = canonical_digest(candidate)
-        store.add_result_ref(
-            topic.topic_id,
+        candidate = _add_authoritative_result_candidate(
+            store,
+            topic_id=topic.topic_id,
             result_ref="result:viewer-candidate",
-            snapshot_id="2026H1",
-            contract_version="contracts-v1",
+            source_run_id="run-candidate",
             permission_scope="viewer",
-            semantic_scope="analysis-contract:sha256:analysis-signature",
-            payload=candidate,
         )
         store.add_artifact(
             artifact_id="artifact:viewer-visible",
@@ -311,18 +324,11 @@ class ConversationRuntimeTest(unittest.TestCase):
     def test_runtime_forwards_all_exact_topic_candidates_newest_first(self):
         runtime = _seed_runtime()
         topic = runtime.store.current_topic("thread-phase7")
-        newer = _result_candidate_payload(
-            "result:newer-query",
+        newer = _add_authoritative_result_candidate(
+            runtime.store,
+            topic_id=topic.topic_id,
+            result_ref="result:newer-query",
             source_run_id="run-newer-query",
-        )
-        runtime.store.add_result_ref(
-            topic.topic_id,
-            result_ref=newer["result_ref"],
-            snapshot_id=newer["runtime_snapshot_id"],
-            contract_version=newer["runtime_contract_version"],
-            permission_scope=newer["permission_scope"],
-            semantic_scope=newer["semantic_scope_signature"],
-            payload=newer,
         )
 
         result = runtime.handle_message(
@@ -340,6 +346,327 @@ class ConversationRuntimeTest(unittest.TestCase):
                 and not decision.can_support_claim
                 for decision in result.reuse_decisions
             )
+        )
+
+    def test_prior_topic_material_rejects_indexed_candidate_payload_drift(self):
+        class DriftedAuthorityStore(InMemoryConversationStore):
+            def resolve_result_candidate_authority(self, **kwargs):
+                authority = super().resolve_result_candidate_authority(**kwargs)
+                authority["result_ref_record"]["payload"][
+                    "rows_content_hash"
+                ] = "drifted-indexed-payload"
+                return authority
+
+        store = DriftedAuthorityStore()
+        store.create_thread("thread-indexed-drift", owner_id="analyst-1")
+        topic = store.create_topic(
+            "thread-indexed-drift",
+            title="付费金额变化",
+            summary="已完成付费金额变化分析。",
+        )
+        store.set_current_topic("thread-indexed-drift", topic.topic_id)
+        _add_authoritative_result_candidate(
+            store,
+            topic_id=topic.topic_id,
+            result_ref="result:indexed-drift",
+            source_run_id="run-indexed-drift",
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "prior_topic_result_candidate_authority_mismatch",
+        ):
+            ConversationRuntime(store).handle_message(
+                "thread-indexed-drift",
+                "继续看刚才的渠道贡献。",
+            )
+
+    def test_prior_topic_material_builder_rejects_non_mapping_authority_with_typed_reason(self):
+        from bi_agent.conversation.clarification_authority import (
+            build_prior_topic_material_context,
+        )
+
+        for malformed in (None, "invalid", [], 0):
+            with self.subTest(malformed=malformed):
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "^prior_topic_completed_authority_shape_invalid$",
+                ):
+                    build_prior_topic_material_context(
+                        thread_id="thread-authority-shape",
+                        topic_id="topic-authority-shape",
+                        source_result_refs=("result:authority-shape",),
+                        authorities=(malformed,),
+                    )
+
+    def test_prior_topic_material_rejects_indexed_column_or_contract_drift(self):
+        mutations = {
+            "snapshot": lambda authority: authority["result_ref_record"].__setitem__(
+                "snapshot_id", "2026H2"
+            ),
+            "contract_version": lambda authority: authority[
+                "result_ref_record"
+            ].__setitem__("contract_version", "contracts-v2"),
+            "semantic_scope": lambda authority: authority[
+                "result_ref_record"
+            ].__setitem__("semantic_scope", "analysis-contract:sha256:drift"),
+            "analysis_contract": lambda authority: authority[
+                "analysis_contract"
+            ].__setitem__("business_timezone", "UTC"),
+        }
+        for axis, mutate in mutations.items():
+            with self.subTest(axis=axis):
+                class DriftedAuthorityStore(InMemoryConversationStore):
+                    def resolve_result_candidate_authority(self, **kwargs):
+                        authority = super().resolve_result_candidate_authority(
+                            **kwargs
+                        )
+                        mutate(authority)
+                        return authority
+
+                thread_id = f"thread-indexed-{axis}"
+                store = DriftedAuthorityStore()
+                store.create_thread(thread_id, owner_id="analyst-1")
+                topic = store.create_topic(
+                    thread_id,
+                    title="付费金额变化",
+                    summary="已完成付费金额变化分析。",
+                )
+                store.set_current_topic(thread_id, topic.topic_id)
+                _add_authoritative_result_candidate(
+                    store,
+                    topic_id=topic.topic_id,
+                    result_ref=f"result:indexed-{axis}",
+                    source_run_id=f"run-indexed-{axis}",
+                )
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "prior_topic_result_candidate_(authority|contract)_mismatch",
+                ):
+                    ConversationRuntime(store).handle_message(
+                        thread_id,
+                        "继续看刚才的渠道贡献。",
+                    )
+
+    def test_prior_topic_material_rejects_one_bad_ref_in_same_run_group(self):
+        class OneBadRefStore(InMemoryConversationStore):
+            def resolve_result_candidate_authority(self, **kwargs):
+                authority = super().resolve_result_candidate_authority(**kwargs)
+                if kwargs["result_ref"] == "result:same-run-bad":
+                    authority["result_ref_record"]["snapshot_id"] = "2026H2"
+                return authority
+
+        store = OneBadRefStore()
+        store.create_thread("thread-same-run-bad", owner_id="analyst-1")
+        topic = store.create_topic(
+            "thread-same-run-bad",
+            title="付费金额变化",
+            summary="已完成付费金额变化分析。",
+        )
+        store.set_current_topic("thread-same-run-bad", topic.topic_id)
+        good = _add_authoritative_result_candidate(
+            store,
+            topic_id=topic.topic_id,
+            result_ref="result:same-run-good",
+            source_run_id="run-same-ref-group",
+        )
+        bad = {
+            **good,
+            "result_ref": "result:same-run-bad",
+        }
+        bad.pop("candidate_signature")
+        bad["candidate_signature"] = canonical_digest(bad)
+        store.add_result_ref(
+            topic.topic_id,
+            result_ref=bad["result_ref"],
+            snapshot_id=bad["runtime_snapshot_id"],
+            contract_version=bad["runtime_contract_version"],
+            permission_scope=bad["permission_scope"],
+            semantic_scope=bad["semantic_scope_signature"],
+            payload=bad,
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "prior_topic_result_candidate_authority_mismatch",
+        ):
+            ConversationRuntime(store).handle_message(
+                "thread-same-run-bad",
+                "继续看刚才的渠道贡献。",
+            )
+
+    def test_prior_topic_material_rejects_contract_or_execution_permission_scope_drift(self):
+        for axis in ("contract", "execution"):
+            with self.subTest(axis=axis):
+                class PermissionDriftStore(InMemoryConversationStore):
+                    def resolve_completed_material_authority(self, **kwargs):
+                        authority = super().resolve_completed_material_authority(
+                            **kwargs
+                        )
+                        if axis == "contract":
+                            authority["analysis_contract"][
+                                "permission_scope"
+                            ] = "admin"
+                        else:
+                            authority["material_authority"][
+                                "execution_material"
+                            ]["permission_scope"] = "admin"
+                        return authority
+
+                thread_id = f"thread-permission-drift-{axis}"
+                store = PermissionDriftStore()
+                store.create_thread(thread_id, owner_id="analyst-1")
+                topic = store.create_topic(
+                    thread_id,
+                    title="付费金额变化",
+                    summary="已完成付费金额变化分析。",
+                )
+                store.set_current_topic(thread_id, topic.topic_id)
+                _add_authoritative_result_candidate(
+                    store,
+                    topic_id=topic.topic_id,
+                    result_ref=f"result:permission-{axis}",
+                    source_run_id=f"run-permission-{axis}",
+                )
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "prior_topic_permission_scope_mismatch",
+                ):
+                    ConversationRuntime(store).handle_message(
+                        thread_id,
+                        "继续看刚才的渠道贡献。",
+                    )
+
+    def test_prior_topic_material_conflict_is_order_independent(self):
+        orders = (
+            (("run-previous", ("previous_day",)), ("run-rolling", ("rolling_7_day_baseline",))),
+            (("run-rolling", ("rolling_7_day_baseline",)), ("run-previous", ("previous_day",))),
+        )
+        for index, order in enumerate(orders):
+            with self.subTest(order=index):
+                thread_id = f"thread-material-conflict-{index}"
+                store = InMemoryConversationStore()
+                store.create_thread(thread_id, owner_id="analyst-1")
+                topic = store.create_topic(
+                    thread_id,
+                    title="付费金额变化",
+                    summary="已完成付费金额变化分析。",
+                )
+                store.set_current_topic(thread_id, topic.topic_id)
+                for source_run_id, baselines in order:
+                    _add_authoritative_result_candidate(
+                        store,
+                        topic_id=topic.topic_id,
+                        result_ref=f"result:{source_run_id}",
+                        source_run_id=source_run_id,
+                        baselines=baselines,
+                    )
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "prior_topic_material_conflict",
+                ):
+                    ConversationRuntime(store).handle_message(
+                        thread_id,
+                        "继续看刚才的渠道贡献。",
+                    )
+
+    def test_identical_multi_run_material_is_canonical_across_input_order(self):
+        from bi_agent.conversation.clarification_authority import (
+            build_prior_topic_material_context,
+        )
+
+        store = InMemoryConversationStore()
+        store.create_thread("thread-canonical-material", owner_id="analyst-1")
+        topic = store.create_topic(
+            "thread-canonical-material",
+            title="付费金额变化",
+            summary="已完成付费金额变化分析。",
+        )
+        first = _add_authoritative_result_candidate(
+            store,
+            topic_id=topic.topic_id,
+            result_ref="result:canonical-a",
+            source_run_id="run-canonical-a",
+        )
+        second = _add_authoritative_result_candidate(
+            store,
+            topic_id=topic.topic_id,
+            result_ref="result:canonical-b",
+            source_run_id="run-canonical-b",
+        )
+        authorities = tuple(
+            store.resolve_completed_material_authority(
+                source_run_id=run_id,
+                thread_id="thread-canonical-material",
+                topic_id=topic.topic_id,
+            )
+            for run_id in (first["source_run_id"], second["source_run_id"])
+        )
+
+        forward = build_prior_topic_material_context(
+            thread_id="thread-canonical-material",
+            topic_id=topic.topic_id,
+            source_result_refs=(first["result_ref"], second["result_ref"]),
+            authorities=authorities,
+        )
+        reverse = build_prior_topic_material_context(
+            thread_id="thread-canonical-material",
+            topic_id=topic.topic_id,
+            source_result_refs=(second["result_ref"], first["result_ref"]),
+            authorities=reversed(authorities),
+        )
+
+        self.assertEqual(forward, reverse)
+        self.assertEqual(
+            forward["source_run_ids"],
+            ["run-canonical-a", "run-canonical-b"],
+        )
+
+    def test_same_run_valid_result_refs_collapse_to_one_authority_and_keep_both_refs(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-same-run-good", owner_id="analyst-1")
+        topic = store.create_topic(
+            "thread-same-run-good",
+            title="付费金额变化",
+            summary="已完成付费金额变化分析。",
+        )
+        store.set_current_topic("thread-same-run-good", topic.topic_id)
+        first = _add_authoritative_result_candidate(
+            store,
+            topic_id=topic.topic_id,
+            result_ref="result:same-run-good-a",
+            source_run_id="run-same-run-good",
+        )
+        second = {
+            **first,
+            "result_ref": "result:same-run-good-b",
+        }
+        second.pop("candidate_signature")
+        second["candidate_signature"] = canonical_digest(second)
+        store.add_result_ref(
+            topic.topic_id,
+            result_ref=second["result_ref"],
+            snapshot_id=second["runtime_snapshot_id"],
+            contract_version=second["runtime_contract_version"],
+            permission_scope=second["permission_scope"],
+            semantic_scope=second["semantic_scope_signature"],
+            payload=second,
+        )
+
+        turn = ConversationRuntime(store).handle_message(
+            "thread-same-run-good",
+            "继续看刚才的渠道贡献。",
+        )
+        context = turn.run_request.to_dict()["prior_topic_material_context"]
+
+        self.assertEqual(context["source_run_ids"], ["run-same-run-good"])
+        self.assertEqual(len(context["authorities"]), 1)
+        self.assertEqual(
+            context["source_result_refs"],
+            ["result:same-run-good-a", "result:same-run-good-b"],
         )
 
     def test_runtime_records_turn_before_context_manifest(self):
@@ -880,26 +1207,17 @@ def _seed_runtime() -> ConversationRuntime:
         summary="第二个 topic 关注 1 月月初付费模式。",
     )
     store.set_current_topic("thread-phase7", q2_topic.topic_id)
-    store.add_result_ref(
-        q2_topic.topic_id,
+    _add_authoritative_result_candidate(
+        store,
+        topic_id=q2_topic.topic_id,
         result_ref="result:q2-q1:paid_amount",
-        snapshot_id="2026H1",
-        contract_version="contracts-v1",
-        permission_scope="analyst",
-        semantic_scope="analysis-contract:sha256:analysis-signature",
-        payload=_result_candidate_payload("result:q2-q1:paid_amount"),
+        source_run_id="run-candidate",
     )
-    store.add_result_ref(
-        month_topic.topic_id,
+    _add_authoritative_result_candidate(
+        store,
+        topic_id=month_topic.topic_id,
         result_ref="result:jan-month-start",
-        snapshot_id="2026H1",
-        contract_version="contracts-v1",
-        permission_scope="analyst",
-        semantic_scope="analysis-contract:sha256:analysis-signature",
-        payload=_result_candidate_payload(
-            "result:jan-month-start",
-            source_run_id="run-jan-month-start",
-        ),
+        source_run_id="run-jan-month-start",
     )
     store.add_artifact(
         artifact_id="artifact:q2-q1",
@@ -956,6 +1274,118 @@ def _result_candidate_payload(
     }
     payload["candidate_signature"] = canonical_digest(payload)
     return payload
+
+
+def _add_authoritative_result_candidate(
+    store,
+    *,
+    topic_id,
+    result_ref,
+    source_run_id,
+    permission_scope="analyst",
+    baselines=(),
+):
+    from bi_agent.conversation.clarification_authority import (
+        build_material_authority,
+    )
+    from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+    from tests.phase7.test_clarification_resume_authority import (
+        _runtime_material_for_contract,
+        _source_contract,
+    )
+
+    topic = store.topic(topic_id)
+    contract = _source_contract(source_run_id)
+    contract["permission_scope"] = permission_scope
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    baseline_values = list(baselines)
+    original_intent = {
+        "question_family": "business_object_impact_review",
+        "question_families": ["business_object_impact_review"],
+        "primary_question_family": "business_object_impact_review",
+        "secondary_question_families": [],
+        "target_metric": "paid_amount",
+        "requested_components": [],
+        "requested_dimensions": [],
+        "baseline_candidates": baseline_values,
+        "context_sources": [],
+        "claim_intents": [],
+        "scope": "full_sample",
+        "time_window": {
+            "target": "yesterday",
+            **(
+                {"baseline": baseline_values[0]}
+                if baseline_values
+                else {}
+            ),
+        },
+    }
+    material_slots = {
+        "target_metrics": ["paid_amount"],
+        "requested_components": [],
+        "requested_dimensions": [],
+        "baselines": baseline_values,
+        "context_sources": [],
+        "claim_intents": [],
+        "diagnostic_tags": [],
+        "scope": "full_sample",
+    }
+    material_authority = build_material_authority(
+        source_run_id=source_run_id,
+        thread_id=topic.thread_id,
+        topic_id=topic_id,
+        original_intent=original_intent,
+        material_slots=material_slots,
+        runtime_material=_runtime_material_for_contract(contract),
+    )
+    store.upsert_run(
+        source_run_id,
+        thread_id=topic.thread_id,
+        topic_id=topic_id,
+        status="running_workflow",
+        request={},
+    )
+    store.analysis_runtime_authority["analysis_contract"][
+        contract["analysis_contract_id"]
+    ] = contract
+    store.analysis_runtime_records[source_run_id] = {
+        "digest": f"publication:{source_run_id}",
+        "payload": {"analysis_contract": contract},
+    }
+    store.finalize_completed_material_authority(
+        run_id=source_run_id,
+        thread_id=topic.thread_id,
+        topic_id=topic_id,
+        request={},
+        material_authority=material_authority,
+    )
+    candidate = _result_candidate_payload(
+        result_ref,
+        source_run_id=source_run_id,
+    )
+    candidate.pop("candidate_signature")
+    candidate.update(
+        {
+            "analysis_contract_ref": contract["analysis_contract_id"],
+            "analysis_contract_signature": contract["contract_signature"],
+            "permission_scope": permission_scope,
+            "semantic_scope_signature": (
+                "analysis-contract:sha256:"
+                + contract["contract_signature"]
+            ),
+        }
+    )
+    candidate["candidate_signature"] = canonical_digest(candidate)
+    store.add_result_ref(
+        topic_id,
+        result_ref=result_ref,
+        snapshot_id=candidate["runtime_snapshot_id"],
+        contract_version=candidate["runtime_contract_version"],
+        permission_scope=permission_scope,
+        semantic_scope=candidate["semantic_scope_signature"],
+        payload=candidate,
+    )
+    return candidate
 
 
 def build_test_runtime() -> ConversationRuntime:

@@ -3933,6 +3933,30 @@ def _signed_material_authority(
     )
 
 
+def _completed_material_authority_record(
+    *,
+    contract,
+    material_authority,
+    source_run_id="run-source",
+    thread_id="thread-1",
+    topic_id="topic-1",
+):
+    from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
+
+    body = {
+        "schema_version": "completed-material-authority.v1",
+        "source_run_id": source_run_id,
+        "thread_id": thread_id,
+        "topic_id": topic_id,
+        "analysis_contract_ref": contract["analysis_contract_id"],
+        "analysis_contract_signature": contract["contract_signature"],
+        "analysis_contract_digest": canonical_digest(contract),
+        "material_authority": canonical_value(material_authority),
+        "material_authority_digest": canonical_digest(material_authority),
+    }
+    return {**body, "record_digest": canonical_digest(body)}
+
+
 def _resume_request(
     original_intent,
     material_slots,
@@ -4206,6 +4230,293 @@ def test_memory_resume_authority_ignores_mutable_request_and_binds_actual_choice
     assert authority["clarification_outcome"]["choice"] == _choice()
 
 
+def test_memory_completed_followup_authority_resolves_signed_material_and_contract():
+    store, contract = _seed_memory_store()
+    material_authority = deepcopy(
+        store.runs["run-source"]["request"]["material_authority"]
+    )
+    store.runs["run-source"]["status"] = "running_workflow"
+    store.finalize_completed_material_authority(
+        run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        request={"question": "source question"},
+        material_authority=material_authority,
+    )
+
+    authority = store.resolve_completed_material_authority(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+
+    assert authority["source_run_id"] == "run-source"
+    assert authority["thread_id"] == "thread-1"
+    assert authority["topic_id"] == "topic-1"
+    assert authority["analysis_contract_signature"] == contract["contract_signature"]
+    assert authority["material_authority"] == store.runs["run-source"][
+        "request"
+    ]["material_authority"]
+
+
+@pytest.mark.parametrize("status", ["failed", "waiting_for_clarification"])
+def test_memory_completed_followup_authority_rejects_noncompleted_source(status):
+    store, contract = _seed_memory_store()
+    material_authority = deepcopy(
+        store.runs["run-source"]["request"]["material_authority"]
+    )
+    store.runs["run-source"]["status"] = "running_workflow"
+    store.finalize_completed_material_authority(
+        run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        request={"question": "source question"},
+        material_authority=material_authority,
+    )
+    store.runs["run-source"]["status"] = status
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="completed_followup_source_run_not_complete",
+    ):
+        store.resolve_completed_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+        )
+
+
+def test_completed_followup_authority_rejects_resigned_request_material_drift():
+    from bi_agent.runtime.analysis_contracts import stable_contract_signature
+
+    store, _ = _seed_memory_store()
+    material_authority = deepcopy(
+        store.runs["run-source"]["request"]["material_authority"]
+    )
+    store.runs["run-source"]["status"] = "running_workflow"
+    store.finalize_completed_material_authority(
+        run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        request={"question": "source question"},
+        material_authority=material_authority,
+    )
+    mutable = store.runs["run-source"]["request"]["material_authority"]
+    mutable["route_material_slots"]["diagnostic_tags"] = ["baseline_stability"]
+    body = {
+        key: value
+        for key, value in mutable.items()
+        if key != "material_authority_signature"
+    }
+    mutable["material_authority_signature"] = stable_contract_signature(body)
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="completed_followup_authority_record_mismatch",
+    ):
+        store.resolve_completed_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+        )
+
+
+def test_completed_followup_authority_finalization_is_exactly_idempotent():
+    store, _ = _seed_memory_store()
+    material_authority = deepcopy(
+        store.runs["run-source"]["request"]["material_authority"]
+    )
+    store.runs["run-source"]["status"] = "running_workflow"
+    kwargs = {
+        "run_id": "run-source",
+        "thread_id": "thread-1",
+        "topic_id": "topic-1",
+        "request": {"question": "source question"},
+        "material_authority": material_authority,
+    }
+
+    store.finalize_completed_material_authority(**kwargs)
+    store.finalize_completed_material_authority(**kwargs)
+
+    events = [
+        event
+        for event in store.audit_events
+        if event["event_type"] == "completed_material_authority_recorded"
+        and event["run_id"] == "run-source"
+    ]
+    assert len(events) == 1
+
+
+def test_completed_followup_authority_cannot_be_backfilled_for_historical_completed_run():
+    store, _ = _seed_memory_store()
+    material_authority = deepcopy(
+        store.runs["run-source"]["request"]["material_authority"]
+    )
+    store.runs["run-source"]["status"] = "completed"
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="completed_followup_source_run_not_finalizable",
+    ):
+        store.finalize_completed_material_authority(
+            run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            request={"question": "source question"},
+            material_authority=material_authority,
+        )
+
+    assert not any(
+        event["event_type"] == "completed_material_authority_recorded"
+        for event in store.audit_events
+    )
+
+
+def test_completed_followup_authority_finalization_records_status_transition_once():
+    store, _ = _seed_memory_store()
+    material_authority = deepcopy(
+        store.runs["run-source"]["request"]["material_authority"]
+    )
+    store.runs["run-source"]["status"] = "running_workflow"
+    before = sum(
+        event["event_type"] == "run_status_changed"
+        for event in store.audit_events
+    )
+    kwargs = {
+        "run_id": "run-source",
+        "thread_id": "thread-1",
+        "topic_id": "topic-1",
+        "request": {"question": "source question"},
+        "material_authority": material_authority,
+    }
+
+    store.finalize_completed_material_authority(**kwargs)
+    store.finalize_completed_material_authority(**kwargs)
+
+    completed_status_events = [
+        event
+        for event in store.audit_events
+        if event["event_type"] == "run_status_changed"
+        and event["run_id"] == "run-source"
+        and event.get("payload", {}).get("status") == "completed"
+    ]
+    assert len(completed_status_events) == 1
+    assert sum(
+        event["event_type"] == "run_status_changed"
+        for event in store.audit_events
+    ) == before + 1
+
+
+def test_completed_followup_authority_exact_replay_rejects_event_owner_ref_drift():
+    store, _ = _seed_memory_store()
+    material_authority = deepcopy(
+        store.runs["run-source"]["request"]["material_authority"]
+    )
+    store.runs["run-source"]["status"] = "running_workflow"
+    kwargs = {
+        "run_id": "run-source",
+        "thread_id": "thread-1",
+        "topic_id": "topic-1",
+        "request": {"question": "source question"},
+        "material_authority": material_authority,
+    }
+    store.finalize_completed_material_authority(**kwargs)
+    event = next(
+        item
+        for item in store._audit_events
+        if item["event_type"] == "completed_material_authority_recorded"
+    )
+    event["ref"] = "completed-material-authority:run-other"
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="completed_followup_authority_record_conflict",
+    ):
+        store.finalize_completed_material_authority(**kwargs)
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="completed_followup_authority_record_mismatch",
+    ):
+        store.resolve_completed_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+        )
+
+
+def test_completed_followup_authority_inmemory_finalization_is_atomic_on_audit_failure():
+    class FailSecondStagedAuditStore(InMemoryConversationStore):
+        def __init__(self):
+            super().__init__()
+            self.staged_audit_count = 0
+
+        def _append_staged_audit_event(self, events, event):
+            self.staged_audit_count += 1
+            if self.staged_audit_count == 2:
+                raise RuntimeError("injected staged audit failure")
+            return super()._append_staged_audit_event(events, event)
+
+    base, contract = _seed_memory_store()
+    store = FailSecondStagedAuditStore()
+    store.__dict__.update(deepcopy(base.__dict__))
+    material_authority = deepcopy(
+        store.runs["run-source"]["request"]["material_authority"]
+    )
+    store.runs["run-source"]["status"] = "running_workflow"
+    before_run = deepcopy(store.runs["run-source"])
+    before_events = store.audit_events
+
+    with pytest.raises(RuntimeError, match="injected staged audit failure"):
+        store.finalize_completed_material_authority(
+            run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            request={"question": "source question"},
+            material_authority=material_authority,
+        )
+
+    assert store.runs["run-source"] == before_run
+    assert store.audit_events == before_events
+
+
+def test_completed_followup_authority_resolver_rejects_duplicate_events():
+    store, _ = _seed_memory_store()
+    material_authority = deepcopy(
+        store.runs["run-source"]["request"]["material_authority"]
+    )
+    store.runs["run-source"]["status"] = "running_workflow"
+    store.finalize_completed_material_authority(
+        run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        request={"question": "source question"},
+        material_authority=material_authority,
+    )
+    event = next(
+        item
+        for item in store.audit_events
+        if item["event_type"] == "completed_material_authority_recorded"
+    )
+    store.add_audit_event(
+        event["event_type"],
+        thread_id=event["thread_id"],
+        topic_id=event["topic_id"],
+        run_id=event["run_id"],
+        ref=event["ref"],
+        payload=event["payload"],
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="completed_followup_authority_record_ambiguous",
+    ):
+        store.resolve_completed_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+        )
+
+
 def test_clarification_outcome_cannot_be_persisted_under_a_different_owner():
     store, _ = _seed_memory_store()
 
@@ -4354,6 +4665,504 @@ def test_postgres_resume_authority_selects_immutable_contract_and_outcome_with_o
     assert "r.request AS run_request" in sql
     assert resolved["clarification_outcome"]["outcome_ref"] == outcome_ref
     assert resolved["material_authority"] == material_authority
+
+
+def test_postgres_completed_followup_authority_matches_inmemory_contract():
+    contract = _source_contract()
+    material_authority = _signed_material_authority(
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+    authority_record = _completed_material_authority_record(
+        contract=contract,
+        material_authority=material_authority,
+    )
+    connection = FakeConnection(rows=[{
+        "analysis_contract_id": contract["analysis_contract_id"],
+        "analysis_run_id": "run-source",
+        "stored_contract_signature": contract["contract_signature"],
+        "contract_payload": json.dumps(contract),
+        "run_status": "completed",
+        "run_thread_id": "thread-1",
+        "run_topic_id": "topic-1",
+        "run_request": json.dumps({
+            "analysis_contract": contract,
+            "material_authority": material_authority,
+        }),
+        "authority_record_payload": json.dumps(authority_record),
+        "authority_record_ref": "completed-material-authority:run-source",
+        "authority_event_run_id": "run-source",
+        "authority_event_thread_id": "thread-1",
+        "authority_event_topic_id": "topic-1",
+    }])
+
+    resolved = PostgresConversationStore(
+        connection
+    ).resolve_completed_material_authority(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+
+    sql = "\n".join(statement for statement, _ in connection.statements)
+    assert "waje_runtime.analysis_runs" in sql
+    assert "waje_runtime.analysis_contracts" in sql
+    assert "waje_runtime.audit_events" in sql
+    assert resolved["analysis_contract_signature"] == contract["contract_signature"]
+    assert resolved["material_authority"] == material_authority
+
+
+def test_postgres_completed_followup_authority_resolver_rejects_missing_embedded_signature():
+    contract = _source_contract()
+    persisted_contract = {
+        key: value
+        for key, value in contract.items()
+        if key != "contract_signature"
+    }
+    material_authority = _signed_material_authority(
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+    authority_record = _completed_material_authority_record(
+        contract=contract,
+        material_authority=material_authority,
+    )
+    connection = FakeConnection(rows=[{
+        "analysis_contract_id": contract["analysis_contract_id"],
+        "analysis_run_id": "run-source",
+        "stored_contract_signature": contract["contract_signature"],
+        "contract_payload": json.dumps(persisted_contract),
+        "run_status": "completed",
+        "run_thread_id": "thread-1",
+        "run_topic_id": "topic-1",
+        "run_request": json.dumps({
+            "analysis_contract": contract,
+            "material_authority": material_authority,
+        }),
+        "authority_record_payload": json.dumps(authority_record),
+        "authority_record_ref": "completed-material-authority:run-source",
+        "authority_event_run_id": "run-source",
+        "authority_event_thread_id": "thread-1",
+        "authority_event_topic_id": "topic-1",
+    }])
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^completed_followup_contract_signature_invalid$",
+    ):
+        PostgresConversationStore(
+            connection
+        ).resolve_completed_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+        )
+
+
+@pytest.mark.parametrize(
+    ("rows", "reason"),
+    [
+        ([], "completed_followup_source_run_missing"),
+        (
+            [
+                {
+                    "analysis_contract_id": None,
+                    "analysis_run_id": None,
+                    "stored_contract_signature": None,
+                    "contract_payload": None,
+                    "run_status": "completed",
+                    "run_thread_id": "thread-1",
+                    "run_topic_id": "topic-1",
+                    "run_request": json.dumps({}),
+                    "authority_record_payload": None,
+                    "authority_record_ref": None,
+                    "authority_event_run_id": None,
+                    "authority_event_thread_id": None,
+                    "authority_event_topic_id": None,
+                }
+            ],
+            "completed_followup_contract_missing",
+        ),
+        (
+            [
+                {
+                    "analysis_contract_id": _source_contract()[
+                        "analysis_contract_id"
+                    ],
+                    "analysis_run_id": "run-source",
+                    "stored_contract_signature": _source_contract()[
+                        "contract_signature"
+                    ],
+                    "contract_payload": json.dumps(_source_contract()),
+                    "run_status": "completed",
+                    "run_thread_id": "thread-1",
+                    "run_topic_id": "topic-1",
+                    "run_request": json.dumps({}),
+                    "authority_record_payload": None,
+                    "authority_record_ref": None,
+                    "authority_event_run_id": None,
+                    "authority_event_thread_id": None,
+                    "authority_event_topic_id": None,
+                }
+            ],
+            "completed_followup_authority_record_missing",
+        ),
+    ],
+)
+def test_postgres_completed_followup_authority_missing_reason_matches_inmemory(
+    rows,
+    reason,
+):
+    with pytest.raises(EvidenceIntegrityError, match=reason):
+        PostgresConversationStore(
+            FakeConnection(rows=rows)
+        ).resolve_completed_material_authority(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+        )
+
+
+class _CompletedFinalizationCursor:
+    def __init__(self, rows):
+        self.rows = list(rows)
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+    def fetchall(self):
+        return list(self.rows)
+
+
+class _CompletedFinalizationConnection:
+    def __init__(self, *, run_row, authority_events=()):
+        self.run_row = run_row
+        self.authority_events = list(authority_events)
+        self.statements = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def execute(self, statement, params=None):
+        self.statements.append((statement, params or {}))
+        if (
+            "completed_material_authority_finalization_run_lock" in statement
+            or "completed_material_authority_finalization_contract_lock"
+            in statement
+        ):
+            return _CompletedFinalizationCursor([self.run_row])
+        if "completed_material_authority_existing_events" in statement:
+            return _CompletedFinalizationCursor(self.authority_events)
+        return _CompletedFinalizationCursor(())
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+def test_conversation_stores_expose_write_failure_recovery_contract():
+    connection = _CompletedFinalizationConnection(run_row={})
+
+    assert InMemoryConversationStore().recover_after_write_failure() is None
+    assert (
+        PostgresConversationStore(connection).recover_after_write_failure()
+        is None
+    )
+    assert connection.rollbacks == 1
+
+
+def test_postgres_completed_followup_authority_finalizes_status_and_events_atomically():
+    from bi_agent.runtime.evidence_authority import canonical_value
+
+    contract = _source_contract()
+    material_authority = _signed_material_authority(
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+    connection = _CompletedFinalizationConnection(
+        run_row={
+            "run_status": "running_workflow",
+            "run_thread_id": "thread-1",
+            "run_topic_id": "topic-1",
+            "run_request": json.dumps({"question": "source question"}),
+            "analysis_run_id": "run-source",
+            "stored_contract_signature": contract["contract_signature"],
+            "contract_payload": json.dumps(contract),
+        }
+    )
+
+    finalized = PostgresConversationStore(
+        connection
+    ).finalize_completed_material_authority(
+        run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        request={"question": "source question"},
+        material_authority=material_authority,
+    )
+
+    assert finalized["analysis_contract"] == canonical_value(contract)
+    assert finalized["material_authority"] == canonical_value(material_authority)
+    assert connection.commits == 1
+    assert connection.rollbacks == 0
+    sql = "\n".join(statement for statement, _ in connection.statements)
+    assert sql.count("FOR UPDATE") == 3
+    assert "completed_material_authority_finalization_run_lock" in sql
+    assert "completed_material_authority_finalization_contract_lock" in sql
+    assert "UPDATE waje_runtime.analysis_runs" in sql
+    event_params = [
+        params
+        for statement, params in connection.statements
+        if "INSERT INTO waje_runtime.audit_events" in statement
+    ]
+    assert [params["event_type"] for params in event_params] == [
+        "run_status_changed",
+        "completed_material_authority_recorded",
+    ]
+    assert json.loads(event_params[0]["payload"]) == {"status": "completed"}
+
+
+def test_postgres_completed_followup_authority_rejects_embedded_contract_signature_drift():
+    contract = _source_contract()
+    persisted_contract = {**contract, "contract_signature": "tampered-embedded"}
+    material_authority = _signed_material_authority(
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+    connection = _CompletedFinalizationConnection(
+        run_row={
+            "run_status": "running_workflow",
+            "run_thread_id": "thread-1",
+            "run_topic_id": "topic-1",
+            "run_request": json.dumps({}),
+            "analysis_run_id": "run-source",
+            "stored_contract_signature": contract["contract_signature"],
+            "contract_payload": json.dumps(persisted_contract),
+        }
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="completed_followup_contract_signature_invalid",
+    ):
+        PostgresConversationStore(
+            connection
+        ).finalize_completed_material_authority(
+            run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            request={},
+            material_authority=material_authority,
+        )
+
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_postgres_completed_followup_authority_rejects_missing_embedded_contract_signature():
+    contract = _source_contract()
+    persisted_contract = {
+        key: value
+        for key, value in contract.items()
+        if key != "contract_signature"
+    }
+    material_authority = _signed_material_authority(
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+    connection = _CompletedFinalizationConnection(
+        run_row={
+            "run_status": "running_workflow",
+            "run_thread_id": "thread-1",
+            "run_topic_id": "topic-1",
+            "run_request": json.dumps({}),
+            "analysis_run_id": "run-source",
+            "stored_contract_signature": contract["contract_signature"],
+            "contract_payload": json.dumps(persisted_contract),
+        }
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^completed_followup_contract_signature_invalid$",
+    ):
+        PostgresConversationStore(
+            connection
+        ).finalize_completed_material_authority(
+            run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            request={},
+            material_authority=material_authority,
+        )
+
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def _completed_replay_connection(*, duplicate_events=False):
+    from bi_agent.runtime.evidence_authority import canonical_value
+
+    contract = _source_contract()
+    material_authority = _signed_material_authority(
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+    finalized_request = canonical_value(
+        {
+            "question": "source question",
+            "analysis_contract": contract,
+            "material_authority": material_authority,
+        }
+    )
+    record = _completed_material_authority_record(
+        contract=contract,
+        material_authority=material_authority,
+    )
+    event = {
+        "payload": json.dumps(record),
+        "ref": "completed-material-authority:run-source",
+        "run_id": "run-source",
+        "thread_id": "thread-1",
+        "topic_id": "topic-1",
+    }
+    connection = _CompletedFinalizationConnection(
+        run_row={
+            "run_status": "completed",
+            "run_thread_id": "thread-1",
+            "run_topic_id": "topic-1",
+            "run_request": json.dumps(finalized_request),
+            "analysis_run_id": "run-source",
+            "stored_contract_signature": contract["contract_signature"],
+            "contract_payload": json.dumps(contract),
+        },
+        authority_events=(event, event) if duplicate_events else (event,),
+    )
+    return connection, material_authority, finalized_request
+
+
+def test_postgres_completed_followup_authority_exact_replay_is_idempotent():
+    connection, material_authority, finalized_request = (
+        _completed_replay_connection()
+    )
+    store = PostgresConversationStore(connection)
+    kwargs = {
+        "run_id": "run-source",
+        "thread_id": "thread-1",
+        "topic_id": "topic-1",
+        "request": {"question": "source question"},
+        "material_authority": material_authority,
+    }
+
+    assert store.finalize_completed_material_authority(**kwargs) == finalized_request
+    assert store.finalize_completed_material_authority(**kwargs) == finalized_request
+    assert connection.commits == 0
+    assert connection.rollbacks == 2
+
+
+def test_postgres_completed_followup_authority_duplicate_event_conflicts():
+    connection, material_authority, _ = _completed_replay_connection(
+        duplicate_events=True
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^completed_followup_authority_record_conflict$",
+    ):
+        PostgresConversationStore(
+            connection
+        ).finalize_completed_material_authority(
+            run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            request={"question": "source question"},
+            material_authority=material_authority,
+        )
+
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_postgres_completed_followup_authority_second_audit_failure_rolls_back_all():
+    class SecondAuditFailureConnection(_CompletedFinalizationConnection):
+        def __init__(self, *, run_row):
+            super().__init__(run_row=run_row)
+            self.audit_writes = 0
+
+        def execute(self, statement, params=None):
+            if "INSERT INTO waje_runtime.audit_events" in statement:
+                self.audit_writes += 1
+                if self.audit_writes == 2:
+                    raise RuntimeError("injected second audit failure")
+            return super().execute(statement, params)
+
+    contract = _source_contract()
+    material_authority = _signed_material_authority(
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+    connection = SecondAuditFailureConnection(
+        run_row={
+            "run_status": "running_workflow",
+            "run_thread_id": "thread-1",
+            "run_topic_id": "topic-1",
+            "run_request": json.dumps({}),
+            "analysis_run_id": "run-source",
+            "stored_contract_signature": contract["contract_signature"],
+            "contract_payload": json.dumps(contract),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="injected second audit failure"):
+        PostgresConversationStore(
+            connection
+        ).finalize_completed_material_authority(
+            run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            request={},
+            material_authority=material_authority,
+        )
+
+    assert connection.audit_writes == 2
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_postgres_completed_followup_authority_finalizer_reports_missing_contract():
+    material_authority = _signed_material_authority(
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+    connection = _CompletedFinalizationConnection(
+        run_row={
+            "run_status": "running_workflow",
+            "run_thread_id": "thread-1",
+            "run_topic_id": "topic-1",
+            "run_request": json.dumps({}),
+            "analysis_run_id": None,
+            "stored_contract_signature": None,
+            "contract_payload": None,
+        }
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="completed_followup_contract_missing",
+    ):
+        PostgresConversationStore(
+            connection
+        ).finalize_completed_material_authority(
+            run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            request={},
+            material_authority=material_authority,
+        )
+
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
 
 
 def test_postgres_outcome_record_locks_and_requires_waiting_source_run():
