@@ -782,6 +782,180 @@ def test_resume_component_extra_requires_valid_source_contract(contract_state):
     assert exc.value.failure_type == "contract"
 
 
+def test_resume_accepts_contract_authorized_baseline_expansion():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": ["前日", "上周同日"],
+        "context_sources": [],
+        "claim_intents": [],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source question",
+    }
+    material = _complete_material_slots(
+        baselines=["same_weekday_last_week"]
+    )
+
+    workflow._bind_clarification_resume_intent(
+        {},
+        _resume_request(
+            original,
+            material,
+            analysis_contract=_source_contract_with_window(
+                "same_weekday_last_week", role="baseline"
+            ),
+        ),
+        RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+    )
+
+
+def test_resume_accepts_reordered_original_canonical_baselines():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": ["previous_day", "same_weekday_last_week"],
+        "context_sources": [],
+        "claim_intents": [],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source question",
+    }
+    material = _complete_material_slots(
+        baselines=["same_weekday_last_week", "previous_day"]
+    )
+
+    workflow._bind_clarification_resume_intent(
+        {},
+        _resume_request(original, material),
+        RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+    )
+
+
+def test_resume_rejects_removing_original_canonical_baseline():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": ["previous_day", "same_weekday_last_week"],
+        "context_sources": [],
+        "claim_intents": [],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source question",
+    }
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="clarification_resume_material_slots_conflict:baselines",
+    ) as exc:
+        workflow._bind_clarification_resume_intent(
+            {},
+            _resume_request(
+                original,
+                _complete_material_slots(baselines=["previous_day"]),
+            ),
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+    assert exc.value.failure_type == "contract"
+
+
+def test_resume_keeps_scope_exact_when_baseline_is_unchanged():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": [],
+        "scope": "day",
+        "context_sources": [],
+        "claim_intents": [],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source question",
+    }
+    material = _complete_material_slots()
+    material["scope"] = "full_sample"
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="clarification_resume_material_slots_conflict:scope",
+    ) as exc:
+        workflow._bind_clarification_resume_intent(
+            {},
+            _resume_request(original, material),
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+    assert exc.value.failure_type == "contract"
+
+
+@pytest.mark.parametrize(
+    "contract_state",
+    ["missing", "malformed", "wrong_id", "unresolved", "reference_only"],
+)
+def test_resume_baseline_extra_requires_resolved_source_baseline(contract_state):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": [],
+        "context_sources": [],
+        "claim_intents": [],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source question",
+    }
+    contract = None
+    if contract_state == "malformed":
+        contract = _source_contract_with_window(
+            "same_weekday_last_week", role="baseline"
+        )
+        contract["resolved_windows"] = [{}]
+    elif contract_state == "wrong_id":
+        contract = _source_contract_with_window(
+            "same_weekday_last_week", role="baseline"
+        )
+        contract["analysis_contract_id"] = "analysis:run-other:1"
+    elif contract_state == "unresolved":
+        contract = _source_contract()
+        contract.pop("contract_signature", None)
+    elif contract_state == "reference_only":
+        contract = _source_contract_with_window(
+            "same_weekday_last_week", role="reference"
+        )
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="clarification_resume_material_slots_conflict:baselines",
+    ) as exc:
+        workflow._bind_clarification_resume_intent(
+            {},
+            _resume_request(
+                original,
+                _complete_material_slots(
+                    baselines=["same_weekday_last_week"]
+                ),
+                analysis_contract=contract,
+            ),
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+    assert exc.value.failure_type == "contract"
+
+
 def _source_contract(run_id="run-source"):
     outcome = compile_analysis_contract(
         run_id=run_id,
@@ -796,6 +970,15 @@ def _source_contract(run_id="run-source"):
     )
     payload = outcome.analysis_contract.to_dict()
     payload["contract_signature"] = analysis_contract_signature(payload)
+    return payload
+
+
+def _source_contract_with_window(window_id, *, role):
+    payload = _source_contract()
+    payload.pop("contract_signature", None)
+    window = deepcopy(payload["resolved_windows"][0])
+    window.update({"window_id": window_id, "role": role})
+    payload["resolved_windows"] = [*payload["resolved_windows"], window]
     return payload
 
 

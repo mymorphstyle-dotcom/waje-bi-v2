@@ -729,18 +729,22 @@ def _validate_resume_material_consistency(
                 failure_type="contract",
             )
         extras[axis] = set(material_values) - set(source_values)
-    for key, original_key in (("baselines", "baseline_candidates"), ("scope", "scope")):
-        if key in persisted or original_key in original:
-            expected_value = (
-                _canonical_baseline_ids(original.get(original_key))
-                if key == "baselines"
-                else original.get(original_key)
+    original_baselines = _canonical_baseline_ids(
+        original.get("baseline_candidates")
+    )
+    persisted_baselines = list(persisted.get("baselines") or ())
+    if any(item not in persisted_baselines for item in original_baselines):
+        raise WorkflowFailure(
+            "clarification_resume_material_slots_conflict:baselines",
+            failure_type="contract",
+        )
+    extras["baselines"] = set(persisted_baselines) - set(original_baselines)
+    if "scope" in persisted or "scope" in original:
+        if persisted.get("scope") != original.get("scope"):
+            raise WorkflowFailure(
+                "clarification_resume_material_slots_conflict:scope",
+                failure_type="contract",
             )
-            if persisted.get(key) != expected_value:
-                raise WorkflowFailure(
-                    f"clarification_resume_material_slots_conflict:{key}",
-                    failure_type="contract",
-                )
     authorization_axis = next(
         (axis for axis, axis_extras in extras.items() if axis_extras),
         "",
@@ -800,6 +804,11 @@ def _validate_resume_material_consistency(
         "requested_dimensions": authorized_dimension_ids,
         "context_sources": authorized_context_sources,
         "claim_intents": set(accepted_source_contract.claim_intents),
+        "baselines": {
+            window.window_id
+            for window in accepted_source_contract.resolved_windows
+            if window.role == "baseline"
+        },
     }
     for axis, axis_extras in extras.items():
         if not axis_extras.issubset(authorized_values[axis]):
