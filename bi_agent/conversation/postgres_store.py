@@ -31,6 +31,9 @@ from bi_agent.runtime.dataset_catalog import (
     immutable_dataset_snapshot_projection,
     validate_dataset_snapshot_release_payloads,
 )
+from bi_agent.runtime.runtime_publication_index import (
+    runtime_publication_index as _runtime_publication_index,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1286,18 +1289,7 @@ class PostgresConversationStore:
                     "analysis_contract_id": analysis["analysis_contract_id"],
                     "topic_id": expected_topic_id,
                     "bundle_digest": bundle_digest,
-                    "payload": _json(
-                        {
-                            "analysis_contract_id": analysis["analysis_contract_id"],
-                            "context_manifest_refs": [
-                                item["manifest_id"]
-                                for item in bundle["context_manifests"]
-                            ],
-                            "verified_claim_refs": [
-                                item["claim_ref"] for item in bundle["verified_claims"]
-                            ],
-                        }
-                    ),
+                    "payload": _json(_runtime_publication_index(bundle)),
                 },
                 collision="analysis_runtime_publication",
             )
@@ -1377,6 +1369,7 @@ class PostgresConversationStore:
                 run_id=run_id,
                 ref=str(analysis["analysis_contract_id"]),
                 payload={
+                    "bundle_digest": bundle_digest,
                     "query_count": len(bundle["query_execution_records"]),
                     "capability_binding_count": len(bundle["capability_binding_records"]),
                     "claim_link_count": len(bundle["claim_links"]),

@@ -839,40 +839,21 @@ def test_runtime_audit_package_rejects_drifted_artifact_root_contract_when_admin
     ) == {"_authority_error": "persisted_analysis_contract_mismatch"}
 
 
-def test_postgres_runtime_authority_resolver_queries_unique_contract_by_run_only():
+def test_postgres_runtime_authority_resolver_queries_projection_by_run_only():
     from tools.phase7 import run_live_conversation_system_test as system_test
 
     run_id = "run-noncanonical-contract-ref"
-    contract = {
-        **_analysis_contract(_canonical_gap()),
-        "analysis_contract_id": "analysis-contract:custom-version:7",
-    }
-    signature = analysis_contract_signature(
-        analysis_contract_from_dict(contract)
-    )
-
     class Store:
         def _fetchall(self, statement, params):
-            assert "analysis_contract_id =" not in statement
+            assert "live_eval_runtime_evaluation_authority" in statement
+            assert "%(analysis_contract_id)s" not in statement
+            assert "WHERE r.run_id = %(run_id)s" in statement
             assert params == {"run_id": run_id}
-            return [
-                (
-                    run_id,
-                    signature,
-                    {**contract, "contract_signature": signature},
-                )
-            ]
+            return []
 
     resolver = system_test._runtime_authority_resolver_for_store(Store())
 
-    assert resolver(run_id) == {
-        "run_id": run_id,
-        "analysis_contract": {
-            **contract,
-            "contract_signature": signature,
-        },
-        "stored_contract_signature": signature,
-    }
+    assert resolver(run_id) is None
 
 
 def test_postgres_runtime_authority_resolver_rejects_ambiguous_contracts_for_run():

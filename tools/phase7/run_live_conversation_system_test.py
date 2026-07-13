@@ -55,12 +55,18 @@ from bi_agent.runtime.evidence_authority import (
     QueryExecutionRecord,
     RowsPayloadLoader,
     RuntimeEvidenceResolver,
+    canonical_digest,
     canonical_value,
     runtime_evidence_record_integrity_errors,
 )
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
+)
+from bi_agent.runtime.runtime_publication_index import (
+    RUNTIME_PUBLICATION_INDEX_SCHEMA_VERSION,
+    RUNTIME_PUBLICATION_RECORD_GROUPS,
+    runtime_publication_record_ref,
 )
 from bi_agent.runtime.query_completeness import CURRENT_DATA_ASSERTIONS
 
@@ -3251,6 +3257,7 @@ def _real_clickhouse_review(
     required_datasets: tuple[str, ...] | list[str] = (),
     analysis_context: Mapping[str, Any] | None = None,
     runtime_authority_resolver: Any = None,
+    runtime_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not real_clickhouse:
         return {
@@ -3265,12 +3272,19 @@ def _real_clickhouse_review(
             },
             "issues": [],
         }
-    package = _runtime_audit_package(
-        result,
-        authority_resolver=runtime_authority_resolver,
+    package = (
+        dict(runtime_authority)
+        if isinstance(runtime_authority, Mapping)
+        else _runtime_audit_package(
+            result,
+            authority_resolver=runtime_authority_resolver,
+        )
     )
 
     issues: list[str] = []
+    authority_error = str(package.get("_authority_error") or "")
+    if authority_error:
+        issues.append(f"runtime_authority_error:{authority_error}")
     result_refs: set[str] = set()
     observed_datasets: set[str] = set()
     evidence_items = {
@@ -3666,46 +3680,134 @@ def _runtime_authority_resolver_for_store(conversation_store: Any):
             payload = publication.get("payload")
             if not isinstance(payload, Mapping):
                 raise ValueError("runtime_authority_publication_invalid")
+            run = getattr(conversation_store, "runs", {}).get(run_id)
+            if not isinstance(run, Mapping):
+                raise ValueError("runtime_evaluation_run_missing")
+            audit_events = getattr(conversation_store, "audit_events", ())
+            runtime_events = [
+                event
+                for event in audit_events
+                if isinstance(event, Mapping) and event.get("run_id") == run_id
+            ]
             contract = payload.get("analysis_contract")
-            if not isinstance(contract, Mapping):
-                raise ValueError("runtime_authority_contract_missing")
-            contract_ref = str(contract.get("analysis_contract_id") or "")
+            contract_ref = str(
+                contract.get("analysis_contract_id")
+                if isinstance(contract, Mapping)
+                else ""
+            )
             indexed = getattr(
                 conversation_store,
                 "analysis_runtime_authority",
                 None,
             )
-            indexed_contract = (
-                indexed.get("analysis_contract", {}).get(contract_ref)
+            indexed_contracts = (
+                indexed.get("analysis_contract")
                 if isinstance(indexed, Mapping)
-                and isinstance(indexed.get("analysis_contract"), Mapping)
                 else None
             )
-            if (
-                not isinstance(indexed_contract, Mapping)
-                or canonical_value(indexed_contract) != canonical_value(contract)
-            ):
-                raise ValueError("runtime_authority_contract_index_mismatch")
-            return {
-                "run_id": run_id,
-                "analysis_contract": dict(contract),
-                "stored_contract_signature": str(
-                    contract.get("contract_signature") or ""
+            indexed_contract = (
+                indexed_contracts.get(contract_ref)
+                if isinstance(indexed_contracts, Mapping)
+                else None
+            )
+            digest = str(publication.get("digest") or "")
+            delivery_verifier = _validate_runtime_evaluation_authority_owner_index(
+                run_id=run_id,
+                thread_id=str(run.get("thread_id") or ""),
+                topic_id=str(run.get("topic_id") or ""),
+                run_status=str(run.get("status") or ""),
+                publication_digest=digest,
+                bundle=payload,
+                indexed_analysis_contract=indexed_contract,
+                stored_contract_signature=str(
+                    indexed_contract.get("contract_signature")
+                    if isinstance(indexed_contract, Mapping)
+                    else ""
                 ),
-            }
+                publication_events=[
+                    event
+                    for event in runtime_events
+                    if event.get("event_type")
+                    == "analysis_runtime_records_persisted"
+                ],
+                delivery_events=[
+                    event
+                    for event in runtime_events
+                    if event.get("event_type") == "delivery_verifier_completed"
+                ],
+            )
+            return _normalized_runtime_evaluation_projection(
+                run_id=run_id,
+                thread_id=str(run.get("thread_id") or ""),
+                topic_id=str(run.get("topic_id") or ""),
+                turn_id=str(run.get("turn_id") or ""),
+                run_status=str(run.get("status") or ""),
+                publication_digest=digest,
+                bundle=payload,
+                stored_contract_signature=str(
+                    indexed_contract.get("contract_signature") or ""
+                ),
+                delivery_verifier=delivery_verifier,
+            )
 
         fetchall = getattr(conversation_store, "_fetchall", None)
         if not callable(fetchall):
             return None
         rows = fetchall(
             """
-            /* live_eval_runtime_analysis_contract */
-            SELECT ac.run_id,
-                   ac.contract_signature,
-                   ac.payload
+            /* live_eval_runtime_evaluation_authority_root */
+            SELECT r.run_id,
+                   r.thread_id,
+                   r.turn_id,
+                   r.topic_id,
+                   r.status AS run_status,
+                   p.run_id AS publication_run_id,
+                   p.topic_id AS publication_topic_id,
+                   p.bundle_digest AS publication_digest,
+                   p.payload AS publication_index,
+                   ac.run_id AS indexed_contract_run_id,
+                   ac.contract_signature AS stored_contract_signature,
+                   ac.payload AS indexed_analysis_contract,
+                   (
+                     SELECT count(*)
+                     FROM waje_runtime.analysis_contracts owned
+                     WHERE owned.run_id = r.run_id
+                   ) AS analysis_contract_count,
+                   COALESCE((
+                     SELECT jsonb_agg(
+                       jsonb_build_object(
+                         'event_type', event.event_type,
+                         'thread_id', event.thread_id,
+                         'topic_id', event.topic_id,
+                         'run_id', event.run_id,
+                         'ref', event.ref,
+                         'payload', event.payload
+                       ) ORDER BY event.audit_id
+                     )
+                     FROM waje_runtime.audit_events event
+                     WHERE event.run_id = r.run_id
+                       AND event.event_type = 'analysis_runtime_records_persisted'
+                   ), '[]'::jsonb) AS publication_events,
+                   COALESCE((
+                     SELECT jsonb_agg(
+                       jsonb_build_object(
+                         'event_type', event.event_type,
+                         'thread_id', event.thread_id,
+                         'topic_id', event.topic_id,
+                         'run_id', event.run_id,
+                         'ref', event.ref,
+                         'payload', event.payload
+                       ) ORDER BY event.audit_id
+                     )
+                     FROM waje_runtime.audit_events event
+                     WHERE event.run_id = r.run_id
+                       AND event.event_type = 'delivery_verifier_completed'
+                   ), '[]'::jsonb) AS delivery_verifier_events
             FROM waje_runtime.analysis_runs r
-            JOIN waje_runtime.analysis_contracts ac
-              ON ac.run_id = r.run_id
+            LEFT JOIN waje_runtime.analysis_runtime_publications p
+              ON p.run_id = r.run_id
+            LEFT JOIN waje_runtime.analysis_contracts ac
+              ON ac.analysis_contract_id = p.analysis_contract_id
             WHERE r.run_id = %(run_id)s
             """,
             {"run_id": run_id},
@@ -3715,19 +3817,927 @@ def _runtime_authority_resolver_for_store(conversation_store: Any):
         if len(rows) != 1:
             raise ValueError("runtime_authority_contract_ambiguous")
         row = rows[0]
-        if isinstance(row, Mapping):
-            resolved_run_id = row.get("run_id")
-            stored_signature = row.get("contract_signature")
-            contract = row.get("payload")
-        else:
-            resolved_run_id, stored_signature, contract = row
-        return {
-            "run_id": resolved_run_id,
-            "analysis_contract": contract,
-            "stored_contract_signature": stored_signature,
-        }
+        resolved_run_id = _runtime_evaluation_row_field(row, "run_id", 0)
+        thread_id = _runtime_evaluation_row_field(row, "thread_id", 1)
+        turn_id = _runtime_evaluation_row_field(row, "turn_id", 2)
+        topic_id = _runtime_evaluation_row_field(row, "topic_id", 3)
+        run_status = _runtime_evaluation_row_field(row, "run_status", 4)
+        publication_run_id = _runtime_evaluation_row_field(
+            row, "publication_run_id", 5
+        )
+        publication_topic_id = _runtime_evaluation_row_field(
+            row, "publication_topic_id", 6
+        )
+        publication_digest = _runtime_evaluation_row_field(
+            row, "publication_digest", 7
+        )
+        publication_index = _runtime_evaluation_json_value(
+            _runtime_evaluation_row_field(row, "publication_index", 8)
+        )
+        indexed_contract_run_id = _runtime_evaluation_row_field(
+            row, "indexed_contract_run_id", 9
+        )
+        stored_signature = _runtime_evaluation_row_field(
+            row, "stored_contract_signature", 10
+        )
+        indexed_contract = _runtime_evaluation_json_value(
+            _runtime_evaluation_row_field(
+                row,
+                "indexed_analysis_contract",
+                11,
+            )
+        )
+        contract_count = _runtime_evaluation_row_field(
+            row, "analysis_contract_count", 12
+        )
+        publication_events = _runtime_evaluation_json_value(
+            _runtime_evaluation_row_field(row, "publication_events", 13)
+        )
+        delivery_events = _runtime_evaluation_json_value(
+            _runtime_evaluation_row_field(row, "delivery_verifier_events", 14)
+        )
+        if contract_count != 1:
+            raise ValueError("runtime_authority_contract_ambiguous")
+        resolved_run_id = str(resolved_run_id or "")
+        thread_id = str(thread_id or "")
+        topic_id = str(topic_id or "")
+        if str(run_status or "") != "completed":
+            raise ValueError("runtime_evaluation_run_incomplete")
+        if (
+            not resolved_run_id
+            or str(publication_run_id or "") != resolved_run_id
+            or str(publication_topic_id or "") != topic_id
+            or str(indexed_contract_run_id or "") != resolved_run_id
+        ):
+            raise ValueError("runtime_evaluation_authority_cross_run")
+        validated_index = _validated_runtime_evaluation_publication_index(
+            publication_index,
+            indexed_analysis_contract=indexed_contract,
+        )
+        ordered_refs = validated_index["ordered_refs"]
+        inventory_rows = fetchall(
+            _runtime_evaluation_inventory_sql(),
+            {
+                "run_id": resolved_run_id,
+                "ordered_refs": json.dumps(
+                    ordered_refs,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            },
+        )
+        bundle = _runtime_evaluation_bundle_from_inventory(
+            run_id=resolved_run_id,
+            indexed_analysis_contract=indexed_contract,
+            ordered_refs=ordered_refs,
+            inventory_rows=inventory_rows,
+        )
+        delivery_verifier = _validate_runtime_evaluation_authority_owner_index(
+            run_id=resolved_run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+            run_status=str(run_status or ""),
+            publication_digest=str(publication_digest or ""),
+            bundle=bundle,
+            indexed_analysis_contract=indexed_contract,
+            stored_contract_signature=str(stored_signature or ""),
+            publication_events=publication_events,
+            delivery_events=delivery_events,
+        )
+        return _normalized_runtime_evaluation_projection(
+            run_id=resolved_run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+            turn_id=str(turn_id or ""),
+            run_status=str(run_status or ""),
+            publication_digest=str(publication_digest or ""),
+            bundle=bundle,
+            stored_contract_signature=str(stored_signature or ""),
+            delivery_verifier=delivery_verifier,
+        )
 
     return resolve
+
+
+def _runtime_evaluation_row_field(row: Any, name: str, index: int) -> Any:
+    if isinstance(row, Mapping):
+        return row.get(name)
+    return row[index]
+
+
+def _runtime_evaluation_json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("runtime_evaluation_authority_json_invalid") from exc
+    return value
+
+
+def _validated_runtime_evaluation_publication_index(
+    publication_index: Any,
+    *,
+    indexed_analysis_contract: Any,
+) -> dict[str, Any]:
+    if (
+        not isinstance(publication_index, Mapping)
+        or set(publication_index)
+        != {"schema_version", "analysis_contract_id", "ordered_refs"}
+        or publication_index.get("schema_version")
+        != RUNTIME_PUBLICATION_INDEX_SCHEMA_VERSION
+        or not isinstance(indexed_analysis_contract, Mapping)
+    ):
+        raise ValueError("runtime_evaluation_publication_index_invalid")
+    if str(publication_index.get("analysis_contract_id") or "") != str(
+        indexed_analysis_contract.get("analysis_contract_id") or ""
+    ):
+        raise ValueError("runtime_evaluation_authority_index_mismatch")
+    raw_groups = publication_index.get("ordered_refs")
+    if (
+        not isinstance(raw_groups, Mapping)
+        or set(raw_groups) != set(RUNTIME_PUBLICATION_RECORD_GROUPS)
+    ):
+        raise ValueError("runtime_evaluation_publication_index_invalid")
+    ordered_refs: dict[str, list[str]] = {}
+    for group in RUNTIME_PUBLICATION_RECORD_GROUPS:
+        refs = raw_groups.get(group)
+        if (
+            not isinstance(refs, list)
+            or any(not isinstance(ref, str) or not ref for ref in refs)
+            or len(refs) != len(set(refs))
+        ):
+            raise ValueError("runtime_evaluation_publication_index_invalid")
+        ordered_refs[group] = list(refs)
+    return {
+        "schema_version": RUNTIME_PUBLICATION_INDEX_SCHEMA_VERSION,
+        "analysis_contract_id": str(publication_index["analysis_contract_id"]),
+        "ordered_refs": ordered_refs,
+    }
+
+
+def _runtime_evaluation_bundle_from_inventory(
+    *,
+    run_id: str,
+    indexed_analysis_contract: Any,
+    ordered_refs: Mapping[str, list[str]],
+    inventory_rows: Any,
+) -> dict[str, Any]:
+    if not isinstance(indexed_analysis_contract, Mapping):
+        raise ValueError("runtime_evaluation_authority_index_mismatch")
+    if not isinstance(inventory_rows, (list, tuple)):
+        raise ValueError("runtime_evaluation_normalized_rows_invalid")
+    wrapped_kinds = {
+        "query_execution_records": "query_execution",
+        "rows_records": "rows",
+        "snapshot_records": "snapshot",
+        "completeness_records": "completeness",
+        "capability_binding_records": "capability_binding",
+    }
+    records_by_group: dict[str, dict[str, Mapping[str, Any]]] = {
+        group: {} for group in RUNTIME_PUBLICATION_RECORD_GROUPS
+    }
+    for row in inventory_rows:
+        group = str(_runtime_evaluation_row_field(row, "record_group", 0) or "")
+        record_ref = str(
+            _runtime_evaluation_row_field(row, "record_ref", 1) or ""
+        )
+        owner_run_ids = _runtime_evaluation_json_value(
+            _runtime_evaluation_row_field(row, "owner_run_ids", 2)
+        )
+        raw_payload = _runtime_evaluation_json_value(
+            _runtime_evaluation_row_field(row, "payload", 3)
+        )
+        if group not in records_by_group or not record_ref:
+            raise ValueError("runtime_evaluation_normalized_rows_invalid")
+        if (
+            not isinstance(owner_run_ids, list)
+            or not owner_run_ids
+            or any(str(owner or "") != run_id for owner in owner_run_ids)
+        ):
+            raise ValueError("runtime_evaluation_authority_cross_run")
+        if group in wrapped_kinds:
+            if (
+                not isinstance(raw_payload, Mapping)
+                or set(raw_payload) != {"kind", "record"}
+                or raw_payload.get("kind") != wrapped_kinds[group]
+                or not isinstance(raw_payload.get("record"), Mapping)
+            ):
+                raise ValueError("runtime_evaluation_normalized_rows_invalid")
+            payload = raw_payload["record"]
+        else:
+            if not isinstance(raw_payload, Mapping):
+                raise ValueError("runtime_evaluation_normalized_rows_invalid")
+            payload = raw_payload
+        try:
+            payload_ref = runtime_publication_record_ref(group, payload)
+        except (EvidenceIntegrityError, KeyError, TypeError, ValueError) as exc:
+            raise ValueError("runtime_evaluation_normalized_rows_invalid") from exc
+        if payload_ref != record_ref:
+            raise ValueError("runtime_evaluation_normalized_rows_invalid")
+        group_records = records_by_group[group]
+        if record_ref in group_records:
+            raise ValueError("runtime_evaluation_normalized_rows_ambiguous")
+        group_records[record_ref] = dict(payload)
+
+    bundle: dict[str, Any] = {
+        "analysis_contract": dict(indexed_analysis_contract),
+    }
+    for group in RUNTIME_PUBLICATION_RECORD_GROUPS:
+        expected = ordered_refs[group]
+        records = records_by_group[group]
+        missing = set(expected) - set(records)
+        unexpected = set(records) - set(expected)
+        if missing:
+            raise ValueError("runtime_evaluation_normalized_rows_missing")
+        if unexpected:
+            raise ValueError("runtime_evaluation_normalized_rows_unexpected")
+        bundle[group] = [records[ref] for ref in expected]
+    return bundle
+
+
+def _runtime_evaluation_inventory_sql() -> str:
+    return """
+        /* live_eval_runtime_evaluation_authority_inventory */
+        WITH requested AS (
+          SELECT %(run_id)s::text AS run_id,
+                 %(ordered_refs)s::jsonb AS ordered_refs
+        )
+        SELECT 'query_contracts' AS record_group,
+               query_contract.query_contract_id AS record_ref,
+               jsonb_build_array(query_contract.run_id) AS owner_run_ids,
+               query_contract.payload
+        FROM requested
+        JOIN waje_runtime.query_contracts query_contract
+          ON query_contract.run_id = requested.run_id
+          OR query_contract.query_contract_id IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'query_contracts'
+            )
+          )
+        UNION ALL
+        SELECT 'query_execution_records',
+               execution.record_ref,
+               jsonb_build_array(
+                 execution.run_id, query_run.run_id, query_contract.run_id
+               ),
+               execution.payload
+        FROM requested
+        JOIN waje_runtime.query_execution_authority execution
+          ON execution.run_id = requested.run_id
+          OR execution.record_ref IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'query_execution_records'
+            )
+          )
+        LEFT JOIN waje_runtime.query_runs query_run
+          ON query_run.result_ref = execution.result_ref
+        LEFT JOIN waje_runtime.query_contracts query_contract
+          ON query_contract.query_contract_id = execution.query_contract_ref
+        UNION ALL
+        SELECT 'rows_records',
+               rows_record.record_ref,
+               COALESCE((
+                 SELECT jsonb_agg(DISTINCT linked.run_id ORDER BY linked.run_id)
+                 FROM waje_runtime.query_execution_authority linked
+                 WHERE linked.rows_ref = rows_record.rows_ref
+                   AND (
+                     linked.run_id = requested.run_id
+                     OR linked.record_ref IN (
+                       SELECT jsonb_array_elements_text(
+                         requested.ordered_refs -> 'query_execution_records'
+                       )
+                     )
+                   )
+               ), '[]'::jsonb),
+               rows_record.payload
+        FROM requested
+        JOIN waje_runtime.rows_metadata_authority rows_record
+          ON rows_record.record_ref IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'rows_records'
+            )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM waje_runtime.query_execution_authority current_execution
+            WHERE current_execution.run_id = requested.run_id
+              AND current_execution.rows_ref = rows_record.rows_ref
+          )
+        UNION ALL
+        SELECT 'snapshot_records',
+               snapshot_record.record_ref,
+               COALESCE((
+                 SELECT jsonb_agg(DISTINCT linked.run_id ORDER BY linked.run_id)
+                 FROM (
+                   SELECT execution.run_id
+                   FROM waje_runtime.query_execution_authority execution
+                   WHERE (
+                       execution.run_id = requested.run_id
+                       OR execution.record_ref IN (
+                         SELECT jsonb_array_elements_text(
+                           requested.ordered_refs -> 'query_execution_records'
+                         )
+                       )
+                     )
+                     AND EXISTS (
+                       SELECT 1
+                       FROM jsonb_array_elements_text(
+                         COALESCE(
+                           execution.payload #> '{record,source_snapshot_record_refs}',
+                           '[]'::jsonb
+                         )
+                       ) AS source_record(record_ref)
+                       WHERE source_record.record_ref = snapshot_record.record_ref
+                     )
+                   UNION
+                   SELECT query_contract.run_id
+                   FROM waje_runtime.query_contracts query_contract
+                   WHERE (
+                       query_contract.run_id = requested.run_id
+                       OR query_contract.query_contract_id IN (
+                         SELECT jsonb_array_elements_text(
+                           requested.ordered_refs -> 'query_contracts'
+                         )
+                       )
+                     )
+                     AND COALESCE(
+                       query_contract.payload -> 'dataset_snapshot_refs',
+                       '[]'::jsonb
+                     ) ? snapshot_record.snapshot_ref
+                 ) linked
+               ), '[]'::jsonb),
+               snapshot_record.payload
+        FROM requested
+        JOIN waje_runtime.snapshot_authority snapshot_record
+          ON snapshot_record.record_ref IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'snapshot_records'
+            )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM waje_runtime.query_execution_authority current_execution
+            WHERE current_execution.run_id = requested.run_id
+              AND EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements_text(
+                  COALESCE(
+                    current_execution.payload
+                      #> '{record,source_snapshot_record_refs}',
+                    '[]'::jsonb
+                  )
+                ) AS source_record(record_ref)
+                WHERE source_record.record_ref = snapshot_record.record_ref
+              )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM waje_runtime.query_contracts current_contract
+            WHERE current_contract.run_id = requested.run_id
+              AND COALESCE(
+                current_contract.payload -> 'dataset_snapshot_refs',
+                '[]'::jsonb
+              ) ? snapshot_record.snapshot_ref
+          )
+        UNION ALL
+        SELECT 'completeness_records',
+               completeness.record_ref,
+               jsonb_build_array(
+                 completeness.run_id, query_run.run_id, query_contract.run_id
+               ),
+               completeness.payload
+        FROM requested
+        JOIN waje_runtime.query_completeness_reports completeness
+          ON completeness.run_id = requested.run_id
+          OR completeness.record_ref IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'completeness_records'
+            )
+          )
+        LEFT JOIN waje_runtime.query_runs query_run
+          ON query_run.result_ref = completeness.result_ref
+        LEFT JOIN waje_runtime.query_contracts query_contract
+          ON query_contract.query_contract_id = completeness.query_contract_ref
+        UNION ALL
+        SELECT 'capability_binding_records',
+               binding.record_ref,
+               jsonb_build_array(binding.run_id, analysis_contract.run_id),
+               binding.payload
+        FROM requested
+        JOIN waje_runtime.capability_binding_authority binding
+          ON binding.run_id = requested.run_id
+          OR binding.record_ref IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'capability_binding_records'
+            )
+          )
+        LEFT JOIN waje_runtime.analysis_contracts analysis_contract
+          ON analysis_contract.analysis_contract_id = binding.analysis_contract_id
+        UNION ALL
+        SELECT 'evidence_manifests',
+               evidence.evidence_ref,
+               jsonb_build_array(evidence.run_id, binding.run_id),
+               evidence.payload
+        FROM requested
+        JOIN waje_runtime.evidence_manifests evidence
+          ON evidence.run_id = requested.run_id
+          OR evidence.evidence_ref IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'evidence_manifests'
+            )
+          )
+        LEFT JOIN waje_runtime.capability_binding_authority binding
+          ON binding.record_ref = evidence.binding_record_ref
+        UNION ALL
+        SELECT 'context_manifests',
+               context.manifest_id,
+               jsonb_build_array(context.run_id),
+               context.payload
+        FROM requested
+        JOIN waje_runtime.context_manifests context
+          ON context.run_id = requested.run_id
+          OR context.manifest_id IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'context_manifests'
+            )
+          )
+        UNION ALL
+        SELECT 'trusted_provenance_records',
+               provenance.record_ref,
+               jsonb_build_array(provenance.run_id),
+               provenance.payload
+        FROM requested
+        JOIN waje_runtime.claim_provenance_records provenance
+          ON provenance.run_id = requested.run_id
+          OR provenance.record_ref IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'trusted_provenance_records'
+            )
+          )
+        UNION ALL
+        SELECT 'verified_claims',
+               claim.claim_ref,
+               jsonb_build_array(
+                 claim.run_id, context.run_id, provenance.run_id
+               ),
+               claim.payload
+        FROM requested
+        JOIN waje_runtime.verified_claims claim
+          ON claim.run_id = requested.run_id
+          OR claim.claim_ref IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'verified_claims'
+            )
+          )
+        LEFT JOIN waje_runtime.context_manifests context
+          ON context.manifest_id = claim.context_manifest_ref
+        LEFT JOIN waje_runtime.claim_provenance_records provenance
+          ON provenance.record_ref = claim.provenance_record_ref
+        UNION ALL
+        SELECT 'claim_links',
+               link.claim_ref || chr(31) || link.evidence_ref,
+               jsonb_build_array(claim.run_id, evidence.run_id, context.run_id),
+               link.payload
+        FROM requested
+        JOIN waje_runtime.claim_evidence_links link
+          ON link.claim_ref || chr(31) || link.evidence_ref IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'claim_links'
+            )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM waje_runtime.verified_claims current_claim
+            WHERE current_claim.claim_ref = link.claim_ref
+              AND current_claim.run_id = requested.run_id
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM waje_runtime.evidence_manifests current_evidence
+            WHERE current_evidence.evidence_ref = link.evidence_ref
+              AND current_evidence.run_id = requested.run_id
+          )
+        LEFT JOIN waje_runtime.verified_claims claim
+          ON claim.claim_ref = link.claim_ref
+        LEFT JOIN waje_runtime.evidence_manifests evidence
+          ON evidence.evidence_ref = link.evidence_ref
+        LEFT JOIN waje_runtime.context_manifests context
+          ON context.manifest_id = link.context_manifest_ref
+        UNION ALL
+        SELECT 'repair_attempts',
+               repair.attempt_ref,
+               jsonb_build_array(repair.run_id),
+               repair.payload
+        FROM requested
+        JOIN waje_runtime.query_repair_attempts repair
+          ON repair.run_id = requested.run_id
+          OR repair.attempt_ref IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'repair_attempts'
+            )
+          )
+        ORDER BY record_group, record_ref
+    """
+
+
+def _unique_runtime_evaluation_event(
+    events: Any,
+    *,
+    event_type: str,
+    run_id: str,
+    thread_id: str,
+    topic_id: str,
+    require_owner: bool = True,
+) -> Mapping[str, Any]:
+    if not isinstance(events, list):
+        raise ValueError("runtime_evaluation_authority_event_invalid")
+    matches = tuple(
+        event
+        for event in events
+        if isinstance(event, Mapping) and event.get("event_type") == event_type
+    )
+    if len(matches) != 1:
+        suffix = "missing" if not matches else "ambiguous"
+        raise ValueError(f"runtime_evaluation_{event_type}_{suffix}")
+    event = matches[0]
+    if (
+        str(event.get("run_id") or "") != run_id
+        or require_owner
+        and (
+            str(event.get("thread_id") or "") != thread_id
+            or str(event.get("topic_id") or "") != topic_id
+        )
+    ):
+        raise ValueError("runtime_evaluation_authority_cross_run")
+    return event
+
+
+def _validate_runtime_evaluation_authority_owner_index(
+    *,
+    run_id: str,
+    thread_id: str,
+    topic_id: str,
+    run_status: str,
+    publication_digest: str,
+    bundle: Any,
+    indexed_analysis_contract: Any,
+    stored_contract_signature: str,
+    publication_events: Any,
+    delivery_events: Any,
+) -> Mapping[str, Any]:
+    """Validate the exact persisted owner/index chain for live evaluation."""
+    if not run_id or not thread_id or not topic_id:
+        raise ValueError("runtime_evaluation_authority_owner_missing")
+    if run_status != "completed":
+        raise ValueError("runtime_evaluation_run_incomplete")
+    if not isinstance(bundle, Mapping):
+        raise ValueError("runtime_evaluation_authority_invalid")
+    if not publication_digest or canonical_digest(bundle) != publication_digest:
+        raise ValueError("runtime_evaluation_publication_digest_mismatch")
+
+    publication_event = _unique_runtime_evaluation_event(
+        publication_events,
+        event_type="analysis_runtime_records_persisted",
+        run_id=run_id,
+        thread_id=thread_id,
+        topic_id=topic_id,
+        require_owner=False,
+    )
+    publication_event_payload = publication_event.get("payload")
+    if (
+        not isinstance(publication_event_payload, Mapping)
+        or str(publication_event_payload.get("bundle_digest") or "")
+        != publication_digest
+    ):
+        raise ValueError("runtime_evaluation_publication_digest_mismatch")
+
+    contract = bundle.get("analysis_contract")
+    if not isinstance(contract, Mapping):
+        raise ValueError("runtime_authority_contract_missing")
+    if (
+        not isinstance(indexed_analysis_contract, Mapping)
+        or canonical_value(indexed_analysis_contract) != canonical_value(contract)
+    ):
+        raise ValueError("runtime_evaluation_authority_index_mismatch")
+    contract_signature = str(contract.get("contract_signature") or "")
+    indexed_signature = str(
+        indexed_analysis_contract.get("contract_signature") or ""
+    )
+    contract_payload = {
+        key: value
+        for key, value in contract.items()
+        if key != "contract_signature"
+    }
+    try:
+        typed_contract = analysis_contract_from_dict(contract_payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("runtime_evaluation_analysis_contract_invalid") from exc
+    if (
+        not str(contract.get("analysis_contract_id") or "")
+        or not contract_signature
+        or stored_contract_signature != contract_signature
+        or indexed_signature != contract_signature
+        or analysis_contract_signature(typed_contract) != contract_signature
+    ):
+        raise ValueError("runtime_evaluation_analysis_contract_digest_mismatch")
+
+    delivery_event = _unique_runtime_evaluation_event(
+        delivery_events,
+        event_type="delivery_verifier_completed",
+        run_id=run_id,
+        thread_id=thread_id,
+        topic_id=topic_id,
+    )
+    verifier = delivery_event.get("payload")
+    if (
+        not isinstance(verifier, Mapping)
+        or verifier.get("status") != "passed"
+        or not isinstance(verifier.get("errors"), (list, tuple))
+        or verifier.get("errors")
+    ):
+        raise ValueError("runtime_evaluation_delivery_verifier_rejected")
+    return verifier
+
+
+def _normalized_runtime_evaluation_projection(
+    *,
+    run_id: str,
+    thread_id: str,
+    topic_id: str,
+    turn_id: str,
+    run_status: str,
+    publication_digest: str,
+    bundle: Mapping[str, Any],
+    stored_contract_signature: str,
+    delivery_verifier: Any,
+) -> dict[str, Any]:
+    """Validate and normalize the persisted authority consumed by live eval."""
+    from bi_agent.runtime.runtime_persistence import (
+        _record_from_payload,
+        validate_analysis_runtime_records,
+    )
+    from bi_agent.runtime.reuse_decision import (
+        PHYSICAL_QUERY_REUSE_DECISION_SCHEMA_VERSION,
+        validated_physical_query_reuse_decision_record,
+    )
+
+    if not run_id or not thread_id or not topic_id:
+        raise ValueError("runtime_evaluation_authority_owner_missing")
+    if run_status != "completed":
+        raise ValueError("runtime_evaluation_run_incomplete")
+    if (
+        not isinstance(delivery_verifier, Mapping)
+        or delivery_verifier.get("status") != "passed"
+        or not isinstance(delivery_verifier.get("errors"), (list, tuple))
+        or delivery_verifier.get("errors")
+    ):
+        raise ValueError("runtime_evaluation_delivery_verifier_rejected")
+    if (
+        not publication_digest
+        or canonical_digest(bundle) != publication_digest
+    ):
+        raise ValueError("runtime_evaluation_publication_digest_mismatch")
+
+    contract = bundle.get("analysis_contract")
+    if not isinstance(contract, Mapping):
+        raise ValueError("runtime_authority_contract_missing")
+    contract_ref = str(contract.get("analysis_contract_id") or "")
+    contract_signature = str(contract.get("contract_signature") or "")
+    contract_payload = {
+        key: value for key, value in contract.items() if key != "contract_signature"
+    }
+    try:
+        typed_contract = analysis_contract_from_dict(contract_payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("runtime_evaluation_analysis_contract_invalid") from exc
+    if (
+        not contract_ref
+        or stored_contract_signature != contract_signature
+        or analysis_contract_signature(typed_contract) != contract_signature
+    ):
+        raise ValueError("runtime_evaluation_analysis_contract_digest_mismatch")
+
+    def records(key: str) -> list[dict[str, Any]]:
+        raw = bundle.get(key)
+        if not isinstance(raw, (list, tuple)) or any(
+            not isinstance(item, Mapping) for item in raw
+        ):
+            raise ValueError(f"runtime_evaluation_{key}_invalid")
+        return [dict(item) for item in raw]
+
+    def unique(items: list[dict[str, Any]], key: str, error: str) -> None:
+        refs = [str(item.get(key) or "") for item in items]
+        if any(not ref for ref in refs) or len(refs) != len(set(refs)):
+            raise ValueError(error)
+
+    raw_records = {
+        key: records(key)
+        for key in (
+            "query_contracts",
+            "query_execution_records",
+            "rows_records",
+            "snapshot_records",
+            "completeness_records",
+            "capability_binding_records",
+            "evidence_manifests",
+            "context_manifests",
+            "trusted_provenance_records",
+            "verified_claims",
+            "claim_links",
+            "repair_attempts",
+        )
+    }
+    query_contracts = raw_records["query_contracts"]
+    unique(
+        query_contracts,
+        "query_contract_id",
+        "runtime_evaluation_query_contract_ambiguous",
+    )
+    try:
+        typed_queries = tuple(_query_contract_from_mapping(item) for item in query_contracts)
+        typed_groups = {
+            key: tuple(_record_from_payload(kind, item) for item in raw_records[key])
+            for key, kind in (
+                ("query_execution_records", "query_execution"),
+                ("rows_records", "rows"),
+                ("snapshot_records", "snapshot"),
+                ("completeness_records", "completeness"),
+                ("capability_binding_records", "capability_binding"),
+            )
+        }
+    except Exception as exc:
+        raise ValueError("runtime_evaluation_authority_record_invalid") from exc
+
+    if any(item.analysis_contract_ref != contract_ref for item in typed_queries):
+        raise ValueError("runtime_evaluation_authority_cross_run")
+    executions = typed_groups["query_execution_records"]
+    bindings = typed_groups["capability_binding_records"]
+    if any(
+        item.contract.analysis_contract_ref != contract_ref for item in executions
+    ) or any(item.analysis_contract_ref != contract_ref for item in bindings):
+        raise ValueError("runtime_evaluation_authority_cross_run")
+    available_results = {item.result_ref for item in executions}
+    required_results = {
+        ref
+        for binding in bindings
+        for ref in (*binding.result_refs, *binding.validation_result_refs)
+    }
+    if not required_results.issubset(available_results):
+        raise ValueError("runtime_evaluation_query_execution_missing")
+
+    try:
+        validate_analysis_runtime_records(
+            run_id=run_id,
+            analysis_contract=contract,
+            query_contracts=typed_queries,
+            query_execution_records=executions,
+            rows_records=typed_groups["rows_records"],
+            snapshot_records=typed_groups["snapshot_records"],
+            completeness_records=typed_groups["completeness_records"],
+            capability_binding_records=bindings,
+            evidence_manifests=raw_records["evidence_manifests"],
+            context_manifests=raw_records["context_manifests"],
+            trusted_provenance_records=raw_records["trusted_provenance_records"],
+            verified_claims=raw_records["verified_claims"],
+            claim_links=raw_records["claim_links"],
+            repair_attempts=raw_records["repair_attempts"],
+        )
+    except (EvidenceIntegrityError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError("runtime_evaluation_authority_invalid") from exc
+
+    bindings_by_ref = {item.record_ref: item for item in bindings}
+    evidence = []
+    for item in raw_records["evidence_manifests"]:
+        binding_ref = str(item.get("binding_record_ref") or "")
+        binding = bindings_by_ref[binding_ref]
+        evidence.append(
+            {
+                **item,
+                "binding_manifest_ref": binding_ref,
+                "binding_manifest_digest": binding.binding_digest,
+            }
+        )
+
+    raw_reuse_decisions = [
+        item
+        for provenance in raw_records["trusted_provenance_records"]
+        for item in provenance.get("reuse_decisions") or ()
+        if isinstance(item, Mapping)
+        and item.get("schema_version")
+        == PHYSICAL_QUERY_REUSE_DECISION_SCHEMA_VERSION
+    ]
+    try:
+        reuse_decisions = [
+            validated_physical_query_reuse_decision_record(item)
+            for item in raw_reuse_decisions
+        ]
+    except (EvidenceIntegrityError, TypeError, ValueError) as exc:
+        raise ValueError("runtime_evaluation_reuse_decision_invalid") from exc
+    decision_refs = [item["decision_ref"] for item in reuse_decisions]
+    if len(decision_refs) != len(set(decision_refs)):
+        raise ValueError("runtime_evaluation_reuse_decision_ambiguous")
+    queries_by_ref = {item.query_contract_id: item for item in typed_queries}
+    executions_by_record = {item.record_ref: item for item in executions}
+    completeness_by_ref = {
+        item.record_ref: item for item in typed_groups["completeness_records"]
+    }
+    for decision in reuse_decisions:
+        if (
+            decision["run_id"] != run_id
+            or decision["topic_id"] != topic_id
+            or decision["analysis_contract_ref"] != contract_ref
+        ):
+            raise ValueError("runtime_evaluation_authority_cross_run")
+        query = queries_by_ref.get(decision["query_contract_ref"])
+        execution = executions_by_record.get(
+            decision["query_execution_record_ref"]
+        )
+        if execution is None:
+            raise ValueError("runtime_evaluation_query_execution_missing")
+        if (
+            query is None
+            or query.contract_signature != decision["query_contract_signature"]
+            or execution.query_contract_ref != decision["query_contract_ref"]
+            or execution.result_ref != decision["result_ref"]
+        ):
+            raise ValueError("runtime_evaluation_reuse_decision_invalid")
+        decision_completeness = [
+            completeness_by_ref.get(ref)
+            for ref in decision["completeness_record_refs"]
+        ]
+        if any(item is None for item in decision_completeness):
+            raise ValueError("runtime_evaluation_completeness_missing")
+        if any(
+            item.result_ref != decision["result_ref"]
+            or item.query_contract_ref != decision["query_contract_ref"]
+            for item in decision_completeness
+        ):
+            raise ValueError("runtime_evaluation_reuse_decision_invalid")
+
+    query_results = [canonical_value(item.result_payload) for item in executions]
+    reports = [
+        canonical_value(item.report_payload)
+        for item in typed_groups["completeness_records"]
+    ]
+    plans_by_ref: dict[str, Mapping[str, Any]] = {}
+    for binding in bindings:
+        plan_ref = canonical_digest(binding.plan_payload)
+        plans_by_ref.setdefault(plan_ref, canonical_value(binding.plan_payload))
+    query_contracts = raw_records["query_contracts"]
+    query_executions = raw_records["query_execution_records"]
+    completeness_records = raw_records["completeness_records"]
+    capability_bindings = raw_records["capability_binding_records"]
+    context_manifests = raw_records["context_manifests"]
+    provenance_records = raw_records["trusted_provenance_records"]
+    verified_claims = raw_records["verified_claims"]
+    claim_links = raw_records["claim_links"]
+    projection = {
+        "projection_schema_version": "eval-runtime-authority.v1",
+        "run_id": run_id,
+        "thread_id": thread_id,
+        "topic_id": topic_id,
+        "turn_id": turn_id,
+        "run_status": run_status,
+        "publication_digest": publication_digest,
+        "analysis_contract": dict(contract),
+        "stored_contract_signature": contract_signature,
+        "query_contracts": query_contracts,
+        "query_executions": query_executions,
+        "completeness_records": completeness_records,
+        "capability_bindings": capability_bindings,
+        "evidence_manifests": evidence,
+        "context_manifests": context_manifests,
+        "trusted_provenance_records": provenance_records,
+        "verified_claims": verified_claims,
+        "claim_links": claim_links,
+        "delivery_verifier": dict(delivery_verifier),
+        "reuse_decisions": reuse_decisions,
+        "sections": [
+            {
+                "section_id": "summary",
+                "payload": {"claims": verified_claims},
+            },
+            {
+                "section_id": "evidence",
+                "payload": {"evidence": evidence},
+            },
+        ],
+        "admin_audit": {
+            "analysis_contract": contract_payload,
+            "compiler_runtime_plan": {"analysis_contract": contract_payload},
+            "query_contracts": query_contracts,
+            "query_results": query_results,
+            "query_executions": query_executions,
+            "completeness_reports": reports,
+            "completeness_records": completeness_records,
+            "capability_execution_plans": list(plans_by_ref.values()),
+            "capability_bindings": capability_bindings,
+            "verifier": dict(delivery_verifier),
+            "reuse_decisions": reuse_decisions,
+        },
+    }
+    return canonical_value(projection)
 
 
 def _runtime_evidence_resolver_for_store(
@@ -3931,6 +4941,18 @@ def _runtime_audit_package(
         return failure("effective_analysis_contract_id_mismatch")
     if client_copy_issue == "content_mismatch":
         return failure("effective_analysis_contract_mismatch")
+    if (
+        resolved_authority.get("projection_schema_version")
+        == "eval-runtime-authority.v1"
+    ):
+        projection_admin = resolved_authority.get("admin_audit")
+        if not isinstance(projection_admin, Mapping):
+            return failure("runtime_evaluation_projection_invalid")
+        return {
+            **dict(payload),
+            **dict(resolved_authority),
+            "admin_audit": dict(projection_admin),
+        }
     return {
         **dict(payload),
         "admin_audit": {
@@ -4628,6 +5650,7 @@ def run_case(
             required_datasets=required_datasets,
             analysis_context=analysis_context,
             runtime_authority_resolver=runtime_authority_resolver,
+            runtime_authority=runtime_authority,
         )
         if turn_record["scenario"]:
             turn_record["runtime_authority"] = runtime_authority

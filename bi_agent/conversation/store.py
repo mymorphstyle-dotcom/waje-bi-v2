@@ -636,6 +636,7 @@ class InMemoryConversationStore:
                 "ref": str(bundle["analysis_contract"]["analysis_contract_id"]),
                 "payload": deepcopy(
                     {
+                        "bundle_digest": digest,
                         "query_count": len(bundle["query_execution_records"]),
                         "capability_binding_count": len(
                             bundle["capability_binding_records"]

@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime
 import json
@@ -395,6 +396,810 @@ def _reuse_case_lineage(
             },)
         ),
     }
+
+
+def _runtime_evaluation_projection_fixture():
+    fixture = _authoritative_reuse_review_fixture()
+    run_id = fixture.current_run_id
+    evidence_ref = f"evidence:{fixture.current_binding.record_ref}"
+    bundle = fixture.runtime.build_persistence_bundle(
+        fixture.current,
+        answer_package={
+            "sections": [
+                {
+                    "section_id": "summary",
+                    "payload": {"claims": [{
+                        "text": "复用后结论",
+                        "claim_type": "comparative_change",
+                        "claim_strength": "observed",
+                        "evidence_refs": [evidence_ref],
+                    }]},
+                },
+                {
+                    "section_id": "evidence",
+                    "payload": {"evidence": [{
+                        "evidence_ref": evidence_ref,
+                        "binding_manifest_ref": fixture.current_binding.record_ref,
+                    }]},
+                },
+            ],
+        },
+        request={
+            "run_id": run_id,
+            "thread_id": fixture.thread_id,
+            "topic_id": fixture.topic_id,
+            "permission_context": {"role": "analyst"},
+            "reuse_decisions": [dict(fixture.current.reuse_decisions[0])],
+        },
+        artifact_path="artifacts/phase7/runtime-eval/answer_package.json",
+    )
+    fixture.store.save_analysis_runtime_records(run_id=run_id, **bundle)
+    fixture.store.add_audit_event(
+        "delivery_verifier_completed",
+        thread_id=fixture.thread_id,
+        topic_id=fixture.topic_id,
+        run_id=run_id,
+        ref=run_id,
+        payload={
+            "status": "passed",
+            "errors": [],
+            "warnings": [],
+            "accepted_claim_indexes": [],
+            "rejected_claim_indexes": [],
+        },
+    )
+    return fixture, run_id
+
+
+def _rebind_runtime_publication_digest(fixture, run_id):
+    publication = fixture.store.analysis_runtime_records[run_id]
+    event = next(
+        item
+        for item in fixture.store._audit_events
+        if item["event_type"] == "analysis_runtime_records_persisted"
+        and item["run_id"] == run_id
+    )
+    event["payload"]["bundle_digest"] = publication["digest"]
+
+
+_RUNTIME_EVALUATION_RECORD_REF_FIELDS = {
+    "query_contracts": "query_contract_id",
+    "query_execution_records": "record_ref",
+    "rows_records": "record_ref",
+    "snapshot_records": "record_ref",
+    "completeness_records": "record_ref",
+    "capability_binding_records": "record_ref",
+    "evidence_manifests": "evidence_ref",
+    "context_manifests": "manifest_id",
+    "trusted_provenance_records": "record_ref",
+    "verified_claims": "claim_ref",
+    "repair_attempts": "attempt_ref",
+}
+
+
+def _runtime_evaluation_record_ref(group, payload):
+    if group == "claim_links":
+        return f"{payload['claim_ref']}\x1f{payload['evidence_ref']}"
+    return str(payload[_RUNTIME_EVALUATION_RECORD_REF_FIELDS[group]])
+
+
+def _postgres_runtime_evaluation_backend(fixture, run_id):
+    publication = fixture.store.analysis_runtime_records[run_id]
+    runtime_bundle = publication["payload"]
+    contract_ref = publication["payload"]["analysis_contract"][
+        "analysis_contract_id"
+    ]
+    persisted_event = next(
+        event
+        for event in fixture.store.audit_events
+        if event["event_type"] == "analysis_runtime_records_persisted"
+        and event["run_id"] == run_id
+    )
+    delivery_event = next(
+        event
+        for event in fixture.store.audit_events
+        if event["event_type"] == "delivery_verifier_completed"
+        and event["run_id"] == run_id
+    )
+    groups = {
+        group: [
+            {
+                "owner_run_ids": [run_id],
+                "payload": deepcopy(payload),
+            }
+            for payload in runtime_bundle[group]
+        ]
+        for group in (*_RUNTIME_EVALUATION_RECORD_REF_FIELDS, "claim_links")
+    }
+    record_refs = {
+        group: [
+            _runtime_evaluation_record_ref(group, payload)
+            for payload in runtime_bundle[group]
+        ]
+        for group in groups
+    }
+    row = {
+        "run_id": run_id,
+        "thread_id": fixture.thread_id,
+        "turn_id": "turn-runtime-eval",
+        "topic_id": fixture.topic_id,
+        "run_status": "completed",
+        "publication_run_id": run_id,
+        "publication_topic_id": fixture.topic_id,
+        "publication_digest": publication["digest"],
+        "stored_contract_signature": publication["payload"]["analysis_contract"][
+            "contract_signature"
+        ],
+        "analysis_contract_count": 1,
+        "publication_index": {
+            "schema_version": "analysis-runtime-publication-index.v1",
+            "analysis_contract_id": contract_ref,
+            "ordered_refs": record_refs,
+        },
+        "publication_events": [deepcopy(persisted_event)],
+        "delivery_verifier_events": [deepcopy(delivery_event)],
+        "indexed_analysis_contract": deepcopy(
+            fixture.store.analysis_runtime_authority["analysis_contract"][
+                contract_ref
+            ]
+        ),
+        "indexed_contract_run_id": run_id,
+        "normalized_runtime_groups": groups,
+    }
+
+    class Store:
+        def _fetchall(self, statement, params):
+            if "live_eval_runtime_evaluation_authority_root" in statement:
+                assert "analysis_runtime_publications" in statement
+                assert "p.payload AS publication_index" in statement
+                assert "p.bundle_digest AS publication_digest" in statement
+                assert "ac.payload AS indexed_analysis_contract" in statement
+                assert "delivery_verifier_completed" in statement
+                assert "answer_packages" not in statement
+                assert params == {"run_id": run_id}
+                return [row]
+            assert "live_eval_runtime_evaluation_authority_inventory" in statement
+            for table in (
+                "query_contracts",
+                "query_execution_authority",
+                "rows_metadata_authority",
+                "snapshot_authority",
+                "query_completeness_reports",
+                "capability_binding_authority",
+                "evidence_manifests",
+                "context_manifests",
+                "claim_provenance_records",
+                "verified_claims",
+                "claim_evidence_links",
+                "query_repair_attempts",
+            ):
+                assert f"waje_runtime.{table}" in statement
+            assert "answer_packages" not in statement
+            assert params["run_id"] == run_id
+            assert json.loads(params["ordered_refs"]) == row[
+                "publication_index"
+            ]["ordered_refs"]
+            wrapper_kinds = {
+                "query_execution_records": "query_execution",
+                "rows_records": "rows",
+                "snapshot_records": "snapshot",
+                "completeness_records": "completeness",
+                "capability_binding_records": "capability_binding",
+            }
+            return [
+                {
+                    "record_group": group,
+                    "record_ref": entry.get(
+                        "record_ref",
+                        _runtime_evaluation_record_ref(
+                            group,
+                            entry["payload"],
+                        ),
+                    ),
+                    "owner_run_ids": deepcopy(entry["owner_run_ids"]),
+                    "payload": (
+                        {
+                            "kind": wrapper_kinds[group],
+                            "record": deepcopy(entry["payload"]),
+                        }
+                        if group in wrapper_kinds
+                        else deepcopy(entry["payload"])
+                    ),
+                }
+                for group, entries in row[
+                    "normalized_runtime_groups"
+                ].items()
+                for entry in entries
+            ]
+
+    return Store(), row
+
+
+def _runtime_evaluation_backend(fixture, run_id, backend):
+    if backend == "memory":
+        return fixture.store, None
+    return _postgres_runtime_evaluation_backend(fixture, run_id)
+
+
+def test_eval_runtime_authority_projection_reads_complete_run_matched_store_chain():
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+
+    projection = _runtime_authority_resolver_for_store(fixture.store)(run_id)
+
+    assert projection["projection_schema_version"] == "eval-runtime-authority.v1"
+    assert projection["run_id"] == run_id
+    assert projection["thread_id"] == fixture.thread_id
+    assert projection["topic_id"] == fixture.topic_id
+    assert projection["publication_digest"]
+    assert projection["analysis_contract"]["analysis_contract_id"] == (
+        f"analysis:{run_id}:1"
+    )
+    assert projection["query_contracts"]
+    assert projection["query_executions"]
+    assert projection["completeness_records"]
+    assert projection["capability_bindings"]
+    assert projection["evidence_manifests"]
+    assert "verified_claims" in projection
+    assert "claim_links" in projection
+    assert projection["delivery_verifier"]["status"] == "passed"
+    assert projection["reuse_decisions"] == [
+        dict(fixture.current.reuse_decisions[0])
+    ]
+    assert all(
+        item["analysis_contract_ref"]
+        == projection["analysis_contract"]["analysis_contract_id"]
+        for item in projection["query_contracts"]
+    )
+
+
+def test_runtime_publication_audit_binds_the_projection_digest():
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    persisted = [
+        event
+        for event in fixture.store.audit_events
+        if event["event_type"] == "analysis_runtime_records_persisted"
+        and event["run_id"] == run_id
+    ]
+
+    assert len(persisted) == 1
+    assert persisted[0]["payload"]["bundle_digest"] == (
+        fixture.store.analysis_runtime_records[run_id]["digest"]
+    )
+
+
+def test_postgres_runtime_publication_index_keeps_only_ordered_record_refs():
+    from bi_agent.conversation.postgres_store import _runtime_publication_index
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    bundle = fixture.store.analysis_runtime_records[run_id]["payload"]
+
+    publication_index = _runtime_publication_index(bundle)
+
+    assert set(publication_index) == {
+        "schema_version",
+        "analysis_contract_id",
+        "ordered_refs",
+    }
+    assert publication_index["schema_version"] == (
+        "analysis-runtime-publication-index.v1"
+    )
+    assert set(publication_index["ordered_refs"]) == {
+        *_RUNTIME_EVALUATION_RECORD_REF_FIELDS,
+        "claim_links",
+    }
+    assert publication_index["ordered_refs"]["query_contracts"] == [
+        item["query_contract_id"] for item in bundle["query_contracts"]
+    ]
+    assert publication_index["ordered_refs"]["rows_records"] == [
+        item["record_ref"] for item in bundle["rows_records"]
+    ]
+    assert publication_index["ordered_refs"]["snapshot_records"] == [
+        item["record_ref"] for item in bundle["snapshot_records"]
+    ]
+    assert publication_index["ordered_refs"]["repair_attempts"] == []
+    assert "query_contracts" not in publication_index
+
+
+def test_postgres_eval_runtime_authority_projection_reads_one_normalized_row():
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _postgres_runtime_evaluation_backend(fixture, run_id)
+
+    assert row["publication_index"]["ordered_refs"]["repair_attempts"] == []
+    assert row["publication_index"]["ordered_refs"]["rows_records"]
+    assert row["publication_index"]["ordered_refs"]["snapshot_records"]
+
+    projection = _runtime_authority_resolver_for_store(store)(run_id)
+
+    assert projection["projection_schema_version"] == "eval-runtime-authority.v1"
+    assert projection["run_id"] == run_id
+    assert projection["query_executions"]
+    assert projection["capability_bindings"]
+    assert projection["delivery_verifier"]["status"] == "passed"
+    assert projection["admin_audit"]["query_results"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("missing", "runtime_evaluation_normalized_rows_missing"),
+        ("duplicate", "runtime_evaluation_normalized_rows_ambiguous"),
+        ("cross_run", "runtime_evaluation_authority_cross_run"),
+        ("digest_drift", "runtime_evaluation_publication_digest_mismatch"),
+    ],
+)
+def test_postgres_eval_runtime_authority_projection_fails_closed_on_normalized_row_drift(
+    mutation,
+    expected_error,
+):
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _postgres_runtime_evaluation_backend(fixture, run_id)
+    records = row["normalized_runtime_groups"]["query_execution_records"]
+    if mutation == "missing":
+        records.pop()
+    elif mutation == "duplicate":
+        records.append(deepcopy(records[0]))
+    elif mutation == "cross_run":
+        records[0]["owner_run_ids"] = ["run-other"]
+    else:
+        records[0]["payload"]["execution_status"] = "failed"
+
+    with pytest.raises(ValueError, match=f"^{expected_error}$"):
+        _runtime_authority_resolver_for_store(store)(run_id)
+
+
+@pytest.mark.parametrize("mutation", ["missing_group", "duplicate_ref"])
+def test_postgres_eval_runtime_authority_projection_rejects_invalid_ordered_refs(
+    mutation,
+):
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _postgres_runtime_evaluation_backend(fixture, run_id)
+    ordered_refs = row["publication_index"]["ordered_refs"]
+    if mutation == "missing_group":
+        ordered_refs.pop("repair_attempts")
+    else:
+        ordered_refs["query_contracts"].append(
+            ordered_refs["query_contracts"][0]
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="^runtime_evaluation_publication_index_invalid$",
+    ):
+        _runtime_authority_resolver_for_store(store)(run_id)
+
+
+def test_postgres_eval_runtime_authority_projection_rejects_unindexed_run_record():
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _postgres_runtime_evaluation_backend(fixture, run_id)
+    extra = deepcopy(
+        row["normalized_runtime_groups"]["query_execution_records"][0]
+    )
+    extra["payload"]["record_ref"] = "query-execution:unindexed"
+    row["normalized_runtime_groups"]["query_execution_records"].append(extra)
+
+    with pytest.raises(
+        ValueError,
+        match="^runtime_evaluation_normalized_rows_unexpected$",
+    ):
+        _runtime_authority_resolver_for_store(store)(run_id)
+
+
+@pytest.mark.parametrize("group", ["rows_records", "snapshot_records"])
+def test_postgres_eval_runtime_authority_projection_rejects_unowned_global_record(
+    group,
+):
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _postgres_runtime_evaluation_backend(fixture, run_id)
+    row["normalized_runtime_groups"][group][0]["owner_run_ids"] = []
+
+    with pytest.raises(
+        ValueError,
+        match="^runtime_evaluation_authority_cross_run$",
+    ):
+        _runtime_authority_resolver_for_store(store)(run_id)
+
+
+def test_postgres_eval_runtime_authority_projection_rejects_db_ref_payload_drift():
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _postgres_runtime_evaluation_backend(fixture, run_id)
+    row["normalized_runtime_groups"]["query_contracts"][0][
+        "record_ref"
+    ] = "query:db-column-drift"
+
+    with pytest.raises(
+        ValueError,
+        match="^runtime_evaluation_normalized_rows_invalid$",
+    ):
+        _runtime_authority_resolver_for_store(store)(run_id)
+
+
+def test_postgres_eval_runtime_authority_projection_accepts_all_empty_record_groups():
+    from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+    from bi_agent.runtime.evidence_authority import canonical_digest
+    from bi_agent.runtime.runtime_publication_index import (
+        RUNTIME_PUBLICATION_RECORD_GROUPS,
+    )
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _postgres_runtime_evaluation_backend(fixture, run_id)
+    contract = _analysis_contract_gap_authority([], [])
+    contract["analysis_contract_id"] = f"analysis:{run_id}:empty"
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    bundle = {
+        "analysis_contract": contract,
+        **{group: [] for group in RUNTIME_PUBLICATION_RECORD_GROUPS},
+    }
+    digest = canonical_digest(bundle)
+    row["indexed_analysis_contract"] = contract
+    row["stored_contract_signature"] = contract["contract_signature"]
+    row["publication_index"] = {
+        "schema_version": "analysis-runtime-publication-index.v1",
+        "analysis_contract_id": contract["analysis_contract_id"],
+        "ordered_refs": {
+            group: [] for group in RUNTIME_PUBLICATION_RECORD_GROUPS
+        },
+    }
+    row["normalized_runtime_groups"] = {
+        group: [] for group in RUNTIME_PUBLICATION_RECORD_GROUPS
+    }
+    row["publication_digest"] = digest
+    row["publication_events"][0]["payload"]["bundle_digest"] = digest
+
+    projection = _runtime_authority_resolver_for_store(store)(run_id)
+
+    assert projection["analysis_contract"]["analysis_contract_id"] == (
+        contract["analysis_contract_id"]
+    )
+    assert projection["query_contracts"] == []
+    assert projection["query_executions"] == []
+
+
+def test_postgres_eval_runtime_authority_projection_rejects_legacy_publication_index():
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _postgres_runtime_evaluation_backend(fixture, run_id)
+    row["publication_index"] = {
+        "analysis_contract_id": row["indexed_analysis_contract"][
+            "analysis_contract_id"
+        ],
+        "context_manifest_refs": [],
+        "verified_claim_refs": [],
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="^runtime_evaluation_publication_index_invalid$",
+    ):
+        _runtime_authority_resolver_for_store(store)(run_id)
+
+
+@pytest.mark.parametrize("backend", ["memory", "postgres"])
+def test_eval_runtime_authority_projection_rejects_incomplete_run(backend):
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _runtime_evaluation_backend(fixture, run_id, backend)
+    if backend == "memory":
+        fixture.store.runs[run_id]["status"] = "failed"
+    else:
+        row["run_status"] = "failed"
+
+    with pytest.raises(
+        ValueError,
+        match="^runtime_evaluation_run_incomplete$",
+    ):
+        _runtime_authority_resolver_for_store(store)(run_id)
+
+
+@pytest.mark.parametrize("backend", ["memory", "postgres"])
+@pytest.mark.parametrize(
+    "mutation",
+    ["status", "errors", "errors_missing", "errors_wrong_type"],
+)
+def test_eval_runtime_authority_projection_rejects_failed_delivery_verifier(
+    backend,
+    mutation,
+):
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _runtime_evaluation_backend(fixture, run_id, backend)
+    if backend == "memory":
+        verifier = next(
+            event["payload"]
+            for event in fixture.store._audit_events
+            if event["event_type"] == "delivery_verifier_completed"
+            and event["run_id"] == run_id
+        )
+    else:
+        verifier = row["delivery_verifier_events"][0]["payload"]
+    if mutation == "status":
+        verifier["status"] = "failed"
+    elif mutation == "errors":
+        verifier["errors"] = ["claim_without_evidence"]
+    elif mutation == "errors_missing":
+        verifier.pop("errors")
+    else:
+        verifier["errors"] = ""
+
+    with pytest.raises(
+        ValueError,
+        match="^runtime_evaluation_delivery_verifier_rejected$",
+    ):
+        _runtime_authority_resolver_for_store(store)(run_id)
+
+
+@pytest.mark.parametrize("backend", ["memory", "postgres"])
+def test_eval_runtime_authority_projection_rejects_publication_index_drift(backend):
+    from bi_agent.runtime.analysis_contracts import (
+        analysis_contract_from_dict,
+        analysis_contract_signature,
+    )
+    from bi_agent.runtime.evidence_authority import canonical_digest
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _runtime_evaluation_backend(fixture, run_id, backend)
+    if backend == "memory":
+        publication = fixture.store.analysis_runtime_records[run_id]
+        publication_event = next(
+            event
+            for event in fixture.store._audit_events
+            if event["event_type"] == "analysis_runtime_records_persisted"
+            and event["run_id"] == run_id
+        )
+    else:
+        row["publication_index"]["analysis_contract_id"] = "analysis:other:1"
+        publication_event = row["publication_events"][0]
+    if backend == "memory":
+        contract = publication["payload"]["analysis_contract"]
+        contract["question_families"] = ["revenue_health_review"]
+        unsigned_contract = {
+            key: value
+            for key, value in contract.items()
+            if key != "contract_signature"
+        }
+        contract["contract_signature"] = analysis_contract_signature(
+            analysis_contract_from_dict(unsigned_contract)
+        )
+        publication["digest"] = canonical_digest(publication["payload"])
+        publication_event["payload"]["bundle_digest"] = publication["digest"]
+
+    with pytest.raises(
+        ValueError,
+        match="^runtime_evaluation_authority_index_mismatch$",
+    ):
+        _runtime_authority_resolver_for_store(store)(run_id)
+
+
+@pytest.mark.parametrize("backend", ["memory", "postgres"])
+def test_eval_runtime_authority_projection_rejects_cross_owner_delivery_event(
+    backend,
+):
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    store, row = _runtime_evaluation_backend(fixture, run_id, backend)
+    if backend == "memory":
+        delivery_event = next(
+            event
+            for event in fixture.store._audit_events
+            if event["event_type"] == "delivery_verifier_completed"
+            and event["run_id"] == run_id
+        )
+    else:
+        delivery_event = row["delivery_verifier_events"][0]
+    delivery_event["thread_id"] = "thread-other"
+
+    with pytest.raises(
+        ValueError,
+        match="^runtime_evaluation_authority_cross_run$",
+    ):
+        _runtime_authority_resolver_for_store(store)(run_id)
+
+
+def test_runtime_audit_reviews_use_persisted_projection_instead_of_artifact_producers(
+    tmp_path,
+    monkeypatch,
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    projection_resolver = system_test._runtime_authority_resolver_for_store(
+        fixture.store
+    )
+    contract_ref = fixture.store.analysis_runtime_records[run_id]["payload"][
+        "analysis_contract"
+    ]["analysis_contract_id"]
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    artifact_path = artifact_root / "answer-package.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "sections": [
+                    {
+                        "section_id": "summary",
+                        "payload": {
+                            "claims": [
+                                {
+                                    "claim_ref": "forged-client-claim",
+                                    "producer": "clickhouse",
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "admin_audit": {
+                    "analysis_runtime_persistence": {
+                        "status": "persisted",
+                        "analysis_contract_ref": contract_ref,
+                    },
+                    "verifier": {"status": "passed"},
+                    "reuse_decisions": [
+                        {"decision": "reuse", "source_ref": "forged-client-ref"}
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+
+    authority = system_test._runtime_audit_package(
+        {
+            "run_id": run_id,
+            "artifact_path": str(artifact_path),
+            "answer_package": {
+                "admin_audit": {
+                    "analysis_runtime_persistence": {
+                        "status": "persisted",
+                        "analysis_contract_ref": contract_ref,
+                    }
+                }
+            },
+        },
+        authority_resolver=projection_resolver,
+    )
+
+    assert authority["projection_schema_version"] == "eval-runtime-authority.v1"
+    assert authority["admin_audit"]["query_contracts"]
+    assert authority["admin_audit"]["query_results"]
+    assert authority["admin_audit"]["capability_bindings"]
+    assert authority["admin_audit"]["verifier"] == authority["delivery_verifier"]
+    assert authority["admin_audit"]["reuse_decisions"] == [
+        dict(fixture.current.reuse_decisions[0])
+    ]
+    assert not any(
+        claim.get("producer") == "clickhouse"
+        for section in authority["sections"]
+        for claim in section.get("payload", {}).get("claims", [])
+    )
+
+
+def test_real_clickhouse_review_accepts_the_already_resolved_runtime_projection(
+    monkeypatch,
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    monkeypatch.setattr(
+        system_test,
+        "_runtime_audit_package",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("runtime authority must not be resolved twice")
+        ),
+    )
+
+    review = system_test._real_clickhouse_review(
+        {},
+        real_clickhouse=True,
+        runtime_authority={"_authority_error": "projection_failed"},
+    )
+
+    assert review["real_clickhouse_verified"] is False
+    assert "runtime_authority_error:projection_failed" in review["issues"]
+
+
+def test_eval_runtime_authority_projection_does_not_treat_claim_producer_as_execution():
+    from bi_agent.runtime.evidence_authority import canonical_digest
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    publication = fixture.store.analysis_runtime_records[run_id]
+    publication["payload"]["query_execution_records"] = []
+    publication["digest"] = canonical_digest(publication["payload"])
+    _rebind_runtime_publication_digest(fixture, run_id)
+
+    with pytest.raises(
+        ValueError,
+        match="^runtime_evaluation_query_execution_missing$",
+    ):
+        _runtime_authority_resolver_for_store(fixture.store)(run_id)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("cross_run", "runtime_evaluation_authority_cross_run"),
+        ("duplicate", "runtime_evaluation_query_contract_ambiguous"),
+        ("digest_drift", "runtime_evaluation_publication_digest_mismatch"),
+    ],
+)
+def test_eval_runtime_authority_projection_fails_closed_on_owner_duplicate_or_digest_drift(
+    mutation,
+    expected_error,
+):
+    from bi_agent.runtime.evidence_authority import canonical_digest
+    from tools.phase7.run_live_conversation_system_test import (
+        _runtime_authority_resolver_for_store,
+    )
+
+    fixture, run_id = _runtime_evaluation_projection_fixture()
+    publication = fixture.store.analysis_runtime_records[run_id]
+    if mutation == "cross_run":
+        publication["payload"]["query_contracts"][0][
+            "analysis_contract_ref"
+        ] = "analysis:run-other:1"
+        publication["digest"] = canonical_digest(publication["payload"])
+    elif mutation == "duplicate":
+        publication["payload"]["query_contracts"].append(
+            deepcopy(publication["payload"]["query_contracts"][0])
+        )
+        publication["digest"] = canonical_digest(publication["payload"])
+    else:
+        publication["payload"]["analysis_contract"]["question_families"] = [
+            "revenue_health_review"
+        ]
+    if mutation != "digest_drift":
+        _rebind_runtime_publication_digest(fixture, run_id)
+
+    with pytest.raises(ValueError, match=f"^{expected_error}$"):
+        _runtime_authority_resolver_for_store(fixture.store)(run_id)
 
 
 @pytest.mark.parametrize(
