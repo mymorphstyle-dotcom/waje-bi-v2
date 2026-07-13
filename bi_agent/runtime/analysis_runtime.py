@@ -572,8 +572,16 @@ class AnalysisRuntime:
         answer_package: Mapping[str, Any],
         request: Mapping[str, Any],
         artifact_path: str,
+        publication_mode: str = "complete",
+        publication_audit: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if publication_mode not in {"complete", "waiting_for_clarification"}:
+            raise ValueError("analysis_runtime_publication_mode_invalid")
         base = dict(result.persistence_records)
+        if publication_mode == "waiting_for_clarification":
+            base, audit = _project_waiting_persistence_records(base)
+            if publication_audit is not None:
+                publication_audit.update(audit)
         bindings = tuple(base["capability_binding_records"])
         package_evidence = {
             str(item.get("binding_manifest_ref") or ""): dict(item)
@@ -629,7 +637,27 @@ class AnalysisRuntime:
             evidence_manifests.append(manifest)
             evidence_by_ref[evidence_ref] = manifest
         missing_claim_evidence = claim_evidence_refs - set(evidence_by_ref)
-        if missing_claim_evidence:
+        if publication_mode == "waiting_for_clarification":
+            claims = tuple(
+                claim
+                for claim in claims
+                if claim.get("evidence_refs")
+                and not (
+                    {
+                        str(ref)
+                        for ref in claim.get("evidence_refs") or ()
+                        if ref
+                    }
+                    - set(evidence_by_ref)
+                )
+            )
+            claim_evidence_refs = {
+                str(ref)
+                for claim in claims
+                for ref in claim.get("evidence_refs") or ()
+                if ref
+            }
+        elif missing_claim_evidence:
             raise ValueError(
                 "analysis_runtime_claim_evidence_unpersistable:"
                 + ",".join(sorted(missing_claim_evidence))
@@ -723,3 +751,156 @@ class AnalysisRuntime:
                 for index, item in enumerate(result.repair_decisions, start=1)
             ),
         }
+
+
+def _project_waiting_persistence_records(
+    records: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    query_contracts = tuple(records.get("query_contracts") or ())
+    query_records = tuple(records.get("query_execution_records") or ())
+    rows_records = tuple(records.get("rows_records") or ())
+    snapshot_records = tuple(records.get("snapshot_records") or ())
+    completeness_records = tuple(records.get("completeness_records") or ())
+    bindings = tuple(records.get("capability_binding_records") or ())
+    query_contract_refs = {
+        contract.query_contract_id for contract in query_contracts
+    }
+    query_by_result = {record.result_ref: record for record in query_records}
+    rows_by_record_ref = {record.record_ref: record for record in rows_records}
+    completeness_by_record_ref = {
+        record.record_ref: record for record in completeness_records
+    }
+    snapshot_refs = {record.snapshot_ref for record in snapshot_records}
+    retained_bindings = tuple(
+        binding
+        for binding in bindings
+        if _binding_has_complete_persistence_closure(
+            binding,
+            query_contract_refs=query_contract_refs,
+            query_by_result=query_by_result,
+            rows_by_record_ref=rows_by_record_ref,
+            completeness_by_record_ref=completeness_by_record_ref,
+            snapshot_refs=snapshot_refs,
+        )
+    )
+    retained_result_refs = {
+        ref
+        for binding in retained_bindings
+        for ref in (*binding.result_refs, *binding.validation_result_refs)
+    }
+    retained_rows_record_refs = {
+        ref
+        for binding in retained_bindings
+        for ref in (
+            *binding.rows_metadata_record_refs,
+            *binding.validation_rows_metadata_record_refs,
+        )
+    }
+    retained_completeness_record_refs = {
+        ref
+        for binding in retained_bindings
+        for ref in (
+            *binding.completeness_record_refs,
+            *binding.validation_completeness_record_refs,
+        )
+    }
+    all_result_refs = {record.result_ref for record in query_records}
+    omitted_result_refs = tuple(sorted(all_result_refs - retained_result_refs))
+    projected = {
+        **dict(records),
+        "query_contracts": query_contracts,
+        "query_execution_records": tuple(
+            record
+            for record in query_records
+            if record.result_ref in retained_result_refs
+        ),
+        "rows_records": tuple(
+            record
+            for record in rows_records
+            if record.record_ref in retained_rows_record_refs
+        ),
+        "snapshot_records": snapshot_records,
+        "completeness_records": tuple(
+            record
+            for record in completeness_records
+            if record.record_ref in retained_completeness_record_refs
+        ),
+        "capability_binding_records": retained_bindings,
+    }
+    return projected, {
+        "publication_mode": "waiting_for_clarification",
+        "omitted_result_refs": omitted_result_refs,
+        "omitted_result_count": len(omitted_result_refs),
+        "retained_result_count": len(retained_result_refs),
+        "owner": "analysis_runtime_persistence_owner",
+        "reason": "unbound_result_chain_omitted",
+    }
+
+
+def _binding_has_complete_persistence_closure(
+    binding: CapabilityBindingRecord,
+    *,
+    query_contract_refs: set[str],
+    query_by_result: Mapping[str, QueryExecutionRecord],
+    rows_by_record_ref: Mapping[str, RowsRecord],
+    completeness_by_record_ref: Mapping[str, CompletenessRecord],
+    snapshot_refs: set[str],
+) -> bool:
+    groups = (
+        (
+            binding.query_contract_refs,
+            binding.result_refs,
+            binding.query_execution_record_refs,
+            binding.query_execution_record_digests,
+            binding.rows_refs,
+            binding.rows_metadata_record_refs,
+            binding.rows_metadata_record_digests,
+            binding.rows_content_hashes,
+            binding.completeness_report_refs,
+            binding.completeness_record_refs,
+            binding.completeness_record_digests,
+        ),
+        (
+            binding.validation_query_contract_refs,
+            binding.validation_result_refs,
+            binding.validation_query_execution_record_refs,
+            binding.validation_query_execution_record_digests,
+            binding.validation_rows_refs,
+            binding.validation_rows_metadata_record_refs,
+            binding.validation_rows_metadata_record_digests,
+            binding.validation_rows_content_hashes,
+            binding.validation_completeness_report_refs,
+            binding.validation_completeness_record_refs,
+            binding.validation_completeness_record_digests,
+        ),
+    )
+    has_result = False
+    for group in groups:
+        count = len(group[1])
+        if any(len(values) != count for values in group):
+            return False
+        for index, result_ref in enumerate(group[1]):
+            has_result = True
+            query = query_by_result.get(result_ref)
+            rows = rows_by_record_ref.get(group[5][index])
+            completeness = completeness_by_record_ref.get(group[9][index])
+            if (
+                query is None
+                or query.query_contract_ref != group[0][index]
+                or query.query_contract_ref not in query_contract_refs
+                or query.record_ref != group[2][index]
+                or query.record_digest != group[3][index]
+                or query.rows_ref != group[4][index]
+                or not set(query.source_snapshot_refs).issubset(snapshot_refs)
+                or rows is None
+                or rows.rows_ref != group[4][index]
+                or rows.record_digest != group[6][index]
+                or rows.rows_content_hash != group[7][index]
+                or completeness is None
+                or completeness.result_ref != result_ref
+                or completeness.query_contract_ref != group[0][index]
+                or completeness.report_ref != group[8][index]
+                or completeness.report_digest != group[10][index]
+            ):
+                return False
+    return has_result

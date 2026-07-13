@@ -397,14 +397,26 @@ class ConversationAgentCore:
                 else:
                     records = dict(result.analysis_runtime_records)
                     runtime_result = getattr(result, "analysis_runtime_result", None)
+                    partial_publication_audit: dict[str, Any] = {}
                     if self.analysis_runtime is not None and runtime_result is not None:
                         records = self.analysis_runtime.build_persistence_bundle(
                             runtime_result,
                             answer_package=result.answer_package,
                             request=request,
                             artifact_path=result.artifact_path,
+                            publication_mode="waiting_for_clarification",
+                            publication_audit=partial_publication_audit,
                         )
                     self.store.save_analysis_runtime_records(run_id=run_id, **records)
+                    if partial_publication_audit.get("omitted_result_count"):
+                        self.store.add_audit_event(
+                            "analysis_runtime_partial_publication",
+                            thread_id=thread_id,
+                            topic_id=turn.topic_id or "",
+                            run_id=run_id,
+                            ref=run_id,
+                            payload=partial_publication_audit,
+                        )
             except Exception as exc:
                 _record_workflow_failure_llm_audits(
                     self.store,

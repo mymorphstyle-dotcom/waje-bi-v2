@@ -5,6 +5,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -247,6 +248,102 @@ def _evidence_for_binding(binding, *, evidence_ref="evidence:task9:segment"):
         "artifact_refs": ("artifact:task9",),
         "memory_refs": ("memory:task9",),
     }
+
+
+def _waiting_runtime_records_with_unbound_results(*, keep_binding=True):
+    from bi_agent.runtime.analysis_contracts import (
+        analysis_contract_from_dict,
+        analysis_contract_signature,
+    )
+
+    bound = _authority_bundle()
+    unbound = _authority_bundle(
+        query_ref="query:waiting-unbound",
+        evidence_ref="evidence:waiting-unbound",
+    )
+
+    def unique(records, field):
+        return tuple(
+            {
+                getattr(record, field): record
+                for record in records
+            }.values()
+        )
+
+    analysis_contract = bound["analysis_contract"]
+    if not keep_binding:
+        claim_intent = analysis_contract["claim_intents"][0]
+        analysis_contract = {
+            **analysis_contract,
+            "contract_gaps": [{
+                "gap_type": "contract_partial",
+                "gap_id": "capability:waiting_for_binding",
+                "dataset_id": "",
+                "affected_capabilities": list(
+                    analysis_contract["capability_requirements"]
+                ),
+                "affected_claim_types": [claim_intent],
+                "owner": "capability_owner",
+                "repair_options": ["complete_capability_binding"],
+                "requires_clarification": True,
+                "diagnostic_context": {},
+            }],
+        }
+        analysis_contract["contract_signature"] = analysis_contract_signature(
+            analysis_contract
+        )
+    persistence_records = {
+        "analysis_contract": analysis_contract,
+        "query_contracts": unique(
+            (*bound["query_contracts"], *unbound["query_contracts"]),
+            "query_contract_id",
+        ),
+        "query_execution_records": unique(
+            (
+                *bound["query_execution_records"],
+                *unbound["query_execution_records"],
+            ),
+            "result_ref",
+        ),
+        "rows_records": unique(
+            (*bound["rows_records"], *unbound["rows_records"]),
+            "record_ref",
+        ),
+        "snapshot_records": unique(
+            (*bound["snapshot_records"], *unbound["snapshot_records"]),
+            "record_ref",
+        ),
+        "completeness_records": unique(
+            (
+                *bound["completeness_records"],
+                *unbound["completeness_records"],
+            ),
+            "record_ref",
+        ),
+        "capability_binding_records": (
+            bound["capability_binding_records"] if keep_binding else ()
+        ),
+    }
+    analysis_payload = {
+        key: value
+        for key, value in analysis_contract.items()
+        if key != "contract_signature"
+    }
+    result = SimpleNamespace(
+        persistence_records=persistence_records,
+        analysis_contract=analysis_contract_from_dict(analysis_payload),
+        repair_decisions=(),
+    )
+    bound_result_refs = {
+        ref
+        for binding in bound["capability_binding_records"]
+        for ref in (*binding.result_refs, *binding.validation_result_refs)
+    }
+    all_result_refs = {
+        record.result_ref
+        for record in persistence_records["query_execution_records"]
+    }
+    return result, persistence_records, bound_result_refs, all_result_refs
 
 
 def _query_resolver_row(record, *, run_id="run-task9"):
@@ -492,6 +589,198 @@ def _use_high_value_claim_ceiling(bundle, *, claim_intents=("candidate_driver",)
 
 
 class AnalysisRuntimePersistenceTest(unittest.TestCase):
+    def test_waiting_partial_publication_omits_every_unbound_result_chain(self):
+        from bi_agent.runtime.analysis_runtime import AnalysisRuntime
+
+        result, records, _, all_result_refs = (
+            _waiting_runtime_records_with_unbound_results(keep_binding=False)
+        )
+        audit = {}
+        omitted_binding = _authority_bundle()["capability_binding_records"][0]
+
+        projected = AnalysisRuntime.build_persistence_bundle(
+            object.__new__(AnalysisRuntime),
+            result,
+            answer_package={
+                "status": "waiting_for_clarification",
+                "sections": [{
+                    "section_id": "summary",
+                    "payload": {
+                        "evidence": [{
+                            "binding_manifest_ref": omitted_binding.record_ref,
+                            "evidence_ref": "evidence:omitted-waiting",
+                        }],
+                        "claims": [{
+                            "text": "未形成能力绑定的结果不能形成已验证结论。",
+                            "claim_type": "segment_contribution_or_mix_shift",
+                            "claim_strength": "observed",
+                            "evidence_refs": ["evidence:omitted-waiting"],
+                        }],
+                    },
+                }],
+            },
+            request={"run_id": "run-task9"},
+            artifact_path="artifact:waiting",
+            publication_mode="waiting_for_clarification",
+            publication_audit=audit,
+        )
+
+        self.assertEqual(projected["query_contracts"], records["query_contracts"])
+        self.assertEqual(projected["snapshot_records"], records["snapshot_records"])
+        for key in (
+            "query_execution_records",
+            "rows_records",
+            "completeness_records",
+            "capability_binding_records",
+            "evidence_manifests",
+            "context_manifests",
+            "trusted_provenance_records",
+            "verified_claims",
+            "claim_links",
+        ):
+            self.assertEqual(projected[key], (), key)
+        self.assertEqual(set(audit["omitted_result_refs"]), all_result_refs)
+        self.assertEqual(audit["omitted_result_count"], len(all_result_refs))
+        self.assertEqual(audit["retained_result_count"], 0)
+        self.assertEqual(audit["owner"], "analysis_runtime_persistence_owner")
+        self.assertEqual(audit["reason"], "unbound_result_chain_omitted")
+
+    def test_waiting_partial_publication_keeps_only_binding_complete_closure(self):
+        from bi_agent.runtime.analysis_runtime import AnalysisRuntime
+
+        result, records, bound_result_refs, all_result_refs = (
+            _waiting_runtime_records_with_unbound_results()
+        )
+        audit = {}
+
+        projected = AnalysisRuntime.build_persistence_bundle(
+            object.__new__(AnalysisRuntime),
+            result,
+            answer_package={"status": "waiting_for_clarification", "sections": []},
+            request={"run_id": "run-task9"},
+            artifact_path="artifact:waiting",
+            publication_mode="waiting_for_clarification",
+            publication_audit=audit,
+        )
+
+        self.assertEqual(
+            {item.result_ref for item in projected["query_execution_records"]},
+            bound_result_refs,
+        )
+        self.assertEqual(
+            {item.rows_ref for item in projected["rows_records"]},
+            {item.rows_ref for item in projected["query_execution_records"]},
+        )
+        self.assertEqual(
+            {item.result_ref for item in projected["completeness_records"]},
+            bound_result_refs,
+        )
+        self.assertEqual(
+            projected["capability_binding_records"],
+            records["capability_binding_records"],
+        )
+        self.assertEqual(projected["query_contracts"], records["query_contracts"])
+        self.assertEqual(projected["snapshot_records"], records["snapshot_records"])
+        self.assertEqual(
+            set(audit["omitted_result_refs"]),
+            all_result_refs - bound_result_refs,
+        )
+        self.assertEqual(audit["retained_result_count"], len(bound_result_refs))
+
+    def test_completed_bundle_and_raw_unbound_validator_remain_strict(self):
+        from bi_agent.runtime.analysis_runtime import AnalysisRuntime
+
+        valid = _authority_bundle()
+        result, raw_records, _, _ = _waiting_runtime_records_with_unbound_results()
+        completed_result = SimpleNamespace(
+            persistence_records={
+                key: valid[key]
+                for key in (
+                    "analysis_contract",
+                    "query_contracts",
+                    "query_execution_records",
+                    "rows_records",
+                    "snapshot_records",
+                    "completeness_records",
+                    "capability_binding_records",
+                )
+            },
+            analysis_contract=result.analysis_contract,
+            repair_decisions=(),
+        )
+
+        completed = AnalysisRuntime.build_persistence_bundle(
+            object.__new__(AnalysisRuntime),
+            completed_result,
+            answer_package={"status": "draft", "sections": []},
+            request={"run_id": "run-task9"},
+            artifact_path="artifact:completed",
+        )
+
+        for key in (
+            "query_contracts",
+            "query_execution_records",
+            "rows_records",
+            "snapshot_records",
+            "completeness_records",
+            "capability_binding_records",
+        ):
+            self.assertEqual(completed[key], valid[key], key)
+        raw_bundle = {
+            **valid,
+            **raw_records,
+            "evidence_manifests": (),
+            "context_manifests": (),
+            "trusted_provenance_records": (),
+            "verified_claims": (),
+            "claim_links": (),
+            "repair_attempts": (),
+        }
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_binding_chain_incomplete",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **raw_bundle
+            )
+
+    def test_projected_waiting_bundle_publishes_to_memory_and_postgres(self):
+        from bi_agent.runtime.analysis_runtime import AnalysisRuntime
+
+        result, _, _, _ = _waiting_runtime_records_with_unbound_results(
+            keep_binding=False
+        )
+        projected = AnalysisRuntime.build_persistence_bundle(
+            object.__new__(AnalysisRuntime),
+            result,
+            answer_package={"status": "waiting_for_clarification", "sections": []},
+            request={"run_id": "run-task9"},
+            artifact_path="artifact:waiting",
+            publication_mode="waiting_for_clarification",
+        )
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **projected
+            ),
+            "published",
+        )
+        connection = FakeConnection()
+        self.assertEqual(
+            PostgresConversationStore(connection).save_analysis_runtime_records(
+                run_id="run-task9", **projected
+            ),
+            "published",
+        )
+        sql = "\n".join(statement for statement, _ in connection.statements)
+        self.assertIn("waje_runtime.analysis_contracts", sql)
+        self.assertIn("waje_runtime.query_contracts", sql)
+        self.assertIn("waje_runtime.snapshot_authority", sql)
+        self.assertNotIn(
+            "INSERT INTO waje_runtime.query_execution_authority",
+            sql,
+        )
+
     def test_descriptive_relative_day_baselines_are_canonicalized(self):
         from bi_agent.runtime.langgraph_workflow import _canonical_baselines
 

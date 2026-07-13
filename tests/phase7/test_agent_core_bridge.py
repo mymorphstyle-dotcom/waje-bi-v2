@@ -487,6 +487,83 @@ class AgentCoreBridgeTest(unittest.TestCase):
             canonical["manifest_id"],
         )
 
+    def test_waiting_query_gap_persists_partial_runtime_closure_and_internal_audit(self):
+        from bi_agent.runtime.analysis_runtime import AnalysisRuntime
+        from tests.phase7.test_analysis_runtime_persistence import (
+            _waiting_runtime_records_with_unbound_results,
+        )
+
+        runtime_result, _, bound_result_refs, all_result_refs = (
+            _waiting_runtime_records_with_unbound_results()
+        )
+
+        def workflow(request):
+            return WorkflowRunResult(
+                status="waiting_for_clarification",
+                run_id=request["run_id"],
+                answer_package={
+                    "status": "waiting_for_clarification",
+                    "accepted_graph": ["segment_contribution"],
+                    "analysis_contract": runtime_result.persistence_records[
+                        "analysis_contract"
+                    ],
+                    "analysis_route": {"requested_nodes": ["segment_contribution"]},
+                    "original_intent": {},
+                    "material_slots": {},
+                    "clarification": {
+                        "questions": [{
+                            "question": "部分结果尚未形成能力绑定，怎么继续？",
+                            "options": [
+                                "等待完整绑定后继续",
+                                "tell the agent to do differently",
+                            ],
+                        }],
+                        "recommended_assumption": {
+                            "option": "等待完整绑定后继续"
+                        },
+                    },
+                },
+                analysis_runtime_records=runtime_result.persistence_records,
+                analysis_runtime_result=runtime_result,
+            )
+
+        store = InMemoryConversationStore()
+        result = ConversationAgentCore(
+            store,
+            workflow_runner=workflow,
+            analysis_runtime=object.__new__(AnalysisRuntime),
+        ).run_message(
+            thread_id="thread-waiting-partial-runtime",
+            run_id="run-task9",
+            user_message="昨天付费金额的渠道贡献为什么变化？",
+        )
+
+        self.assertEqual(result["status"], "waiting_for_clarification")
+        persisted = store.analysis_runtime_records["run-task9"]["payload"]
+        self.assertEqual(
+            {item["result_ref"] for item in persisted["query_execution_records"]},
+            bound_result_refs,
+        )
+        audit = next(
+            event
+            for event in store.audit_events
+            if event["event_type"] == "analysis_runtime_partial_publication"
+        )
+        self.assertEqual(
+            set(audit["payload"]["omitted_result_refs"]),
+            all_result_refs - bound_result_refs,
+        )
+        self.assertEqual(
+            audit["payload"]["omitted_result_count"],
+            len(all_result_refs - bound_result_refs),
+        )
+        self.assertEqual(
+            audit["payload"]["owner"],
+            "analysis_runtime_persistence_owner",
+        )
+        self.assertNotIn("partial_publication", result)
+        self.assertNotIn("omitted_result_refs", str(result))
+
     def test_query_gap_answer_resumes_same_topic_and_original_analysis_lineage(self):
         captured = []
 
