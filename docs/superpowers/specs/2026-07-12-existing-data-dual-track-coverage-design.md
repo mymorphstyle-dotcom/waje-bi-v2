@@ -373,6 +373,22 @@ Those outputs fail with a typed LLM or LLM-contract error before publication.
 Legacy fixture-only narrative helpers remain outside the production/live path
 and cannot be selected by a real provider failure.
 
+The reviewed clarification escape `tell the agent to do differently` is a
+machine contract token even though it is displayed inside a user-facing options
+array. Conversation orchestration, boundary decision, general clarification,
+and query-gap clarification all import one neutral contract constant. Every LLM
+surface receives the token in delimited input and an explicit system/task-level
+exception to the Chinese narrative rule; structured conversation options use
+the same exact label with a Chinese description. It must be copied
+character-for-character as the final option. Translation, paraphrase, case
+changes, whitespace changes, relocation, aliases, or local fallback fail with a
+typed contract error. A provider boundary decision with `needs_question` has
+exactly one question, two or three business options, the final escape, and a
+recommendation copied from a business option. Other boundary statuses carry an
+empty question list. Business options and recommendation explanations remain
+natural Simplified Chinese. Local policy continues to own the choice action and
+accepted-graph effect.
+
 The provider client owns the only implicit retry loop and uses exactly
 `DEFAULT_MAX_ATTEMPTS=3`. A LangGraph business node invokes its LLM task once;
 the node wrapper records one checkpoint and does not invoke the node again after

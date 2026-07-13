@@ -32,6 +32,7 @@ from bi_agent.conversation.clarification_authority import (
     validate_terminal_resume_proposal_overlap,
     validate_terminal_runtime_context_overlap,
 )
+from bi_agent.conversation.models import CLARIFICATION_ESCAPE_OPTION
 from bi_agent.capabilities.data_quality_check import data_quality_check
 from bi_agent.capabilities.driver_decomposition import driver_decomposition
 from bi_agent.capabilities.formula_decompose import formula_decompose
@@ -1791,8 +1792,97 @@ def _decide_question_boundary(state: WorkflowState) -> WorkflowState:
         },
         "phase4_policy": "ask only when ambiguity can change conclusion, baseline, time semantics, permission, claim strength, or cost",
     }
-    state["boundary_decision"] = _invoke_llm(state, "boundary_decision", boundary_payload)
+    output = _invoke_llm(state, "boundary_decision", boundary_payload)
+    state["boundary_decision"] = _normalize_boundary_decision_output(output)
     return state
+
+
+def _normalize_boundary_decision_output(output: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(output, Mapping):
+        raise WorkflowFailure(
+            "boundary_decision_contract_invalid:output",
+            failure_type="llm_contract",
+        )
+    status = output.get("boundary_status")
+    if status not in {
+        "clear",
+        "low_risk_assumption",
+        "needs_question",
+        "cannot_answer",
+    }:
+        raise WorkflowFailure(
+            "boundary_decision_contract_invalid:boundary_status",
+            failure_type="llm_contract",
+        )
+    questions = output.get("clarification_questions")
+    if not isinstance(questions, list):
+        raise WorkflowFailure(
+            "boundary_decision_contract_invalid:questions",
+            failure_type="llm_contract",
+        )
+    if status != "needs_question":
+        if questions:
+            raise WorkflowFailure(
+                "boundary_decision_contract_invalid:questions",
+                failure_type="llm_contract",
+            )
+        return {**dict(output), "clarification_questions": []}
+    if len(questions) != 1 or not isinstance(questions[0], Mapping):
+        raise WorkflowFailure(
+            "boundary_decision_contract_invalid:questions",
+            failure_type="llm_contract",
+        )
+    question = questions[0]
+    if set(question) != {"question", "options"}:
+        raise WorkflowFailure(
+            "boundary_decision_contract_invalid:questions",
+            failure_type="llm_contract",
+        )
+    question_text = question.get("question")
+    raw_options = question.get("options")
+    if (
+        not isinstance(question_text, str)
+        or not question_text
+        or question_text != question_text.strip()
+        or not isinstance(raw_options, list)
+        or len(raw_options) not in {3, 4}
+        or any(not isinstance(option, str) for option in raw_options)
+        or raw_options[-1] != CLARIFICATION_ESCAPE_OPTION
+        or any(not option or option != option.strip() for option in raw_options[:-1])
+    ):
+        raise WorkflowFailure(
+            "boundary_decision_contract_invalid:options",
+            failure_type="llm_contract",
+        )
+    recommended = output.get("recommended_assumption")
+    if (
+        not isinstance(recommended, Mapping)
+        or set(recommended) != {"option"}
+        or not isinstance(recommended.get("option"), str)
+        or recommended.get("option") not in raw_options[:-1]
+    ):
+        raise WorkflowFailure(
+            "boundary_decision_contract_invalid:recommended_option",
+            failure_type="llm_contract",
+        )
+    try:
+        normalized = _normalize_general_clarification_output({
+            "questions": questions,
+            "recommended_assumption": recommended,
+        })
+    except WorkflowFailure as exc:
+        reason = str(exc)
+        prefix = "general_clarification_contract_invalid:"
+        suffix = reason[len(prefix):] if reason.startswith(prefix) else "questions"
+        raise WorkflowFailure(
+            f"boundary_decision_contract_invalid:{suffix}",
+            failure_type="llm_contract",
+        ) from exc
+    return {
+        **dict(output),
+        "clarification_questions": normalized["questions"],
+        "recommended_assumption": normalized["recommended_assumption"],
+    }
 
 
 def _local_question_boundary_decision(state: WorkflowState) -> dict[str, Any]:
@@ -2057,14 +2147,19 @@ def _normalize_general_clarification_output(
             "general_clarification_contract_invalid:question_shape",
             failure_type="llm_contract",
         )
+    if not raw_options or raw_options[-1] != CLARIFICATION_ESCAPE_OPTION:
+        raise WorkflowFailure(
+            "general_clarification_contract_invalid:options",
+            failure_type="llm_contract",
+        )
     options = [value for item in raw_options if (value := option_text(item))]
-    escape = "tell the agent to do differently"
-    business_options = [item for item in options if item.lower() != escape]
+    business_options = options[:-1]
     if (
         not 2 <= len(business_options) <= 3
         or len(options) != len(business_options) + 1
         or len(set(options)) != len(options)
-        or not any(item.lower() == escape for item in options)
+        or options[-1] != CLARIFICATION_ESCAPE_OPTION
+        or CLARIFICATION_ESCAPE_OPTION in business_options
         or any(_has_internal_visible_token(item) for item in business_options)
     ):
         raise WorkflowFailure(
@@ -2184,6 +2279,7 @@ def _local_outlier_clarification_questions() -> list[dict[str, Any]]:
                 "按日粒度，移除贡献最大的正向日期后复算。",
                 "只标记异常日期，不从结果中移除。",
                 "先不复算，继续保留原结论和异常风险提示。",
+                CLARIFICATION_ESCAPE_OPTION,
             ],
         }
     ]
@@ -4261,14 +4357,13 @@ def _render_query_gap_actions(
             failure_type="llm_contract",
         )
     options = list(raw_options)
-    escape = "tell the agent to do differently"
     expected_business_options = tuple(
         str(action["business_semantics"]) for action in grouped_actions
     )
     if (
         len(options) != len(expected_business_options) + 1
         or tuple(options[:-1]) != expected_business_options
-        or options[-1] != escape
+        or options[-1] != CLARIFICATION_ESCAPE_OPTION
     ):
         raise WorkflowFailure(
             "query_gap_action_binding_invalid:options",
@@ -4309,12 +4404,12 @@ def _render_query_gap_actions(
         {
             "choice_id": "user_redirect",
             "action_kind": "user_redirect",
-            "business_label": escape,
+            "business_label": CLARIFICATION_ESCAPE_OPTION,
             "business_reason": "允许用户提供新的处理方式",
             "affected_capabilities": [],
         }
     )
-    return [*expected_business_options, escape], bound
+    return [*expected_business_options, CLARIFICATION_ESCAPE_OPTION], bound
 
 
 def _group_query_gap_actions(

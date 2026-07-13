@@ -12,6 +12,7 @@ from bi_agent.runtime.evidence_authority import (
 
 
 RESULT_REUSE_CANDIDATE_SCHEMA_VERSION = "result-reuse-candidate.v1"
+CLARIFICATION_ESCAPE_OPTION = "tell the agent to do differently"
 RESULT_REUSE_CANDIDATE_FIELDS = (
     "schema_version",
     "source_run_id",

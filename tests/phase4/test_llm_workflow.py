@@ -28,6 +28,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _clarification_policy_gate,
     _claims_from_llm_or_default,
     _default_claim_from_evidence,
+    _decide_question_boundary,
     _design_analysis_route,
     _delivery_reverify_with_answer_repair,
     _execute_capabilities,
@@ -2075,6 +2076,161 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("non-empty recommendation_reason", text)
         self.assertNotIn("allowed_business_options. return.", text)
         self.assertIn("future availability timestamp", text)
+
+    def test_all_clarification_prompts_treat_reviewed_escape_as_exact_contract_token(self):
+        escape = "tell the agent to do differently"
+        payloads = {
+            "boundary_decision": {
+                "intent": {"target_metric": "paid_amount"},
+            },
+            "clarification_question": {
+                "boundary_decision": {"boundary_status": "needs_question"},
+            },
+            "query_gap_clarification": {
+                "allowed_business_options": [
+                    "继续可验证的主指标分析，并明确缺少相关业务背景证据",
+                    "等待相关业务数据可用后再恢复本次分析",
+                ],
+            },
+        }
+
+        for task, payload in payloads.items():
+            with self.subTest(task=task):
+                system_message, task_message = build_prompt(task, payload).messages
+                self.assertIn(
+                    "reviewed clarification escape option is a machine contract token",
+                    system_message["content"],
+                )
+                self.assertIn(
+                    '"reviewed_clarification_escape_option": '
+                    f'"{escape}"',
+                    task_message["content"],
+                )
+                self.assertIn(
+                    "never translate or paraphrase the reviewed clarification escape option",
+                    task_message["content"],
+                )
+
+    def test_boundary_decision_needs_question_requires_one_exact_clarification(self):
+        escape = "tell the agent to do differently"
+        business_options = ["保留当前口径", "调整业务口径"]
+
+        def state(output):
+            return {
+                "request": {},
+                "intent": {
+                    "scope": "full_sample",
+                    "time_window": "target_day",
+                    "pattern_family": "intra_period",
+                },
+                "llm_client": FakeLLMClient({"boundary_decision": output}),
+                "llm_calls": [],
+                "checkpoint_events": [],
+            }
+
+        valid = {
+            "boundary_status": "needs_question",
+            "recommended_assumption": {"option": business_options[0]},
+            "clarification_questions": [{
+                "question": "按哪个业务口径继续？",
+                "options": [*business_options, escape],
+            }],
+            "decision_summary": "该选择会改变业务结论。",
+        }
+        valid_state = state(valid)
+        _decide_question_boundary(valid_state)
+        self.assertEqual(
+            valid_state["boundary_decision"]["clarification_questions"],
+            valid["clarification_questions"],
+        )
+        self.assertEqual(
+            valid_state["boundary_decision"]["recommended_assumption"],
+            valid["recommended_assumption"],
+        )
+
+        invalid_options = (
+            [business_options[0], escape],
+            [*business_options, "第三个业务口径", "第四个业务口径", escape],
+            [*business_options, "按其他方式处理"],
+            [*business_options, "Tell the agent to do differently"],
+            [*business_options, f" {escape} "],
+            [escape, *business_options],
+            ["保留 evidence_ref 口径", business_options[1], escape],
+        )
+        for options in invalid_options:
+            candidate = {
+                **valid,
+                "clarification_questions": [{
+                    "question": "按哪个业务口径继续？",
+                    "options": options,
+                }],
+            }
+            with self.subTest(options=options), self.assertRaisesRegex(
+                WorkflowFailure,
+                "boundary_decision_contract_invalid",
+            ):
+                _decide_question_boundary(state(candidate))
+
+        multiple_questions = {
+            **valid,
+            "clarification_questions": [
+                *valid["clarification_questions"],
+                {
+                    "question": "还要确认时间口径吗？",
+                    "options": [*business_options, escape],
+                },
+            ],
+        }
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "boundary_decision_contract_invalid",
+        ):
+            _decide_question_boundary(state(multiple_questions))
+
+        invalid_recommendation = {
+            **valid,
+            "recommended_assumption": {"option": "使用未审核的默认口径"},
+        }
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "boundary_decision_contract_invalid:recommended_option",
+        ):
+            _decide_question_boundary(state(invalid_recommendation))
+
+    def test_boundary_decision_nonquestion_status_requires_empty_questions(self):
+        def state(status, questions):
+            return {
+                "request": {},
+                "intent": {
+                    "scope": "full_sample",
+                    "time_window": "target_day",
+                    "pattern_family": "intra_period",
+                },
+                "llm_client": FakeLLMClient({
+                    "boundary_decision": {
+                        "boundary_status": status,
+                        "recommended_assumption": {},
+                        "clarification_questions": questions,
+                        "decision_summary": "已确认业务边界。",
+                    }
+                }),
+                "llm_calls": [],
+                "checkpoint_events": [],
+            }
+
+        for status in ("clear", "low_risk_assumption", "cannot_answer"):
+            valid = state(status, [])
+            _decide_question_boundary(valid)
+            self.assertEqual(
+                valid["boundary_decision"]["clarification_questions"],
+                [],
+            )
+
+            with self.subTest(status=status), self.assertRaisesRegex(
+                WorkflowFailure,
+                "boundary_decision_contract_invalid:questions",
+            ):
+                _decide_question_boundary(state(status, [{"question": "不应出现"}]))
 
     def test_final_llm_audit_hard_label_is_recorded_as_nonblocking_risk(self):
         audit = normalize_final_answer_audit(
@@ -4237,6 +4393,7 @@ class LLMWorkflowTest(unittest.TestCase):
             [" 继续主指标分析并说明限制", "等待相关业务数据", escape],
             [{"label": "继续主指标分析并说明限制"}, "等待相关业务数据", escape],
             ["继续主指标分析并说明限制", "等待相关业务数据", "Tell the agent to do differently"],
+            ["继续主指标分析并说明限制", "等待相关业务数据", "按其他方式处理"],
             [escape, "继续主指标分析并说明限制", "等待相关业务数据"],
         )
         for options in invalid:
@@ -6137,6 +6294,31 @@ class LLMWorkflowTest(unittest.TestCase):
             "general_clarification_contract_invalid:options",
         ):
             _normalize_general_clarification_output(duplicate)
+
+    def test_general_clarification_rejects_translated_changed_or_reordered_escape(self):
+        from bi_agent.runtime.langgraph_workflow import (
+            _normalize_general_clarification_output,
+        )
+
+        business_options = ["保留当前范围", "调整业务范围"]
+        invalid_options = (
+            [*business_options, "按其他方式处理"],
+            [*business_options, "Tell the agent to do differently"],
+            [*business_options, " tell the agent to do differently "],
+            ["tell the agent to do differently", *business_options],
+        )
+        for options in invalid_options:
+            with self.subTest(options=options), self.assertRaisesRegex(
+                WorkflowFailure,
+                "general_clarification_contract_invalid:options",
+            ):
+                _normalize_general_clarification_output({
+                    "questions": [{
+                        "question": "按哪个范围继续？",
+                        "options": options,
+                    }],
+                    "recommended_assumption": {"option": business_options[0]},
+                })
 
     def test_general_clarification_prompt_requires_string_option_array(self):
         text = "\n".join(
@@ -11469,26 +11651,30 @@ class LLMWorkflowTest(unittest.TestCase):
             {
                 "boundary_decision": {
                     "boundary_status": "needs_question",
-                    "recommended_assumption": {"scope": "full_sample"},
+                    "recommended_assumption": {"option": "使用全样本口径继续"},
                     "clarification_questions": [
                         {
-                            "question": "Which scope should be used?",
-                            "options": ["full sample", "custom scope"],
+                            "question": "按哪个业务范围继续？",
+                            "options": [
+                                "使用全样本口径继续",
+                                "调整业务范围后继续",
+                                "tell the agent to do differently",
+                            ],
                         }
                     ],
-                    "decision_summary": "Scope could change the answer.",
+                    "decision_summary": "业务范围会改变结论，需要用户确认。",
                 },
                 "clarification_question": {
                     "questions": [{
-                        "question": "Which business scope should be used?",
+                        "question": "按哪个业务范围继续？",
                         "options": [
-                            "Use the full sample.",
-                            "Use a custom business scope.",
+                            "使用全样本口径继续",
+                            "调整业务范围后继续",
                             "tell the agent to do differently",
                         ],
                     }],
-                    "recommended_assumption": {"option": "Use the full sample."},
-                    "status_message": "Waiting for a business scope choice.",
+                    "recommended_assumption": {"option": "使用全样本口径继续"},
+                    "status_message": "等待用户确认业务范围。",
                 },
             }
         )
@@ -11504,7 +11690,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.answer_package["accepted_graph"], [])
         self.assertEqual(
             result.answer_package["clarification"]["recommended_assumption"],
-            {"option": "Use the full sample."},
+            {"option": "使用全样本口径继续"},
         )
 
     def test_degrade_suggestion_does_not_drop_established_pattern_answer(self):

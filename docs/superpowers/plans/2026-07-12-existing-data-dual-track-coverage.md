@@ -1377,6 +1377,15 @@ boundary:
   scope, and time window already fixed by canonical output or bound context
   cannot be marked ambiguous in the same response. This is an LLM output
   coherence instruction, while advisory list containers still fail closed;
+- every clarification-producing surface imports one neutral
+  `tell the agent to do differently` contract constant. LLM surfaces receive it
+  in delimited input and mark it as exempt from Chinese narrative translation;
+  structured conversation options use the exact final label and a Chinese
+  description. Boundary decisions that need input contain exactly one question,
+  2-3 business options, the exact final escape, and a recommendation copied from
+  a business option; all other boundary statuses carry `[]`. Translation,
+  paraphrase, case or whitespace changes, relocation, aliases, and local fallback
+  fail closed while business option wording remains Chinese;
 - each workflow business node calls the shared LLM client once, while the
   provider retains the sole three-attempt retry loop; and
 - provider subprocess IPC must be received and drained before child join, with

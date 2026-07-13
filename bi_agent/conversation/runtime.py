@@ -6,6 +6,7 @@ from typing import Any, Mapping, Optional
 from uuid import uuid4
 
 from bi_agent.conversation.models import (
+    CLARIFICATION_ESCAPE_OPTION,
     ClarificationOption,
     ClarificationQuestion,
     ClarificationRequest,
@@ -23,7 +24,6 @@ from bi_agent.conversation.models import (
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.analysis_assets import merge_analysis_assets
 from bi_agent.runtime.compiler import suggest_revenue_diagnostic_nodes
-from bi_agent.runtime.llm_prompts import build_prompt
 from bi_agent.runtime.permission_roles import can_read_scope as _can_read_permission_scope
 
 
@@ -349,6 +349,8 @@ class ConversationRuntime:
             allow_clarification_answer,
         ):
             return local
+
+        from bi_agent.runtime.llm_prompts import build_prompt
 
         spec = build_prompt(
             "conversation_orchestrator",
@@ -1001,7 +1003,7 @@ def _build_clarification(
                 ),
                 ClarificationOption(
                     option_id="tell_agent_differently",
-                    label="告诉 Agent 换一种做法",
+                    label=CLARIFICATION_ESCAPE_OPTION,
                     description="自己说明要继续哪个问题或换一个分析方式。",
                 ),
             ),
@@ -1030,7 +1032,7 @@ def _build_clarification(
                 ),
                 ClarificationOption(
                     option_id="tell_agent_differently",
-                    label="告诉 Agent 换一种做法",
+                    label=CLARIFICATION_ESCAPE_OPTION,
                     description="自己指定异常识别口径和剔除范围。",
                 ),
             ),
@@ -1058,7 +1060,7 @@ def _build_clarification(
             ),
             ClarificationOption(
                 option_id="tell_agent_differently",
-                label="告诉 Agent 换一个口径",
+                label=CLARIFICATION_ESCAPE_OPTION,
                 description="自己指定指标、时间窗口或对比基线。",
             ),
         ),

@@ -5,7 +5,9 @@ import unittest
 
 import yaml
 
+from bi_agent.conversation import models as conversation_models
 from bi_agent.conversation.runtime import ConversationRuntime, _can_read_scope
+from bi_agent.conversation.runtime import _build_clarification
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.evidence_authority import canonical_digest
 
@@ -19,6 +21,37 @@ def _cases():
 
 
 class ConversationRuntimeTest(unittest.TestCase):
+    def test_every_local_clarification_surface_uses_exact_final_escape_token(self):
+        escape = "tell the agent to do differently"
+        self.assertEqual(
+            getattr(conversation_models, "CLARIFICATION_ESCAPE_OPTION", None),
+            escape,
+        )
+        cases = (
+            ("topic", "继续看刚才那个问题", "ask_topic_choice"),
+            ("outlier", "如果去掉异常天还成立吗？", "inherit_current"),
+            ("metric", "这个月是不是变好了？", "inherit_current"),
+        )
+
+        for surface, message, topic_relation in cases:
+            with self.subTest(surface=surface):
+                clarification = _build_clarification(
+                    f"turn-{surface}",
+                    message,
+                    topic_relation,
+                )
+                self.assertEqual(len(clarification.questions), 1)
+                options = clarification.questions[0].options
+                self.assertEqual(options[-1].label, escape)
+                self.assertEqual(
+                    [option.label for option in options].count(escape),
+                    1,
+                )
+                self.assertTrue(options[-1].description)
+                self.assertTrue(
+                    any("\u4e00" <= char <= "\u9fff" for char in options[-1].description)
+                )
+
     def test_manifest_has_required_natural_language_coverage(self):
         data = yaml.safe_load(CASE_FILE.read_text(encoding="utf-8"))
         cases = data["cases"]
