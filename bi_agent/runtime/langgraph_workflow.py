@@ -705,24 +705,30 @@ def _validate_resume_material_consistency(
     resume: Mapping[str, Any],
     registry: RuntimeContractRegistry,
 ) -> None:
-    expected = {
-        "context_sources": list(original.get("context_sources") or ()),
-        "requested_dimensions": list(original.get("requested_dimensions") or ()),
+    original_target = original.get("target_metric")
+    original_values = {
+        "target_metrics": (
+            [original_target]
+            if isinstance(original_target, str) and original_target
+            else []
+        ),
         "requested_components": list(original.get("requested_components") or ()),
+        "requested_dimensions": list(original.get("requested_dimensions") or ()),
+        "context_sources": list(original.get("context_sources") or ()),
+        "claim_intents": list(original.get("claim_intents") or ()),
     }
-    for key, value in expected.items():
-        if persisted.get(key, []) != value:
+    persisted_values = {
+        axis: list(persisted.get(axis) or ()) for axis in original_values
+    }
+    extras: dict[str, set[str]] = {}
+    for axis, source_values in original_values.items():
+        material_values = persisted_values[axis]
+        if any(item not in material_values for item in source_values):
             raise WorkflowFailure(
-                f"clarification_resume_material_slots_conflict:{key}",
+                f"clarification_resume_material_slots_conflict:{axis}",
                 failure_type="contract",
             )
-    original_targets = [str(original.get("target_metric") or "")]
-    persisted_targets = list(persisted.get("target_metrics") or ())
-    if any(item not in persisted_targets for item in original_targets):
-        raise WorkflowFailure(
-            "clarification_resume_material_slots_conflict:target_metrics",
-            failure_type="contract",
-        )
+        extras[axis] = set(material_values) - set(source_values)
     for key, original_key in (("baselines", "baseline_candidates"), ("scope", "scope")):
         if key in persisted or original_key in original:
             expected_value = (
@@ -735,21 +741,13 @@ def _validate_resume_material_consistency(
                     f"clarification_resume_material_slots_conflict:{key}",
                     failure_type="contract",
                 )
-    original_claims = list(original.get("claim_intents") or ())
-    persisted_claims = list(persisted.get("claim_intents") or ())
-    if any(claim not in persisted_claims for claim in original_claims):
-        raise WorkflowFailure(
-            "clarification_resume_material_slots_conflict:claim_intents",
-            failure_type="contract",
-        )
-    claim_extras = set(persisted_claims) - set(original_claims)
-    target_extras = set(persisted_targets) - set(original_targets)
-    if not claim_extras and not target_extras:
+    authorization_axis = next(
+        (axis for axis, axis_extras in extras.items() if axis_extras),
+        "",
+    )
+    if not authorization_axis:
         return
     source_contract = resume.get("analysis_contract")
-    authorization_axis = (
-        "target_metrics" if target_extras and not claim_extras else "claim_intents"
-    )
     if not isinstance(source_contract, Mapping):
         raise WorkflowFailure(
             f"clarification_resume_material_slots_conflict:{authorization_axis}",
@@ -768,22 +766,58 @@ def _validate_resume_material_consistency(
             f"clarification_resume_material_slots_conflict:{authorization_axis}",
             failure_type="contract",
         )
-    if not claim_extras.issubset(set(accepted_source_contract.claim_intents)):
-        raise WorkflowFailure(
-            "clarification_resume_material_slots_conflict:claim_intents",
-            failure_type="contract",
-        )
-    if not target_extras.issubset(
-            {
-                *accepted_source_contract.target_metric_refs,
-                *(binding.metric_id for binding in accepted_source_contract.metric_bindings),
-                *(accepted_source_contract.scope.get("requested_metric_ids") or ()),
-            }
-        ):
-        raise WorkflowFailure(
-            "clarification_resume_material_slots_conflict:target_metrics",
-            failure_type="contract",
-        )
+    scope_metric_ids = _resume_contract_scope_ids(
+        accepted_source_contract.scope, "requested_metric_ids"
+    )
+    authorized_metric_ids = {
+        *accepted_source_contract.target_metric_refs,
+        *(binding.metric_id for binding in accepted_source_contract.metric_bindings),
+        *scope_metric_ids,
+    }
+    scope_dimension_ids = _resume_contract_scope_ids(
+        accepted_source_contract.scope, "requested_dimension_ids"
+    )
+    authorized_dimension_ids = {
+        *(binding.dimension_id for binding in accepted_source_contract.dimension_bindings),
+        *scope_dimension_ids,
+    }
+    contract_dataset_ids = {
+        *accepted_source_contract.dataset_requirements,
+        *(binding.dataset_id for binding in accepted_source_contract.metric_bindings),
+        *(binding.dataset_id for binding in accepted_source_contract.dimension_bindings),
+    }
+    authorized_context_sources = set()
+    for dataset_id in contract_dataset_ids:
+        try:
+            dataset_contract = registry.dataset(dataset_id)
+        except KeyError:
+            continue
+        if "business_context" in dataset_contract.get("intent_roles", ()):
+            authorized_context_sources.add(dataset_id)
+    authorized_values = {
+        "target_metrics": authorized_metric_ids,
+        "requested_components": authorized_metric_ids,
+        "requested_dimensions": authorized_dimension_ids,
+        "context_sources": authorized_context_sources,
+        "claim_intents": set(accepted_source_contract.claim_intents),
+    }
+    for axis, axis_extras in extras.items():
+        if not axis_extras.issubset(authorized_values[axis]):
+            raise WorkflowFailure(
+                f"clarification_resume_material_slots_conflict:{axis}",
+                failure_type="contract",
+            )
+
+
+def _resume_contract_scope_ids(
+    scope: Mapping[str, Any], key: str
+) -> set[str]:
+    raw_values = scope.get(key)
+    if not isinstance(raw_values, (list, tuple)) or any(
+        not isinstance(value, str) or not value for value in raw_values
+    ):
+        return set()
+    return set(raw_values)
 
 
 def _business_intent_payload(request: dict[str, Any]) -> dict[str, Any]:

@@ -566,6 +566,222 @@ def test_resume_material_schema_rejects_malformed_baselines(baselines):
     assert exc.value.failure_type == "contract"
 
 
+def test_resume_accepts_source_contract_authorized_component_expansion():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": ["previous_day"],
+        "context_sources": ["gameplay"],
+        "claim_intents": ["comparative_change"],
+        "requested_dimensions": [],
+        "requested_components": ["active_users"],
+        "question": "source question",
+    }
+    contract = _source_contract()
+    contract.pop("contract_signature", None)
+    contract["scope"] = {
+        **contract["scope"],
+        "requested_metric_ids": [
+            "paid_amount",
+            "active_users",
+            "player_bet_amount",
+        ],
+    }
+    material = _complete_material_slots(
+        requested_components=["active_users", "player_bet_amount"],
+        baselines=["previous_day"],
+        context_sources=["gameplay"],
+        claim_intents=["comparative_change"],
+    )
+
+    bound = workflow._bind_clarification_resume_intent(
+        {},
+        _resume_request(original, material, analysis_contract=contract),
+        RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+    )
+
+    assert bound["requested_components"] == ["active_users"]
+
+
+@pytest.mark.parametrize(
+    "axis,persisted_values",
+    [
+        ("target_metrics", []),
+        ("requested_components", []),
+        ("requested_dimensions", []),
+        ("context_sources", []),
+        ("claim_intents", []),
+    ],
+)
+def test_resume_rejects_removing_original_material_axis(axis, persisted_values):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": [],
+        "context_sources": ["gameplay"],
+        "claim_intents": ["comparative_change"],
+        "requested_dimensions": ["channel"],
+        "requested_components": ["active_users"],
+        "question": "source question",
+    }
+    material = _complete_material_slots(
+        requested_components=["active_users"],
+        requested_dimensions=["channel"],
+        context_sources=["gameplay"],
+        claim_intents=["comparative_change"],
+    )
+    material[axis] = persisted_values
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match=f"clarification_resume_material_slots_conflict:{axis}",
+    ) as exc:
+        workflow._bind_clarification_resume_intent(
+            {},
+            _resume_request(original, material),
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+    assert exc.value.failure_type == "contract"
+
+
+def test_resume_accepts_multiple_source_contract_authorized_axis_expansions():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": [],
+        "context_sources": [],
+        "claim_intents": [],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source question",
+    }
+    contract = _source_contract()
+    contract.pop("contract_signature", None)
+    contract["scope"] = {
+        **contract["scope"],
+        "requested_metric_ids": ["paid_amount", "player_bet_amount"],
+        "requested_dimension_ids": ["gameplay"],
+    }
+    contract["dataset_requirements"] = [
+        *contract["dataset_requirements"],
+        "gameplay",
+    ]
+    contract["claim_intents"] = ["observed_activity"]
+    material = _complete_material_slots(
+        target_metrics=["paid_amount", "player_bet_amount"],
+        requested_components=["player_bet_amount"],
+        requested_dimensions=["gameplay"],
+        context_sources=["gameplay"],
+        claim_intents=["observed_activity"],
+    )
+
+    workflow._bind_clarification_resume_intent(
+        {},
+        _resume_request(original, material, analysis_contract=contract),
+        RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "axis,material_update",
+    [
+        ("target_metrics", {"target_metrics": ["paid_amount", "paid_users"]}),
+        (
+            "requested_components",
+            {"requested_components": ["paid_users"]},
+        ),
+        ("requested_dimensions", {"requested_dimensions": ["channel"]}),
+        ("context_sources", {"context_sources": ["gameplay"]}),
+        (
+            "claim_intents",
+            {"claim_intents": ["contract_coverage_and_trust_boundary"]},
+        ),
+    ],
+)
+def test_resume_rejects_source_contract_unauthorized_axis_extra(
+    axis, material_update
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": [],
+        "context_sources": [],
+        "claim_intents": [],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source question",
+    }
+    contract = _source_contract()
+    contract.pop("contract_signature", None)
+    material = _complete_material_slots(**material_update)
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match=f"clarification_resume_material_slots_conflict:{axis}",
+    ) as exc:
+        workflow._bind_clarification_resume_intent(
+            {},
+            _resume_request(original, material, analysis_contract=contract),
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+    assert exc.value.failure_type == "contract"
+
+
+@pytest.mark.parametrize("contract_state", ["missing", "malformed", "wrong_id"])
+def test_resume_component_extra_requires_valid_source_contract(contract_state):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": [],
+        "context_sources": [],
+        "claim_intents": [],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "question": "source question",
+    }
+    material = _complete_material_slots(requested_components=["paid_users"])
+    contract = None
+    if contract_state != "missing":
+        contract = _source_contract()
+        contract.pop("contract_signature", None)
+        if contract_state == "malformed":
+            contract["metric_bindings"] = [{}]
+        else:
+            contract["analysis_contract_id"] = "analysis:run-other:1"
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match=(
+            "clarification_resume_material_slots_conflict:"
+            "requested_components"
+        ),
+    ) as exc:
+        workflow._bind_clarification_resume_intent(
+            {},
+            _resume_request(original, material, analysis_contract=contract),
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+    assert exc.value.failure_type == "contract"
+
+
 def _source_contract(run_id="run-source"):
     outcome = compile_analysis_contract(
         run_id=run_id,
@@ -581,6 +797,50 @@ def _source_contract(run_id="run-source"):
     payload = outcome.analysis_contract.to_dict()
     payload["contract_signature"] = analysis_contract_signature(payload)
     return payload
+
+
+def _complete_material_slots(
+    *,
+    target_metrics=None,
+    requested_components=None,
+    requested_dimensions=None,
+    baselines=None,
+    context_sources=None,
+    claim_intents=None,
+):
+    return {
+        "target_metrics": (
+            ["paid_amount"] if target_metrics is None else target_metrics
+        ),
+        "requested_components": (
+            [] if requested_components is None else requested_components
+        ),
+        "requested_dimensions": (
+            [] if requested_dimensions is None else requested_dimensions
+        ),
+        "baselines": [] if baselines is None else baselines,
+        "context_sources": [] if context_sources is None else context_sources,
+        "claim_intents": [] if claim_intents is None else claim_intents,
+    }
+
+
+def _resume_request(original_intent, material_slots, *, analysis_contract=None):
+    resume_context = {
+        "resume_run_id": "run-source",
+        "source_thread_id": "thread-source",
+        "source_topic_id": "topic-source",
+        "question": "source question",
+        "original_intent": original_intent,
+        "material_slots": material_slots,
+    }
+    if analysis_contract is not None:
+        resume_context["analysis_contract"] = analysis_contract
+    return {
+        "thread_id": "thread-source",
+        "topic_id": "topic-source",
+        "question": "source question",
+        "clarification_resume_context": resume_context,
+    }
 
 
 def _choice(run_id="run-source"):
