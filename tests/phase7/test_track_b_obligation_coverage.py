@@ -1030,11 +1030,13 @@ def test_resume_route_merges_authoritative_material_before_validation():
                     "requested_nodes": ["data_quality_profile"],
                     "analysis_requirements": {
                         "target_metrics": ["paid_amount"],
-                        "requested_components": [],
-                        "requested_dimensions": [],
-                        "baselines": [],
-                        "context_sources": [],
-                        "claim_intents": [],
+                        "requested_components": ["active_users"],
+                        "requested_dimensions": ["channel"],
+                        "baselines": ["previous_day"],
+                        "context_sources": ["external_event"],
+                        "claim_intents": [
+                            "contract_coverage_and_trust_boundary"
+                        ],
                         "scope": "full_sample",
                     },
                 },
@@ -1177,6 +1179,125 @@ def test_resume_route_rejects_material_axis_missing_from_authority(
         workflow._design_analysis_route(state)
 
     assert exc.value.failure_type == "contract"
+
+
+@pytest.mark.parametrize(
+    "axis",
+    [
+        "target_metrics",
+        "requested_components",
+        "requested_dimensions",
+        "baselines",
+        "context_sources",
+        "claim_intents",
+    ],
+)
+def test_strict_resume_merge_preserves_explicit_empty_authority(axis):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    material_slots = {
+        "target_metrics": [],
+        "requested_components": [],
+        "requested_dimensions": [],
+        "baselines": [],
+        "context_sources": [],
+        "claim_intents": [],
+    }
+    merged, conflicts = workflow._merge_confirmed_material_requirements(
+        {"analysis_requirements": {}},
+        {
+            "intent": {},
+            "request": {
+                "clarification_resume_context": {
+                    "material_slots": material_slots
+                }
+            },
+        },
+        strict_resume_authority=True,
+    )
+
+    assert conflicts == ()
+    assert axis in merged["analysis_requirements"]
+    assert merged["analysis_requirements"][axis] == []
+
+
+@pytest.mark.parametrize(
+    "axis",
+    [
+        "target_metrics",
+        "requested_components",
+        "requested_dimensions",
+        "baselines",
+        "context_sources",
+        "claim_intents",
+    ],
+)
+def test_strict_resume_merge_does_not_treat_missing_authority_as_empty(axis):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    material_slots = {
+        "target_metrics": [],
+        "requested_components": [],
+        "requested_dimensions": [],
+        "baselines": [],
+        "context_sources": [],
+        "claim_intents": [],
+    }
+    material_slots.pop(axis)
+    _, conflicts = workflow._merge_confirmed_material_requirements(
+        {"analysis_requirements": {axis: []}},
+        {
+            "intent": {},
+            "request": {
+                "clarification_resume_context": {
+                    "material_slots": material_slots
+                }
+            },
+        },
+        strict_resume_authority=True,
+    )
+
+    assert conflicts == (axis,)
+
+
+@pytest.mark.parametrize(
+    "axis,proposed",
+    [
+        ("target_metrics", ["paid_amount"]),
+        ("requested_components", ["paid_users"]),
+        ("requested_dimensions", ["channel"]),
+        ("baselines", ["previous_day"]),
+        ("context_sources", ["gameplay"]),
+        ("claim_intents", ["comparative_change"]),
+    ],
+)
+def test_strict_resume_merge_rejects_nonempty_proposal_against_empty_authority(
+    axis, proposed
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    material_slots = {
+        "target_metrics": [],
+        "requested_components": [],
+        "requested_dimensions": [],
+        "baselines": [],
+        "context_sources": [],
+        "claim_intents": [],
+    }
+    _, conflicts = workflow._merge_confirmed_material_requirements(
+        {"analysis_requirements": {axis: proposed}},
+        {
+            "intent": {},
+            "request": {
+                "clarification_resume_context": {
+                    "material_slots": material_slots
+                }
+            },
+        },
+        strict_resume_authority=True,
+    )
+
+    assert conflicts == (axis,)
 
 
 @pytest.mark.parametrize(

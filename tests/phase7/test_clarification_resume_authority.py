@@ -76,7 +76,11 @@ def test_early_clarification_resume_preserves_source_topic_family(monkeypatch):
                     "original_intent": original_intent,
                         "material_slots": {
                             "target_metrics": ["paid_amount"],
+                            "requested_components": [],
+                            "requested_dimensions": [],
                             "baselines": [],
+                            "context_sources": [],
+                            "claim_intents": [],
                             "scope": "full_sample",
                         },
                 },
@@ -140,9 +144,47 @@ def test_query_gap_clarification_persists_original_topic_material(tmp_path):
     assert state["answer_package"]["original_intent"] == intent
     assert state["answer_package"]["material_slots"] == {
         "target_metrics": ["paid_amount"],
+        "requested_components": [],
+        "requested_dimensions": ["channel"],
+        "baselines": [],
         "context_sources": ["external_event"],
         "claim_intents": ["candidate_mechanism"],
-        "requested_dimensions": ["channel"],
+    }
+
+
+def test_query_gap_material_slots_preserve_explicit_empty_route_axes():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    state = {
+        "intent": {
+            "target_metric": "paid_amount",
+            "baseline_candidates": ["previous_day"],
+            "context_sources": ["external_event"],
+            "claim_intents": ["candidate_mechanism"],
+            "requested_dimensions": ["channel"],
+            "requested_components": ["paid_users"],
+        },
+        "analysis_route": {
+            "analysis_requirements": {
+                "target_metrics": ["paid_amount"],
+                "requested_components": [],
+                "requested_dimensions": [],
+                "baselines": [],
+                "context_sources": [],
+                "claim_intents": [],
+                "diagnostic_tags": [],
+            }
+        },
+    }
+
+    assert workflow._clarification_material_slots(state) == {
+        "target_metrics": ["paid_amount"],
+        "requested_components": [],
+        "requested_dimensions": [],
+        "baselines": [],
+        "context_sources": [],
+        "claim_intents": [],
+        "diagnostic_tags": [],
     }
 
 
@@ -169,6 +211,9 @@ def test_query_gap_resume_context_roundtrips_source_run_topic_and_material():
     }
     material_slots = {
         "target_metrics": ["paid_amount"],
+        "requested_components": [],
+        "requested_dimensions": [],
+        "baselines": [],
         "context_sources": ["gameplay"],
         "claim_intents": ["candidate_mechanism"],
     }
@@ -262,7 +307,14 @@ def test_resume_intent_authority_rejects_owner_or_material_corruption(corruption
         "source_topic_id": "topic-source",
         "question": "source question",
         "original_intent": original,
-        "material_slots": {"target_metrics": ["paid_amount"]},
+        "material_slots": {
+            "target_metrics": ["paid_amount"],
+            "requested_components": [],
+            "requested_dimensions": [],
+            "baselines": [],
+            "context_sources": ["gameplay"],
+            "claim_intents": ["candidate_mechanism"],
+        },
     }
     request = {
         "thread_id": "thread-source",
@@ -275,28 +327,20 @@ def test_resume_intent_authority_rejects_owner_or_material_corruption(corruption
     elif corruption == "topic":
         resume["source_topic_id"] = "topic-other"
     elif corruption == "persisted_material":
-        resume["material_slots"] = {"context_sources": ["paid_order_success"]}
+        resume["material_slots"]["context_sources"] = ["paid_order_success"]
     elif corruption == "context_conflict":
-        resume["material_slots"] = {
-            "target_metrics": ["paid_amount"],
-            "context_sources": ["external_event"],
-        }
+        resume["material_slots"]["context_sources"] = ["external_event"]
     elif corruption == "target_conflict":
-        resume["material_slots"] = {
-            "target_metrics": ["paid_amount", "paid_users"],
-            "context_sources": ["gameplay"],
-            "claim_intents": ["candidate_mechanism"],
-        }
+        resume["material_slots"]["target_metrics"] = [
+            "paid_amount",
+            "paid_users",
+        ]
     elif corruption == "component_conflict":
-        resume["material_slots"] = {
-            "target_metrics": ["paid_amount"],
-            "requested_components": ["paid_users"],
-        }
+        resume["material_slots"]["requested_components"] = ["paid_users"]
     elif corruption == "claim_extra_unauthorized":
-        resume["material_slots"] = {
-            "target_metrics": ["paid_amount"],
-            "claim_intents": ["contract_coverage_and_trust_boundary"],
-        }
+        resume["material_slots"]["claim_intents"] = [
+            "contract_coverage_and_trust_boundary"
+        ]
 
     expected_axis = (
         "target_metrics" if corruption == "target_conflict" else None
@@ -337,6 +381,10 @@ def test_resume_allows_source_contract_authorized_trust_boundary_claim():
         "original_intent": original,
         "material_slots": {
             "target_metrics": ["paid_amount"],
+            "requested_components": [],
+            "requested_dimensions": [],
+            "baselines": [],
+            "context_sources": [],
             "claim_intents": [
                 "comparative_change",
                 "contract_coverage_and_trust_boundary",
@@ -389,7 +437,11 @@ def test_resume_canonicalizes_object_baseline_and_allows_authorized_target_extra
         "original_intent": original,
         "material_slots": {
             "target_metrics": ["paid_amount", "paid_users"],
+            "requested_components": [],
+            "requested_dimensions": [],
             "baselines": ["previous_day"],
+            "context_sources": [],
+            "claim_intents": [],
         },
         "analysis_contract": source_contract,
     }
@@ -406,6 +458,112 @@ def test_resume_canonicalizes_object_baseline_and_allows_authorized_target_extra
     assert workflow._intent_material_slots(original)["baselines"] == [
         "previous_day"
     ]
+
+
+def test_intent_material_slots_persist_complete_authority_axes():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    assert workflow._intent_material_slots(
+        {
+            "target_metric": "paid_amount",
+            "baseline_candidates": [],
+            "scope": "full_sample",
+        }
+    ) == {
+        "target_metrics": ["paid_amount"],
+        "requested_components": [],
+        "requested_dimensions": [],
+        "baselines": [],
+        "context_sources": [],
+        "claim_intents": [],
+        "scope": "full_sample",
+    }
+
+
+@pytest.mark.parametrize(
+    "missing_axis",
+    [
+        "target_metrics",
+        "requested_components",
+        "requested_dimensions",
+        "baselines",
+        "context_sources",
+        "claim_intents",
+    ],
+)
+def test_resume_material_schema_rejects_missing_authority_axis(missing_axis):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    material = {
+        "target_metrics": ["paid_amount"],
+        "requested_components": [],
+        "requested_dimensions": [],
+        "baselines": [],
+        "context_sources": [],
+        "claim_intents": [],
+    }
+    material.pop(missing_axis)
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match=f"clarification_resume_material_slots_invalid:{missing_axis}",
+    ) as exc:
+        workflow._validated_resume_material_slots(
+            material,
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+    assert exc.value.failure_type == "contract"
+
+
+@pytest.mark.parametrize("material", [None, {}])
+def test_resume_material_schema_rejects_absent_authority(material):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="clarification_resume_material_slots_invalid",
+    ) as exc:
+        workflow._validated_resume_material_slots(
+            material,
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+    assert exc.value.failure_type == "contract"
+
+
+@pytest.mark.parametrize(
+    "baselines",
+    ["previous_day", [{}], ["yesterday"], ["previous_day", "previous_day"]],
+)
+def test_resume_material_schema_rejects_malformed_baselines(baselines):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    material = {
+        "target_metrics": ["paid_amount"],
+        "requested_components": [],
+        "requested_dimensions": [],
+        "baselines": baselines,
+        "context_sources": [],
+        "claim_intents": [],
+    }
+
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="clarification_resume_material_slots_invalid:baselines",
+    ) as exc:
+        workflow._validated_resume_material_slots(
+            material,
+            RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+    assert exc.value.failure_type == "contract"
 
 
 def _source_contract(run_id="run-source"):

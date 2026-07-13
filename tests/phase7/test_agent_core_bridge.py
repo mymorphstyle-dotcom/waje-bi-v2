@@ -507,8 +507,33 @@ class AgentCoreBridgeTest(unittest.TestCase):
                             "requested_nodes": ["compare_periods"],
                             "analysis_requirements": {
                                 "target_metrics": ["paid_amount"],
-                                "baselines": ["previous_day"],
+                                "requested_components": [],
+                                "requested_dimensions": [],
+                                "baselines": [],
+                                "context_sources": [],
+                                "claim_intents": [],
                             },
+                        },
+                        "original_intent": {
+                            "question_family": "revenue_health_review",
+                            "question_families": ["revenue_health_review"],
+                            "primary_question_family": "revenue_health_review",
+                            "secondary_question_families": [],
+                            "target_metric": "paid_amount",
+                            "baseline_candidates": [],
+                            "context_sources": [],
+                            "claim_intents": [],
+                            "requested_dimensions": [],
+                            "requested_components": [],
+                            "question": "昨天付费金额为什么变化？",
+                        },
+                        "material_slots": {
+                            "target_metrics": ["paid_amount"],
+                            "requested_components": [],
+                            "requested_dimensions": [],
+                            "baselines": [],
+                            "context_sources": [],
+                            "claim_intents": [],
                         },
                         "clarification": {
                             "questions": [
@@ -540,6 +565,22 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     },
                     analysis_runtime_records={},
                 )
+            from bi_agent.runtime import langgraph_workflow as workflow
+
+            workflow._bind_clarification_resume_intent(
+                {
+                    "question_family": "data_quality_or_evidence_review",
+                    "target_metric": "paid_amount",
+                    "context_sources": [],
+                    "claim_intents": [],
+                    "requested_dimensions": [],
+                    "requested_components": [],
+                },
+                request,
+                RuntimeContractRegistry.from_path(
+                    "contracts/runtime/clickhouse-analysis-bindings.yaml"
+                ),
+            )
             return fake_workflow(request)
 
         store = InMemoryConversationStore()
@@ -604,6 +645,17 @@ class AgentCoreBridgeTest(unittest.TestCase):
             captured[1]["clarification_resume_context"]["analysis_route"]
             ["analysis_requirements"]["target_metrics"],
             ["paid_amount"],
+        )
+        self.assertEqual(
+            captured[1]["clarification_resume_context"]["material_slots"],
+            {
+                "target_metrics": ["paid_amount"],
+                "requested_components": [],
+                "requested_dimensions": [],
+                "baselines": [],
+                "context_sources": [],
+                "claim_intents": [],
+            },
         )
         self.assertEqual(
             captured[1]["clarification_resume_context"]["selected_query_gap_action"]

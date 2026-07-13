@@ -105,6 +105,14 @@ ROUTE_BLOCKED_CAPABILITY_IDS = frozenset(
         "change_point_scan",
     }
 )
+MATERIAL_AUTHORITY_LIST_AXES = (
+    "target_metrics",
+    "requested_components",
+    "requested_dimensions",
+    "baselines",
+    "context_sources",
+    "claim_intents",
+)
 
 
 class WorkflowState(TypedDict, total=False):
@@ -646,15 +654,20 @@ def _validated_resume_material_slots(
     raw: Any,
     registry: RuntimeContractRegistry,
 ) -> dict[str, Any]:
-    if raw in (None, {}):
-        return {}
     if not isinstance(raw, Mapping):
         raise WorkflowFailure(
             "clarification_resume_material_slots_invalid",
             failure_type="contract",
         )
+    for key in MATERIAL_AUTHORITY_LIST_AXES:
+        if key not in raw:
+            raise WorkflowFailure(
+                f"clarification_resume_material_slots_invalid:{key}",
+                failure_type="contract",
+            )
     allowed_values = {
         "target_metrics": set(registry.metric_ids),
+        "baselines": set(CURRENT_DATA_BASELINES),
         "context_sources": set(registry.context_source_ids),
         "claim_intents": {
             str(claim_type)
@@ -1682,20 +1695,20 @@ def _persist_clarification(state: WorkflowState) -> WorkflowState:
 
 
 def _intent_material_slots(intent: Mapping[str, Any]) -> dict[str, Any]:
-    slots: dict[str, Any] = {}
+    slots: dict[str, Any] = {
+        key: [] for key in MATERIAL_AUTHORITY_LIST_AXES
+    }
     target_metric = str(intent.get("target_metric") or "").strip()
     if target_metric:
         slots["target_metrics"] = [target_metric]
     baselines = _canonical_baseline_ids(intent.get("baseline_candidates"))
-    if baselines:
-        slots["baselines"] = list(dict.fromkeys(baselines))
+    slots["baselines"] = list(dict.fromkeys(baselines))
     context_sources = [
         str(item)
         for item in intent.get("context_sources") or ()
         if isinstance(item, str) and item
     ]
-    if context_sources:
-        slots["context_sources"] = list(dict.fromkeys(context_sources))
+    slots["context_sources"] = list(dict.fromkeys(context_sources))
     for key in (
         "claim_intents",
         "requested_dimensions",
@@ -1706,8 +1719,7 @@ def _intent_material_slots(intent: Mapping[str, Any]) -> dict[str, Any]:
             for item in intent.get(key) or ()
             if isinstance(item, str) and item
         ]
-        if values:
-            slots[key] = list(dict.fromkeys(values))
+        slots[key] = list(dict.fromkeys(values))
     scope = intent.get("scope")
     if scope not in (None, "", {}, []):
         slots["scope"] = scope
@@ -2010,7 +2022,10 @@ def _merge_confirmed_material_requirements(
     authoritative: dict[str, Any] = {}
     if isinstance(persisted, Mapping):
         for key, value in persisted.items():
-            if value not in (None, "", (), [], {}):
+            if key in MATERIAL_AUTHORITY_LIST_AXES:
+                confirmed[key] = value
+                authoritative[key] = value
+            elif value not in (None, "", (), [], {}):
                 confirmed[key] = value
                 authoritative[key] = value
     conflicts: list[str] = []
@@ -2033,21 +2048,15 @@ def _merge_confirmed_material_requirements(
         and proposed.get("scope") != confirmed_scope
     ):
         conflicts.append("scope")
-    for key in (
-        "target_metrics",
-        "requested_components",
-        "requested_dimensions",
-        "baselines",
-        "context_sources",
-        "claim_intents",
-    ):
+    for key in MATERIAL_AUTHORITY_LIST_AXES:
         proposed_values = _typed_material_axis_values(proposed.get(key))
-        if strict_resume_authority and proposed_values:
+        if strict_resume_authority and key in proposed:
             authoritative_values = _typed_material_axis_values(
                 authoritative.get(key)
             )
             if (
                 key not in authoritative
+                or proposed_values is None
                 or authoritative_values is None
                 or set(proposed_values) != set(authoritative_values)
             ):
@@ -2058,6 +2067,8 @@ def _merge_confirmed_material_requirements(
                 proposed[key] = confirmed[key]
             continue
         if not confirmed_values:
+            if key in confirmed and key not in proposed:
+                proposed[key] = []
             continue
         if proposed_values is None:
             if key not in proposed:
@@ -3857,19 +3868,12 @@ def _clarification_material_slots(state: Mapping[str, Any]) -> dict[str, Any]:
     ) or {}
     if not isinstance(requirements, Mapping):
         return slots
-    for key in (
-        "target_metrics",
-        "requested_components",
-        "requested_dimensions",
-        "baselines",
-        "context_sources",
-        "diagnostic_tags",
-        "claim_intents",
-        "scope",
-    ):
-        value = requirements.get(key)
-        if value not in (None, "", (), [], {}):
-            slots[key] = to_jsonable(value)
+    for key in (*MATERIAL_AUTHORITY_LIST_AXES, "diagnostic_tags"):
+        if key in requirements:
+            slots[key] = to_jsonable(requirements[key])
+    scope = requirements.get("scope")
+    if scope not in (None, "", (), [], {}):
+        slots["scope"] = to_jsonable(scope)
     return slots
 
 
