@@ -7,6 +7,10 @@ from bi_agent.runtime.evidence_authority import (
     canonical_digest,
     canonical_value,
 )
+from bi_agent.runtime.reuse_decision import (
+    PHYSICAL_QUERY_REUSE_DECISION_SCHEMA_VERSION,
+    validated_query_reuse_decision,
+)
 
 
 _UNTRUSTED_PROVENANCE_FIELDS = frozenset(
@@ -86,15 +90,14 @@ def build_trusted_claim_provenance_record(
         raise EvidenceIntegrityError("claim_provenance_run_missing")
     normalized_reuse = []
     for raw in reuse_decisions:
-        if not isinstance(raw, Mapping):
-            raise EvidenceIntegrityError("claim_provenance_reuse_invalid")
-        decision = {
-            key: str(raw.get(key) or "")
-            for key in ("source_ref", "result_ref", "decision")
-            if raw.get(key)
-        }
-        if not decision.get("source_ref") or not decision.get("decision"):
-            raise EvidenceIntegrityError("claim_provenance_reuse_invalid")
+        decision = validated_query_reuse_decision(raw)
+        if decision.get("schema_version") == (
+            PHYSICAL_QUERY_REUSE_DECISION_SCHEMA_VERSION
+        ):
+            if decision["run_id"] != run_id:
+                raise EvidenceIntegrityError(
+                    "claim_provenance_reuse_run_mismatch"
+                )
         normalized_reuse.append(decision)
     payload = canonical_value(
         {

@@ -34,6 +34,11 @@ from bi_agent.runtime.claim_provenance import (
     validate_trusted_claim_provenance_record,
     validate_verified_claim_record,
 )
+from bi_agent.runtime.reuse_decision import (
+    PHYSICAL_QUERY_REUSE_DECISION_SCHEMA_VERSION,
+    physical_reuse_decision_cache_provenance_matches,
+    validated_physical_query_reuse_decision_record,
+)
 from bi_agent.runtime.evidence_authority import (
     CapabilityBindingRecord,
     CompletenessRecord,
@@ -357,6 +362,14 @@ def validate_analysis_runtime_records(
         if ref in provenance_by_ref:
             raise EvidenceIntegrityError("runtime_persistence_claim_provenance_duplicate")
         provenance_by_ref[ref] = payload
+    _validate_physical_reuse_provenance(
+        provenance_by_ref,
+        run_id=run_id,
+        analysis_contract_ref=analysis_ref,
+        query_by_ref=query_by_ref,
+        query_records=query_records,
+        reports_by_result=reports_by_result,
+    )
 
     claims_by_ref: dict[str, Mapping[str, Any]] = {}
     try:
@@ -394,8 +407,15 @@ def validate_analysis_runtime_records(
         if ref in claims_by_ref:
             raise EvidenceIntegrityError("runtime_persistence_verified_claim_duplicate")
         claims_by_ref[ref] = payload
-    if not has_verified_claims and (
-        provenance_by_ref or claim_links
+    if not has_verified_claims and claim_links:
+        raise EvidenceIntegrityError("runtime_persistence_zero_claim_provenance_invalid")
+    if (
+        not has_verified_claims
+        and provenance_by_ref
+        and not _zero_claim_provenance_is_final_physical_reuse(
+            provenance_by_ref,
+            run_id=run_id,
+        )
     ):
         raise EvidenceIntegrityError("runtime_persistence_zero_claim_provenance_invalid")
 
@@ -486,6 +506,108 @@ def validate_analysis_runtime_records(
         "claim_links": tuple(normalized_links),
         "repair_attempts": tuple(normalized_repairs),
     }
+
+
+def _zero_claim_provenance_is_final_physical_reuse(
+    provenance_by_ref: Mapping[str, Mapping[str, Any]],
+    *,
+    run_id: str,
+) -> bool:
+    decision_refs: set[str] = set()
+    for provenance in provenance_by_ref.values():
+        raw_decisions = provenance.get("reuse_decisions") or ()
+        if not raw_decisions:
+            return False
+        for raw in raw_decisions:
+            try:
+                decision = validated_physical_query_reuse_decision_record(raw)
+            except (EvidenceIntegrityError, TypeError, ValueError):
+                return False
+            decision_ref = str(decision.get("decision_ref") or "")
+            if (
+                decision["run_id"] != run_id
+                or not decision_ref
+                or decision_ref in decision_refs
+            ):
+                return False
+            decision_refs.add(decision_ref)
+    return bool(decision_refs)
+
+
+def _validate_physical_reuse_provenance(
+    provenance_by_ref: Mapping[str, Mapping[str, Any]],
+    *,
+    run_id: str,
+    analysis_contract_ref: str,
+    query_by_ref: Mapping[str, QueryContract],
+    query_records: Mapping[str, QueryExecutionRecord],
+    reports_by_result: Mapping[str, CompletenessRecord],
+) -> None:
+    decision_refs: set[str] = set()
+    for provenance in provenance_by_ref.values():
+        for raw in provenance.get("reuse_decisions") or ():
+            if (
+                not isinstance(raw, Mapping)
+                or raw.get("schema_version")
+                != PHYSICAL_QUERY_REUSE_DECISION_SCHEMA_VERSION
+            ):
+                continue
+            decision = validated_physical_query_reuse_decision_record(raw)
+            if (
+                decision["run_id"] != run_id
+                or decision["analysis_contract_ref"] != analysis_contract_ref
+            ):
+                raise EvidenceIntegrityError(
+                    "runtime_persistence_reuse_decision_owner_mismatch"
+                )
+
+            contract = query_by_ref.get(decision["query_contract_ref"])
+            query = query_records.get(decision["result_ref"])
+            if (
+                contract is None
+                or query is None
+                or contract.contract_signature
+                != decision["query_contract_signature"]
+                or query.query_contract_ref != decision["query_contract_ref"]
+                or query.contract_signature
+                != decision["query_contract_signature"]
+                or query.record_ref != decision["query_execution_record_ref"]
+            ):
+                raise EvidenceIntegrityError(
+                    "runtime_persistence_reuse_decision_query_mismatch"
+                )
+
+            report = reports_by_result.get(decision["result_ref"])
+            if (
+                report is None
+                or report.query_contract_ref != decision["query_contract_ref"]
+                or tuple(decision["completeness_record_refs"])
+                != (report.record_ref,)
+            ):
+                raise EvidenceIntegrityError(
+                    "runtime_persistence_reuse_decision_completeness_mismatch"
+                )
+
+            result_payload = canonical_thaw(query.result_payload)
+            provider_stats = (
+                result_payload.get("provider_stats") or {}
+                if isinstance(result_payload, Mapping)
+                else {}
+            )
+            if not physical_reuse_decision_cache_provenance_matches(
+                decision,
+                provider_stats,
+            ):
+                raise EvidenceIntegrityError(
+                    "runtime_persistence_reuse_decision_cache_mismatch"
+                )
+
+            decision_ref = decision["decision_ref"]
+            if decision_ref in decision_refs:
+                raise EvidenceIntegrityError(
+                    "runtime_persistence_reuse_decision_duplicate"
+                )
+            decision_refs.add(decision_ref)
 
 
 def _unique_by(records: Sequence[Any], field: str, code: str) -> dict[str, Any]:

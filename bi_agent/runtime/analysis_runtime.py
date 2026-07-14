@@ -52,6 +52,12 @@ from bi_agent.runtime.evidence_authority import (
 from bi_agent.runtime.query_completeness import validate_query_result, validate_query_set
 from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
 from bi_agent.runtime.query_repair import QueryRepairDecision, plan_query_repair
+from bi_agent.runtime.reuse_decision import (
+    build_physical_query_reuse_decision_record,
+    physical_reuse_decision_cache_provenance_matches,
+    validated_physical_query_reuse_decision_record,
+    validated_query_reuse_decision,
+)
 from bi_agent.runtime.permission_roles import runtime_permission_scope_from_request
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
@@ -161,17 +167,10 @@ class AnswerPackageBuildContext:
             f"memory:context:{original_manifest.get('manifest_id') or request.get('run_id')}",
         )
         raw_reuse = tuple(request.get("reuse_decisions") or ())
-        reuse = tuple(
-            {
-                "source_ref": str(item.get("source_ref") or item.get("ref") or ""),
-                "result_ref": str(item.get("result_ref") or ""),
-                "decision": str(item.get("decision") or ""),
-            }
-            for item in raw_reuse
-            if isinstance(item, Mapping)
-            and (item.get("source_ref") or item.get("ref"))
-            and item.get("decision")
-        ) or (
+        reuse_items: list[Mapping[str, Any]] = []
+        for item in raw_reuse:
+            reuse_items.append(validated_query_reuse_decision(item))
+        reuse = tuple(reuse_items) or (
             {
                 "source_ref": str(original_manifest.get("manifest_id") or request.get("run_id") or ""),
                 "decision": "fresh",
@@ -440,6 +439,9 @@ class AnalysisRuntime:
         reports: list[CompletenessReport] = []
         decisions: list[QueryRepairDecision] = []
         reuse_decisions: list[Mapping[str, Any]] = []
+        reuse_attempts: list[
+            tuple[Mapping[str, Any], bool, str] | None
+        ] = []
         executed_contracts: list[QueryContract] = []
         for contract in compiled.query_contracts:
             contract_snapshots = {
@@ -492,28 +494,6 @@ class AnalysisRuntime:
                     contract_snapshots,
                     release_resolver=self.release_resolver,
                 )
-            if candidate is not None:
-                reused = validated_reuse is not None and not rerun_reason
-                reuse_decisions.append(
-                    MappingProxyType(
-                        {
-                            "source_ref": str(candidate.get("result_ref") or ""),
-                            "result_ref": result.result_ref,
-                            "decision": "reuse" if reused else "rerun",
-                            "reason": (
-                                "validated_authoritative_query_chain"
-                                if reused
-                                else str(rerun_reason or "reuse_candidate_mismatch")
-                            ),
-                            "can_support_claim": reused,
-                            "requires_rerun": not reused,
-                            "query_contract_ref": contract.query_contract_id,
-                            "candidate_signature": str(
-                                candidate.get("candidate_signature") or ""
-                            ),
-                        }
-                    )
-                )
             report = validate_query_result(
                 contract,
                 result,
@@ -524,6 +504,15 @@ class AnalysisRuntime:
             results.append(result)
             reports.append(report)
             executed_contracts.append(contract)
+            reuse_attempts.append(
+                (
+                    candidate,
+                    validated_reuse is not None and not rerun_reason,
+                    str(rerun_reason or "reuse_candidate_mismatch"),
+                )
+                if candidate is not None
+                else None
+            )
         if results:
             reports = list(
                 validate_query_set(
@@ -531,6 +520,68 @@ class AnalysisRuntime:
                     tuple(results),
                     tuple(reports),
                     evidence_writer=self.evidence_writer,
+                )
+            )
+        for contract, result, report, reuse_attempt in zip(
+            executed_contracts,
+            results,
+            reports,
+            reuse_attempts,
+        ):
+            if reuse_attempt is None:
+                continue
+            candidate, reused, rerun_reason = reuse_attempt
+            query_record = self.evidence_resolver.resolve_query_execution(
+                result.result_ref
+            )
+            completeness_record = self.evidence_authority.resolve_latest_completeness(
+                report.report_ref
+            )
+            if query_record is None:
+                raise EvidenceIntegrityError(
+                    "physical_reuse_decision_current_query_missing"
+                )
+            if completeness_record is None:
+                raise EvidenceIntegrityError(
+                    "physical_reuse_decision_current_completeness_missing"
+                )
+            reuse_decisions.append(
+                MappingProxyType(
+                    build_physical_query_reuse_decision_record(
+                        run_id=typed.run_id,
+                        topic_id=typed.topic_id,
+                        analysis_contract_ref=(
+                            compiled.analysis_contract.analysis_contract_id
+                        ),
+                        source_run_id=str(candidate.get("source_run_id") or ""),
+                        source_analysis_contract_ref=str(
+                            candidate.get("analysis_contract_ref") or ""
+                        ),
+                        source_ref=str(candidate.get("result_ref") or ""),
+                        source_query_contract_ref=str(
+                            candidate.get("query_contract_ref") or ""
+                        ),
+                        source_query_execution_record_ref=str(
+                            candidate.get("query_execution_record_ref") or ""
+                        ),
+                        source_completeness_record_refs=_reuse_candidate_refs(
+                            candidate.get("completeness_record_refs")
+                        ),
+                        result_ref=result.result_ref,
+                        query_contract_ref=contract.query_contract_id,
+                        query_contract_signature=contract.contract_signature,
+                        query_execution_record_ref=query_record.record_ref,
+                        completeness_record_refs=(completeness_record.record_ref,),
+                        candidate_signature=str(
+                            candidate.get("candidate_signature") or ""
+                        ),
+                        decision="reuse" if reused else "rerun",
+                        reason=(
+                            "validated_authoritative_query_chain"
+                            if reused
+                            else rerun_reason
+                        ),
+                    )
                 )
             )
         for contract, report in zip(executed_contracts, reports):
@@ -648,6 +699,8 @@ class AnalysisRuntime:
         candidate_signature = str(unsigned.pop("candidate_signature") or "")
         if candidate_signature != canonical_digest(unsigned):
             raise EvidenceIntegrityError("reuse_candidate_signature_invalid")
+        if str(candidate["source_run_id"]) == request.run_id:
+            raise EvidenceIntegrityError("reuse_candidate_source_run_alias")
 
         snapshot_fields = (
             "source_snapshot_refs",
@@ -1061,8 +1114,27 @@ class AnalysisRuntime:
         if publication_mode not in {"complete", "waiting_for_clarification"}:
             raise ValueError("analysis_runtime_publication_mode_invalid")
         base = dict(result.persistence_records)
+        authoritative_reuse_decisions = _validated_result_reuse_decisions(
+            result,
+            request=request,
+            records=base,
+        )
         if publication_mode == "waiting_for_clarification":
             base, audit = _project_waiting_persistence_records(base)
+            retained_reuse_decisions = tuple(
+                decision
+                for decision in authoritative_reuse_decisions
+                if _reuse_decision_persistence_closure_retained(
+                    decision,
+                    records=base,
+                )
+            )
+            authoritative_reuse_decisions = _validated_result_reuse_decisions(
+                result,
+                request=request,
+                records=base,
+                reuse_decisions=retained_reuse_decisions,
+            )
             if publication_audit is not None:
                 publication_audit.update(audit)
         bindings = tuple(base["capability_binding_records"])
@@ -1150,11 +1222,25 @@ class AnalysisRuntime:
         provenance_records: tuple[Mapping[str, Any], ...] = ()
         verified_claims: tuple[Mapping[str, Any], ...] = ()
         claim_links: tuple[Mapping[str, Any], ...] = ()
-        if claims:
+        build_context: AnswerPackageBuildContext | None = None
+        provenance: dict[str, Any] | None = None
+        if claims or authoritative_reuse_decisions:
+            provenance_request = dict(request)
+            if authoritative_reuse_decisions:
+                provenance_request["reuse_decisions"] = [
+                    dict(item) for item in authoritative_reuse_decisions
+                ]
             build_context = AnswerPackageBuildContext.create(
-                request=request,
+                request=provenance_request,
                 artifact_path=artifact_path,
             )
+            provenance = dict(build_context.trusted_provenance)
+            provenance_records = (provenance,)
+        if claims:
+            if build_context is None or provenance is None:
+                raise EvidenceIntegrityError(
+                    "analysis_runtime_claim_provenance_missing"
+                )
             sources = tuple(
                 (
                     {"type": "evidence", "ref": evidence_ref, "can_support_claim": True}
@@ -1193,7 +1279,6 @@ class AnalysisRuntime:
             )
             for manifest in evidence_manifests:
                 manifest["context_manifest_ref"] = context["manifest_id"]
-            provenance = dict(build_context.trusted_provenance)
             built_claims = tuple(
                 build_verified_claim_record(
                     claim,
@@ -1214,7 +1299,6 @@ class AnalysisRuntime:
                 for evidence_ref in claim["evidence_refs"]
             )
             context_records = (context,)
-            provenance_records = (provenance,)
             verified_claims = built_claims
             claim_links = links
         return {
@@ -1245,9 +1329,137 @@ def _mapping_value(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _validated_result_reuse_decisions(
+    result: AnalysisRuntimeResult | Any,
+    *,
+    request: Mapping[str, Any],
+    records: Mapping[str, Any],
+    reuse_decisions: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[Mapping[str, Any], ...]:
+    raw_decisions = tuple(
+        getattr(result, "reuse_decisions", ()) or ()
+        if reuse_decisions is None
+        else reuse_decisions
+    )
+    if not raw_decisions:
+        return ()
+    run_id = str(request.get("run_id") or "")
+    topic_id = str(request.get("topic_id") or "")
+    analysis_contract_ref = str(
+        getattr(result.analysis_contract, "analysis_contract_id", "") or ""
+    )
+    query_contracts = {
+        item.query_contract_id: item
+        for item in records.get("query_contracts") or ()
+    }
+    query_records = {
+        item.result_ref: item
+        for item in records.get("query_execution_records") or ()
+    }
+    completeness_records = {
+        item.record_ref: item
+        for item in records.get("completeness_records") or ()
+    }
+    validated: list[Mapping[str, Any]] = []
+    decision_refs: set[str] = set()
+    for raw in raw_decisions:
+        decision = validated_physical_query_reuse_decision_record(raw)
+        if (
+            decision["run_id"] != run_id
+            or decision["topic_id"] != topic_id
+            or decision["analysis_contract_ref"] != analysis_contract_ref
+        ):
+            raise EvidenceIntegrityError(
+                "analysis_runtime_reuse_decision_owner_mismatch"
+            )
+        contract = query_contracts.get(decision["query_contract_ref"])
+        query = query_records.get(decision["result_ref"])
+        if (
+            contract is None
+            or query is None
+            or contract.contract_signature
+            != decision["query_contract_signature"]
+            or query.query_contract_ref != decision["query_contract_ref"]
+            or query.record_ref != decision["query_execution_record_ref"]
+            or query.contract_signature != decision["query_contract_signature"]
+        ):
+            raise EvidenceIntegrityError(
+                "analysis_runtime_reuse_decision_query_mismatch"
+            )
+        provider_stats = _mapping_value(
+            _mapping_value(query.result_payload).get("provider_stats")
+        )
+        if not physical_reuse_decision_cache_provenance_matches(
+            decision,
+            provider_stats,
+        ):
+            raise EvidenceIntegrityError(
+                "analysis_runtime_reuse_decision_cache_mismatch"
+            )
+        current_completeness = tuple(
+            completeness_records.get(ref)
+            for ref in decision["completeness_record_refs"]
+        )
+        if any(record is None for record in current_completeness) or any(
+            record.result_ref != decision["result_ref"]
+            or record.query_contract_ref != decision["query_contract_ref"]
+            for record in current_completeness
+            if record is not None
+        ):
+            raise EvidenceIntegrityError(
+                "analysis_runtime_reuse_decision_completeness_mismatch"
+            )
+        if decision["decision_ref"] in decision_refs:
+            raise EvidenceIntegrityError(
+                "analysis_runtime_reuse_decision_duplicate"
+            )
+        decision_refs.add(decision["decision_ref"])
+        validated.append(MappingProxyType(decision))
+    return tuple(validated)
+
+
+def _reuse_decision_persistence_closure_retained(
+    decision: Mapping[str, Any],
+    *,
+    records: Mapping[str, Any],
+) -> bool:
+    query_contract_refs = {
+        item.query_contract_id for item in records.get("query_contracts") or ()
+    }
+    query_by_result = {
+        item.result_ref: item
+        for item in records.get("query_execution_records") or ()
+    }
+    completeness_refs = {
+        item.record_ref for item in records.get("completeness_records") or ()
+    }
+    query = query_by_result.get(str(decision.get("result_ref") or ""))
+    return bool(
+        decision.get("query_contract_ref") in query_contract_refs
+        and query is not None
+        and query.record_ref == decision.get("query_execution_record_ref")
+        and set(decision.get("completeness_record_refs") or ()).issubset(
+            completeness_refs
+        )
+    )
+
+
 def _exception_reason(exc: BaseException) -> str:
     reason = str(exc).strip()
     return reason or type(exc).__name__
+
+
+def _reuse_candidate_refs(value: Any) -> tuple[str, ...]:
+    if (
+        not isinstance(value, (list, tuple))
+        or isinstance(value, (str, bytes))
+    ):
+        return ()
+    return tuple(
+        dict.fromkeys(
+            item for item in value if isinstance(item, str) and item
+        )
+    )
 
 
 def _window_payloads(contract: QueryContract) -> tuple[Mapping[str, Any], ...]:
