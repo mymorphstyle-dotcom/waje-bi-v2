@@ -20,6 +20,11 @@ from bi_agent.runtime.authoritative_query_chain import (
     AuthoritativeQueryChainError,
     validate_capability_binding_plan_semantics,
 )
+from bi_agent.runtime.contract_gaps import (
+    canonical_source_ambiguity_source_ids,
+    is_canonical_direct_analysis_source_ambiguity,
+    reviewed_queryless_gap_claim_types,
+)
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
@@ -301,6 +306,7 @@ def validate_analysis_runtime_records(
             supported_claim_intents,
         )
     )
+    _validate_analysis_target_metric_refs(typed_analysis)
     evidence_by_ref: dict[str, Mapping[str, Any]] = {}
     for raw in evidence_manifests:
         payload = canonical_value(raw)
@@ -379,6 +385,7 @@ def validate_analysis_runtime_records(
             unbound_claim_intents=unbound_claim_intents,
             evidence_by_ref=evidence_by_ref,
             bindings_by_ref=bindings_by_ref,
+            query_by_ref=query_by_ref,
             registry=claim_registry,
         )
         ref = str(payload["claim_ref"])
@@ -529,12 +536,6 @@ def _validate_query_contract_analysis_semantics(
         raise EvidenceIntegrityError(
             "runtime_persistence_analysis_dataset_requirement_mismatch"
         )
-    if not set(analysis.target_metric_refs).issubset(
-        {item.contract_ref for item in analysis.metric_bindings}
-    ):
-        raise EvidenceIntegrityError(
-            "runtime_persistence_analysis_target_metric_mismatch"
-        )
     if contract.permission_scope != analysis.permission_scope:
         raise EvidenceIntegrityError(
             "runtime_persistence_query_permission_scope_mismatch"
@@ -596,43 +597,29 @@ def _validated_unbound_claim_intents(
     )
     bound_metric_ids = {metric.metric_id for metric in analysis.metric_bindings}
     required_dataset_ids = set(analysis.dataset_requirements)
-    target_metric_refs = set(analysis.target_metric_refs)
-    claim_authorizing_boundary_gaps = tuple(
-        gap
-        for gap in boundary_gaps
-        if _boundary_gap_authorizes_claim_intents(
-            gap,
-            bound_metric_ids=bound_metric_ids,
-            required_dataset_ids=required_dataset_ids,
-            target_metric_refs=target_metric_refs,
-        )
-    )
-    boundary_claim_intents = {
-        claim_type
-        for gap in claim_authorizing_boundary_gaps
-        for claim_type in gap.affected_claim_types
-    }
-    has_terminal_boundary_gap = any(
-        gap.requires_clarification
-        and bool(gap.owner)
-        and bool(gap.repair_options)
-        and (
-            "analysis_contract" in gap.affected_capabilities
-            or bool(
-                set(gap.affected_capabilities).intersection(
-                    analysis.capability_requirements
-                )
-            )
-        )
-        for gap in boundary_gaps
-    )
     try:
         registry = RuntimeContractRegistry.from_path(
             CANONICAL_RUNTIME_BINDINGS_PATH
         )
+        claim_authorizing_boundary_gaps = tuple(
+            gap
+            for gap in boundary_gaps
+            if _boundary_gap_authorizes_claim_intents(
+                gap,
+                bound_metric_ids=bound_metric_ids,
+                required_dataset_ids=required_dataset_ids,
+                required_capability_ids=analysis.capability_requirements,
+                registry=registry,
+            )
+        )
+        boundary_claim_intents = {
+            claim_type
+            for gap in claim_authorizing_boundary_gaps
+            for claim_type in gap.affected_claim_types
+        }
         capability_claim_intents = {
             claim_type
-            for gap in boundary_gaps
+            for gap in claim_authorizing_boundary_gaps
             for capability_id in gap.affected_capabilities
             if capability_id in analysis.capability_requirements
             for claim_type in registry.capability_inputs(capability_id).get(
@@ -641,13 +628,14 @@ def _validated_unbound_claim_intents(
         }
         queryless_capability_claim_intents = {
             claim_type
-            for capability_id in analysis.capability_requirements
-            for inputs in (registry.capability_inputs(capability_id),)
-            if has_terminal_boundary_gap
-            if not inputs.get("query_families")
-            and not inputs.get("required_metrics")
-            and inputs.get("minimum_readiness", {}).get("required_slots") == "none"
-            for claim_type in inputs.get("supported_claim_types", ())
+            for gap in claim_authorizing_boundary_gaps
+            for capability_id in gap.affected_capabilities
+            if capability_id in analysis.capability_requirements
+            for claim_type in reviewed_queryless_gap_claim_types(
+                capability_id,
+                gap.affected_claim_types,
+                registry=registry,
+            )
         }
     except (KeyError, OSError, TypeError, ValueError) as exc:
         raise EvidenceIntegrityError(
@@ -764,69 +752,207 @@ def _boundary_gap_authorizes_claim_intents(
     *,
     bound_metric_ids: set[str],
     required_dataset_ids: set[str],
-    target_metric_refs: set[str],
+    required_capability_ids: tuple[str, ...],
+    registry: RuntimeContractRegistry,
 ) -> bool:
     if not gap.affected_claim_types:
         return False
     parts = gap.gap_id.split(":")
     if parts[0] == "metric" and len(parts) >= 3:
         metric_id = parts[1]
-        diagnostic = canonical_value(gap.diagnostic_context)
+        source_ambiguity_prefix = f"metric:{metric_id}:source_ambiguous:"
+        if gap.gap_id.startswith(source_ambiguity_prefix):
+            if not is_canonical_direct_analysis_source_ambiguity(
+                gap,
+                tuple(gap.affected_capabilities),
+                registry=registry,
+                expected_capability_requirements=required_capability_ids,
+            ):
+                return False
+            source_ids = canonical_source_ambiguity_source_ids(
+                gap,
+                registry=registry,
+            )
+            try:
+                metric_sources = registry.metric_sources(metric_id)
+                selected_contract_refs = tuple(
+                    str(metric_sources[source_id].get("contract_ref") or "")
+                    for source_id in source_ids
+                )
+            except (KeyError, TypeError, ValueError):
+                return False
+            return bool(
+                selected_contract_refs
+                and all(selected_contract_refs)
+            )
         if metric_id in bound_metric_ids:
             return True
-        try:
-            registry = RuntimeContractRegistry.from_path(
-                CANONICAL_RUNTIME_BINDINGS_PATH
-            )
-            metric_sources = registry.metric_sources(metric_id)
-            source_ids = tuple(metric_sources)
-            metric_contract_refs = {
-                str(source.get("contract_ref") or "")
-                for source in metric_sources.values()
-                if str(source.get("contract_ref") or "")
-            }
-        except (KeyError, OSError, TypeError, ValueError):
-            return False
-        return (
-            len(source_ids) > 1
-            and metric_contract_refs.issubset(target_metric_refs)
-            and gap.gap_id
-            == f"metric:{metric_id}:source_ambiguous:{','.join(source_ids)}"
-            and gap.gap_type == "contract_partial"
-            and gap.dataset_id == ""
-            and gap.owner == "contract_owner"
-            and gap.repair_options
-            == ("select_dataset_requirement", "clarify_source_scope")
-            and gap.requires_clarification is True
-            and diagnostic.get("item_kind") == "metric"
-            and diagnostic.get("item_id") == metric_id
-            and set(diagnostic.get("claim_intents") or ())
-            == set(gap.affected_claim_types)
-        )
+        return False
     if parts[0] == "dataset":
         return bool(gap.dataset_id) and gap.dataset_id in required_dataset_ids
     return True
 
 
+def _validate_analysis_target_metric_refs(analysis: AnalysisContract) -> None:
+    try:
+        registry = RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        raise EvidenceIntegrityError(
+            "runtime_persistence_analysis_target_metric_contract_invalid"
+        ) from exc
+
+    target_refs = tuple(analysis.target_metric_refs)
+    target_ref_membership = set(target_refs)
+    bound_refs_by_metric: dict[str, list[str]] = {}
+    for binding in analysis.metric_bindings:
+        if binding.contract_ref:
+            bound_refs_by_metric.setdefault(binding.metric_id, []).append(
+                binding.contract_ref
+            )
+    ambiguity_refs_by_metric: dict[str, list[tuple[tuple[str, ...], bool]]] = {}
+    for gap in analysis.contract_gaps:
+        if not is_canonical_direct_analysis_source_ambiguity(
+            gap,
+            tuple(gap.affected_capabilities),
+            registry=registry,
+        ):
+            continue
+        diagnostic = gap.diagnostic_context
+        if diagnostic.get("item_kind") != "metric":
+            continue
+        metric_id = str(diagnostic.get("item_id") or "")
+        source_ids = canonical_source_ambiguity_source_ids(
+            gap,
+            registry=registry,
+        )
+        try:
+            sources = registry.metric_sources(metric_id)
+            selected_refs = tuple(
+                str(sources[source_id].get("contract_ref") or "")
+                for source_id in source_ids
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        if selected_refs and all(selected_refs):
+            affected = tuple(gap.affected_capabilities)
+            actual_scope = is_canonical_direct_analysis_source_ambiguity(
+                gap,
+                affected,
+                registry=registry,
+                expected_capability_requirements=(
+                    analysis.capability_requirements
+                ),
+            )
+            if affected != ("analysis_contract",) and not actual_scope:
+                continue
+            ambiguity_refs_by_metric.setdefault(metric_id, []).append(
+                (tuple(dict.fromkeys(selected_refs)), actual_scope and bool(affected[1:]))
+            )
+
+    requested_metric_ids = analysis.scope.get("requested_metric_ids")
+    metric_order = tuple(dict.fromkeys((
+        *(
+            tuple(requested_metric_ids)
+            if isinstance(requested_metric_ids, (list, tuple))
+            and all(
+                isinstance(metric_id, str) and metric_id
+                for metric_id in requested_metric_ids
+            )
+            else ()
+        ),
+        *bound_refs_by_metric,
+        *ambiguity_refs_by_metric,
+    )))
+    expected_refs: list[str] = []
+
+    def extend_distinct(refs: Sequence[str]) -> None:
+        for ref in refs:
+            if ref and ref not in expected_refs:
+                expected_refs.append(ref)
+
+    for metric_id in metric_order:
+        bound_refs = tuple(bound_refs_by_metric.get(metric_id, ()))
+        if any(ref in target_ref_membership for ref in bound_refs):
+            extend_distinct(bound_refs)
+        for selected_refs, mandatory in ambiguity_refs_by_metric.get(
+            metric_id,
+            (),
+        ):
+            if mandatory:
+                extend_distinct(selected_refs)
+            else:
+                extend_distinct(tuple(
+                    ref for ref in selected_refs if ref in target_ref_membership
+                ))
+
+    if target_refs != tuple(expected_refs):
+        raise EvidenceIntegrityError(
+            "runtime_persistence_analysis_target_metric_mismatch"
+        )
+
+
 def _contract_gap_blocks_binding_claim(
     analysis: AnalysisContract,
     *,
-    capability_id: str,
+    binding: CapabilityBindingRecord,
+    query_by_ref: Mapping[str, QueryContract] | None,
+    evidence_manifests: Sequence[Mapping[str, Any]] = (),
     claim_type: str,
     unbound_claim_intents: set[str],
+    registry: RuntimeContractRegistry,
 ) -> bool:
+    query_refs = tuple(
+        dict.fromkeys(
+            (*binding.query_contract_refs, *binding.validation_query_contract_refs)
+        )
+    )
+    dependency_items = None
+    if (
+        query_refs
+        and query_by_ref is not None
+        and all(ref in query_by_ref for ref in query_refs)
+    ):
+        dependency_items = {
+            "metric": {
+                metric.metric_id
+                for query_ref in query_refs
+                for metric in query_by_ref[query_ref].metric_bindings
+            },
+            "dimension": {
+                dimension.dimension_id
+                for query_ref in query_refs
+                for dimension in query_by_ref[query_ref].dimension_bindings
+            },
+        }
+        for manifest in evidence_manifests:
+            metric_id = manifest.get("metric")
+            if isinstance(metric_id, str) and metric_id:
+                dependency_items["metric"].add(metric_id)
+            dimensions = manifest.get("dimensions")
+            if isinstance(dimensions, Mapping):
+                dependency_items["dimension"].update(
+                    str(dimension_id)
+                    for dimension_id in dimensions
+                    if str(dimension_id)
+                )
+            elif isinstance(dimensions, str):
+                if dimensions:
+                    dependency_items["dimension"].add(dimensions)
+            elif isinstance(dimensions, (list, tuple)):
+                for dimension in dimensions:
+                    if isinstance(dimension, str) and dimension:
+                        dependency_items["dimension"].add(dimension)
+                    elif isinstance(dimension, Mapping):
+                        dimension_id = str(
+                            dimension.get("dimension_id")
+                            or dimension.get("id")
+                            or ""
+                        )
+                        if dimension_id:
+                            dependency_items["dimension"].add(dimension_id)
     for gap in analysis.contract_gaps:
-        if not (
-            gap.requires_clarification
-            or gap.gap_type in {
-                "source_unbound",
-                "permission_blocked",
-                "dataset_snapshot_unavailable_as_of",
-                "unsupported_grain",
-                "query_completeness_failed",
-            }
-        ):
-            continue
         affected_claim_types = set(gap.affected_claim_types)
         if (
             affected_claim_types
@@ -838,11 +964,49 @@ def _contract_gap_blocks_binding_claim(
         ):
             continue
         affected = tuple(gap.affected_capabilities)
+        diagnostic = canonical_value(gap.diagnostic_context)
+        item_kind = str(diagnostic.get("item_kind") or "")
+        item_id = str(diagnostic.get("item_id") or "")
+        source_ambiguity_family = (
+            ":source_ambiguous:" in gap.gap_id
+            or tuple(gap.repair_options)
+            == ("select_dataset_requirement", "clarify_source_scope")
+        )
+        if source_ambiguity_family:
+            if not is_canonical_direct_analysis_source_ambiguity(
+                gap,
+                affected,
+                registry=registry,
+                expected_capability_requirements=(
+                    analysis.capability_requirements
+                ),
+            ):
+                return True
+            if affected == ("analysis_contract",):
+                if dependency_items is None:
+                    return True
+                if item_id in dependency_items[item_kind]:
+                    return True
+                continue
+        if not (
+            gap.requires_clarification
+            or gap.gap_type in {
+                "source_unbound",
+                "permission_blocked",
+                "dataset_snapshot_unavailable_as_of",
+                "unsupported_grain",
+                "query_completeness_failed",
+            }
+        ):
+            continue
         if not affected:
             return True
         concrete = {item for item in affected if item != "analysis_contract"}
-        if not concrete or capability_id in concrete:
+        if binding.capability_id in concrete:
             return True
+        if concrete:
+            continue
+        return True
     return False
 
 
@@ -854,6 +1018,7 @@ def _validate_verified_claim_contract_boundary(
     evidence_by_ref: Mapping[str, Mapping[str, Any]],
     bindings_by_ref: Mapping[str, CapabilityBindingRecord],
     registry: RuntimeContractRegistry,
+    query_by_ref: Mapping[str, QueryContract] | None = None,
 ) -> None:
     unbound_claim_intents = set(unbound_claim_intents or ())
     claim_type = str(payload.get("claim_type") or "")
@@ -863,12 +1028,20 @@ def _validate_verified_claim_contract_boundary(
         raise EvidenceIntegrityError(
             "runtime_persistence_verified_claim_intent_mismatch"
         )
-    linked_bindings = tuple(
-        bindings_by_ref[
-            str(evidence_by_ref[evidence_ref]["binding_record_ref"])
-        ]
+    linked_evidence = tuple(
+        evidence_by_ref[evidence_ref]
         for evidence_ref in payload.get("evidence_refs") or ()
         if evidence_ref in evidence_by_ref
+    )
+    linked_binding_refs = tuple(
+        dict.fromkeys(
+            str(evidence["binding_record_ref"])
+            for evidence in linked_evidence
+        )
+    )
+    linked_bindings = tuple(
+        bindings_by_ref[binding_ref]
+        for binding_ref in linked_binding_refs
     )
     if not linked_bindings or any(
         claim_type not in binding.supported_claim_types
@@ -880,9 +1053,16 @@ def _validate_verified_claim_contract_boundary(
     for binding in linked_bindings:
         if _contract_gap_blocks_binding_claim(
             analysis,
-            capability_id=binding.capability_id,
+            binding=binding,
+            query_by_ref=query_by_ref,
+            evidence_manifests=tuple(
+                evidence
+                for evidence in linked_evidence
+                if str(evidence["binding_record_ref"]) == binding.record_ref
+            ),
             claim_type=claim_type,
             unbound_claim_intents=unbound_claim_intents,
+            registry=registry,
         ):
             raise EvidenceIntegrityError(
                 "runtime_persistence_verified_claim_gap_blocked"

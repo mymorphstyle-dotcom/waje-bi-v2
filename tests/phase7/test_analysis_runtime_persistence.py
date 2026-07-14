@@ -214,6 +214,290 @@ def _authority_bundle(
     }
 
 
+def _paid_amount_market_health_bundle():
+    from bi_agent.runtime.analysis_contracts import (
+        AnalysisContract,
+        analysis_contract_signature,
+    )
+    from bi_agent.runtime.analysis_runtime import AnalysisRuntime
+    from bi_agent.runtime.answer_package import build_answer_package
+    from bi_agent.runtime.capability_harness import execute_capability
+    from tests.phase4.test_market_window_evidence import (
+        _market_context,
+        _market_request,
+    )
+
+    context = _market_context(target_metrics=("paid_amount",))
+    envelope = execute_capability(
+        _market_request(context, metric="paid_amount")
+    )
+    claim = {
+        "text": "目标期付费金额相对基线增加。",
+        "claim_type": "comparative_change",
+        "claim_strength": "observed",
+        "evidence_refs": (envelope.evidence_ref,),
+        "numbers": dict(envelope.numeric_facts),
+    }
+    package = build_answer_package(
+        run_id="run-market-multi-window",
+        draft_claims=(claim,),
+        evidence=(envelope.to_dict(),),
+        evidence_resolver=context["authority"],
+        rows_loader=context["authority"].rows_loader,
+        runtime_registry=context["registry"],
+        release_resolver=context["release_resolver"],
+        checkpoint_events=(),
+        proposed_graph=("market_health_compare",),
+        accepted_graph=("market_health_compare",),
+        rejected_or_degraded_mutations=(),
+        validator_results=({"validator": "test", "ok": True},),
+        sql_text="",
+        sql_hash="hash:market-health",
+        artifact_audit={},
+        answer_text=claim["text"],
+        final_business_summary=claim["text"],
+    )
+    query_record = context["authority"].resolve_query_execution(
+        context["result"].result_ref
+    )
+    rows_record = context["authority"].resolve_rows(query_record.rows_ref)
+    snapshot_records = tuple(
+        context["authority"].resolve_snapshot(ref)
+        for ref in query_record.source_snapshot_refs
+    )
+    completeness_record = context["authority"].resolve_latest_completeness(
+        context["report"].report_ref
+    )
+    binding_record = context["authority"].resolve_capability_binding(
+        context["bound"].binding_manifest_ref
+    )
+    analysis = AnalysisContract(
+        analysis_contract_id=context["contract"].analysis_contract_ref,
+        contract_version=context["registry"].contract_version,
+        question_families=("custom_baseline_comparison",),
+        target_metric_refs=tuple(
+            binding.contract_ref
+            for binding in context["contract"].metric_bindings
+        ),
+        claim_intents=("comparative_change",),
+        scope={"type": "full_sample"},
+        business_timezone=context["registry"].business_timezone,
+        as_of="2026-06-03T12:00:00+01:00",
+        resolved_windows=context["contract"].resolved_windows,
+        metric_bindings=context["contract"].metric_bindings,
+        dimension_bindings=context["contract"].dimension_bindings,
+        dataset_requirements=tuple(
+            dict.fromkeys(
+                record.snapshot.dataset_id for record in snapshot_records
+            )
+        ),
+        capability_requirements=("market_health_compare",),
+        permission_scope="analyst",
+    )
+    persistence_records = {
+        "analysis_contract": {
+            **analysis.to_dict(),
+            "contract_signature": analysis_contract_signature(analysis),
+        },
+        "query_contracts": (context["contract"],),
+        "query_execution_records": (query_record,),
+        "rows_records": (rows_record,),
+        "snapshot_records": snapshot_records,
+        "completeness_records": (completeness_record,),
+        "capability_binding_records": (binding_record,),
+    }
+    result = SimpleNamespace(
+        persistence_records=persistence_records,
+        analysis_contract=analysis,
+        repair_decisions=(),
+    )
+    return AnalysisRuntime.build_persistence_bundle(
+        object.__new__(AnalysisRuntime),
+        result,
+        answer_package=package,
+        request={
+            "run_id": "run-market-multi-window",
+            "thread_id": "thread-market",
+            "topic_id": "topic-market",
+            "role": "analyst",
+        },
+        artifact_path="artifact:market-health",
+    )
+
+
+def _item_source_ambiguity_gap(
+    item_kind,
+    item_id,
+    *,
+    source_ids=None,
+    affected_claim_types=("comparative_change",),
+    diagnostic_claim_intents=None,
+    diagnostic_extra=None,
+    affected_capabilities=("analysis_contract",),
+):
+    from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    sources = (
+        registry.metric_sources(item_id)
+        if item_kind == "metric"
+        else registry.dimension_sources(item_id)
+    )
+    selected_sources = tuple(source_ids or sources)
+    diagnostic = {
+        "item_kind": item_kind,
+        "item_id": item_id,
+        "claim_intents": list(
+            affected_claim_types
+            if diagnostic_claim_intents is None
+            else diagnostic_claim_intents
+        ),
+    }
+    diagnostic.update(diagnostic_extra or {})
+    return {
+        "gap_type": "contract_partial",
+        "gap_id": (
+            f"{item_kind}:{item_id}:source_ambiguous:{','.join(selected_sources)}"
+        ),
+        "dataset_id": "",
+        "affected_capabilities": list(affected_capabilities),
+        "affected_claim_types": list(affected_claim_types),
+        "owner": "contract_owner",
+        "repair_options": ["select_dataset_requirement", "clarify_source_scope"],
+        "requires_clarification": True,
+        "diagnostic_context": diagnostic,
+    }
+
+
+def _with_contract_gaps(bundle, *gaps):
+    from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+    analysis = {
+        **bundle["analysis_contract"],
+        "contract_gaps": list(gaps),
+    }
+    analysis["contract_signature"] = analysis_contract_signature(analysis)
+    bundle["analysis_contract"] = analysis
+    return bundle
+
+
+def _queryless_source_ambiguity_bundle(
+    *,
+    source_ids=("market_dashboard", "market_dashboard_channel"),
+    claim_intents=("recurring_pattern_existence",),
+    affected_claim_types=("recurring_pattern_existence",),
+    diagnostic_claim_intents=None,
+    diagnostic_extra=None,
+):
+    from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+    from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    metric_sources = registry.metric_sources("paid_amount")
+    target_metric_refs = tuple(dict.fromkeys(
+        str(metric_sources[source_id]["contract_ref"])
+        for source_id in source_ids
+    ))
+    bundle = _authority_bundle()
+    analysis = {
+        **bundle["analysis_contract"],
+        "claim_intents": list(claim_intents),
+        "capability_requirements": ["answer_verify", "evidence_reduce"],
+        "target_metric_refs": list(target_metric_refs),
+        "dataset_requirements": [],
+        "metric_bindings": [],
+        "dimension_bindings": [],
+        "contract_gaps": [
+            _item_source_ambiguity_gap(
+                "metric",
+                "paid_amount",
+                source_ids=source_ids,
+                affected_claim_types=affected_claim_types,
+                diagnostic_claim_intents=diagnostic_claim_intents,
+                diagnostic_extra=diagnostic_extra,
+                affected_capabilities=(
+                    "analysis_contract",
+                    "evidence_reduce",
+                ),
+            )
+        ],
+    }
+    analysis["contract_signature"] = analysis_contract_signature(analysis)
+    bundle.update(
+        {
+            "analysis_contract": analysis,
+            "query_contracts": (),
+            "query_execution_records": (),
+            "rows_records": (),
+            "snapshot_records": (),
+            "completeness_records": (),
+            "capability_binding_records": (),
+            "evidence_manifests": (),
+            "context_manifests": (),
+            "trusted_provenance_records": (),
+            "verified_claims": (),
+            "claim_links": (),
+            "repair_attempts": (),
+        }
+    )
+    return bundle
+
+
+def _compiled_queryless_source_ambiguity_bundle(
+    *,
+    target_metrics=("paid_amount",),
+):
+    from datetime import datetime
+
+    from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
+    from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+    from bi_agent.runtime.dataset_catalog import DatasetCatalog
+    from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    outcome = compile_analysis_contract(
+        run_id="run-compiled-queryless-subset",
+        proposal={
+            "target_metrics": list(target_metrics),
+            "dataset_requirements": [
+                "market_dashboard",
+                "market_dashboard_channel",
+            ],
+        },
+        accepted_capabilities=("answer_verify", "evidence_reduce"),
+        catalog=DatasetCatalog(()),
+        registry=registry,
+        as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+        permission_scope="analyst",
+    )
+    analysis = outcome.analysis_contract
+    bundle = {
+        "analysis_contract": {
+            **analysis.to_dict(),
+            "contract_signature": analysis_contract_signature(analysis),
+        },
+        "query_contracts": outcome.query_contracts,
+        "query_execution_records": (),
+        "rows_records": (),
+        "snapshot_records": (),
+        "completeness_records": (),
+        "capability_binding_records": (),
+        "evidence_manifests": (),
+        "context_manifests": (),
+        "trusted_provenance_records": (),
+        "verified_claims": (),
+        "claim_links": (),
+        "repair_attempts": (),
+    }
+    return bundle, registry
+
+
 def _evidence_for_binding(binding, *, evidence_ref="evidence:task9:segment"):
     dedupe = lambda values: tuple(dict.fromkeys(values))
     return {
@@ -1484,6 +1768,380 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             "published",
         )
 
+    def test_control_only_item_gap_does_not_block_unrelated_market_claim(self):
+        for item_kind, item_id in (
+            ("metric", "paid_users"),
+            ("dimension", "channel"),
+        ):
+            with self.subTest(item_kind=item_kind, item_id=item_id):
+                bundle = _with_contract_gaps(
+                    _paid_amount_market_health_bundle(),
+                    _item_source_ambiguity_gap(item_kind, item_id),
+                )
+
+                self.assertEqual(
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-market-multi-window",
+                        **bundle,
+                    ),
+                    "published",
+                )
+
+    def test_control_only_item_gap_blocks_intersecting_market_claim(self):
+        bundle = _with_contract_gaps(
+            _paid_amount_market_health_bundle(),
+            _item_source_ambiguity_gap("metric", "paid_amount"),
+        )
+        bundle["evidence_manifests"] = tuple(
+            {
+                key: value
+                for key, value in manifest.items()
+                if key != "metric"
+            }
+            for manifest in bundle["evidence_manifests"]
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_verified_claim_gap_blocked",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-market-multi-window",
+                **bundle,
+            )
+
+    def test_queryless_gap_cannot_forge_nonrequired_capability_scope(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        bundle = _paid_amount_market_health_bundle()
+        gap = _item_source_ambiguity_gap(
+            "metric",
+            "paid_amount",
+            source_ids=("market_dashboard", "market_dashboard_channel"),
+            affected_capabilities=("analysis_contract", "evidence_reduce"),
+        )
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        metric_sources = registry.metric_sources("paid_amount")
+        selected_refs = tuple(dict.fromkeys(
+            str(metric_sources[source_id]["contract_ref"])
+            for source_id in ("market_dashboard", "market_dashboard_channel")
+        ))
+        analysis = {
+            **bundle["analysis_contract"],
+            "target_metric_refs": list(dict.fromkeys((
+                *bundle["analysis_contract"]["target_metric_refs"],
+                *selected_refs,
+            ))),
+            "contract_gaps": [gap],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+        bundle["evidence_manifests"] = tuple(
+            {
+                key: value
+                for key, value in manifest.items()
+                if key != "metric"
+            }
+            for manifest in bundle["evidence_manifests"]
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_verified_claim_gap_blocked",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-market-multi-window",
+                **bundle,
+            )
+
+    def test_queryless_gap_requires_complete_affected_claim_coverage(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _paid_amount_market_health_bundle()
+        gap = _item_source_ambiguity_gap(
+            "metric",
+            "paid_amount",
+            source_ids=("market_dashboard", "market_dashboard_channel"),
+            affected_claim_types=("comparative_change", "candidate_driver"),
+            affected_capabilities=("analysis_contract", "evidence_reduce"),
+        )
+        analysis = {
+            **bundle["analysis_contract"],
+            "capability_requirements": [
+                *bundle["analysis_contract"]["capability_requirements"],
+                "evidence_reduce",
+            ],
+            "contract_gaps": [gap],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+        bundle["evidence_manifests"] = tuple(
+            {
+                key: value
+                for key, value in manifest.items()
+                if key != "metric"
+            }
+            for manifest in bundle["evidence_manifests"]
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_verified_claim_gap_blocked",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-market-multi-window",
+                **bundle,
+            )
+
+    def test_source_ambiguity_family_rejects_malformed_item_diagnostics(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        diagnostics = (
+            {},
+            {
+                "item_kind": "other",
+                "item_id": "paid_amount",
+                "claim_intents": ["comparative_change"],
+            },
+        )
+        for diagnostic in diagnostics:
+            with self.subTest(diagnostic=diagnostic):
+                bundle = _paid_amount_market_health_bundle()
+                gap = _item_source_ambiguity_gap(
+                    "metric",
+                    "paid_amount",
+                    source_ids=(
+                        "market_dashboard",
+                        "market_dashboard_channel",
+                    ),
+                    affected_capabilities=(
+                        "analysis_contract",
+                        "evidence_reduce",
+                    ),
+                )
+                gap["diagnostic_context"] = diagnostic
+                analysis = {
+                    **bundle["analysis_contract"],
+                    "capability_requirements": [
+                        *bundle["analysis_contract"][
+                            "capability_requirements"
+                        ],
+                        "evidence_reduce",
+                    ],
+                    "contract_gaps": [gap],
+                }
+                analysis["contract_signature"] = analysis_contract_signature(
+                    analysis
+                )
+                bundle["analysis_contract"] = analysis
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_verified_claim_gap_blocked",
+                ):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-market-multi-window",
+                        **bundle,
+                    )
+
+    def test_requested_source_unreviewed_gap_is_capability_local(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _paid_amount_market_health_bundle()
+        gap = {
+            "gap_type": "contract_partial",
+            "gap_id": (
+                "metric:paid_amount:requested_source_unreviewed:"
+                "market_dashboard_channel"
+            ),
+            "dataset_id": "market_dashboard_channel",
+            "affected_capabilities": ["compare_periods"],
+            "affected_claim_types": ["comparative_change"],
+            "owner": "contract_owner",
+            "repair_options": [
+                "use_capability_reviewed_source",
+                "bind_independent_context_capability",
+            ],
+            "requires_clarification": False,
+            "diagnostic_context": {
+                "item_kind": "metric",
+                "item_id": "paid_amount",
+                "requested_dataset_ids": ["market_dashboard_channel"],
+                "reviewed_dataset_ids": ["market_dashboard"],
+                "excluded_dataset_ids": ["market_dashboard_channel"],
+                "claim_intents": ["comparative_change"],
+            },
+        }
+        analysis = {
+            **bundle["analysis_contract"],
+            "capability_requirements": [
+                *bundle["analysis_contract"]["capability_requirements"],
+                "compare_periods",
+            ],
+            "contract_gaps": [gap],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-market-multi-window",
+                **bundle,
+            ),
+            "published",
+        )
+
+    def test_control_only_item_gap_requires_query_dependency_authority(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+        from bi_agent.runtime.runtime_persistence import (
+            _contract_gap_blocks_binding_claim,
+        )
+
+        bundle = _with_contract_gaps(
+            _paid_amount_market_health_bundle(),
+            _item_source_ambiguity_gap("metric", "paid_users"),
+        )
+        analysis = analysis_contract_from_dict({
+            key: value
+            for key, value in bundle["analysis_contract"].items()
+            if key != "contract_signature"
+        })
+        binding = bundle["capability_binding_records"][0]
+        query_by_ref = {
+            query.query_contract_id: query
+            for query in bundle["query_contracts"]
+        }
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        cases = (
+            (
+                "empty_binding_query_refs",
+                replace(
+                    binding,
+                    query_contract_refs=(),
+                    validation_query_contract_refs=(),
+                ),
+                query_by_ref,
+            ),
+            ("missing_query_authority", binding, {}),
+        )
+
+        for case, candidate_binding, candidate_queries in cases:
+            with self.subTest(case=case):
+                self.assertTrue(
+                    _contract_gap_blocks_binding_claim(
+                        analysis,
+                        binding=candidate_binding,
+                        query_by_ref=candidate_queries,
+                        claim_type="comparative_change",
+                        unbound_claim_intents=set(),
+                        registry=registry,
+                    )
+                )
+
+    def test_malformed_control_only_item_gap_remains_hard_blocking(self):
+        malformed_shapes = (
+            ("gap_type", {"gap_type": "source_unbound"}),
+            ("gap_id", {"gap_id": "metric:paid_users:contract_absent"}),
+            (
+                "forged_source_suffix",
+                {
+                    "gap_id": (
+                        "metric:paid_users:source_ambiguous:forged_source"
+                    )
+                },
+            ),
+            ("dataset_id", {"dataset_id": "paid_order_success"}),
+            ("owner", {"owner": "runtime_owner"}),
+            ("repair_options", {"repair_options": ["clarify_source_scope"]}),
+            ("requires_clarification", {"requires_clarification": False}),
+            (
+                "claim_intent_drift",
+                {
+                    "diagnostic_context": {
+                        "item_kind": "metric",
+                        "item_id": "paid_users",
+                        "claim_intents": ["candidate_mechanism"],
+                    }
+                },
+            ),
+        )
+
+        for case, mutation in malformed_shapes:
+            with self.subTest(case=case):
+                gap = {**_item_source_ambiguity_gap("metric", "paid_users"), **mutation}
+                bundle = _with_contract_gaps(
+                    _paid_amount_market_health_bundle(),
+                    gap,
+                )
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_verified_claim_gap_blocked",
+                ):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-market-multi-window",
+                        **bundle,
+                    )
+
+    def test_control_only_gap_blocks_linked_evidence_only_item_dependency(self):
+        evidence_items = (
+            ("metric", "paid_users", {"metric": "paid_users"}),
+            ("dimension", "channel", {"dimensions": {"channel": "app"}}),
+        )
+
+        for item_kind, item_id, evidence_dependency in evidence_items:
+            with self.subTest(item_kind=item_kind, item_id=item_id):
+                bundle = _with_contract_gaps(
+                    _paid_amount_market_health_bundle(),
+                    _item_source_ambiguity_gap(item_kind, item_id),
+                )
+                bundle["evidence_manifests"] = tuple(
+                    {**manifest, **evidence_dependency}
+                    for manifest in bundle["evidence_manifests"]
+                )
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_verified_claim_gap_blocked",
+                ):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-market-multi-window",
+                        **bundle,
+                    )
+
+    def test_control_only_unscoped_gap_remains_global_hard_blocker(self):
+        bundle = _paid_amount_market_health_bundle()
+        claim_type = bundle["verified_claims"][0]["claim_type"]
+        bundle = _with_contract_gaps(
+            bundle,
+            {
+                "gap_type": "contract_partial",
+                "gap_id": "claim_authority:incomplete",
+                "dataset_id": "",
+                "affected_capabilities": ["analysis_contract"],
+                "affected_claim_types": [claim_type],
+                "owner": "contract_owner",
+                "repair_options": ["bind_capability_claim_types"],
+                "requires_clarification": True,
+                "diagnostic_context": {},
+            },
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_verified_claim_gap_blocked",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-market-multi-window",
+                **bundle,
+            )
+
     def test_global_or_ready_capability_gap_blocks_ready_claim(self):
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature
 
@@ -1522,49 +2180,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                     )
 
     def test_queryless_contract_capability_persists_zero_claim_boundary(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-
-        bundle = _authority_bundle()
-        analysis = {
-            **bundle["analysis_contract"],
-            "claim_intents": ["recurring_pattern_existence"],
-            "capability_requirements": ["answer_verify", "evidence_reduce"],
-            "dataset_requirements": [],
-            "metric_bindings": [],
-            "dimension_bindings": [],
-            "contract_gaps": [{
-                "gap_type": "contract_partial",
-                "gap_id": "metric:paid_amount:source_ambiguous",
-                "dataset_id": "",
-                "affected_capabilities": ["analysis_contract"],
-                "affected_claim_types": [],
-                "owner": "contract_owner",
-                "repair_options": [
-                    "select_dataset_requirement",
-                    "clarify_source_scope",
-                ],
-                "requires_clarification": True,
-                "diagnostic_context": {},
-            }],
-        }
-        analysis["contract_signature"] = analysis_contract_signature(analysis)
-        bundle.update(
-            {
-                "analysis_contract": analysis,
-                "query_contracts": (),
-                "query_execution_records": (),
-                "rows_records": (),
-                "snapshot_records": (),
-                "completeness_records": (),
-                "capability_binding_records": (),
-                "evidence_manifests": (),
-                "context_manifests": (),
-                "trusted_provenance_records": (),
-                "verified_claims": (),
-                "claim_links": (),
-                "repair_attempts": (),
-            }
-        )
+        bundle = _queryless_source_ambiguity_bundle()
 
         self.assertEqual(
             InMemoryConversationStore().save_analysis_runtime_records(
@@ -1572,6 +2188,251 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             ),
             "published",
         )
+
+    def test_compiled_queryless_reviewed_subset_persists_final_gap_scope(self):
+        bundle, registry = _compiled_queryless_source_ambiguity_bundle()
+        gap = next(
+            gap
+            for gap in bundle["analysis_contract"]["contract_gaps"]
+            if gap["gap_id"].startswith("metric:paid_amount:source_ambiguous:")
+        )
+        expected_refs = tuple(dict.fromkeys(
+            registry.metric_sources("paid_amount")[source_id]["contract_ref"]
+            for source_id in ("market_dashboard", "market_dashboard_channel")
+        ))
+
+        self.assertEqual(bundle["query_contracts"], ())
+        self.assertEqual(
+            gap["affected_capabilities"],
+            ("analysis_contract", "evidence_reduce"),
+        )
+        self.assertEqual(
+            tuple(bundle["analysis_contract"]["target_metric_refs"]),
+            expected_refs,
+        )
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-compiled-queryless-subset",
+                **bundle,
+            ),
+            "published",
+        )
+
+    def test_compiled_queryless_reviewed_subset_requires_exact_target_refs(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        for mutation in ("missing", "extra"):
+            with self.subTest(mutation=mutation):
+                bundle, registry = _compiled_queryless_source_ambiguity_bundle()
+                analysis = deepcopy(bundle["analysis_contract"])
+                if mutation == "missing":
+                    analysis["target_metric_refs"] = []
+                else:
+                    analysis["target_metric_refs"] = [
+                        *analysis["target_metric_refs"],
+                        registry.metric_sources("paid_amount")[
+                            "paid_order_success"
+                        ]["contract_ref"],
+                    ]
+                analysis["contract_signature"] = analysis_contract_signature(
+                    analysis
+                )
+                bundle["analysis_contract"] = analysis
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_analysis_target_metric_mismatch",
+                ):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-compiled-queryless-subset",
+                        **bundle,
+                    )
+
+    def test_compiled_queryless_multi_target_preserves_exact_target_refs(self):
+        bundle, registry = _compiled_queryless_source_ambiguity_bundle(
+            target_metrics=("active_users", "paid_amount"),
+        )
+        expected_refs = (
+            registry.metric_sources("active_users")["market_dashboard"][
+                "contract_ref"
+            ],
+            *tuple(dict.fromkeys(
+                registry.metric_sources("paid_amount")[source_id]["contract_ref"]
+                for source_id in (
+                    "market_dashboard",
+                    "market_dashboard_channel",
+                )
+            )),
+        )
+
+        self.assertEqual(
+            tuple(bundle["analysis_contract"]["target_metric_refs"]),
+            expected_refs,
+        )
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-compiled-queryless-subset",
+                **bundle,
+            ),
+            "published",
+        )
+
+    def test_compiled_queryless_multi_target_rejects_noncanonical_target_ref_tuple(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        for mutation in ("duplicate", "reverse"):
+            with self.subTest(mutation=mutation):
+                bundle, _ = _compiled_queryless_source_ambiguity_bundle(
+                    target_metrics=("active_users", "paid_amount"),
+                )
+                analysis = deepcopy(bundle["analysis_contract"])
+                refs = list(analysis["target_metric_refs"])
+                analysis["target_metric_refs"] = (
+                    [*refs, refs[0]]
+                    if mutation == "duplicate"
+                    else list(reversed(refs))
+                )
+                analysis["contract_signature"] = analysis_contract_signature(
+                    analysis
+                )
+                bundle["analysis_contract"] = analysis
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_analysis_target_metric_mismatch",
+                ):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-compiled-queryless-subset",
+                        **bundle,
+                    )
+
+    def test_queryless_preflight_rejects_reviewed_subset_for_unrelated_claim(self):
+        bundle = _queryless_source_ambiguity_bundle(
+            claim_intents=("recurring_pattern_existence",),
+            affected_claim_types=("comparative_change",),
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_analysis_claim_intent_unsupported",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            )
+
+    def test_queryless_preflight_requires_selected_source_contract_refs(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _queryless_source_ambiguity_bundle()
+        analysis = {
+            **bundle["analysis_contract"],
+            "target_metric_refs": [],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_analysis_target_metric_mismatch",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            )
+
+    def test_queryless_preflight_rejects_affected_capability_drift(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _queryless_source_ambiguity_bundle()
+        analysis = deepcopy(bundle["analysis_contract"])
+        analysis["contract_gaps"][0]["affected_capabilities"] = [
+            "answer_verify"
+        ]
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_analysis_claim_intent_unsupported",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            )
+
+    def test_queryless_preflight_rejects_unreviewed_target_metric_ref(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+        bundle = _queryless_source_ambiguity_bundle()
+        analysis = {
+            **bundle["analysis_contract"],
+            "target_metric_refs": [
+                *bundle["analysis_contract"]["target_metric_refs"],
+                "metric-contract:unreviewed",
+            ],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_analysis_target_metric_mismatch",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            )
+
+    def test_queryless_preflight_rejects_noncanonical_source_gap_diagnostics(self):
+        cases = (
+            (
+                "claim_intent_order",
+                {
+                    "affected_claim_types": (
+                        "comparative_change",
+                        "recurring_pattern_existence",
+                    ),
+                    "diagnostic_claim_intents": (
+                        "recurring_pattern_existence",
+                        "comparative_change",
+                    ),
+                },
+            ),
+            (
+                "claim_intent_duplicate",
+                {
+                    "diagnostic_claim_intents": (
+                        "recurring_pattern_existence",
+                        "recurring_pattern_existence",
+                    ),
+                },
+            ),
+            (
+                "claim_intent_duplicate_in_gap_and_diagnostic",
+                {
+                    "affected_claim_types": (
+                        "recurring_pattern_existence",
+                        "recurring_pattern_existence",
+                    ),
+                    "diagnostic_claim_intents": (
+                        "recurring_pattern_existence",
+                        "recurring_pattern_existence",
+                    ),
+                },
+            ),
+            (
+                "diagnostic_extra_key",
+                {"diagnostic_extra": {"unreviewed": True}},
+            ),
+        )
+
+        for case, kwargs in cases:
+            with self.subTest(case=case):
+                bundle = _queryless_source_ambiguity_bundle(**kwargs)
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_analysis_claim_intent_unsupported",
+                ):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-task9", **bundle
+                    )
 
     def test_queryless_contract_capability_without_boundary_is_unsupported(self):
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature
@@ -1687,13 +2548,13 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             **analysis,
             "claim_intents": linked_claim_intents,
             "metric_bindings": [active_binding],
-            "target_metric_refs": [
+            "target_metric_refs": list(dict.fromkeys((
                 active_binding["contract_ref"],
                 *(
                     source["contract_ref"]
                     for source in unbound_sources.values()
                 ),
-            ],
+            ))),
             "contract_gaps": [{
                 **analysis["contract_gaps"][0],
                 "gap_id": (

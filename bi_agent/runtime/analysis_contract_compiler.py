@@ -30,6 +30,13 @@ from bi_agent.runtime.analysis_contracts import (
     query_contract_signature,
     stable_contract_signature,
 )
+from bi_agent.runtime.contract_gaps import (
+    canonical_source_ambiguity_source_ids,
+    canonical_source_ambiguity_subset,
+    is_canonical_direct_analysis_source_ambiguity,
+    is_unscoped_direct_analysis_source_ambiguity,
+    reviewed_queryless_gap_claim_types,
+)
 from bi_agent.runtime.evidence_authority import canonical_value
 from bi_agent.runtime.dataset_catalog import (
     DatasetCatalog,
@@ -340,6 +347,7 @@ def compile_analysis_contract(
         target_metric_refs=_ordered_target_metric_refs(
             target_metrics,
             metric_bindings,
+            tuple(gaps),
             registry,
         ),
         claim_intents=accepted_claim_intents,
@@ -2024,13 +2032,22 @@ def _scope_gaps(
     affected_capabilities: tuple[str, ...],
     affected_claim_types: tuple[str, ...],
     claim_types_by_capability: Mapping[str, tuple[str, ...]] | None = None,
-    registry: RuntimeContractRegistry | None = None,
+    registry: RuntimeContractRegistry,
 ) -> tuple[ContractGap, ...]:
     scoped = []
     for gap in gaps:
         capabilities = gap.affected_capabilities or affected_capabilities
-        direct_source_ambiguity = _is_direct_analysis_source_ambiguity(
-            gap, capabilities
+        direct_source_ambiguity = is_canonical_direct_analysis_source_ambiguity(
+            gap,
+            capabilities,
+            registry=registry,
+        )
+        unscoped_direct_source_ambiguity = (
+            is_unscoped_direct_analysis_source_ambiguity(
+                gap,
+                capabilities,
+                registry=registry,
+            )
         )
         claim_types = gap.affected_claim_types
         if not claim_types and claim_types_by_capability is not None:
@@ -2039,7 +2056,9 @@ def _scope_gaps(
                 for capability_id in capabilities
                 for claim_type in claim_types_by_capability.get(capability_id, ())
             )
-        if not claim_types and direct_source_ambiguity:
+        if not claim_types and (
+            direct_source_ambiguity or unscoped_direct_source_ambiguity
+        ):
             claim_types = affected_claim_types
         scoped_claim_types = (
             claim_types
@@ -2061,7 +2080,9 @@ def _scope_gaps(
                 ),
             ))
         diagnostic_context = gap.diagnostic_context
-        if scoped_claim_types and direct_source_ambiguity:
+        if scoped_claim_types and (
+            direct_source_ambiguity or unscoped_direct_source_ambiguity
+        ):
             diagnostic_context = {
                 **gap.diagnostic_context,
                 "claim_intents": list(scoped_claim_types),
@@ -2082,43 +2103,12 @@ def _queryless_capability_blocks_claims(
     affected_claim_types: tuple[str, ...],
     registry: RuntimeContractRegistry,
 ) -> bool:
-    contract = _registry_entry(registry.capability_inputs, capability_id)
-    if contract is None:
-        return False
-    readiness = contract.get("minimum_readiness") or {}
-    degradation = contract.get("degradation_policy") or {}
-    if not isinstance(readiness, Mapping) or not isinstance(degradation, Mapping):
-        return False
-    supported_claim_types = set(
-        _mapping_values(contract, "supported_claim_types")
-    )
-    return (
-        readiness.get("required_slots") == "none"
-        and str(degradation.get("missing_required_input") or "").startswith(
-            "block_"
+    return bool(
+        reviewed_queryless_gap_claim_types(
+            capability_id,
+            affected_claim_types,
+            registry=registry,
         )
-        and bool(supported_claim_types.intersection(affected_claim_types))
-    )
-
-
-def _is_direct_analysis_source_ambiguity(
-    gap: ContractGap,
-    capabilities: tuple[str, ...],
-) -> bool:
-    diagnostic = gap.diagnostic_context
-    item_kind = str(diagnostic.get("item_kind") or "")
-    item_id = str(diagnostic.get("item_id") or "")
-    return (
-        capabilities == ("analysis_contract",)
-        and item_kind in {"metric", "dimension"}
-        and bool(item_id)
-        and gap.gap_type == "contract_partial"
-        and gap.gap_id.startswith(f"{item_kind}:{item_id}:source_ambiguous:")
-        and gap.dataset_id == ""
-        and gap.owner == "contract_owner"
-        and gap.repair_options
-        == ("select_dataset_requirement", "clarify_source_scope")
-        and gap.requires_clarification is True
     )
 
 
@@ -2497,7 +2487,12 @@ def _select_source_datasets(
                 )
             return selected, None
         return (), _source_ambiguity_gap(
-            item_kind, item_id, selected, affected, affected_claim_types
+            item_kind,
+            item_id,
+            selected,
+            affected,
+            affected_claim_types,
+            registered_source_ids=sources,
         )
 
     if allowed:
@@ -2510,13 +2505,23 @@ def _select_source_datasets(
             return constrained, None
         if len(constrained) > 1:
             return (), _source_ambiguity_gap(
-                item_kind, item_id, constrained, affected, affected_claim_types
+                item_kind,
+                item_id,
+                constrained,
+                affected,
+                affected_claim_types,
+                registered_source_ids=sources,
             )
     if len(candidates) == 1:
         return candidates, None
     if candidates:
         return (), _source_ambiguity_gap(
-            item_kind, item_id, candidates, affected, affected_claim_types
+            item_kind,
+            item_id,
+            candidates,
+            affected,
+            affected_claim_types,
+            registered_source_ids=sources,
         )
     return (), _contract_gap(
         gap_type="contract_absent",
@@ -2620,11 +2625,20 @@ def _source_ambiguity_gap(
     datasets: tuple[str, ...],
     affected: tuple[str, ...],
     affected_claim_types: tuple[str, ...],
+    *,
+    registered_source_ids: tuple[str, ...],
 ) -> ContractGap:
+    canonical_datasets = canonical_source_ambiguity_subset(
+        registered_source_ids,
+        datasets,
+    )
+    if not canonical_datasets:
+        raise ValueError("source_ambiguity_subset_invalid")
     return _contract_gap(
         gap_type="contract_partial",
         gap_id=(
-            f"{item_kind}:{item_id}:source_ambiguous:{','.join(datasets)}"
+            f"{item_kind}:{item_id}:source_ambiguous:"
+            f"{','.join(canonical_datasets)}"
         ),
         affected_capabilities=affected,
         affected_claim_types=affected_claim_types,
@@ -2641,6 +2655,7 @@ def _source_ambiguity_gap(
 def _ordered_target_metric_refs(
     target_metrics: tuple[str, ...],
     metric_bindings: tuple[MetricBinding, ...],
+    contract_gaps: tuple[ContractGap, ...],
     registry: RuntimeContractRegistry,
 ) -> tuple[str, ...]:
     refs: list[str] = []
@@ -2654,14 +2669,35 @@ def _ordered_target_metric_refs(
             refs.extend(bound_refs)
             continue
         try:
-            sources = registry.metric_sources(metric_id).values()
+            sources = registry.metric_sources(metric_id)
         except (KeyError, TypeError, ValueError):
             continue
-        refs.extend(
-            str(source.get("contract_ref") or "")
-            for source in sources
-            if str(source.get("contract_ref") or "")
+        selected_source_ids = _dedupe(
+            source_id
+            for gap in contract_gaps
+            if gap.diagnostic_context.get("item_kind") == "metric"
+            and gap.diagnostic_context.get("item_id") == metric_id
+            and is_canonical_direct_analysis_source_ambiguity(
+                gap,
+                tuple(gap.affected_capabilities),
+                registry=registry,
+            )
+            for source_id in canonical_source_ambiguity_source_ids(
+                gap,
+                registry=registry,
+            )
         )
+        if selected_source_ids:
+            refs.extend(
+                str(sources[source_id].get("contract_ref") or "")
+                for source_id in selected_source_ids
+                if str(sources[source_id].get("contract_ref") or "")
+            )
+        elif len(sources) == 1:
+            source = next(iter(sources.values()))
+            ref = str(source.get("contract_ref") or "")
+            if ref:
+                refs.append(ref)
     return tuple(dict.fromkeys(refs))
 
 

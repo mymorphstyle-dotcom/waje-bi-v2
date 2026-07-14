@@ -16,6 +16,9 @@ from bi_agent.runtime.analysis_contracts import (
 )
 from bi_agent.runtime.capability_registry import public_capability_ids
 from bi_agent.runtime.compiler import SUPPORTED_CAPABILITIES, compile_graph
+from bi_agent.runtime.contract_gaps import (
+    is_canonical_direct_analysis_source_ambiguity,
+)
 from bi_agent.runtime.contracts import load_contract
 from bi_agent.runtime.dataset_catalog import (
     canonical_dataset_release_members,
@@ -2678,6 +2681,255 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 ],
             },
         )
+
+    def test_direct_analysis_source_ambiguity_rejects_forged_source_suffix(self):
+        from bi_agent.runtime.analysis_contract_compiler import (
+            _source_ambiguity_gap,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        for item_kind, item_id, source_ids in (
+            ("metric", "paid_users", tuple(registry.metric_sources("paid_users"))),
+            ("dimension", "channel", tuple(registry.dimension_sources("channel"))),
+        ):
+            with self.subTest(item_kind=item_kind, item_id=item_id):
+                gap = _source_ambiguity_gap(
+                    item_kind,
+                    item_id,
+                    source_ids,
+                    ("analysis_contract",),
+                    ("comparative_change",),
+                    registered_source_ids=source_ids,
+                )
+                forged = replace(
+                    gap,
+                    gap_id=(
+                        f"{item_kind}:{item_id}:source_ambiguous:forged_source"
+                    ),
+                )
+
+                self.assertFalse(
+                    is_canonical_direct_analysis_source_ambiguity(
+                        forged,
+                        forged.affected_capabilities,
+                        registry=registry,
+                    )
+                )
+
+    def test_direct_analysis_source_ambiguity_accepts_reviewed_registry_subset(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-reviewed-source-ambiguity-subset",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "dataset_requirements": [
+                    "market_dashboard",
+                    "market_dashboard_channel",
+                ],
+            },
+            accepted_capabilities=("answer_verify", "evidence_reduce"),
+            catalog=DatasetCatalog(()),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        gap = next(
+            item
+            for item in outcome.analysis_contract.contract_gaps
+            if item.gap_id.startswith("metric:paid_amount:source_ambiguous:")
+        )
+
+        self.assertEqual(
+            gap.gap_id,
+            (
+                "metric:paid_amount:source_ambiguous:"
+                "market_dashboard,market_dashboard_channel"
+            ),
+        )
+        self.assertEqual(
+            gap.affected_capabilities,
+            ("analysis_contract", "evidence_reduce"),
+        )
+        self.assertTrue(
+            is_canonical_direct_analysis_source_ambiguity(
+                gap,
+                gap.affected_capabilities,
+                registry=registry,
+            )
+        )
+        self.assertFalse(
+            is_canonical_direct_analysis_source_ambiguity(
+                gap,
+                ("analysis_contract",),
+                registry=registry,
+            )
+        )
+        expected_refs = tuple(dict.fromkeys(
+            registry.metric_sources("paid_amount")[source_id]["contract_ref"]
+            for source_id in ("market_dashboard", "market_dashboard_channel")
+        ))
+        self.assertEqual(
+            outcome.analysis_contract.target_metric_refs,
+            expected_refs,
+        )
+
+    def test_direct_analysis_source_ambiguity_rejects_noncanonical_suffixes(self):
+        from bi_agent.runtime.analysis_contract_compiler import (
+            _source_ambiguity_gap,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        source_ids = tuple(registry.metric_sources("paid_amount"))
+        gap = _source_ambiguity_gap(
+            "metric",
+            "paid_amount",
+            source_ids,
+            ("analysis_contract",),
+            ("comparative_change",),
+            registered_source_ids=source_ids,
+        )
+        suffixes = (
+            "paid_order_success,forged_source",
+            "market_dashboard,paid_order_success",
+            "paid_order_success,paid_order_success",
+        )
+
+        for suffix in suffixes:
+            with self.subTest(suffix=suffix):
+                candidate = replace(
+                    gap,
+                    gap_id=f"metric:paid_amount:source_ambiguous:{suffix}",
+                )
+                self.assertFalse(
+                    is_canonical_direct_analysis_source_ambiguity(
+                        candidate,
+                        candidate.affected_capabilities,
+                        registry=registry,
+                    )
+                )
+
+    def test_direct_analysis_source_ambiguity_requires_exact_diagnostic_shape(self):
+        from bi_agent.runtime.analysis_contract_compiler import (
+            _source_ambiguity_gap,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        gap = _source_ambiguity_gap(
+            "metric",
+            "paid_users",
+            tuple(registry.metric_sources("paid_users")),
+            ("analysis_contract",),
+            ("comparative_change", "recurring_pattern_existence"),
+            registered_source_ids=tuple(registry.metric_sources("paid_users")),
+        )
+        diagnostics = (
+            {
+                **gap.diagnostic_context,
+                "claim_intents": [
+                    "recurring_pattern_existence",
+                    "comparative_change",
+                ],
+            },
+            {
+                **gap.diagnostic_context,
+                "claim_intents": [
+                    "comparative_change",
+                    "recurring_pattern_existence",
+                    "recurring_pattern_existence",
+                ],
+            },
+            {**gap.diagnostic_context, "unreviewed": True},
+        )
+
+        for diagnostic in diagnostics:
+            with self.subTest(diagnostic=diagnostic):
+                self.assertFalse(
+                    is_canonical_direct_analysis_source_ambiguity(
+                        replace(gap, diagnostic_context=diagnostic),
+                        gap.affected_capabilities,
+                        registry=registry,
+                    )
+                )
+
+    def test_direct_analysis_source_ambiguity_rejects_claim_intent_drift(self):
+        from bi_agent.runtime.analysis_contract_compiler import (
+            _source_ambiguity_gap,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        gap = _source_ambiguity_gap(
+            "metric",
+            "paid_users",
+            tuple(registry.metric_sources("paid_users")),
+            ("analysis_contract",),
+            ("comparative_change",),
+            registered_source_ids=tuple(registry.metric_sources("paid_users")),
+        )
+        drifted = replace(
+            gap,
+            diagnostic_context={
+                **gap.diagnostic_context,
+                "claim_intents": ["candidate_mechanism"],
+            },
+        )
+
+        self.assertFalse(
+            is_canonical_direct_analysis_source_ambiguity(
+                drifted,
+                drifted.affected_capabilities,
+                registry=registry,
+            )
+        )
+
+    def test_direct_analysis_source_ambiguity_requires_distinct_claim_intents(self):
+        from bi_agent.runtime.analysis_contract_compiler import (
+            _source_ambiguity_gap,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        source_ids = tuple(registry.metric_sources("paid_users"))
+        canonical = _source_ambiguity_gap(
+            "metric",
+            "paid_users",
+            source_ids,
+            ("analysis_contract",),
+            ("comparative_change",),
+            registered_source_ids=source_ids,
+        )
+
+        for claim_intents in (
+            (),
+            ("comparative_change", "comparative_change"),
+        ):
+            with self.subTest(claim_intents=claim_intents):
+                drifted = replace(
+                    canonical,
+                    affected_claim_types=claim_intents,
+                    diagnostic_context={
+                        **canonical.diagnostic_context,
+                        "claim_intents": list(claim_intents),
+                    },
+                )
+                self.assertFalse(
+                    is_canonical_direct_analysis_source_ambiguity(
+                        drifted,
+                        drifted.affected_capabilities,
+                        registry=registry,
+                    )
+                )
 
     def test_source_ambiguity_links_inferred_claim_intents_from_bound_peer_metric(self):
         registry = RuntimeContractRegistry.from_path(
