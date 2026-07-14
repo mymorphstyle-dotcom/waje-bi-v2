@@ -557,6 +557,35 @@ materially different contract-valid routes. Add regressions proving that an
 incompatible diagnostic cannot suppress required, conditional, or independent
 family obligations.
 
+Production route narrative follows an explicit authority split after every
+initial reconciliation, repair, or clarification resume:
+
+- `requested_nodes`, `analysis_requirements`, obligation resolution, compiled
+  evidence bindings, and claim contracts are the hard authority. Provider prose
+  cannot add a node, evidence owner, execution input, permission, or claim.
+- The provider returns `capability_sections` keyed by every active capability id
+  and by no other id. Each section contains all required provider-authored prose
+  for that capability. Global summaries and every section remain
+  `display_advisory`; semantic quality risks flow to the existing quality/final
+  audit and never become route authority.
+- Local workflow code only projects sections in accepted-graph order and joins
+  provider-authored text for display. It cannot synthesize, rewrite, replace, or
+  default business prose, including through registry templates.
+- Missing sections, extra sections, wrong container or field types, empty prose,
+  and a mismatch between typed refs and active capability ids fail inside the
+  shared provider client's three-attempt validation loop. The accept boundary
+  repeats the exact section-key and ref checks before compilation.
+- Clarification resume first removes every capability excluded by signed route
+  authority, then asks the provider to regenerate sections for the final active
+  graph. Prior or removed capability cards, labels, sections, and narrative are
+  absent from that request.
+
+Add a counterexample proving that a section whose prose mentions a concept from
+another capability cannot change the machine graph, evidence ownership,
+compiler input, or claim authority. Do not add keyword or synonym rules, and do
+not add a local narrative fallback. Free-text semantic mismatch remains a
+quality/final-audit risk under the explicit advisory contract.
+
 - [x] **Step 5: Run targeted and full compiler regressions**
 
 ```bash

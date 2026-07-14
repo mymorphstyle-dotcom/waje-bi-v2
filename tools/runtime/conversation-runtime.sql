@@ -51,6 +51,96 @@ CREATE TABLE IF NOT EXISTS waje_runtime.analysis_runs (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS waje_runtime.run_dispatches (
+  dispatch_id text PRIMARY KEY,
+  producer_kind text NOT NULL
+    CONSTRAINT run_dispatch_producer_kind_check
+    CHECK (producer_kind IN (
+      'thread_message', 'artifact_continue', 'clarification_resume'
+    )),
+  scope_ref text NOT NULL,
+  request_identity text NOT NULL,
+  request_digest text NOT NULL,
+  request_payload jsonb NOT NULL,
+  thread_id text NOT NULL REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
+  run_id text NOT NULL UNIQUE REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  message_id text NOT NULL UNIQUE REFERENCES waje_runtime.conversation_messages(message_id) ON DELETE CASCADE,
+  dispatch_state text NOT NULL DEFAULT 'pending'
+    CONSTRAINT run_dispatch_state_check
+    CHECK (dispatch_state IN ('pending', 'leased', 'running', 'terminal')),
+  owner_id text,
+  lease_epoch bigint NOT NULL DEFAULT 0,
+  lease_expires_at timestamptz,
+  heartbeat_at timestamptz,
+  terminal_status text,
+  failure_reason text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(producer_kind, scope_ref, request_identity),
+  CONSTRAINT run_dispatch_owner_shape_check CHECK (
+    dispatch_state NOT IN ('leased', 'running')
+    OR (owner_id IS NOT NULL AND lease_expires_at IS NOT NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_dispatch_recovery
+  ON waje_runtime.run_dispatches(dispatch_state, lease_expires_at)
+  WHERE dispatch_state IN ('pending', 'leased', 'running');
+
+CREATE TABLE IF NOT EXISTS waje_runtime.clarification_resume_claims (
+  source_run_id text PRIMARY KEY REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  resumed_run_id text NOT NULL UNIQUE REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  thread_id text NOT NULL REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
+  request_identity text NOT NULL,
+  submission jsonb NOT NULL,
+  message_id text NOT NULL UNIQUE REFERENCES waje_runtime.conversation_messages(message_id) ON DELETE CASCADE,
+  dispatch_state text NOT NULL DEFAULT 'pending'
+    CONSTRAINT clarification_resume_dispatch_state_check
+    CHECK (dispatch_state IN ('pending', 'leased', 'dispatched')),
+  dispatch_owner_id text,
+  dispatch_lease_expires_at timestamptz,
+  dispatched_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE waje_runtime.clarification_resume_claims
+  ADD COLUMN IF NOT EXISTS dispatch_state text NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS dispatch_owner_id text,
+  ADD COLUMN IF NOT EXISTS dispatch_lease_expires_at timestamptz,
+  ADD COLUMN IF NOT EXISTS dispatched_at timestamptz;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'clarification_resume_dispatch_state_check'
+      AND conrelid = 'waje_runtime.clarification_resume_claims'::regclass
+  ) THEN
+    ALTER TABLE waje_runtime.clarification_resume_claims
+      ADD CONSTRAINT clarification_resume_dispatch_state_check
+      CHECK (dispatch_state IN ('pending', 'leased', 'dispatched'));
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'clarification_resume_dispatch_lease_shape_check'
+      AND conrelid = 'waje_runtime.clarification_resume_claims'::regclass
+  ) THEN
+    ALTER TABLE waje_runtime.clarification_resume_claims
+      ADD CONSTRAINT clarification_resume_dispatch_lease_shape_check
+      CHECK (
+        dispatch_state <> 'leased'
+        OR (
+          dispatch_owner_id IS NOT NULL
+          AND dispatch_lease_expires_at IS NOT NULL
+        )
+      );
+  END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_clarification_resume_dispatch_recovery
+  ON waje_runtime.clarification_resume_claims(dispatch_state, dispatch_lease_expires_at);
+
 CREATE TABLE IF NOT EXISTS waje_runtime.run_nodes (
   node_id text PRIMARY KEY,
   run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
@@ -386,6 +476,15 @@ CREATE TABLE IF NOT EXISTS waje_runtime.claim_provenance_records (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS waje_runtime.answer_package_artifacts (
+  artifact_ref text PRIMARY KEY,
+  run_id text NOT NULL UNIQUE REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  canonical_path text NOT NULL,
+  payload_digest text NOT NULL CHECK (length(payload_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS waje_runtime.verified_claims (
   claim_ref text PRIMARY KEY,
   run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
@@ -483,6 +582,8 @@ CREATE INDEX IF NOT EXISTS idx_verified_claims_run
   ON waje_runtime.verified_claims(run_id, context_manifest_ref);
 CREATE INDEX IF NOT EXISTS idx_claim_provenance_records_run
   ON waje_runtime.claim_provenance_records(run_id);
+CREATE INDEX IF NOT EXISTS idx_answer_package_artifacts_run
+  ON waje_runtime.answer_package_artifacts(run_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_contracts_run_identity
   ON waje_runtime.analysis_contracts(run_id, analysis_contract_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_query_contracts_run_identity

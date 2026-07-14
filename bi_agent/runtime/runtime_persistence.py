@@ -37,6 +37,9 @@ from bi_agent.runtime.runtime_publication_index import (
     RUNTIME_PUBLICATION_INDEX_SCHEMA_VERSION,
     RUNTIME_PUBLICATION_RECORD_GROUPS,
 )
+from bi_agent.runtime.answer_package_artifact import (
+    validate_answer_package_artifact_record,
+)
 from bi_agent.runtime.claim_provenance import (
     validate_context_manifest_record,
     validate_trusted_claim_provenance_record,
@@ -544,6 +547,7 @@ def validate_analysis_runtime_records(
     verified_claims: Sequence[Mapping[str, Any]],
     claim_links: Sequence[Mapping[str, Any]],
     repair_attempts: Sequence[Mapping[str, Any]],
+    answer_package_artifacts: Sequence[Mapping[str, Any]] | None = None,
     result_candidate_resolver: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Close the persistence graph before any database statement is issued."""
@@ -902,6 +906,38 @@ def validate_analysis_runtime_records(
                 "runtime_persistence_zero_claim_evidence_context_invalid"
             )
 
+    normalized_artifacts: tuple[Mapping[str, Any], ...] = ()
+    declared_artifact_refs = {
+        str(ref)
+        for provenance in provenance_by_ref.values()
+        for ref in provenance.get("artifact_refs") or ()
+        if str(ref)
+    }
+    artifact_records = tuple(answer_package_artifacts or ())
+    if len(artifact_records) > 1:
+        raise EvidenceIntegrityError(
+            "runtime_persistence_answer_package_artifact_ambiguous"
+        )
+    if declared_artifact_refs and not artifact_records:
+        raise EvidenceIntegrityError(
+            "runtime_persistence_answer_package_artifact_missing"
+        )
+    if artifact_records:
+        artifact_record = validate_answer_package_artifact_record(
+            artifact_records[0],
+            run_id=run_id,
+        )
+        expected_artifact_refs = [artifact_record["artifact_ref"]]
+        if any(
+            list(provenance.get("artifact_refs") or ())
+            != expected_artifact_refs
+            for provenance in provenance_by_ref.values()
+        ):
+            raise EvidenceIntegrityError(
+                "runtime_persistence_answer_package_artifact_provenance_mismatch"
+            )
+        normalized_artifacts = (artifact_record,)
+
     normalized_links = []
     for raw in claim_links:
         payload = canonical_value(raw)
@@ -954,6 +990,7 @@ def validate_analysis_runtime_records(
         "evidence_manifests": tuple(evidence_by_ref.values()),
         "context_manifests": tuple(contexts_by_ref.values()),
         "trusted_provenance_records": tuple(provenance_by_ref.values()),
+        "answer_package_artifacts": normalized_artifacts,
         "verified_claims": tuple(claims_by_ref.values()),
         "claim_links": tuple(normalized_links),
         "repair_attempts": tuple(normalized_repairs),

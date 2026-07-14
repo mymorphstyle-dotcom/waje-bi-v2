@@ -13,10 +13,11 @@ from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
+    canonical_digest,
     canonical_value,
 )
 from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
-from tests.phase7.test_conversation_persistence import FakeConnection
+from tests.phase7.test_conversation_persistence import FakeConnection, FakeCursor
 
 
 def _contains_key(value, key):
@@ -60,6 +61,7 @@ def _authority_bundle(
     analysis_contract_ref="analysis:asset-fixture:1",
     evidence_ref="evidence:task9:segment",
     repair_attempt_ref="repair:task9:1",
+    artifact_ref=None,
 ):
     from bi_agent.runtime.analysis_contracts import (
         AnalysisContract,
@@ -148,9 +150,10 @@ def _authority_bundle(
         "completeness_record_refs": completeness_refs,
         "context_manifest_ref": context_manifest["manifest_id"],
     }
+    artifact_ref = artifact_ref or f"answer-package:{run_id}"
     provenance = build_trusted_claim_provenance_record(
         run_id=run_id,
-        artifact_refs=("artifact:task9",),
+        artifact_refs=(artifact_ref,),
         memory_refs=("memory:task9",),
         reuse_decisions=({"source_ref": "asset:task9", "decision": "reuse"},),
     )
@@ -188,7 +191,7 @@ def _authority_bundle(
         evidence_by_ref={evidence_ref: evidence_manifest},
         trusted_provenance=provenance,
     )
-    return {
+    bundle = {
         "analysis_contract": analysis_contract,
         "query_contracts": tuple(record.contract for record in query_records),
         "query_execution_records": query_records,
@@ -212,6 +215,20 @@ def _authority_bundle(
             "reason": "query_contract_validation_failed",
         },),
     }
+    answer_package = {
+        "run_id": run_id,
+        "status": "completed",
+        "analysis_contract_ref": analysis_contract["analysis_contract_id"],
+        "verified_claims": bundle["verified_claims"],
+    }
+    from tests.phase7.artifact_test_support import bind_answer_package_artifact
+
+    bind_answer_package_artifact(
+        bundle,
+        run_id=run_id,
+        answer_package=answer_package,
+    )
+    return bundle
 
 
 def _paid_amount_market_health_bundle():
@@ -311,7 +328,7 @@ def _paid_amount_market_health_bundle():
         analysis_contract=analysis,
         repair_decisions=(),
     )
-    return AnalysisRuntime.build_persistence_bundle(
+    bundle = AnalysisRuntime.build_persistence_bundle(
         object.__new__(AnalysisRuntime),
         result,
         answer_package=package,
@@ -323,6 +340,14 @@ def _paid_amount_market_health_bundle():
         },
         artifact_path="artifact:market-health",
     )
+    from tests.phase7.artifact_test_support import bind_answer_package_artifact
+
+    bind_answer_package_artifact(
+        bundle,
+        run_id="run-market-multi-window",
+        answer_package=package,
+    )
+    return bundle
 
 
 def _item_source_ambiguity_gap(
@@ -939,6 +964,174 @@ def _use_high_value_claim_ceiling(bundle, *, claim_intents=("candidate_driver",)
 
 
 class AnalysisRuntimePersistenceTest(unittest.TestCase):
+    def test_authority_bundle_materializes_its_answer_package_artifact(self):
+        run_id = "run-authority-bundle-artifact"
+        bundle = _authority_bundle(
+            run_id=run_id,
+            analysis_contract_ref=f"analysis:{run_id}:1",
+        )
+        record = bundle["answer_package_artifacts"][0]
+        artifact_path = Path(record["canonical_path"])
+        expected_package = canonical_value(
+            {
+                "run_id": run_id,
+                "status": "completed",
+                "analysis_contract_ref": bundle["analysis_contract"][
+                    "analysis_contract_id"
+                ],
+                "verified_claims": bundle["verified_claims"],
+            }
+        )
+
+        self.assertTrue(artifact_path.is_file())
+        self.assertEqual(
+            canonical_value(json.loads(artifact_path.read_text(encoding="utf-8"))),
+            expected_package,
+        )
+        self.assertEqual(record["canonical_path"], str(artifact_path.resolve()))
+        self.assertEqual(record["payload_digest"], canonical_digest(expected_package))
+        self.assertEqual(record["artifact_ref"], f"answer-package:{run_id}")
+        self.assertEqual(
+            bundle["trusted_provenance_records"][0]["artifact_refs"],
+            [record["artifact_ref"]],
+        )
+
+    def test_final_artifact_synchronization_builds_canonical_digest_authority(self):
+        from bi_agent.runtime.answer_package_artifact import (
+            build_answer_package_artifact_record,
+            replacement_answer_package_artifact_ref,
+        )
+        from bi_agent.runtime.artifacts import synchronize_existing_artifact
+        from bi_agent.runtime.evidence_authority import canonical_digest
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "answer-package.json"
+            path.write_text('{"run_id":"stale"}', encoding="utf-8")
+            package = {
+                "run_id": "run-artifact-record",
+                "status": "completed",
+                "sections": [],
+            }
+
+            self.assertTrue(synchronize_existing_artifact(package, path))
+            record = build_answer_package_artifact_record(
+                run_id="run-artifact-record",
+                artifact_path=path,
+                answer_package=package,
+            )
+
+            self.assertEqual(
+                record,
+                {
+                    "schema_version": "answer-package-artifact.v1",
+                    "artifact_ref": "answer-package:run-artifact-record",
+                    "run_id": "run-artifact-record",
+                    "canonical_path": str(path.resolve()),
+                    "payload_digest": canonical_digest(package),
+                },
+            )
+            self.assertNotEqual(
+                replacement_answer_package_artifact_ref(record),
+                record["artifact_ref"],
+            )
+
+    def test_runtime_publication_persists_canonical_answer_package_artifact(self):
+        from bi_agent.runtime.answer_package_artifact import (
+            build_answer_package_artifact_record,
+        )
+        from bi_agent.runtime.artifacts import synchronize_existing_artifact
+        from tempfile import TemporaryDirectory
+
+        run_id = "run-artifact-publication"
+        artifact_ref = f"answer-package:{run_id}"
+        bundle = _authority_bundle(
+            run_id=run_id,
+            analysis_contract_ref=f"analysis:{run_id}:1",
+            artifact_ref=artifact_ref,
+        )
+        package = {
+            "run_id": run_id,
+            "status": "completed",
+            "analysis_contract_ref": bundle["analysis_contract"][
+                "analysis_contract_id"
+            ],
+        }
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "answer-package.json"
+            path.write_text("{}", encoding="utf-8")
+            self.assertTrue(synchronize_existing_artifact(package, path))
+            artifact = build_answer_package_artifact_record(
+                run_id=run_id,
+                artifact_path=path,
+                answer_package=package,
+            )
+            bundle["answer_package_artifacts"] = (artifact,)
+
+            memory = InMemoryConversationStore()
+            self.assertEqual(
+                memory.save_analysis_runtime_records(run_id=run_id, **bundle),
+                "published",
+            )
+            self.assertEqual(
+                memory.analysis_runtime_authority["answer_package_artifact"][
+                    artifact_ref
+                ],
+                artifact,
+            )
+            self.assertEqual(
+                memory.analysis_runtime_records[run_id]["payload"][
+                    "answer_package_artifacts"
+                ],
+                [artifact],
+            )
+
+            connection = FakeConnection()
+            postgres = PostgresConversationStore(connection)
+            self.assertEqual(
+                postgres.save_analysis_runtime_records(run_id=run_id, **bundle),
+                "published",
+            )
+            _, params = next(
+                (statement, params)
+                for statement, params in connection.statements
+                if "INSERT INTO waje_runtime.answer_package_artifacts" in statement
+            )
+            self.assertEqual(params["artifact_ref"], artifact_ref)
+            self.assertEqual(params["canonical_path"], artifact["canonical_path"])
+            self.assertEqual(params["payload_digest"], artifact["payload_digest"])
+            publication = next(
+                params
+                for statement, params in connection.statements
+                if "INSERT INTO waje_runtime.analysis_runtime_publications" in statement
+            )
+            self.assertEqual(
+                json.loads(publication["payload"])["ordered_refs"][
+                    "answer_package_artifacts"
+                ],
+                [artifact_ref],
+            )
+
+    def test_runtime_publication_rejects_dangling_answer_package_provenance(self):
+        for representation in ("omitted", "empty"):
+            with self.subTest(representation=representation):
+                bundle = _authority_bundle(run_id="run-dangling-artifact")
+                if representation == "omitted":
+                    bundle.pop("answer_package_artifacts")
+                else:
+                    bundle["answer_package_artifacts"] = ()
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "^runtime_persistence_answer_package_artifact_missing$",
+                ):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id="run-dangling-artifact",
+                        **bundle,
+                    )
+
     def test_queryless_reviewed_target_identity_ignores_claim_and_capability_axes(self):
         from bi_agent.runtime.analysis_contracts import AnalysisContract
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
@@ -1842,6 +2035,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 "evidence_manifests": (),
                 "context_manifests": (),
                 "trusted_provenance_records": (),
+                "answer_package_artifacts": (),
                 "verified_claims": (),
                 "claim_links": (),
                 "repair_attempts": (),
@@ -1896,6 +2090,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 "evidence_manifests": (),
                 "context_manifests": (),
                 "trusted_provenance_records": (),
+                "answer_package_artifacts": (),
                 "verified_claims": (),
                 "claim_links": (),
                 "repair_attempts": (),
@@ -2724,6 +2919,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 "evidence_manifests": (),
                 "context_manifests": (),
                 "trusted_provenance_records": (),
+                "answer_package_artifacts": (),
                 "verified_claims": (),
                 "claim_links": (),
                 "repair_attempts": (),
@@ -3780,6 +3976,90 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             statement for statement, _ in connection.statements[statement_count:]
         )
         self.assertNotIn("INSERT INTO waje_runtime.analysis_contracts", replay_sql)
+
+    def test_context_manifest_runtime_replay_and_drift_rejection_match_backends(self):
+        class ContextManifestConnection(FakeConnection):
+            def __init__(self):
+                super().__init__()
+                self.context_rows = {}
+
+            def execute(self, statement, params=None):
+                params = params or {}
+                cursor = super().execute(statement, params)
+                if "context_manifest_publication_preflight" in statement:
+                    row = self.context_rows.get(params["manifest_id"])
+                    return FakeCursor([deepcopy(row)] if row else [])
+                if "INSERT INTO waje_runtime.context_manifests AS current" in statement:
+                    self.context_rows[params["manifest_id"]] = {
+                        "manifest_id": params["manifest_id"],
+                        "thread_id": params["thread_id"],
+                        "turn_id": None,
+                        "topic_id": params["topic_id"],
+                        "run_id": params["run_id"],
+                        "can_support_claims": True,
+                        "items": json.loads(params["items"]),
+                        "manifest_digest": params["manifest_digest"],
+                        "payload": json.loads(params["payload"]),
+                    }
+                elif "INSERT INTO waje_runtime.context_manifests(" in statement:
+                    current = self.context_rows.get(params["manifest_id"], {})
+                    self.context_rows[params["manifest_id"]] = {
+                        **current,
+                        "manifest_id": params["manifest_id"],
+                        "thread_id": params["thread_id"],
+                        "turn_id": params.get("turn_id"),
+                        "can_support_claims": params["can_support_claims"],
+                        "items": json.loads(params["items"]),
+                    }
+                return cursor
+
+        bundle = _authority_bundle()
+        manifest = canonical_value(bundle["context_manifests"][0])
+
+        memory = InMemoryConversationStore()
+        memory.save_analysis_runtime_records(run_id="run-task9", **bundle)
+        memory_audits = len(memory.audit_events)
+        self.assertEqual(memory.context_manifests[manifest["manifest_id"]], manifest)
+        memory.record_context_manifest(manifest)
+        self.assertEqual(len(memory.audit_events), memory_audits)
+        self.assertEqual(memory.context_manifests[manifest["manifest_id"]], manifest)
+
+        connection = ContextManifestConnection()
+        postgres = PostgresConversationStore(connection)
+        postgres.save_analysis_runtime_records(run_id="run-task9", **bundle)
+        manifest_row = deepcopy(connection.context_rows[manifest["manifest_id"]])
+        postgres_commits = connection.commits
+        manifest_audits = sum(
+            params.get("event_type") == "context_manifest_recorded"
+            for _, params in connection.statements
+        )
+        postgres.record_context_manifest(manifest)
+        self.assertEqual(connection.commits, postgres_commits)
+        self.assertEqual(
+            sum(
+                params.get("event_type") == "context_manifest_recorded"
+                for _, params in connection.statements
+            ),
+            manifest_audits,
+        )
+        self.assertEqual(
+            connection.context_rows[manifest["manifest_id"]],
+            manifest_row,
+        )
+
+        drifted = deepcopy(manifest)
+        drifted["permission_context"] = {"role": "forged"}
+        for store in (memory, postgres):
+            with self.subTest(store=type(store).__name__), self.assertRaisesRegex(
+                EvidenceIntegrityError,
+                "context_manifest_(integrity_invalid|publication_conflict)",
+            ):
+                store.record_context_manifest(drifted)
+        self.assertEqual(memory.context_manifests[manifest["manifest_id"]], manifest)
+        self.assertEqual(
+            connection.context_rows[manifest["manifest_id"]],
+            manifest_row,
+        )
 
     def test_conflicting_postgres_publication_for_same_run_is_rejected_prewrite(self):
         connection = FakeConnection()

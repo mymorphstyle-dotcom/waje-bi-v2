@@ -148,6 +148,27 @@ def _provider_client_with_outputs(outputs):
     return client, completions
 
 
+def _provider_claim(
+    *,
+    text,
+    evidence_refs,
+    numbers,
+    scope="full_sample",
+    time_window="2024-01..2026-05",
+    claim_type="recurring_pattern_existence",
+    claim_strength="observed",
+):
+    return {
+        "text": text,
+        "evidence_refs": list(evidence_refs),
+        "numbers": dict(numbers),
+        "scope": scope,
+        "time_window": time_window,
+        "claim_type": claim_type,
+        "claim_strength": claim_strength,
+    }
+
+
 def _provider_business_intent_output(**overrides):
     output = {
         "question_family": "revenue_health_review",
@@ -169,6 +190,135 @@ def _provider_business_intent_output(**overrides):
     }
     output.update(overrides)
     return output
+
+
+def _provider_analysis_route_output(**overrides):
+    output = {
+        "requested_nodes": ["rolling_window_compare"],
+        "route_summary": (
+            "先复核目标窗口，再用滚动窗口对比核对变化是否持续。"
+        ),
+        "expected_evidence": {
+            "rolling_window_compare": "目标窗口与滚动基线之间的可比变化证据。",
+        },
+        "analysis_requirements": {
+            "target_metrics": ["paid_amount"],
+            "requested_components": [],
+            "requested_dimensions": [],
+            "baselines": ["rolling_7_day_baseline"],
+            "context_sources": [],
+            "dataset_requirements": [],
+            "diagnostic_tags": [],
+            "claim_intents": ["baseline_stability"],
+            "scope": {"type": "full_sample"},
+        },
+        "decision_summary": "保留可执行的滚动窗口验证路径。",
+        "display_summary": "已形成滚动窗口核对路线。",
+    }
+    output.update(overrides)
+    requested_nodes = list(output.get("requested_nodes") or [])
+    output.setdefault(
+        "capability_sections",
+        {
+            capability: {
+                "route_step": "核对该业务能力对应的分析路径。",
+                "expected_evidence": str(
+                    (output.get("expected_evidence") or {}).get(capability)
+                    or "核对该能力对应的业务证据与限制。"
+                ),
+            }
+            for capability in requested_nodes
+        },
+    )
+    output["expected_evidence"] = {
+        capability: str(section["expected_evidence"])
+        for capability, section in output["capability_sections"].items()
+        if capability in requested_nodes
+    }
+    output.setdefault(
+        "narrative_capability_refs",
+        {
+            "route_summary_capability_ids": requested_nodes,
+            "decision_summary_capability_ids": requested_nodes,
+            "display_summary_capability_ids": requested_nodes,
+            "expected_evidence_capability_ids": {
+                capability: [capability]
+                for capability in requested_nodes
+            },
+        },
+    )
+    return output
+
+
+def _provider_capability_sections(
+    requested_nodes,
+    *,
+    route_step="核对该能力对应的业务路径。",
+    expected_evidence="核对该能力对应的业务证据与限制。",
+):
+    return {
+        capability: {
+            "route_step": route_step,
+            "expected_evidence": expected_evidence,
+        }
+        for capability in requested_nodes
+    }
+
+
+def _provider_closed_analysis_route_output(**overrides):
+    requested_nodes = (
+        "rolling_window_compare",
+        "metric_timeseries",
+        "data_quality_profile",
+        "evidence_reduce",
+        "answer_verify",
+        "compare_periods",
+        "compare_period_phases",
+        "weekday_calendar_compare",
+    )
+    output = _provider_analysis_route_output(
+        requested_nodes=list(requested_nodes),
+        expected_evidence={
+            capability: "该业务能力对应的可验证证据与限制说明。"
+            for capability in requested_nodes
+        },
+    )
+    output.update(overrides)
+    return output
+
+
+def _provider_analysis_route_state(client):
+    return {
+        "run_id": "provider-route-contract",
+        "request": {
+            "run_id": "provider-route-contract",
+            "question": "近七日付费金额变化是否持续？",
+            "run_mode": "production",
+            "role": "analyst",
+        },
+        "intent": {
+            "question_family": "pattern_explanation",
+            "question_families": ["pattern_explanation"],
+            "primary_question_family": "pattern_explanation",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+            "target_metrics": ["paid_amount"],
+            "pattern_family": "rolling",
+            "pattern_params": {},
+            "scope": "full_sample",
+            "time_window": "2026-05-26..2026-06-02",
+            "target_claim": "baseline_stability",
+            "baseline_candidates": ["rolling_7_day_baseline"],
+            "requested_components": [],
+            "requested_dimensions": [],
+            "context_sources": [],
+            "claim_intents": ["baseline_stability"],
+        },
+        "confirmed_understanding": {},
+        "llm_client": client,
+        "llm_calls": [],
+        "checkpoint_events": [],
+    }
 
 
 def _test_terminal_execution_material():
@@ -2330,7 +2480,9 @@ class LLMWorkflowTest(unittest.TestCase):
             {
                 "run_id": "live-missing-analysis-runtime",
                 "run_mode": "live",
-                "llm_client": FakeLLMClient(),
+                "llm_client": FakeLLMClient(
+                    {"analysis_route": _provider_closed_analysis_route_output()}
+                ),
             }
         )
 
@@ -2346,7 +2498,9 @@ class LLMWorkflowTest(unittest.TestCase):
                 request = {
                     "run_id": f"{case}-missing-analysis-runtime",
                     "artifact_root": tmpdir,
-                    "llm_client": FakeLLMClient(),
+                    "llm_client": FakeLLMClient(
+                        {"analysis_route": _provider_closed_analysis_route_output()}
+                    ),
                 }
                 if run_mode is not None:
                     request["run_mode"] = run_mode
@@ -3184,10 +3338,17 @@ class LLMWorkflowTest(unittest.TestCase):
             prior_route = {
                 "requested_nodes": list(accepted_graph),
                 "analysis_requirements": deepcopy(requirements),
+                "route_summary": "沿用已确认的业务证据路线继续。",
+                "expected_evidence": {
+                    capability: "沿用该路径已确认的业务证据说明。"
+                    for capability in accepted_graph
+                },
+                "decision_summary": "按用户确认的降级范围继续。",
             }
             return {
                 "run_id": "run-authority-closed-route",
                 "request": {
+                    "run_mode": "production",
                     "accepted_degradation_choice": effective,
                     "clarification_resume_context": {
                         "accepted_graph": accepted_graph,
@@ -3234,6 +3395,51 @@ class LLMWorkflowTest(unittest.TestCase):
             selected=selected,
             effective=effective,
         )
+        expected_active = (
+            "pattern_scan",
+            "metric_timeseries",
+            "data_quality_profile",
+            "evidence_reduce",
+            "answer_verify",
+            "compare_periods",
+            "event_window_compare",
+            "outlier_contribution",
+            "compare_period_phases",
+            "weekday_calendar_compare",
+            "change_point_scan",
+        )
+        finalized_requirements = {
+            **deepcopy(requirements),
+            "dataset_requirements": ["paid_order_success"],
+        }
+        resume_output = _provider_analysis_route_output(
+            requested_nodes=list(expected_active),
+            expected_evidence={
+                capability: "该业务路径对应的可验证证据与限制说明。"
+                for capability in expected_active
+            },
+            analysis_requirements=finalized_requirements,
+            route_summary="按已确认的降级范围保留可验证路径继续分析。",
+            decision_summary="已排除用户确认不可用的背景路径。",
+            display_summary="已按确认范围更新分析路线。",
+        )
+        stale_resume_output = {
+            **deepcopy(resume_output),
+            "route_summary": "继续核对事件机制证据，再完成其余业务路径分析。",
+            "narrative_capability_refs": {
+                **deepcopy(resume_output["narrative_capability_refs"]),
+                "route_summary_capability_ids": [
+                    *expected_active,
+                    "event_evidence",
+                ],
+            },
+        }
+        client, completions = _provider_client_with_outputs(
+            (stale_resume_output, resume_output)
+        )
+        state["llm_client"] = client
+        state["llm_calls"] = []
+        state["checkpoint_events"] = []
 
         _design_analysis_route(state)
 
@@ -3248,6 +3454,40 @@ class LLMWorkflowTest(unittest.TestCase):
                 state["analysis_route"]["accepted_degradation_choice"],
                 effective,
             )
+        with self.subTest(
+            boundary="advisory_prose_cannot_restore_removed_authority"
+        ):
+            self.assertEqual(active, expected_active)
+            self.assertEqual(
+                state["analysis_route"]["route_overview"],
+                stale_resume_output["route_summary"],
+            )
+            self.assertEqual(
+                set(state["analysis_route"]["expected_evidence"]),
+                set(active),
+            )
+            self.assertNotIn("event_evidence", state["analysis_route"]["expected_evidence"])
+            self.assertNotIn(
+                "event_evidence",
+                state["analysis_route"]["capability_sections"],
+            )
+            self.assertNotIn(
+                "event_evidence",
+                state["analysis_route"]["narrative_capability_refs"][
+                    "route_summary_capability_ids"
+                ],
+            )
+            self.assertEqual(
+                state["analysis_route"]["decision_summary"],
+                stale_resume_output["decision_summary"],
+            )
+            self.assertEqual(
+                state["analysis_route"]["narrative_authority"][
+                    "authority_level"
+                ],
+                "display_advisory",
+            )
+            self.assertEqual(completions.attempt_count, 1)
         with self.subTest(boundary="multi_family_authority_is_preserved"):
             self.assertEqual(
                 state["intent"]["question_families"],
@@ -3268,6 +3508,20 @@ class LLMWorkflowTest(unittest.TestCase):
             selected=all_omitted_selected,
             effective=all_omitted_effective,
         )
+        all_omitted_output = _provider_analysis_route_output(
+            requested_nodes=[],
+            expected_evidence={},
+            analysis_requirements=finalized_requirements,
+            route_summary="当前确认范围内没有可继续执行的证据路径。",
+            decision_summary="按用户选择保留证据缺口边界。",
+            display_summary="已确认当前没有可执行路径。",
+        )
+        all_omitted_client, all_omitted_completions = (
+            _provider_client_with_outputs((all_omitted_output,))
+        )
+        all_omitted["llm_client"] = all_omitted_client
+        all_omitted["llm_calls"] = []
+        all_omitted["checkpoint_events"] = []
 
         _design_analysis_route(all_omitted)
 
@@ -3276,6 +3530,8 @@ class LLMWorkflowTest(unittest.TestCase):
                 tuple(all_omitted["analysis_route"]["requested_nodes"]),
                 (),
             )
+            self.assertEqual(all_omitted["analysis_route"]["expected_evidence"], {})
+            self.assertEqual(all_omitted_completions.attempt_count, 1)
 
     def test_route_reconciliation_adds_unique_metric_query_capability(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
@@ -4279,6 +4535,478 @@ class LLMWorkflowTest(unittest.TestCase):
             state["analysis_route"]["analysis_requirements"]["target_metrics"],
         )
 
+    def test_production_route_repair_finalizes_narrative_after_machine_degradation(self):
+        from types import SimpleNamespace
+
+        current_nodes = (
+            "rolling_window_compare",
+            "metric_timeseries",
+            "data_quality_profile",
+            "evidence_reduce",
+            "answer_verify",
+            "compare_periods",
+            "compare_period_phases",
+            "weekday_calendar_compare",
+        )
+        requirements = _provider_analysis_route_output()["analysis_requirements"]
+        state = {
+            **_provider_analysis_route_state(None),
+            "request": {
+                "run_mode": "production",
+                "accepted_degradation_choice": {
+                    "action_kind": "omit_unavailable_context",
+                    "affected_capabilities": ["rolling_window_compare"],
+                },
+            },
+            "analysis_route": {
+                **_provider_analysis_route_output(
+                    requested_nodes=list(current_nodes),
+                    expected_evidence={
+                        capability: "修复前的业务证据描述。"
+                        for capability in current_nodes
+                    },
+                    analysis_requirements=deepcopy(requirements),
+                ),
+            },
+            "compiled_graph": SimpleNamespace(
+                mutations=SimpleNamespace(records=())
+            ),
+            "obligation_rejection_history": (),
+            "repair_attempts": 0,
+            "llm_calls": [],
+        }
+        calls = []
+
+        def invoke(_state, task, payload, **kwargs):
+            calls.append((task, deepcopy(payload)))
+            if task == "route_repair":
+                return {
+                    "requested_nodes": list(current_nodes),
+                    "repair_summary": "按合同反馈修复机器路线。",
+                    "decision_summary": "保留可执行的证据路径。",
+                    "display_summary": "已修复分析路线。",
+                }
+            final_nodes = tuple(payload["final_route_machine"]["requested_nodes"])
+            candidate = _provider_analysis_route_output(
+                requested_nodes=list(final_nodes),
+                expected_evidence={
+                    capability: "修复后该路径对应的可验证业务证据。"
+                    for capability in final_nodes
+                },
+                analysis_requirements=deepcopy(
+                    payload["final_route_machine"]["analysis_requirements"]
+                ),
+                route_summary="按修复后的最终业务路径继续核验。",
+                decision_summary="最终路线已覆盖保留的证据义务。",
+                display_summary="已形成修复后的业务分析路线。",
+            )
+            kwargs["output_validator"](candidate)
+            return candidate
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._invoke_llm",
+            side_effect=invoke,
+        ):
+            workflow_module._repair_analysis_route(state)
+
+        self.assertEqual([task for task, _ in calls], ["route_repair", "analysis_route"])
+        self.assertNotIn("prior_route_narrative", calls[1][1])
+        self.assertNotIn("removed_capability_business_labels", calls[1][1])
+        self.assertNotIn("rolling_window_compare", state["analysis_route"]["requested_nodes"])
+        self.assertNotIn(
+            "rolling_window_compare",
+            {
+                card["capability_id"]
+                for card in calls[1][1]["known_capabilities"]
+            },
+        )
+        self.assertEqual(
+            workflow_module._final_narrative_capability_refs(
+                state["analysis_route"]["requested_nodes"]
+            ),
+            state["analysis_route"]["narrative_capability_refs"],
+        )
+        self.assertNotIn("final_narrative_capability_refs", calls[1][1])
+        self.assertEqual(
+            set(state["analysis_route"]["expected_evidence"]),
+            set(state["analysis_route"]["requested_nodes"]),
+        )
+
+    def test_route_repair_retries_unknown_capability_inside_provider_boundary(self):
+        from types import SimpleNamespace
+
+        requirements = _provider_analysis_route_output()["analysis_requirements"]
+        invalid = {
+            "requested_nodes": ["invented_revenue_oracle"],
+            "repair_summary": "尝试使用未供应的机器能力。",
+            "decision_summary": "尝试修复路线。",
+            "display_summary": "尝试修复路线。",
+        }
+        valid = {
+            "requested_nodes": ["rolling_window_compare"],
+            "repair_summary": "保留已供应的滚动窗口能力。",
+            "decision_summary": "按已知合同修复路线。",
+            "display_summary": "已修复分析路线。",
+        }
+        client, completions = _provider_client_with_outputs((invalid, valid))
+        state = {
+            **_provider_analysis_route_state(client),
+            "request": {},
+            "analysis_route": _provider_analysis_route_output(
+                analysis_requirements=deepcopy(requirements),
+            ),
+            "compiled_graph": SimpleNamespace(
+                mutations=SimpleNamespace(records=())
+            ),
+            "obligation_rejection_history": (),
+            "repair_attempts": 0,
+        }
+
+        workflow_module._repair_analysis_route(state)
+
+        self.assertEqual(completions.attempt_count, 2)
+        self.assertNotIn(
+            "invented_revenue_oracle",
+            state["analysis_route"]["requested_nodes"],
+        )
+
+    def test_final_route_narrative_retries_non_exact_capability_sections(self):
+        from bi_agent.runtime.runtime_contract_registry import (
+            RuntimeContractRegistry,
+        )
+
+        requested = ("compare_periods",)
+        requirements = _provider_analysis_route_output()["analysis_requirements"]
+        missing = _provider_analysis_route_output(
+            requested_nodes=list(requested),
+            expected_evidence={
+                "compare_periods": "目标周期与基准周期之间的变化证据。"
+            },
+            analysis_requirements=deepcopy(requirements),
+            capability_sections={},
+        )
+        extra = _provider_analysis_route_output(
+            requested_nodes=list(requested),
+            expected_evidence={
+                "compare_periods": "目标周期与基准周期之间的变化证据。"
+            },
+            analysis_requirements=deepcopy(requirements),
+            capability_sections={
+                **_provider_capability_sections(requested),
+                "rolling_window_compare": {
+                    "route_step": "补充滚动窗口业务路径。",
+                    "expected_evidence": "补充滚动窗口业务证据。",
+                },
+            },
+        )
+        valid = _provider_analysis_route_output(
+            requested_nodes=list(requested),
+            expected_evidence={
+                "compare_periods": "目标周期与基准周期之间的变化证据。"
+            },
+            analysis_requirements=deepcopy(requirements),
+            route_summary="使用周期对比核对目标周期的业务变化。",
+            decision_summary="保留周期对比证据路径。",
+            display_summary="已形成周期对比路线。",
+            capability_sections={
+                "compare_periods": {
+                    "route_step": "核对目标周期与基准周期的变化。",
+                    "expected_evidence": "目标周期与基准周期之间的变化证据。",
+                }
+            },
+            narrative_capability_refs={
+                "route_summary_capability_ids": ["rolling_window_compare"],
+            },
+            narrative_authority={"authority_level": "hard"},
+            rogue_route_authority={"authority_level": "hard"},
+        )
+        client, completions = _provider_client_with_outputs(
+            (missing, extra, valid)
+        )
+        state = _provider_analysis_route_state(client)
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+
+        finalized = workflow_module._finalize_production_analysis_route_narrative(
+            state,
+            route={"analysis_requirements": deepcopy(requirements)},
+            requested=requested,
+            registry=registry,
+        )
+
+        self.assertEqual(completions.attempt_count, 3)
+        self.assertEqual(
+            set(finalized["capability_sections"]),
+            set(requested),
+        )
+        self.assertIn(valid["route_summary"], finalized["route_summary"])
+        self.assertIn(
+            valid["capability_sections"]["compare_periods"]["route_step"],
+            finalized["route_summary"],
+        )
+        self.assertEqual(
+            finalized["narrative_capability_refs"],
+            workflow_module._final_narrative_capability_refs(requested),
+        )
+        self.assertEqual(
+            finalized["narrative_authority"],
+            workflow_module._final_narrative_authority(),
+        )
+        self.assertNotIn("rogue_route_authority", finalized)
+
+    def test_cross_concept_route_section_cannot_expand_machine_authority(self):
+        from bi_agent.runtime.runtime_contract_registry import (
+            RuntimeContractRegistry,
+        )
+
+        requested = ("compare_periods",)
+        requirements = {
+            **deepcopy(_provider_analysis_route_output()["analysis_requirements"]),
+            "claim_intents": ["baseline_stability"],
+        }
+        cross_concept_candidate = _provider_analysis_route_output(
+            requested_nodes=list(requested),
+            expected_evidence={
+                "compare_periods": "过去七天均值对照的业务说明。"
+            },
+            analysis_requirements=deepcopy(requirements),
+            route_summary="核对当前周期变化。",
+            capability_sections={
+                "compare_periods": {
+                    "route_step": "补充过去七天均值对照。",
+                    "expected_evidence": "过去七天均值对照的业务说明。",
+                }
+            },
+        )
+        clean_candidate = _provider_analysis_route_output(
+            requested_nodes=list(requested),
+            expected_evidence={
+                "compare_periods": "目标周期与基准周期之间的变化证据。"
+            },
+            analysis_requirements=deepcopy(requirements),
+            route_summary="核对当前周期变化。",
+            capability_sections={
+                "compare_periods": {
+                    "route_step": "核对目标周期与基准周期的变化。",
+                    "expected_evidence": "目标周期与基准周期之间的变化证据。",
+                }
+            },
+        )
+        cross_client, cross_completions = _provider_client_with_outputs(
+            (cross_concept_candidate,)
+        )
+        clean_client, _ = _provider_client_with_outputs((clean_candidate,))
+        cross_state = _provider_analysis_route_state(cross_client)
+        clean_state = _provider_analysis_route_state(clean_client)
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+
+        finalized = workflow_module._finalize_production_analysis_route_narrative(
+            cross_state,
+            route={"analysis_requirements": deepcopy(requirements)},
+            requested=requested,
+            registry=registry,
+        )
+        clean_finalized = workflow_module._finalize_production_analysis_route_narrative(
+            clean_state,
+            route={"analysis_requirements": deepcopy(requirements)},
+            requested=requested,
+            registry=registry,
+        )
+        accepted_route = {**finalized, "requested_nodes": requested}
+        clean_route = {**clean_finalized, "requested_nodes": requested}
+        intent = {
+            "question_family": "custom_baseline_comparison",
+            "question_families": ["custom_baseline_comparison"],
+            "primary_question_family": "custom_baseline_comparison",
+            "secondary_question_families": [],
+            "target_metric": "paid_amount",
+            "pattern_family": "custom_baseline",
+            "scope": "full_sample",
+            "requested_nodes": requested,
+        }
+        for target_state, route in (
+            (cross_state, accepted_route),
+            (clean_state, clean_route),
+        ):
+            target_state["request"] = {
+                "run_mode": "production",
+                "question": "检查目标周期变化",
+            }
+            target_state["intent"] = deepcopy(intent)
+            target_state["analysis_route"] = route
+            workflow_module._accept_analysis_route(target_state)
+
+        self.assertEqual(cross_completions.attempt_count, 1)
+        self.assertEqual(accepted_route["requested_nodes"], requested)
+        self.assertEqual(set(accepted_route["expected_evidence"]), set(requested))
+        self.assertNotIn(
+            "rolling_window_compare",
+            accepted_route["expected_evidence"],
+        )
+        self.assertEqual(
+            accepted_route["analysis_requirements"]["claim_intents"],
+            ["baseline_stability"],
+        )
+        self.assertEqual(
+            accepted_route["narrative_authority"]["authority_level"],
+            "display_advisory",
+        )
+        self.assertEqual(
+            cross_state["compiled_graph"].mutations.accepted_graph,
+            clean_state["compiled_graph"].mutations.accepted_graph,
+        )
+        self.assertEqual(
+            cross_state["compiled_graph"].runtime_plan,
+            clean_state["compiled_graph"].runtime_plan,
+        )
+        self.assertNotIn(
+            "rolling_window_compare",
+            cross_state["compiled_graph"].mutations.accepted_graph,
+        )
+
+    def test_production_route_accept_rejects_tampered_capability_sections(self):
+        requested = ("compare_periods",)
+        provider_route = _provider_analysis_route_output(
+            requested_nodes=list(requested),
+            expected_evidence={
+                "compare_periods": "目标周期与基准周期之间的变化证据。"
+            },
+            capability_sections=_provider_capability_sections(requested),
+        )
+        route = workflow_module._project_final_analysis_route_narrative(
+            {
+                "analysis_requirements": deepcopy(
+                    provider_route["analysis_requirements"]
+                )
+            },
+            provider_route,
+            requested=requested,
+        )
+        route["requested_nodes"] = requested
+        mutations = {
+            "missing_section": (
+                lambda value: value["capability_sections"].clear(),
+                "capability_sections",
+            ),
+            "extra_section": (
+                lambda value: value["capability_sections"].update(
+                    {
+                        "rolling_window_compare": {
+                            "route_step": "补充滚动窗口路径。",
+                            "expected_evidence": "补充滚动窗口证据。",
+                        }
+                    }
+                ),
+                "capability_sections",
+            ),
+            "extra_section_field": (
+                lambda value: value["capability_sections"][
+                    "compare_periods"
+                ].update({"claim_contract": "伪造声明合同"}),
+                "capability_sections",
+            ),
+            "wrong_section_type": (
+                lambda value: value["capability_sections"].__setitem__(
+                    "compare_periods", []
+                ),
+                "capability_sections",
+            ),
+            "tampered_refs": (
+                lambda value: value["narrative_capability_refs"].update(
+                    {"route_summary_capability_ids": []}
+                ),
+                "narrative_capability_refs",
+            ),
+            "tampered_authority": (
+                lambda value: value["narrative_authority"].update(
+                    {"authority_level": "hard"}
+                ),
+                "narrative_authority",
+            ),
+            "tampered_projection": (
+                lambda value: value.__setitem__(
+                    "route_summary", "替换持久化展示文本。"
+                ),
+                "route_summary_projection",
+            ),
+        }
+        for boundary, (mutate, reason) in mutations.items():
+            with self.subTest(boundary=boundary):
+                tampered = deepcopy(route)
+                mutate(tampered)
+                state = {
+                    "request": {
+                        "run_mode": "production",
+                        "question": "检查经营变化",
+                    },
+                    "intent": {
+                        "question_family": "custom_baseline_comparison",
+                        "question_families": ["custom_baseline_comparison"],
+                        "target_metric": "paid_amount",
+                        "pattern_family": "custom_baseline",
+                        "requested_nodes": requested,
+                    },
+                    "analysis_route": tampered,
+                }
+                with self.assertRaisesRegex(
+                    WorkflowFailure,
+                    f"analysis_route_provider_contract_invalid:{reason}",
+                ):
+                    workflow_module._accept_analysis_route(state)
+
+    def test_initial_production_route_retries_missing_capability_sections(self):
+        invalid = _provider_closed_analysis_route_output(
+            capability_sections={},
+        )
+        requested = tuple(invalid["requested_nodes"])
+        valid = _provider_closed_analysis_route_output()
+        valid["permission_scope"] = "admin"
+        valid["claim_contract"] = {"claim_type": "causal"}
+        valid["accepted_degradation_choice"] = {
+            "action_kind": "provider_forged"
+        }
+        client, completions = _provider_client_with_outputs((invalid, valid))
+        state = _provider_analysis_route_state(client)
+
+        workflow_module._design_analysis_route(state)
+
+        self.assertEqual(completions.attempt_count, 2)
+        self.assertEqual(
+            set(state["analysis_route"]["capability_sections"]),
+            set(state["analysis_route"]["requested_nodes"]),
+        )
+        self.assertNotIn("permission_scope", state["analysis_route"])
+        self.assertNotIn("claim_contract", state["analysis_route"])
+        self.assertNotIn(
+            "accepted_degradation_choice",
+            state["analysis_route"],
+        )
+
+    def test_production_route_accept_rejects_stale_evidence_mapping(self):
+        state = {
+            "request": {"run_mode": "production", "question": "检查经营变化"},
+            "intent": {
+                "question_family": "pattern_explanation",
+                "question_families": ["pattern_explanation"],
+                "target_metric": "paid_amount",
+                "pattern_family": "rolling",
+                "requested_nodes": ("rolling_window_compare",),
+            },
+            "analysis_route": {
+                **_provider_analysis_route_output(),
+                "expected_evidence": {},
+            },
+        }
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "analysis_route_provider_contract_invalid:expected_evidence",
+        ):
+            workflow_module._accept_analysis_route(state)
+
     def test_trusted_fallback_rejection_rejects_extra_fields(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
@@ -4733,7 +5461,7 @@ class LLMWorkflowTest(unittest.TestCase):
 
         captured = []
 
-        def repair_llm(_state, task, payload):
+        def repair_llm(_state, task, payload, **_kwargs):
             captured.append((task, dict(payload)))
             return {"answer_text": "已修复答案", "claims": []}
 
@@ -5438,7 +6166,7 @@ class LLMWorkflowTest(unittest.TestCase):
             request=request,
             artifact_path="artifacts/tampered/answer_package.json",
         )
-        self.assertNotEqual(
+        self.assertEqual(
             tampered.trusted_provenance["record_ref"],
             expected.trusted_provenance["record_ref"],
         )
@@ -5572,38 +6300,40 @@ class LLMWorkflowTest(unittest.TestCase):
 
         binding = result.persistence_records["capability_binding_records"][0]
         evidence_ref = "evidence:runtime-complete"
+        claim_answer_package = {
+            "run_id": "run-runtime-complete",
+            "status": "draft",
+            "sections": [
+                {
+                    "section_id": "summary",
+                    "payload": {
+                        "claims": [
+                            {
+                                "text": "目标日付费金额高于前一日。",
+                                "claim_type": "comparative_change",
+                                "claim_strength": "observed",
+                                "evidence_refs": [evidence_ref],
+                                "numbers": {},
+                            }
+                        ]
+                    },
+                },
+                {
+                    "section_id": "evidence",
+                    "payload": {
+                        "evidence": [
+                            {
+                                "evidence_ref": evidence_ref,
+                                "binding_manifest_ref": binding.record_ref,
+                            }
+                        ]
+                    },
+                },
+            ],
+        }
         claim_bundle = runtime.build_persistence_bundle(
             result,
-            answer_package={
-                "status": "draft",
-                "sections": [
-                    {
-                        "section_id": "summary",
-                        "payload": {
-                            "claims": [
-                                {
-                                    "text": "目标日付费金额高于前一日。",
-                                    "claim_type": "comparative_change",
-                                    "claim_strength": "observed",
-                                    "evidence_refs": [evidence_ref],
-                                    "numbers": {},
-                                }
-                            ]
-                        },
-                    },
-                    {
-                        "section_id": "evidence",
-                        "payload": {
-                            "evidence": [
-                                {
-                                    "evidence_ref": evidence_ref,
-                                    "binding_manifest_ref": binding.record_ref,
-                                }
-                            ]
-                        },
-                    },
-                ],
-            },
+            answer_package=claim_answer_package,
             request={
                 "run_id": "run-runtime-complete",
                 "thread_id": "thread-runtime-complete",
@@ -5612,6 +6342,15 @@ class LLMWorkflowTest(unittest.TestCase):
                 "context_manifest": {"manifest_id": "context-runtime", "items": []},
             },
             artifact_path="artifacts/task10-core/run-runtime-complete.json",
+        )
+        from tests.phase7.artifact_test_support import (
+            bind_answer_package_artifact,
+        )
+
+        bind_answer_package_artifact(
+            claim_bundle,
+            run_id="run-runtime-complete",
+            answer_package=claim_answer_package,
         )
 
         self.assertEqual(len(claim_bundle["verified_claims"]), 1)
@@ -6950,14 +7689,18 @@ class LLMWorkflowTest(unittest.TestCase):
             "time_window": "2026-06-02",
             "target_claim": "检查付费金额经营表现",
         }
-        valid = {
+        invalid_assumptions = {
             **invalid,
             "confirmed_intent": {
                 "business_summary": "检查六月二日付费金额的经营表现。",
                 "machine_intent": machine_intent,
             },
+            "accepted_assumptions": "沿用当前业务口径继续。",
         }
-        client, completions = _provider_client_with_outputs([invalid, valid])
+        valid = {**invalid_assumptions, "accepted_assumptions": []}
+        client, completions = _provider_client_with_outputs(
+            [invalid, invalid_assumptions, valid]
+        )
         state = {
             "request": {},
             "intent": machine_intent,
@@ -6972,7 +7715,7 @@ class LLMWorkflowTest(unittest.TestCase):
 
         workflow_module._confirm_business_understanding(state)
 
-        self.assertEqual(completions.attempt_count, 2)
+        self.assertEqual(completions.attempt_count, 3)
         self.assertEqual(
             state["confirmed_understanding"]["confirmed_intent"]["machine_intent"],
             machine_intent,
@@ -8574,6 +9317,137 @@ class LLMWorkflowTest(unittest.TestCase):
                 self.assertEqual(state["intent"]["pattern_family"], pattern_family)
                 self.assertEqual(state["intent"]["pattern_params"], pattern_params)
 
+    def test_analysis_route_provider_retries_invalid_narrative_contract(self):
+        final_nodes = (
+            "rolling_window_compare",
+            "metric_timeseries",
+            "data_quality_profile",
+            "evidence_reduce",
+            "answer_verify",
+            "compare_periods",
+            "compare_period_phases",
+            "weekday_calendar_compare",
+        )
+        valid = _provider_analysis_route_output(
+            requested_nodes=list(final_nodes),
+            expected_evidence={
+                capability: "该业务能力对应的可验证证据与限制说明。"
+                for capability in final_nodes
+            },
+        )
+        invalid_outputs = {}
+
+        missing = deepcopy(valid)
+        missing.pop("route_summary")
+        invalid_outputs["missing"] = missing
+        invalid_outputs["wrong_typed"] = {
+            **deepcopy(valid),
+            "expected_evidence": ["滚动窗口对比证据"],
+        }
+        invalid_outputs["inconsistent"] = {
+            **deepcopy(valid),
+            "expected_evidence": {
+                "weekday_calendar_compare": "星期日历对比证据。",
+            },
+        }
+
+        for label, invalid in invalid_outputs.items():
+            with self.subTest(label=label):
+                client, completions = _provider_client_with_outputs(
+                    (invalid, valid)
+                )
+                state = _provider_analysis_route_state(client)
+
+                _design_analysis_route(state)
+
+                self.assertEqual(completions.attempt_count, 2)
+                self.assertEqual(state["llm_calls"][-1]["attempt_count"], 2)
+
+    def test_production_analysis_route_retries_until_provider_maps_reconciled_obligations(self):
+        initial = _provider_analysis_route_output()
+        reconciled_nodes = (
+            "rolling_window_compare",
+            "data_quality_profile",
+            "answer_verify",
+            "compare_periods",
+            "compare_period_phases",
+            "weekday_calendar_compare",
+            "metric_timeseries",
+            "evidence_reduce",
+        )
+        final = _provider_analysis_route_output(
+            requested_nodes=list(reconciled_nodes),
+            expected_evidence={
+                capability: "该业务能力对应的可验证证据与限制说明。"
+                for capability in reconciled_nodes
+            },
+            route_summary="先完成基础数据核验，再按完整能力路线形成业务判断。",
+            decision_summary="已覆盖该问题要求的全部证据义务。",
+            display_summary="已形成完整且可验证的分析路线。",
+        )
+        client, completions = _provider_client_with_outputs((initial, final))
+        state = _provider_analysis_route_state(client)
+
+        _design_analysis_route(state)
+
+        self.assertEqual(completions.attempt_count, 2)
+        self.assertEqual(
+            tuple(state["analysis_route"]["requested_nodes"]),
+            reconciled_nodes,
+        )
+        self.assertEqual(
+            state["analysis_route"]["expected_evidence"],
+            final["expected_evidence"],
+        )
+        self.assertEqual(
+            set(state["analysis_route"]["expected_evidence"]),
+            set(state["analysis_route"]["requested_nodes"]),
+        )
+        self.assertEqual(
+            state["analysis_route"]["route_overview"],
+            final["route_summary"],
+        )
+        self.assertTrue(
+            state["analysis_route"]["route_summary"].startswith(
+                final["route_summary"]
+            )
+        )
+        self.assertEqual(state["analysis_route"]["decision_summary"], final["decision_summary"])
+
+    def test_production_analysis_route_retries_registry_known_unsupplied_node(self):
+        required_nodes = (
+            "rolling_window_compare",
+            "data_quality_profile",
+            "answer_verify",
+            "compare_periods",
+            "compare_period_phases",
+            "weekday_calendar_compare",
+            "metric_timeseries",
+            "evidence_reduce",
+        )
+        invalid_nodes = (*required_nodes, "pattern_scan")
+        invalid = _provider_analysis_route_output(
+            requested_nodes=list(invalid_nodes),
+            expected_evidence={
+                capability: "该业务能力对应的可验证证据与限制说明。"
+                for capability in invalid_nodes
+            },
+        )
+        valid = _provider_analysis_route_output(
+            requested_nodes=list(required_nodes),
+            expected_evidence={
+                capability: "该业务能力对应的可验证证据与限制说明。"
+                for capability in required_nodes
+            },
+        )
+        client, completions = _provider_client_with_outputs((invalid, valid))
+        state = _provider_analysis_route_state(client)
+
+        _design_analysis_route(state)
+
+        self.assertEqual(completions.attempt_count, 2)
+        self.assertNotIn("pattern_scan", state["analysis_route"]["requested_nodes"])
+
     def test_pattern_output_contract_does_not_apply_to_other_tasks(self):
         output = {"pattern_family": "none", "pattern_params": None}
         client, completions = _provider_client_with_outputs((output,))
@@ -9232,7 +10106,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 "target_metric": "paid_amount",
                 "recommended_assumption": "产品默认的材料性和稳定性规则，不使用p值。",
                 "route_summary": "使用compare_period_phases和metric_timeseries分析paid_amount，不说显著性。",
-                "accepted_assumptions": "scope为full_sample，min_periods=20。",
+                "accepted_assumptions": ["scope为full_sample，min_periods=20。"],
                 "confirmed_intent": {
                     "business_summary": "scope为full_sample，材料性规则。",
                     "machine_intent": {"scope": "full_sample"},
@@ -9273,6 +10147,15 @@ class LLMWorkflowTest(unittest.TestCase):
             ),
         )
         self.assertEqual(output["claims"][0]["text"], "当前证据显示一个可观察模式。")
+
+    def test_llm_narrative_rejects_scalar_accepted_assumptions(self):
+        with self.assertRaisesRegex(
+            LLMOutputError,
+            "llm_narrative_invalid:accepted_assumptions",
+        ):
+            _localize_narrative_fields(
+                {"accepted_assumptions": "沿用当前业务口径继续。"}
+            )
 
     def test_llm_narrative_invalid_high_value_text_fails_without_local_template(self):
         for key, value in (
@@ -9886,8 +10769,90 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(repaired[0]["time_window"], "昨天与前天")
         self.assertEqual(repaired[0]["numbers"]["absolute_change"], -91560)
         state["draft_claims"] = repaired
-        self.assertEqual(_claims_from_llm_or_default([], state), repaired)
+        self.assertEqual(_claims_from_llm_or_default([], state), [])
         self.assertEqual(_preserved_authority_claims(state), repaired)
+
+    def test_answer_claim_nodes_retry_non_array_claim_shape_in_provider(self):
+        invalid = {
+            "answer_text": "当前证据支持形成有边界的业务结论。",
+            "claims": None,
+            "display_summary": "正在整理业务答案。",
+        }
+        malformed = {
+            **invalid,
+            "claims": [{"text": "当前证据支持形成有边界的业务结论。"}],
+        }
+        valid = {**invalid, "claims": []}
+        for node_name, node in (
+            ("answer_synthesis", workflow_module._synthesize_answer),
+            ("answer_repair", workflow_module._repair_answer),
+        ):
+            with self.subTest(node=node_name):
+                client, completions = _provider_client_with_outputs(
+                    [invalid, malformed, valid]
+                )
+                state = {
+                    "request": {"run_mode": "production"},
+                    "intent": {
+                        "question_family": "revenue_health_review",
+                        "target_metric": "paid_amount",
+                        "pattern_family": "custom_baseline",
+                        "scope": "full_sample",
+                        "time_window": "2026-06-02",
+                    },
+                    "evidence_interpretation": {},
+                    "evidence_brief": {},
+                    "evidence": [],
+                    "answer_text": "待修复答案。",
+                    "draft_claims": [],
+                    "semantic_audit": {},
+                    "verifier": {},
+                    "retry_context": {},
+                    "llm_client": client,
+                    "llm_calls": [],
+                }
+
+                node(state)
+
+                self.assertEqual(completions.attempt_count, 3)
+                self.assertEqual(state["draft_claims"], [])
+
+    def test_answer_claim_provider_contract_requires_exact_typed_item_shape(self):
+        valid_claim = {
+            "text": "当前证据支持形成有边界的业务结论。",
+            "evidence_refs": ["evidence:paid-amount:1"],
+            "numbers": {"absolute_change": -1200},
+            "scope": "full_sample",
+            "time_window": "2026-06-02",
+            "claim_type": "comparative_change",
+            "claim_strength": "observed",
+        }
+        workflow_module._validate_answer_claims_provider_output(
+            {"claims": []}
+        )
+        workflow_module._validate_answer_claims_provider_output(
+            {"claims": [valid_claim]}
+        )
+
+        invalid_claims = (
+            {key: value for key, value in valid_claim.items() if key != "scope"},
+            {**valid_claim, "unexpected": "provider-owned-extra"},
+            {**valid_claim, "text": " 当前证据支持结论。"},
+            {**valid_claim, "scope": ""},
+            {**valid_claim, "evidence_refs": []},
+            {**valid_claim, "evidence_refs": ["evidence:1", " "]},
+            {**valid_claim, "numbers": []},
+            {**valid_claim, "claim_strength": 1},
+        )
+        for claim in invalid_claims:
+            with self.subTest(claim=claim):
+                with self.assertRaisesRegex(
+                    LLMOutputError,
+                    "answer_claims_contract_invalid:claims",
+                ):
+                    workflow_module._validate_answer_claims_provider_output(
+                        {"claims": [claim]}
+                    )
 
     def test_production_short_answer_is_not_rewritten_by_local_narrative_template(self):
         state = {
@@ -13912,13 +14877,12 @@ class LLMWorkflowTest(unittest.TestCase):
                 "answer_synthesis": {
                     "answer_text": "Draft answer with exception period.",
                     "claims": [
-                        {
-                            "text": "The main pattern is supported.",
-                            "evidence_refs": ["pattern_scan:intra_period"],
-                            "numbers": {"median_uplift": 0.2},
-                            "scope": "full_sample",
-                            "time_window": "2026-05",
-                        }
+                        _provider_claim(
+                            text="The main pattern is supported.",
+                            evidence_refs=("pattern_scan:intra_period",),
+                            numbers={"median_uplift": 0.2},
+                            time_window="2026-05",
+                        )
                     ],
                 }
             }
@@ -13938,13 +14902,11 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.answer_package["admin_audit"]["verifier"]["status"], "failed")
 
     def test_duplicate_llm_claims_are_deduped(self):
-        duplicate = {
-            "text": "The same pattern claim.",
-            "evidence_refs": ["pattern_scan:intra_period"],
-            "numbers": {"median_uplift": 0.2},
-            "scope": "full_sample",
-            "time_window": "2024-01..2026-05",
-        }
+        duplicate = _provider_claim(
+            text="The same pattern claim.",
+            evidence_refs=("pattern_scan:intra_period",),
+            numbers={"median_uplift": 0.2},
+        )
         fake = FakeLLMClient(
             {"answer_synthesis": {"answer_text": "Draft.", "claims": [duplicate, duplicate]}}
         )
@@ -13963,20 +14925,16 @@ class LLMWorkflowTest(unittest.TestCase):
                 "answer_synthesis": {
                     "answer_text": "Pattern answer with side diagnostics.",
                     "claims": [
-                        {
-                            "text": "Data quality is high.",
-                            "evidence_refs": ["data_quality_check:inline"],
-                            "numbers": {"row_count": 100},
-                            "scope": "full_sample",
-                            "time_window": "2024-01..2026-05",
-                        },
-                        {
-                            "text": "No outliers were detected.",
-                            "evidence_refs": ["outlier_scan:inline"],
-                            "numbers": {"outliers": []},
-                            "scope": "full_sample",
-                            "time_window": "2024-01..2026-05",
-                        },
+                        _provider_claim(
+                            text="Data quality is high.",
+                            evidence_refs=("data_quality_check:inline",),
+                            numbers={"row_count": 100},
+                        ),
+                        _provider_claim(
+                            text="No outliers were detected.",
+                            evidence_refs=("outlier_scan:inline",),
+                            numbers={"outliers": []},
+                        ),
                     ],
                 }
             }
@@ -14207,6 +15165,13 @@ class LLMWorkflowTest(unittest.TestCase):
             {
                 "answer_synthesis": {
                     "answer_text": "这里引用了不存在的证据。",
+                    "claims": [
+                        _provider_claim(
+                            text="这里保留了错误数字。",
+                            evidence_refs=("pattern_scan:intra_period",),
+                            numbers={"median_uplift": 9.9},
+                        )
+                    ],
                 }
             }
         )
@@ -14217,15 +15182,6 @@ class LLMWorkflowTest(unittest.TestCase):
                     "artifact_root": tmpdir,
                     "run_id": "verifier-retry-reason",
                     "llm_client": fake,
-                    "draft_claims": [
-                        {
-                            "text": "这里保留了错误数字。",
-                            "evidence_refs": ["pattern_scan:intra_period"],
-                            "numbers": {"median_uplift": 9.9},
-                            "scope": "full_sample",
-                            "time_window": "2024-01..2026-05",
-                        }
-                    ],
                 }
             )
 
@@ -14236,13 +15192,11 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("number_mismatch", retry["failure_reason"])
 
     def test_degraded_answer_replaces_claim_rejected_after_repair(self):
-        rejected_claim = {
-            "text": "这里保留了错误数字 990.0%。",
-            "evidence_refs": ["pattern_scan:intra_period"],
-            "numbers": {"median_uplift": 9.9},
-            "scope": "full_sample",
-            "time_window": "2024-01..2026-05",
-        }
+        rejected_claim = _provider_claim(
+            text="这里保留了错误数字 990.0%。",
+            evidence_refs=("pattern_scan:intra_period",),
+            numbers={"median_uplift": 9.9},
+        )
         fake = FakeLLMClient(
             {
                 "answer_synthesis": {
@@ -14283,16 +15237,14 @@ class LLMWorkflowTest(unittest.TestCase):
                         "No event-based explanations are available due to insufficient evidence."
                     ),
                     "claims": [
-                        {
-                            "text": (
+                        _provider_claim(
+                            text=(
                                 "No event-based causes were identified to explain the pattern. "
                                 "No event-based explanations are available due to insufficient evidence."
                             ),
-                            "evidence_refs": ["pattern_scan:intra_period"],
-                            "numbers": {"median_uplift": 0.2},
-                            "scope": "full_sample",
-                            "time_window": "2024-01..2026-05",
-                        }
+                            evidence_refs=("pattern_scan:intra_period",),
+                            numbers={"median_uplift": 0.2},
+                        )
                     ],
                 }
             }

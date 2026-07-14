@@ -128,6 +128,13 @@ class InMemoryConversationStore:
                 return state
         return None
 
+    def get_clarification_state(
+        self,
+        source_run_id: str,
+    ) -> Optional[ClarificationState]:
+        state = self.clarification_states.get(source_run_id)
+        return deepcopy(state) if state is not None else None
+
     def add_turn(self, thread_id: str, turn: dict) -> None:
         self.get_thread(thread_id).turns.append(turn)
 
@@ -186,12 +193,177 @@ class InMemoryConversationStore:
         self.runs = staged_runs
         self._audit_events = staged_events
 
+    def finalize_run_failure(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        turn_id: str,
+        topic_id: str,
+        request: Mapping[str, Any],
+        failure_reason: str,
+        failure_stage: str,
+        failure_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        run = self.runs.get(run_id)
+        if not isinstance(run, Mapping):
+            raise EvidenceIntegrityError("analysis_run_failure_source_missing")
+        finalized_request = canonical_value(
+            {
+                **dict(request),
+                "failure_reason": failure_reason,
+                "failure_stage": failure_stage,
+            }
+        )
+        primary_payload = canonical_value(
+            {
+                **dict(failure_payload),
+                "failure_reason": failure_reason,
+                "failure_stage": failure_stage,
+            }
+        )
+        action = validate_run_status_transition(
+            current_status=str(run.get("status") or ""),
+            next_status="failed",
+            current_thread_id=str(run.get("thread_id") or ""),
+            current_turn_id=str(run.get("turn_id") or ""),
+            current_topic_id=str(run.get("topic_id") or ""),
+            next_thread_id=thread_id,
+            next_turn_id=turn_id,
+            next_topic_id=topic_id,
+            current_request=run.get("request") or {},
+            next_request=finalized_request,
+        )
+        existing_primary = tuple(
+            event
+            for event in self._audit_events
+            if event.get("event_type") == failure_reason
+            and event.get("run_id") == run_id
+        )
+        if action == "replay":
+            if (
+                len(existing_primary) == 1
+                and str(existing_primary[0].get("thread_id") or "") == thread_id
+                and str(existing_primary[0].get("topic_id") or "") == topic_id
+                and str(existing_primary[0].get("ref") or "") == run_id
+                and canonical_value(existing_primary[0].get("payload") or {})
+                == primary_payload
+            ):
+                return deepcopy(finalized_request)
+            raise EvidenceIntegrityError("analysis_run_failure_record_conflict")
+        if existing_primary:
+            raise EvidenceIntegrityError("analysis_run_failure_record_conflict")
+
+        staged_runs = deepcopy(self.runs)
+        staged_events = deepcopy(self._audit_events)
+        staged_runs[run_id] = {
+            **dict(run),
+            "thread_id": thread_id,
+            "turn_id": turn_id,
+            "topic_id": topic_id,
+            "status": "failed",
+            "request": finalized_request,
+        }
+        self._append_staged_audit_event(
+            staged_events,
+            {
+                "event_type": "run_status_changed",
+                "thread_id": thread_id,
+                "topic_id": topic_id,
+                "run_id": run_id,
+                "ref": run_id,
+                "payload": {"status": "failed"},
+            },
+        )
+        self._append_staged_audit_event(
+            staged_events,
+            {
+                "event_type": failure_reason,
+                "thread_id": thread_id,
+                "topic_id": topic_id,
+                "run_id": run_id,
+                "ref": run_id,
+                "payload": primary_payload,
+            },
+        )
+        self.runs = staged_runs
+        self._audit_events = staged_events
+        return deepcopy(finalized_request)
+
     def get_run_request(self, run_id: str) -> dict[str, Any]:
         run = self.runs.get(run_id) or {}
         request = deepcopy(run.get("request") or {})
         request["thread_id"] = str(run.get("thread_id") or "")
         request["topic_id"] = str(run.get("topic_id") or "")
         return request
+
+    def record_terminal_completion_conflict(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        turn_id: str,
+        topic_id: str,
+        failure_reason: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        run = self.runs.get(run_id)
+        if (
+            not isinstance(run, Mapping)
+            or str(run.get("status") or "") != "completed"
+            or str(run.get("thread_id") or "") != thread_id
+            or str(run.get("turn_id") or "") != turn_id
+            or str(run.get("topic_id") or "") != topic_id
+        ):
+            raise EvidenceIntegrityError(
+                "terminal_completion_conflict_owner_unproven"
+            )
+        conflict_payload = canonical_value(
+            {**dict(payload), "durable_run_status": "completed"}
+        )
+        existing = tuple(
+            event
+            for event in self._audit_events
+            if event.get("event_type") == failure_reason
+            and event.get("run_id") == run_id
+        )
+        if existing:
+            if (
+                len(existing) == 1
+                and str(existing[0].get("thread_id") or "") == thread_id
+                and str(existing[0].get("topic_id") or "") == topic_id
+                and str(existing[0].get("ref") or "") == run_id
+                and canonical_value(existing[0].get("payload") or {})
+                == conflict_payload
+            ):
+                return deepcopy(conflict_payload)
+            raise EvidenceIntegrityError(
+                "terminal_completion_conflict_audit_mismatch"
+            )
+        staged_events = deepcopy(self._audit_events)
+        self._append_staged_audit_event(
+            staged_events,
+            {
+                "event_type": failure_reason,
+                "thread_id": thread_id,
+                "topic_id": topic_id,
+                "run_id": run_id,
+                "ref": run_id,
+                "payload": conflict_payload,
+            },
+        )
+        self._audit_events = staged_events
+        return deepcopy(conflict_payload)
 
     def get_run_state(self, run_id: str) -> dict[str, Any] | None:
         run = self.runs.get(run_id)
@@ -219,7 +391,10 @@ class InMemoryConversationStore:
         from bi_agent.conversation.clarification_authority import (
             build_clarification_outcome,
         )
-        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
 
         source_run = self.runs.get(source_run_id)
         if not source_run:
@@ -238,6 +413,25 @@ class InMemoryConversationStore:
             topic_id=topic_id,
             choice=choice,
         )
+        existing = tuple(
+            event
+            for event in self._audit_events
+            if event.get("event_type") == "clarification_outcome_recorded"
+            and event.get("run_id") == source_run_id
+        )
+        if existing:
+            if len(existing) != 1:
+                raise EvidenceIntegrityError("clarification_outcome_ambiguous")
+            event = existing[0]
+            if (
+                str(event.get("thread_id") or "") == thread_id
+                and str(event.get("topic_id") or "") == topic_id
+                and str(event.get("ref") or "") == payload["outcome_ref"]
+                and canonical_value(event.get("payload") or {})
+                == canonical_value(payload)
+            ):
+                return str(payload["outcome_ref"])
+            raise EvidenceIntegrityError("clarification_outcome_conflict")
         self.add_audit_event(
             "clarification_outcome_recorded",
             thread_id=thread_id,
@@ -277,11 +471,15 @@ class InMemoryConversationStore:
             event
             for event in self._audit_events
             if event.get("event_type") == "clarification_outcome_recorded"
-            and event.get("ref") == outcome_ref
+            and event.get("run_id") == source_run_id
         )
-        if len(outcome_events) != 1:
+        if not outcome_events:
             raise EvidenceIntegrityError("clarification_resume_outcome_missing")
+        if len(outcome_events) != 1:
+            raise EvidenceIntegrityError("clarification_resume_outcome_ambiguous")
         event = outcome_events[0]
+        if str(event.get("ref") or "") != outcome_ref:
+            raise EvidenceIntegrityError("clarification_resume_outcome_missing")
         run_request = run.get("request") or {}
         material_authority = (
             run_request.get("material_authority")
@@ -502,12 +700,36 @@ class InMemoryConversationStore:
         self.save_context_manifest(manifest)
 
     def save_context_manifest(self, manifest: ContextManifest | dict) -> None:
+        from bi_agent.runtime.claim_provenance import (
+            validated_context_manifest_record,
+        )
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
         payload = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest)
-        self.context_manifests[payload["manifest_id"]] = payload
+        if "manifest_digest" in payload:
+            payload = validated_context_manifest_record(payload)
+        payload = canonical_value(payload)
+        manifest_id = str(payload["manifest_id"])
+        existing = self.context_manifests.get(manifest_id)
+        authority = self.analysis_runtime_authority.get(
+            "context_manifest", {}
+        ).get(manifest_id)
+        for stored in (existing, authority):
+            if stored is not None and canonical_value(stored) != payload:
+                raise EvidenceIntegrityError(
+                    "context_manifest_publication_conflict"
+                )
+        if existing is not None or authority is not None:
+            self.context_manifests.setdefault(manifest_id, deepcopy(payload))
+            return
+        self.context_manifests[manifest_id] = deepcopy(payload)
         self.add_audit_event(
             "context_manifest_recorded",
             thread_id=payload.get("thread_id", ""),
-            ref=payload["manifest_id"],
+            ref=manifest_id,
         )
 
     def save_reuse_decisions(
@@ -564,6 +786,7 @@ class InMemoryConversationStore:
         evidence_manifests: Sequence[Mapping[str, Any]],
         context_manifests: Sequence[Mapping[str, Any]],
         trusted_provenance_records: Sequence[Mapping[str, Any]],
+        answer_package_artifacts: Sequence[Mapping[str, Any]] | None = None,
         verified_claims: Sequence[Mapping[str, Any]],
         claim_links: Sequence[Mapping[str, Any]],
         repair_attempts: Sequence[Mapping[str, Any]],
@@ -589,6 +812,7 @@ class InMemoryConversationStore:
             evidence_manifests=evidence_manifests,
             context_manifests=context_manifests,
             trusted_provenance_records=trusted_provenance_records,
+            answer_package_artifacts=answer_package_artifacts,
             verified_claims=verified_claims,
             claim_links=claim_links,
             repair_attempts=repair_attempts,
@@ -646,6 +870,13 @@ class InMemoryConversationStore:
                 ),
             ),
             (
+                "answer_package_artifact",
+                tuple(
+                    (item["artifact_ref"], item)
+                    for item in bundle["answer_package_artifacts"]
+                ),
+            ),
+            (
                 "verified_claim",
                 tuple((item["claim_ref"], item) for item in bundle["verified_claims"]),
             ),
@@ -662,16 +893,30 @@ class InMemoryConversationStore:
             ),
         )
         staged_authority = deepcopy(self.analysis_runtime_authority)
+        staged_context_manifests = deepcopy(self.context_manifests)
         for kind, records in entries:
             existing_records = staged_authority[kind]
             for ref, payload in records:
                 existing = existing_records.get(str(ref))
                 if existing is not None and existing != canonical_value(payload):
                     raise EvidenceIntegrityError(f"authority_ref_collision:{kind}")
+                if kind == "context_manifest":
+                    published = staged_context_manifests.get(str(ref))
+                    if (
+                        published is not None
+                        and canonical_value(published) != canonical_value(payload)
+                    ):
+                        raise EvidenceIntegrityError(
+                            "context_manifest_publication_conflict"
+                        )
         for kind, records in entries:
             target = staged_authority[kind]
             for ref, payload in records:
                 target[str(ref)] = deepcopy(canonical_value(payload))
+                if kind == "context_manifest":
+                    staged_context_manifests[str(ref)] = deepcopy(
+                        canonical_value(payload)
+                    )
         staged_publications = deepcopy(self.analysis_runtime_records)
         staged_publications[run_id] = {
             "digest": digest,
@@ -698,6 +943,7 @@ class InMemoryConversationStore:
             }
         )
         self.analysis_runtime_authority = staged_authority
+        self.context_manifests = staged_context_manifests
         self.analysis_runtime_records = staged_publications
         self._audit_events = staged_audits
         return "published"

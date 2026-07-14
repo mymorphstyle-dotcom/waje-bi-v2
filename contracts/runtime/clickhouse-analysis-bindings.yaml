@@ -403,7 +403,7 @@ query_shapes:
     window_policy: fixed_resolved_windows
     reconciliation: not_applicable
     provider_bounds: {max_context_rows: 5000, overflow: detect_extra_row}
-  gameplay_activity_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: sparse_allowed, source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: overall_channel_when_paired, provider_bounds: throw_on_overflow}
+  gameplay_activity_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: independent, dimension_presence_policy: sparse_allowed, source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: overall_channel_when_paired, provider_bounds: throw_on_overflow}
   channel_context_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key, channel], grain: [window_id, observation_key, channel], dimension_topology: joint, dimension_presence_policy: paired_required, source_fields: [channel], source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: overall_channel_required, provider_bounds: throw_on_overflow}
   source_reconciliation_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
   high_value_scan:
@@ -447,8 +447,8 @@ question_family_obligations:
     required_capabilities: [data_quality_profile]
     conditional_rules:
       - {condition: baselines_present, add: [compare_periods]}
-      - {condition: event_context_requested, add: [event_evidence]}
-    independent_capabilities: [gameplay_activity_context, event_window_compare]
+      - {condition: event_context_requested, add: [event_evidence, event_window_compare]}
+    independent_capabilities: [gameplay_activity_context]
     minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
     missing_contract_owner: analysis_contract_owner
     degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}

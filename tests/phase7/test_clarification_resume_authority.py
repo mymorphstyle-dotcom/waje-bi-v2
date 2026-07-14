@@ -20,7 +20,7 @@ from bi_agent.runtime.analysis_contracts import analysis_contract_signature
 from bi_agent.runtime.dataset_catalog import DatasetCatalog
 from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-from tests.phase7.test_conversation_persistence import FakeConnection
+from tests.phase7.test_conversation_persistence import FakeConnection, FakeCursor
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult
 
 
@@ -4376,6 +4376,112 @@ def test_memory_resume_authority_ignores_mutable_request_and_binds_actual_choice
     assert authority["clarification_outcome"]["choice"] == _choice()
 
 
+def test_memory_clarification_outcome_is_one_shot_and_exactly_idempotent():
+    store, _ = _seed_memory_store()
+    choice = _choice()
+
+    first_ref = store.record_clarification_outcome(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        choice=choice,
+    )
+    first_events = store.audit_events
+    replay_ref = store.record_clarification_outcome(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        choice=deepcopy(choice),
+    )
+
+    assert replay_ref == first_ref
+    assert store.audit_events == first_events
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^clarification_outcome_conflict$",
+    ):
+        store.record_clarification_outcome(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            choice={**choice, "choice_id": "conflicting-choice"},
+        )
+    assert store.audit_events == first_events
+
+
+def test_memory_clarification_resume_rejects_duplicate_outcome_rows():
+    store, _ = _seed_memory_store()
+    choice = _choice()
+    outcome_ref = store.record_clarification_outcome(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        choice=choice,
+    )
+    event = next(
+        item
+        for item in store.audit_events
+        if item["event_type"] == "clarification_outcome_recorded"
+    )
+    store.add_audit_event(
+        event["event_type"],
+        thread_id=event["thread_id"],
+        topic_id=event["topic_id"],
+        run_id=event["run_id"],
+        ref=event["ref"],
+        payload=event["payload"],
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^clarification_resume_outcome_ambiguous$",
+    ):
+        store.resolve_clarification_resume_authority(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            choice=choice,
+            outcome_ref=outcome_ref,
+        )
+
+
+def test_memory_clarification_resume_rejects_different_refs_for_one_source():
+    store, _ = _seed_memory_store()
+    choice = _choice()
+    outcome_ref = store.record_clarification_outcome(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        choice=choice,
+    )
+    conflicting = build_clarification_outcome(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        choice={**choice, "choice_id": "conflicting-choice"},
+    )
+    store.add_audit_event(
+        "clarification_outcome_recorded",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        run_id="run-source",
+        ref=conflicting["outcome_ref"],
+        payload=conflicting,
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^clarification_resume_outcome_ambiguous$",
+    ):
+        store.resolve_clarification_resume_authority(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            choice=choice,
+            outcome_ref=outcome_ref,
+        )
+
+
 def test_memory_completed_followup_authority_resolves_signed_material_and_contract():
     store, contract = _seed_memory_store()
     material_authority = deepcopy(
@@ -4811,6 +4917,300 @@ def test_postgres_resume_authority_selects_immutable_contract_and_outcome_with_o
     assert "r.request AS run_request" in sql
     assert resolved["clarification_outcome"]["outcome_ref"] == outcome_ref
     assert resolved["material_authority"] == material_authority
+
+
+def test_postgres_resume_authority_rejects_duplicate_outcome_rows():
+    contract = _source_contract()
+    choice = _choice()
+    outcome = build_clarification_outcome(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        choice=choice,
+    )
+    material_authority = _signed_material_authority(
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+    row = {
+        "analysis_contract_id": contract["analysis_contract_id"],
+        "analysis_run_id": "run-source",
+        "stored_contract_signature": contract["contract_signature"],
+        "contract_payload": json.dumps(
+            {
+                key: value
+                for key, value in contract.items()
+                if key != "contract_signature"
+            }
+        ),
+        "run_status": "waiting_for_clarification",
+        "run_thread_id": "thread-1",
+        "run_topic_id": "topic-1",
+        "run_request": json.dumps(
+            {"material_authority": material_authority}
+        ),
+        "outcome_payload": json.dumps(outcome),
+        "outcome_ref": outcome["outcome_ref"],
+        "outcome_run_id": "run-source",
+        "outcome_thread_id": "thread-1",
+        "outcome_topic_id": "topic-1",
+    }
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^clarification_resume_outcome_ambiguous$",
+    ):
+        PostgresConversationStore(
+            FakeConnection(rows=[row, deepcopy(row)])
+        ).resolve_clarification_resume_authority(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            choice=choice,
+            outcome_ref=outcome["outcome_ref"],
+        )
+
+
+def test_postgres_resume_authority_rejects_different_refs_for_one_source():
+    contract = _source_contract()
+    choice = _choice()
+    first = build_clarification_outcome(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        choice=choice,
+    )
+    conflicting = build_clarification_outcome(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        choice={**choice, "choice_id": "conflicting-choice"},
+    )
+    material_authority = _signed_material_authority(
+        thread_id="thread-1",
+        topic_id="topic-1",
+    )
+
+    def row(outcome):
+        return {
+            "analysis_contract_id": contract["analysis_contract_id"],
+            "analysis_run_id": "run-source",
+            "stored_contract_signature": contract["contract_signature"],
+            "contract_payload": json.dumps(
+                {
+                    key: value
+                    for key, value in contract.items()
+                    if key != "contract_signature"
+                }
+            ),
+            "run_status": "waiting_for_clarification",
+            "run_thread_id": "thread-1",
+            "run_topic_id": "topic-1",
+            "run_request": json.dumps(
+                {"material_authority": material_authority}
+            ),
+            "outcome_payload": json.dumps(outcome),
+            "outcome_ref": outcome["outcome_ref"],
+            "outcome_run_id": "run-source",
+            "outcome_thread_id": "thread-1",
+            "outcome_topic_id": "topic-1",
+        }
+
+    rows = [row(first), row(conflicting)]
+
+    class OutcomeFilteringConnection(FakeConnection):
+        def execute(self, statement, params=None):
+            params = params or {}
+            self.statements.append((statement, params))
+            if "clarification_resume_authority_all_outcomes" in statement:
+                return FakeCursor(rows)
+            if "e.ref = %(outcome_ref)s" in statement:
+                return FakeCursor(
+                    [
+                        candidate
+                        for candidate in rows
+                        if candidate["outcome_ref"] == params.get("outcome_ref")
+                    ]
+                )
+            return FakeCursor(rows)
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^clarification_resume_outcome_ambiguous$",
+    ):
+        PostgresConversationStore(
+            OutcomeFilteringConnection()
+        ).resolve_clarification_resume_authority(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            choice=choice,
+            outcome_ref=first["outcome_ref"],
+        )
+
+
+def test_postgres_resolves_explicit_gateway_resume_mapping():
+    mapping = {
+        "source_run_id": "run-source",
+        "resumed_run_id": "run-resumed",
+        "thread_id": "thread-1",
+        "request_identity": "clarification-request:stable",
+        "answer": "按推荐继续",
+        "selected_option_id": "recommended",
+        "source": "user",
+    }
+    store = PostgresConversationStore(FakeConnection(rows=[mapping]))
+
+    resolved = store.resolve_clarification_resume_claim(
+        source_run_id="run-source",
+        resumed_run_id="run-resumed",
+        thread_id="thread-1",
+        answer="按推荐继续",
+        selected_option_id="recommended",
+        source="user",
+    )
+
+    assert resolved == mapping
+
+
+def test_agent_core_passes_explicit_resume_mapping_to_conversation_runtime(monkeypatch):
+    class MappingStore(InMemoryConversationStore):
+        def __init__(self):
+            super().__init__()
+            self.mapping_calls = []
+
+        def resolve_clarification_resume_claim(self, **kwargs):
+            self.mapping_calls.append(deepcopy(kwargs))
+            return {
+                **kwargs,
+                "request_identity": "clarification-request:stable",
+            }
+
+    class StopAfterBinding(RuntimeError):
+        pass
+
+    captured = {}
+
+    def stop_after_binding(_runtime, _thread_id, _message, **kwargs):
+        captured.update(kwargs)
+        raise StopAfterBinding("mapping observed")
+
+    monkeypatch.setattr(
+        ConversationRuntime,
+        "handle_message",
+        stop_after_binding,
+    )
+    store = MappingStore()
+    store.create_thread("thread-1", owner_id="owner-1")
+
+    with pytest.raises(StopAfterBinding, match="mapping observed"):
+        ConversationAgentCore(store).run_message(
+            thread_id="thread-1",
+            run_id="run-resumed",
+            user_message="按推荐继续",
+            clarification={
+                "runId": "run-source",
+                "answer": "按推荐继续",
+                "selectedOptionId": "recommended",
+                "source": "user",
+            },
+        )
+
+    assert store.mapping_calls == [
+        {
+            "source_run_id": "run-source",
+            "resumed_run_id": "run-resumed",
+            "thread_id": "thread-1",
+            "answer": "按推荐继续",
+            "selected_option_id": "recommended",
+            "source": "user",
+        }
+    ]
+    assert captured["clarification_resume_claim"]["source_run_id"] == "run-source"
+    assert captured["clarification_resume_claim"]["resumed_run_id"] == "run-resumed"
+
+
+def test_explicit_resume_mapping_owns_topic_context_and_manifest_provenance():
+    store = InMemoryConversationStore()
+    thread = store.create_thread("thread-explicit", owner_id="owner-explicit")
+    topic_a = store.create_topic(
+        thread.thread_id,
+        title="source-a",
+    )
+    topic_b = store.create_topic(
+        thread.thread_id,
+        title="source-b",
+    )
+    store.set_current_topic(thread.thread_id, topic_b.topic_id)
+    store.set_pending_clarification(
+        thread.thread_id,
+        topic_b.topic_id,
+        "run-b",
+    )
+    store.upsert_run(
+        "run-a",
+        thread_id=thread.thread_id,
+        topic_id=topic_a.topic_id,
+        status="waiting_for_clarification",
+        request={
+            "clarification_source_envelope": _build_clarification_source_envelope(
+                source_run_id="run-a",
+                source_thread_id=thread.thread_id,
+                source_topic_id=topic_a.topic_id,
+                source_owner_id=thread.owner_id,
+                question="检查来源 A 的业务问题",
+                analysis_context={},
+                clarification={
+                    "questions": [
+                        {
+                            "question": "按哪个边界继续？",
+                            "options": ["按推荐继续"],
+                        }
+                    ]
+                },
+            )
+        },
+    )
+    store.save_clarification_state(
+        ClarificationState(
+            run_id="run-a",
+            topic_id=topic_a.topic_id,
+            question="按哪个边界继续？",
+            options=[],
+        )
+    )
+    store.save_clarification_state(
+        ClarificationState(
+            run_id="run-b",
+            topic_id=topic_b.topic_id,
+            question="来源 B 的待确认问题",
+            options=[],
+        )
+    )
+
+    result = ConversationRuntime(store).handle_message(
+        thread.thread_id,
+        "按推荐继续",
+        run_id="run-resumed-a",
+        clarification_resume_claim={
+            "source_run_id": "run-a",
+            "resumed_run_id": "run-resumed-a",
+            "thread_id": thread.thread_id,
+            "request_identity": "clarification-request:a",
+        },
+    )
+
+    payload = result.to_dict()
+    clarification_refs = [
+        item["source_ref"]
+        for item in payload["context_manifest"]["items"]
+        if item["source_type"] == "clarification"
+    ]
+    assert payload["topic_id"] == topic_a.topic_id
+    assert payload["run_request"]["clarification_resume_context"][
+        "resume_run_id"
+    ] == "run-a"
+    assert clarification_refs == ["run-a"]
 
 
 def test_postgres_completed_followup_authority_matches_inmemory_contract():
@@ -5312,11 +5712,7 @@ def test_postgres_completed_followup_authority_finalizer_reports_missing_contrac
 
 
 def test_postgres_outcome_record_locks_and_requires_waiting_source_run():
-    connection = FakeConnection(rows=[{
-        "thread_id": "thread-1",
-        "topic_id": "topic-1",
-        "status": "waiting_for_clarification",
-    }])
+    connection = _ClarificationOutcomeConnection()
 
     outcome_ref = PostgresConversationStore(connection).record_clarification_outcome(
         source_run_id="run-source",
@@ -5329,6 +5725,91 @@ def test_postgres_outcome_record_locks_and_requires_waiting_source_run():
     assert "FOR UPDATE" in sql
     assert "status" in sql
     assert outcome_ref.startswith("clarification-outcome:")
+
+
+class _ClarificationOutcomeConnection:
+    def __init__(self):
+        self.owner = {
+            "thread_id": "thread-1",
+            "topic_id": "topic-1",
+            "status": "waiting_for_clarification",
+        }
+        self.outcomes = []
+        self.pending_outcomes = []
+        self.statements = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def execute(self, statement, params=None):
+        params = dict(params or {})
+        self.statements.append((statement, params))
+        if (
+            "clarification_outcome_owner_lock" in statement
+            or (
+                "SELECT thread_id, topic_id, status" in statement
+                and "FOR UPDATE" in statement
+            )
+        ):
+            return FakeCursor([self.owner])
+        if "clarification_outcome_existing" in statement:
+            return FakeCursor([*self.outcomes, *self.pending_outcomes])
+        if (
+            "INSERT INTO waje_runtime.audit_events" in statement
+            and params.get("event_type") == "clarification_outcome_recorded"
+        ):
+            self.pending_outcomes.append(
+                {
+                    "ref": params["ref"],
+                    "payload": params["payload"],
+                    "run_id": params["run_id"],
+                    "thread_id": params["thread_id"],
+                    "topic_id": params["topic_id"],
+                }
+            )
+        return FakeCursor([])
+
+    def commit(self):
+        self.outcomes.extend(self.pending_outcomes)
+        self.pending_outcomes = []
+        self.commits += 1
+
+    def rollback(self):
+        self.pending_outcomes = []
+        self.rollbacks += 1
+
+
+def test_postgres_clarification_outcome_is_one_shot_and_exactly_idempotent():
+    connection = _ClarificationOutcomeConnection()
+    store = PostgresConversationStore(connection)
+    choice = _choice()
+
+    first_ref = store.record_clarification_outcome(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        choice=choice,
+    )
+    replay_ref = store.record_clarification_outcome(
+        source_run_id="run-source",
+        thread_id="thread-1",
+        topic_id="topic-1",
+        choice=deepcopy(choice),
+    )
+
+    assert replay_ref == first_ref
+    assert len(connection.outcomes) == 1
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^clarification_outcome_conflict$",
+    ):
+        store.record_clarification_outcome(
+            source_run_id="run-source",
+            thread_id="thread-1",
+            topic_id="topic-1",
+            choice={**choice, "choice_id": "conflicting-choice"},
+        )
+    assert len(connection.outcomes) == 1
+    assert connection.rollbacks == 1
 
 
 def test_agent_core_resume_injects_authority_resolved_from_persisted_source_bundle():
@@ -5375,10 +5856,11 @@ def test_agent_core_resume_injects_authority_resolved_from_persisted_source_bund
                     for binding in records["capability_binding_records"]
                 ),
             )
-            return WorkflowRunResult(
+            result = WorkflowRunResult(
                 status="waiting_for_clarification",
                 run_id=request["run_id"],
                 answer_package={
+                    "run_id": request["run_id"],
                     "status": "waiting_for_clarification",
                     "accepted_graph": ["segment_contribution"],
                     "analysis_contract": records["analysis_contract"],
@@ -5445,6 +5927,15 @@ def test_agent_core_resume_injects_authority_resolved_from_persisted_source_bund
                 },
                 analysis_runtime_records=records,
             )
+            from tests.phase7.artifact_test_support import (
+                materialize_answer_package_artifact,
+            )
+
+            artifact_path, _ = materialize_answer_package_artifact(
+                run_id=request["run_id"],
+                answer_package=result.answer_package,
+            )
+            return replace(result, artifact_path=artifact_path)
         return WorkflowRunResult(
             status="failed",
             run_id=request["run_id"],

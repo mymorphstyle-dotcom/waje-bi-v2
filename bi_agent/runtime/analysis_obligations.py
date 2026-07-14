@@ -81,7 +81,7 @@ def resolve_analysis_obligations(
         independent.extend(contract["independent_capabilities"])
         evidence.extend(contract["minimum_publishable_evidence"])
         for rule in contract["conditional_rules"]:
-            if obligation_condition_matches(rule["condition"], request):
+            if obligation_condition_matches(rule["condition"], request, registry):
                 conditional.extend(rule["add"])
     for tag in request.diagnostic_tags:
         contract = registry.diagnostic_obligation(tag)
@@ -92,7 +92,7 @@ def resolve_analysis_obligations(
                 f"diagnostic_question_family_incompatible:{tag}:"
                 f"{','.join(request.question_families)}"
             )
-        if obligation_condition_matches(contract["condition"], request):
+        if obligation_condition_matches(contract["condition"], request, registry):
             required.extend(contract["required_capabilities"])
     ordered_required = registry.order_capabilities(required)
     required_set = set(ordered_required)
@@ -275,13 +275,24 @@ def capability_dataset_requirements(
     return resolved
 
 
-def obligation_condition_matches(condition: str, request: ObligationRequest) -> bool:
+def obligation_condition_matches(
+    condition: str,
+    request: ObligationRequest,
+    registry: RuntimeContractRegistry,
+) -> bool:
+    compatible_event_sources = set(
+        registry.obligation_condition_context_sources(
+            "event_context_requested"
+        )
+    )
     matches = {
         "baselines_present": bool(request.baselines),
         "dimensions_present": bool(request.requested_dimensions),
         "multiple_dimensions_present": len(request.requested_dimensions) > 1,
         "components_present": "formula_component_contribution" in request.claim_intents,
-        "event_context_requested": bool(request.context_sources),
+        "event_context_requested": bool(
+            compatible_event_sources.intersection(request.context_sources)
+        ),
         "anomaly_review_requested": "external_shock_candidate_or_anomaly" in request.claim_intents,
         "trust_review_requested": "contract_coverage_and_trust_boundary" in request.claim_intents,
     }

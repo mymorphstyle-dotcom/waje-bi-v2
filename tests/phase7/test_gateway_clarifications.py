@@ -11,16 +11,28 @@ HELPER = ROOT / "app" / "api" / "_agentCore.ts"
 
 
 class GatewayClarificationsTest(unittest.TestCase):
-    def test_clarification_route_records_answer_and_resumes_same_run(self):
+    def test_clarification_route_records_submission_and_creates_resumed_run(self):
         route = ROUTE.read_text(encoding="utf-8")
         store = (ROOT / "app" / "api" / "_conversationStore.ts").read_text(encoding="utf-8")
 
         self.assertIn("runAgentCore", route)
-        self.assertIn("recordClarificationOutcome", route)
-        self.assertIn("addUserMessage", route)
+        self.assertIn("claimClarificationResume", route)
         self.assertIn("agentCore", route)
-        self.assertNotIn("createRun", route)
+        self.assertIn("claim.resumedRunId", route)
+        self.assertIn("sourceRunId: runId", route)
+        self.assertIn("eventsUrl: `/api/runs/${claim.resumedRunId}/events`", route)
+        self.assertIn("clarification_resume_claims", store)
         self.assertIn("clarification_answer_recorded", store)
+
+    def test_clarification_spawn_failure_terminalizes_resumed_queue(self):
+        route = ROUTE.read_text(encoding="utf-8")
+
+        self.assertIn("failOwnedRunDispatch", route)
+        self.assertIn("if (agentCore.error)", route)
+        self.assertIn(
+            "failureReason: agentCore.error",
+            route,
+        )
 
     def test_clarification_route_forwards_full_payload_and_waits_for_resumed_result(self):
         route = ROUTE.read_text(encoding="utf-8")
@@ -29,13 +41,13 @@ class GatewayClarificationsTest(unittest.TestCase):
 
         self.assertRegex(
             route,
-            r"const clarificationPayload = \{\s*runId,\s*answer,\s*selectedOptionId: body\.selectedOptionId \?\? null,\s*source: \"user\"(?: as const)?,\s*\}",
+            r"const clarificationPayload = \{\s*runId,\s*answer,\s*selectedOptionId,\s*source: \"user\"(?: as const)?,\s*\}",
         )
         self.assertRegex(
             route,
             r"runAgentCore\([^;]*clarification:\s*clarificationPayload[^;]*forceInline:\s*true[^;]*\)",
         )
-        self.assertIn("resumedRunId: visibleResult.run_id ?? runId", route)
+        self.assertIn("resumedRunId: claim.resumedRunId", route)
         self.assertIn("topicId: visibleResult.topic_id ?? null", route)
         self.assertIn("status: visibleAgentCore.status", route)
         self.assertNotIn("status: resumed.status ?? agentCore.status", route)
@@ -85,6 +97,8 @@ class GatewayClarificationsTest(unittest.TestCase):
 
         self.assertRegex(helper, r"clarification\?:\s*\{")
         self.assertIn("selectedOptionId?: string | null", helper)
+        self.assertIn("clarificationDispatch?:", helper)
+        self.assertIn('"--clarification-dispatch-owner-id"', helper)
         self.assertIn('source?: "user"', helper)
         self.assertIn('"--runtime-permission-scope"', helper)
         self.assertIn("options.runtimePermissionScope", helper)
@@ -102,7 +116,19 @@ class GatewayClarificationsTest(unittest.TestCase):
 
         def require_run(run_id):
             calls["requireRun"] = run_id
-            return {"id": run_id, "threadId": "thread-123"}
+            return {
+                "id": run_id,
+                "threadId": "thread-123",
+                "status": "waiting_for_clarification",
+            }
+
+        def create_run(thread_id):
+            calls["createRun"] = thread_id
+            return {
+                "id": "run-resumed-created",
+                "threadId": thread_id,
+                "status": "queued",
+            }
 
         def add_user_message(thread_id, answer):
             calls["addUserMessage"] = {"threadId": thread_id, "answer": answer}
@@ -123,7 +149,7 @@ class GatewayClarificationsTest(unittest.TestCase):
             return {
                 "status": "completed",
                 "result": {
-                    "run_id": "run-resumed",
+                    "run_id": "run-resumed-created",
                     "topic_id": "topic-456",
                     "status": "completed",
                     "answer_package": {"preview": "answer-package-preview"},
@@ -135,6 +161,7 @@ class GatewayClarificationsTest(unittest.TestCase):
             body={"answer": "按推荐继续", "selectedOptionId": "daily_remove_top_positive_day"},
             role="data_owner_admin",
             require_run=require_run,
+            create_run=create_run,
             add_user_message=add_user_message,
             record_clarification_outcome=record_clarification_outcome,
             run_agent_core=run_agent_core,
@@ -147,8 +174,9 @@ class GatewayClarificationsTest(unittest.TestCase):
             "source": "user",
         }
         self.assertEqual(calls["recordClarificationOutcome"], expected_payload)
+        self.assertEqual(calls["createRun"], "thread-123")
         self.assertEqual(calls["runAgentCore"]["threadId"], "thread-123")
-        self.assertEqual(calls["runAgentCore"]["runId"], "run-open")
+        self.assertEqual(calls["runAgentCore"]["runId"], "run-resumed-created")
         self.assertEqual(calls["runAgentCore"]["answer"], "按推荐继续")
         self.assertEqual(calls["runAgentCore"]["role"], "data_owner_admin")
         self.assertEqual(
@@ -159,12 +187,12 @@ class GatewayClarificationsTest(unittest.TestCase):
                 "runtimePermissionScope": "admin",
             },
         )
-        self.assertEqual(response["runId"], "run-open")
-        self.assertEqual(response["resumedRunId"], "run-resumed")
+        self.assertEqual(response["sourceRunId"], "run-open")
+        self.assertEqual(response["resumedRunId"], "run-resumed-created")
         self.assertEqual(response["topicId"], "topic-456")
         self.assertEqual(response["status"], "completed")
         self.assertEqual(response["answerPackagePreview"], {"preview": "answer-package-preview"})
-        self.assertEqual(response["eventsUrl"], "/api/runs/run-open/events")
+        self.assertEqual(response["eventsUrl"], "/api/runs/run-resumed-created/events")
 
     def test_clarification_route_filters_inline_answer_package_for_non_admin_roles(self):
         answer_package = {
@@ -197,7 +225,16 @@ class GatewayClarificationsTest(unittest.TestCase):
                     run_id="run-open",
                     body={"answer": "按推荐继续"},
                     role=role,
-                    require_run=lambda run_id: {"id": run_id, "threadId": "thread-123"},
+                    require_run=lambda run_id: {
+                        "id": run_id,
+                        "threadId": "thread-123",
+                        "status": "waiting_for_clarification",
+                    },
+                    create_run=lambda thread_id: {
+                        "id": "run-resumed",
+                        "threadId": thread_id,
+                        "status": "queued",
+                    },
                     add_user_message=lambda thread_id, answer: {
                         "id": "message-1",
                         "threadId": thread_id,
@@ -278,7 +315,16 @@ class GatewayClarificationsTest(unittest.TestCase):
                     run_id="run-open",
                     body={"answer": "按推荐继续"},
                     role=role,
-                    require_run=lambda run_id: {"id": run_id, "threadId": "thread-123"},
+                    require_run=lambda run_id: {
+                        "id": run_id,
+                        "threadId": "thread-123",
+                        "status": "waiting_for_clarification",
+                    },
+                    create_run=lambda thread_id: {
+                        "id": "run-resumed",
+                        "threadId": thread_id,
+                        "status": "queued",
+                    },
                     add_user_message=lambda thread_id, answer: {
                         "id": "message-1",
                         "threadId": thread_id,
@@ -424,7 +470,16 @@ class GatewayClarificationsTest(unittest.TestCase):
                     body={"answer": "按推荐继续"},
                     role=configured_role,
                     node_env=node_env,
-                    require_run=lambda run_id: {"id": run_id, "threadId": "thread-123"},
+                    require_run=lambda run_id: {
+                        "id": run_id,
+                        "threadId": "thread-123",
+                        "status": "waiting_for_clarification",
+                    },
+                    create_run=lambda thread_id: {
+                        "id": "run-resumed",
+                        "threadId": thread_id,
+                        "status": "queued",
+                    },
                     add_user_message=lambda thread_id, answer: {
                         "id": "message-1",
                         "threadId": thread_id,
@@ -486,7 +541,16 @@ class GatewayClarificationsTest(unittest.TestCase):
             },
             role="business_reader",
             node_env="test",
-            require_run=lambda run_id: {"id": run_id, "threadId": "thread-123"},
+            require_run=lambda run_id: {
+                "id": run_id,
+                "threadId": "thread-123",
+                "status": "waiting_for_clarification",
+            },
+            create_run=lambda thread_id: {
+                "id": "run-resumed",
+                "threadId": thread_id,
+                "status": "queued",
+            },
             add_user_message=lambda thread_id, answer: {
                 "id": "message-1",
                 "threadId": thread_id,
@@ -533,7 +597,16 @@ class GatewayClarificationsTest(unittest.TestCase):
             run_id="run-open",
             body={"answer": "按推荐继续"},
             role="data_owner_admin",
-            require_run=lambda run_id: {"id": run_id, "threadId": "thread-123"},
+            require_run=lambda run_id: {
+                "id": run_id,
+                "threadId": "thread-123",
+                "status": "waiting_for_clarification",
+            },
+            create_run=lambda thread_id: {
+                "id": "run-resumed",
+                "threadId": thread_id,
+                "status": "queued",
+            },
             add_user_message=lambda thread_id, answer: {
                 "id": "message-1",
                 "threadId": thread_id,
@@ -572,6 +645,7 @@ def _simulate_clarification_route_post(
     role,
     node_env="test",
     require_run,
+    create_run,
     add_user_message,
     record_clarification_outcome,
     run_agent_core,
@@ -580,6 +654,8 @@ def _simulate_clarification_route_post(
     if not answer:
         return {"error": "clarification_answer_required", "statusCode": 400}
     run = require_run(run_id)
+    if run.get("status") != "waiting_for_clarification":
+        return {"error": "clarification_source_not_waiting", "statusCode": 409}
     message = add_user_message(run["threadId"], answer)
     clarification_payload = {
         "runId": run_id,
@@ -588,10 +664,11 @@ def _simulate_clarification_route_post(
         "source": "user",
     }
     clarification = record_clarification_outcome(clarification_payload)
+    resumed_run = create_run(run["threadId"])
     role_decision = _resolve_gateway_role(role, node_env)
     agent_core = run_agent_core(
         run["threadId"],
-        run_id,
+        resumed_run["id"],
         answer,
         role_decision["displayRole"],
         {
@@ -601,6 +678,8 @@ def _simulate_clarification_route_post(
         },
     )
     resumed = agent_core.get("result") if isinstance(agent_core.get("result"), dict) else {}
+    if resumed.get("run_id") != resumed_run["id"]:
+        return {"error": "agent_core_run_id_mismatch", "statusCode": 409}
     visible_agent_core = _filter_agent_core_for_role(
         agent_core,
         role_decision["displayRole"],
@@ -612,15 +691,15 @@ def _simulate_clarification_route_post(
     )
     answer_package_preview = visible_result.get("answer_package")
     return {
-        "runId": run_id,
-        "resumedRunId": resumed.get("run_id") or run_id,
+        "sourceRunId": run_id,
+        "resumedRunId": resumed_run["id"],
         "topicId": resumed.get("topic_id"),
         "status": resumed.get("status") or agent_core.get("status"),
         "answerPackagePreview": answer_package_preview,
         "message": message,
         "clarification": clarification,
         "agentCore": visible_agent_core,
-        "eventsUrl": f"/api/runs/{run['id']}/events",
+        "eventsUrl": f"/api/runs/{resumed_run['id']}/events",
     }
 
 

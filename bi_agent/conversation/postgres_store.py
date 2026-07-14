@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -241,6 +242,17 @@ _RESULT_CANDIDATE_PUBLICATION_INVENTORY_SQL = """
         )
       )
     UNION ALL
+    SELECT 'answer_package_artifacts', record.artifact_ref,
+           jsonb_build_array(record.run_id), record.payload
+    FROM requested
+    JOIN waje_runtime.answer_package_artifacts record
+      ON record.run_id = requested.run_id
+      OR record.artifact_ref IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'answer_package_artifacts'
+        )
+      )
+    UNION ALL
     SELECT 'verified_claims', record.claim_ref,
            jsonb_build_array(
              record.run_id, context.run_id, provenance.run_id
@@ -393,6 +405,8 @@ def _result_candidate_publication_bundle(
 class PostgresConversationStore:
     def __init__(self, connection: Any) -> None:
         self.connection = connection
+        self._active_run_dispatches: dict[str, tuple[str, int]] = {}
+        self._run_dispatch_heartbeat_stops: dict[str, threading.Event] = {}
 
     @classmethod
     def from_env(cls) -> "PostgresConversationStore":
@@ -608,6 +622,29 @@ class PostgresConversationStore:
             )
         return None
 
+    def get_clarification_state(
+        self,
+        source_run_id: str,
+    ) -> Optional[ClarificationState]:
+        row = self._fetchone(
+            """
+            /* clarification_state_by_source_run */
+            SELECT payload
+            FROM waje_runtime.audit_events
+            WHERE run_id = %(source_run_id)s
+              AND event_type = 'clarification_state_saved'
+            ORDER BY created_at DESC, audit_id DESC
+            LIMIT 1
+            """,
+            {"source_run_id": source_run_id},
+        )
+        if row is None:
+            return None
+        state = _clarification_state_from_payload(_field(row, "payload", 0))
+        if state is None or state.run_id != source_run_id:
+            return None
+        return state
+
     def add_turn(self, thread_id: str, turn: dict[str, Any]) -> None:
         turn_id = str(turn.get("turn_id") or turn.get("turnId") or f"turn-{uuid4().hex[:12]}")
         topic_id = turn.get("topic_id") or turn.get("topicId")
@@ -642,6 +679,19 @@ class PostgresConversationStore:
         from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
 
         validate_run_status_value(status)
+        active_dispatch = self._active_run_dispatches.get(run_id)
+        if active_dispatch is not None:
+            self._upsert_owned_run(
+                run_id,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                topic_id=topic_id,
+                status=status,
+                request=request or {},
+                dispatch_owner_id=active_dispatch[0],
+                lease_epoch=active_dispatch[1],
+            )
+            return
         params = {
             "run_id": run_id,
             "thread_id": thread_id,
@@ -752,6 +802,1108 @@ class PostgresConversationStore:
             self.connection.rollback()
             raise
 
+    def claim_run_dispatch(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        dispatch_owner_id: str,
+        lease_epoch: int,
+    ) -> dict[str, Any]:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        if (
+            not all(
+                isinstance(value, str) and value.strip()
+                for value in (run_id, thread_id, dispatch_owner_id)
+            )
+            or not isinstance(lease_epoch, int)
+            or isinstance(lease_epoch, bool)
+            or lease_epoch <= 0
+        ):
+            raise EvidenceIntegrityError("run_dispatch_claim_invalid")
+        try:
+            dispatch = self._fetchone(
+                """
+                /* generic_run_dispatch_owner_lock */
+                SELECT run_id, thread_id, dispatch_state, owner_id,
+                       lease_epoch, lease_expires_at > now() AS lease_active
+                FROM waje_runtime.run_dispatches
+                WHERE run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                {"run_id": run_id},
+            )
+            if dispatch is None:
+                raise EvidenceIntegrityError("run_dispatch_claim_missing")
+            resolved_dispatch = {
+                "run_id": str(_field(dispatch, "run_id", 0) or ""),
+                "thread_id": str(_field(dispatch, "thread_id", 1) or ""),
+                "dispatch_state": str(
+                    _field(dispatch, "dispatch_state", 2) or ""
+                ),
+                "owner_id": str(_field(dispatch, "owner_id", 3) or ""),
+                "lease_epoch": int(_field(dispatch, "lease_epoch", 4) or 0),
+                "lease_active": bool(_field(dispatch, "lease_active", 5)),
+            }
+            run = self._fetchone(
+                """
+                /* generic_run_dispatch_run_lock */
+                SELECT run_id, thread_id, turn_id, topic_id, status, request
+                FROM waje_runtime.analysis_runs
+                WHERE run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                {"run_id": run_id},
+            )
+            if run is None:
+                raise EvidenceIntegrityError("run_dispatch_claim_missing")
+            if (
+                resolved_dispatch["run_id"] != run_id
+                or resolved_dispatch["thread_id"] != thread_id
+                or resolved_dispatch["dispatch_state"] != "leased"
+                or resolved_dispatch["owner_id"] != dispatch_owner_id
+                or resolved_dispatch["lease_epoch"] != lease_epoch
+                or resolved_dispatch["lease_active"] is not True
+                or str(_field(run, "run_id", 0) or "") != run_id
+                or str(_field(run, "thread_id", 1) or "") != thread_id
+                or str(_field(run, "status", 4) or "") != "queued"
+            ):
+                raise EvidenceIntegrityError("run_dispatch_claim_rejected")
+            updated_run = self._execute(
+                """
+                /* generic_run_dispatch_run_claim_cas */
+                UPDATE waje_runtime.analysis_runs
+                SET status = 'running', updated_at = now()
+                WHERE run_id = %(run_id)s
+                  AND thread_id = %(thread_id)s
+                  AND status = 'queued'
+                RETURNING status
+                """,
+                {"run_id": run_id, "thread_id": thread_id},
+                commit=False,
+            ).fetchone()
+            updated_dispatch = self._execute(
+                """
+                /* generic_run_dispatch_owner_consume_cas */
+                UPDATE waje_runtime.run_dispatches
+                SET dispatch_state = 'running',
+                    lease_expires_at = now()
+                      + (%(lease_ms)s * interval '1 millisecond'),
+                    heartbeat_at = now(), updated_at = now()
+                WHERE run_id = %(run_id)s
+                  AND dispatch_state = 'leased'
+                  AND owner_id = %(owner_id)s
+                  AND lease_epoch = %(lease_epoch)s
+                  AND lease_expires_at > now()
+                RETURNING dispatch_state
+                """,
+                {
+                    "run_id": run_id,
+                    "owner_id": dispatch_owner_id,
+                    "lease_epoch": lease_epoch,
+                    "lease_ms": _run_dispatch_lease_ms(),
+                },
+                commit=False,
+            ).fetchone()
+            if updated_run is None or updated_dispatch is None:
+                raise EvidenceIntegrityError("run_dispatch_claim_rejected")
+            self._audit(
+                "run_status_changed",
+                thread_id=thread_id,
+                run_id=run_id,
+                ref=run_id,
+                payload={
+                    "status": "running",
+                    "dispatch_owner_id": dispatch_owner_id,
+                    "lease_epoch": lease_epoch,
+                },
+                commit=False,
+            )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        self._active_run_dispatches[run_id] = (
+            dispatch_owner_id,
+            lease_epoch,
+        )
+        self._start_run_dispatch_heartbeat(
+            run_id=run_id,
+            dispatch_owner_id=dispatch_owner_id,
+            lease_epoch=lease_epoch,
+        )
+        return canonical_value(
+            {
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "dispatch_owner_id": dispatch_owner_id,
+                "lease_epoch": lease_epoch,
+                "status": "running",
+            }
+        )
+
+    def renew_run_dispatch_lease(
+        self,
+        *,
+        run_id: str,
+        dispatch_owner_id: str,
+        lease_epoch: int,
+    ) -> bool:
+        try:
+            renewed = self._execute(
+                """
+                /* generic_run_dispatch_heartbeat_cas */
+                UPDATE waje_runtime.run_dispatches dispatch
+                SET lease_expires_at = now()
+                      + (%(lease_ms)s * interval '1 millisecond'),
+                    heartbeat_at = now(), updated_at = now()
+                FROM waje_runtime.analysis_runs run
+                WHERE dispatch.run_id = %(run_id)s
+                  AND run.run_id = dispatch.run_id
+                  AND dispatch.dispatch_state = 'running'
+                  AND dispatch.owner_id = %(owner_id)s
+                  AND dispatch.lease_epoch = %(lease_epoch)s
+                  AND dispatch.lease_expires_at > now()
+                  AND run.status IN ('running', 'running_workflow')
+                RETURNING dispatch.run_id
+                """,
+                {
+                    "run_id": run_id,
+                    "owner_id": dispatch_owner_id,
+                    "lease_epoch": lease_epoch,
+                    "lease_ms": _run_dispatch_lease_ms(),
+                },
+                commit=False,
+            ).fetchone()
+            self.connection.commit()
+            return renewed is not None
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def sweep_expired_run_dispatches(
+        self,
+        *,
+        limit: int = 100,
+    ) -> tuple[dict[str, Any], ...]:
+        from bi_agent.runtime.evidence_authority import canonical_value
+
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            raise ValueError("run_dispatch_sweep_limit_invalid")
+        recovered: list[dict[str, Any]] = []
+        try:
+            rows = self._fetchall(
+                """
+                /* expired_run_dispatch_scan */
+                SELECT dispatch.run_id, dispatch.thread_id,
+                       dispatch.dispatch_state, dispatch.owner_id,
+                       dispatch.lease_epoch, false AS lease_active,
+                       run.status AS run_status
+                FROM waje_runtime.run_dispatches dispatch
+                JOIN waje_runtime.analysis_runs run
+                  ON run.run_id = dispatch.run_id
+                WHERE dispatch.dispatch_state IN ('leased', 'running')
+                  AND dispatch.lease_expires_at <= now()
+                ORDER BY dispatch.lease_expires_at, dispatch.dispatch_id
+                LIMIT %(limit)s
+                FOR UPDATE OF dispatch, run SKIP LOCKED
+                """,
+                {"limit": limit},
+            )
+            for row in rows:
+                run_id = str(_field(row, "run_id", 0) or "")
+                thread_id = str(_field(row, "thread_id", 1) or "")
+                state = str(_field(row, "dispatch_state", 2) or "")
+                owner_id = str(_field(row, "owner_id", 3) or "")
+                lease_epoch = int(_field(row, "lease_epoch", 4) or 0)
+                run_status = str(_field(row, "run_status", 6) or "")
+                if state == "leased" and run_status == "queued":
+                    released = self._execute(
+                        """
+                        /* expired_leased_dispatch_release_cas */
+                        UPDATE waje_runtime.run_dispatches
+                        SET dispatch_state = 'pending', owner_id = NULL,
+                            lease_expires_at = NULL, heartbeat_at = NULL,
+                            updated_at = now()
+                        WHERE run_id = %(run_id)s
+                          AND dispatch_state = 'leased'
+                          AND owner_id = %(owner_id)s
+                          AND lease_epoch = %(lease_epoch)s
+                        RETURNING dispatch_state
+                        """,
+                        {
+                            "run_id": run_id,
+                            "owner_id": owner_id,
+                            "lease_epoch": lease_epoch,
+                        },
+                        commit=False,
+                    ).fetchone()
+                    if released is not None:
+                        recovered.append({
+                            "run_id": run_id,
+                            "action": "released_for_retry",
+                        })
+                    continue
+                if state != "running" or run_status not in {
+                    "running",
+                    "running_workflow",
+                }:
+                    continue
+                failed = self._execute(
+                    """
+                    /* expired_running_dispatch_run_fail_cas */
+                    UPDATE waje_runtime.analysis_runs
+                    SET status = 'failed',
+                        request = COALESCE(request, '{}'::jsonb)
+                          || jsonb_build_object(
+                            'failure_reason',
+                            'run_dispatch_heartbeat_expired'
+                          ),
+                        updated_at = now()
+                    WHERE run_id = %(run_id)s
+                      AND status IN ('running', 'running_workflow')
+                    RETURNING status
+                    """,
+                    {"run_id": run_id},
+                    commit=False,
+                ).fetchone()
+                terminal = self._execute(
+                    """
+                    /* expired_running_dispatch_terminal_cas */
+                    UPDATE waje_runtime.run_dispatches
+                    SET dispatch_state = 'terminal',
+                        terminal_status = 'failed',
+                        failure_reason = 'run_dispatch_heartbeat_expired',
+                        lease_expires_at = NULL, updated_at = now()
+                    WHERE run_id = %(run_id)s
+                      AND dispatch_state = 'running'
+                      AND owner_id = %(owner_id)s
+                      AND lease_epoch = %(lease_epoch)s
+                    RETURNING dispatch_state
+                    """,
+                    {
+                        "run_id": run_id,
+                        "owner_id": owner_id,
+                        "lease_epoch": lease_epoch,
+                    },
+                    commit=False,
+                ).fetchone()
+                if failed is None or terminal is None:
+                    continue
+                self._audit(
+                    "run_dispatch_failed",
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    ref=run_id,
+                    payload={
+                        "failure_reason": "run_dispatch_heartbeat_expired",
+                        "lease_epoch": lease_epoch,
+                    },
+                    commit=False,
+                )
+                recovered.append({
+                    "run_id": run_id,
+                    "action": "terminalized_expired_owner",
+                })
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return tuple(canonical_value(item) for item in recovered)
+
+    def lease_recoverable_run_dispatches(
+        self,
+        *,
+        limit: int = 100,
+    ) -> tuple[dict[str, Any], ...]:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            raise ValueError("run_dispatch_recovery_limit_invalid")
+        leases: list[dict[str, Any]] = []
+        try:
+            rows = self._fetchall(
+                """
+                /* recoverable_run_dispatch_scan */
+                SELECT dispatch.dispatch_id, dispatch.producer_kind,
+                       dispatch.scope_ref, dispatch.request_identity,
+                       dispatch.request_digest, dispatch.request_payload,
+                       dispatch.run_id, dispatch.thread_id,
+                       dispatch.dispatch_state, dispatch.owner_id,
+                       dispatch.lease_epoch,
+                       dispatch.lease_expires_at <= now() AS lease_expired,
+                       run.status AS run_status
+                FROM waje_runtime.run_dispatches dispatch
+                JOIN waje_runtime.analysis_runs run
+                  ON run.run_id = dispatch.run_id
+                WHERE run.status = 'queued'
+                  AND (
+                    dispatch.dispatch_state = 'pending'
+                    OR (
+                      dispatch.dispatch_state = 'leased'
+                      AND dispatch.lease_expires_at <= now()
+                    )
+                  )
+                ORDER BY COALESCE(
+                           dispatch.lease_expires_at,
+                           dispatch.created_at
+                         ),
+                         dispatch.dispatch_id
+                LIMIT %(limit)s
+                FOR UPDATE OF dispatch, run SKIP LOCKED
+                """,
+                {"limit": limit},
+            )
+            for row in rows:
+                run_id = str(_field(row, "run_id", 6) or "")
+                thread_id = str(_field(row, "thread_id", 7) or "")
+                producer_kind = str(_field(row, "producer_kind", 1) or "")
+                scope_ref = str(_field(row, "scope_ref", 2) or "")
+                request_identity = str(
+                    _field(row, "request_identity", 3) or ""
+                )
+                request_digest = str(
+                    _field(row, "request_digest", 4) or ""
+                )
+                request_payload = _json_value(
+                    _field(row, "request_payload", 5)
+                )
+                current_state = str(
+                    _field(row, "dispatch_state", 8) or ""
+                )
+                current_epoch = int(_field(row, "lease_epoch", 10) or 0)
+                lease_expired = bool(_field(row, "lease_expired", 11))
+                run_status = str(_field(row, "run_status", 12) or "")
+                if (
+                    not all(
+                        value
+                        for value in (
+                            run_id,
+                            thread_id,
+                            producer_kind,
+                            scope_ref,
+                            request_identity,
+                            request_digest,
+                        )
+                    )
+                    or not isinstance(request_payload, Mapping)
+                    or producer_kind not in {
+                        "thread_message",
+                        "artifact_continue",
+                        "clarification_resume",
+                    }
+                    or run_status != "queued"
+                    or current_state not in {"pending", "leased"}
+                    or (current_state == "leased" and not lease_expired)
+                ):
+                    raise EvidenceIntegrityError(
+                        "run_dispatch_recovery_record_invalid"
+                    )
+                owner_id = f"recovery-dispatch-{uuid4()}"
+                leased = self._execute(
+                    """
+                    /* recoverable_run_dispatch_lease_cas */
+                    UPDATE waje_runtime.run_dispatches dispatch
+                    SET dispatch_state = 'leased',
+                        owner_id = %(owner_id)s,
+                        lease_epoch = lease_epoch + 1,
+                        lease_expires_at = now()
+                          + (%(lease_ms)s * interval '1 millisecond'),
+                        heartbeat_at = now(), updated_at = now()
+                    FROM waje_runtime.analysis_runs run
+                    WHERE dispatch.run_id = %(run_id)s
+                      AND run.run_id = dispatch.run_id
+                      AND run.status = 'queued'
+                      AND dispatch.lease_epoch = %(current_epoch)s
+                      AND (
+                        dispatch.dispatch_state = 'pending'
+                        OR (
+                          dispatch.dispatch_state = 'leased'
+                          AND dispatch.lease_expires_at <= now()
+                        )
+                      )
+                    RETURNING dispatch.lease_epoch
+                    """,
+                    {
+                        "run_id": run_id,
+                        "owner_id": owner_id,
+                        "current_epoch": current_epoch,
+                        "lease_ms": _run_dispatch_lease_ms(),
+                    },
+                    commit=False,
+                ).fetchone()
+                if leased is None:
+                    raise EvidenceIntegrityError(
+                        "run_dispatch_recovery_lease_conflict"
+                    )
+                lease_epoch = int(_field(leased, "lease_epoch", 0) or 0)
+                self._audit(
+                    "run_dispatch_recovery_leased",
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    ref=run_id,
+                    payload={
+                        "dispatch_owner_id": owner_id,
+                        "lease_epoch": lease_epoch,
+                        "producer_kind": producer_kind,
+                    },
+                    commit=False,
+                )
+                leases.append(
+                    canonical_value(
+                        {
+                            "run_id": run_id,
+                            "thread_id": thread_id,
+                            "producer_kind": producer_kind,
+                            "scope_ref": scope_ref,
+                            "request_identity": request_identity,
+                            "request_digest": request_digest,
+                            "request_payload": dict(request_payload),
+                            "dispatch_owner_id": owner_id,
+                            "lease_epoch": lease_epoch,
+                        }
+                    )
+                )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return tuple(leases)
+
+    def fail_owned_run_dispatch(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        dispatch_owner_id: str,
+        lease_epoch: int,
+        failure_reason: str,
+    ) -> dict[str, Any]:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        if (
+            not all(
+                isinstance(value, str) and value.strip()
+                for value in (
+                    run_id,
+                    thread_id,
+                    dispatch_owner_id,
+                    failure_reason,
+                )
+            )
+            or not isinstance(lease_epoch, int)
+            or isinstance(lease_epoch, bool)
+            or lease_epoch <= 0
+        ):
+            raise EvidenceIntegrityError("run_dispatch_failure_invalid")
+        try:
+            dispatch = self._fetchone(
+                """
+                /* recovery_run_dispatch_owner_lock */
+                SELECT run_id, thread_id, dispatch_state, owner_id,
+                       lease_epoch, lease_expires_at > now() AS lease_active,
+                       terminal_status, failure_reason
+                FROM waje_runtime.run_dispatches
+                WHERE run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                {"run_id": run_id},
+            )
+            run = self._fetchone(
+                """
+                /* recovery_run_dispatch_run_lock */
+                SELECT run_id, thread_id, turn_id, topic_id, status, request
+                FROM waje_runtime.analysis_runs
+                WHERE run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                {"run_id": run_id},
+            )
+            dispatch_state = str(
+                _field(dispatch, "dispatch_state", 2) or ""
+            )
+            owner_matches = (
+                dispatch is not None
+                and str(_field(dispatch, "run_id", 0) or "") == run_id
+                and str(_field(dispatch, "thread_id", 1) or "") == thread_id
+                and str(_field(dispatch, "owner_id", 3) or "")
+                == dispatch_owner_id
+                and int(_field(dispatch, "lease_epoch", 4) or 0)
+                == lease_epoch
+            )
+            run_status = str(_field(run, "status", 4) or "")
+            if (
+                dispatch is not None
+                and run is not None
+                and owner_matches
+                and dispatch_state == "terminal"
+                and run_status
+                in {
+                    "waiting_for_clarification",
+                    "completed",
+                    "completed_without_workflow",
+                    "failed",
+                }
+                and str(_field(dispatch, "terminal_status", 6) or "")
+                == run_status
+            ):
+                durable_request = _json_value(_field(run, "request", 5))
+                durable_failure_reason = str(
+                    (
+                        durable_request.get("failure_reason")
+                        if isinstance(durable_request, Mapping)
+                        else ""
+                    )
+                    or _field(dispatch, "failure_reason", 7)
+                    or ""
+                )
+                self.connection.commit()
+                return canonical_value(
+                    {
+                        "run_id": run_id,
+                        "thread_id": thread_id,
+                        "status": run_status,
+                        **(
+                            {"failure_reason": durable_failure_reason}
+                            if durable_failure_reason
+                            else {}
+                        ),
+                    }
+                )
+            if (
+                dispatch is None
+                or run is None
+                or str(_field(dispatch, "run_id", 0) or "") != run_id
+                or str(_field(dispatch, "thread_id", 1) or "") != thread_id
+                or dispatch_state not in {"leased", "running"}
+                or not owner_matches
+                or not bool(_field(dispatch, "lease_active", 5))
+                or str(_field(run, "run_id", 0) or "") != run_id
+                or str(_field(run, "thread_id", 1) or "") != thread_id
+                or run_status not in {"queued", "running", "running_workflow"}
+            ):
+                raise EvidenceIntegrityError("run_dispatch_owner_lost")
+            request = _json_value(_field(run, "request", 5))
+            failed_request = canonical_value(
+                {
+                    **(dict(request) if isinstance(request, Mapping) else {}),
+                    "failure_reason": failure_reason,
+                }
+            )
+            current_status = run_status
+            failed = self._execute(
+                """
+                /* recovery_run_dispatch_failure_cas */
+                UPDATE waje_runtime.analysis_runs
+                SET status = 'failed', request = %(request)s::jsonb,
+                    updated_at = now()
+                WHERE run_id = %(run_id)s
+                  AND thread_id = %(thread_id)s
+                  AND status = %(current_status)s
+                RETURNING status
+                """,
+                {
+                    "run_id": run_id,
+                    "thread_id": thread_id,
+                    "current_status": current_status,
+                    "request": _json(failed_request),
+                },
+                commit=False,
+            ).fetchone()
+            terminal = self._execute(
+                """
+                /* recovery_run_dispatch_terminal_cas */
+                UPDATE waje_runtime.run_dispatches
+                SET dispatch_state = 'terminal',
+                    terminal_status = 'failed',
+                    failure_reason = %(failure_reason)s,
+                    lease_expires_at = NULL,
+                    heartbeat_at = now(), updated_at = now()
+                WHERE run_id = %(run_id)s
+                  AND dispatch_state IN ('leased', 'running')
+                  AND owner_id = %(owner_id)s
+                  AND lease_epoch = %(lease_epoch)s
+                  AND lease_expires_at > now()
+                RETURNING dispatch_state
+                """,
+                {
+                    "run_id": run_id,
+                    "owner_id": dispatch_owner_id,
+                    "lease_epoch": lease_epoch,
+                    "failure_reason": failure_reason,
+                },
+                commit=False,
+            ).fetchone()
+            if failed is None or terminal is None:
+                raise EvidenceIntegrityError("run_dispatch_owner_lost")
+            self._audit(
+                "run_status_changed",
+                thread_id=thread_id,
+                run_id=run_id,
+                ref=run_id,
+                payload={"status": "failed"},
+                commit=False,
+            )
+            self._audit(
+                "run_dispatch_failed",
+                thread_id=thread_id,
+                run_id=run_id,
+                ref=run_id,
+                payload={
+                    "failure_reason": failure_reason,
+                    "dispatch_owner_id": dispatch_owner_id,
+                    "lease_epoch": lease_epoch,
+                },
+                commit=False,
+            )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return canonical_value(
+            {
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "status": "failed",
+                "failure_reason": failure_reason,
+            }
+        )
+
+    def _upsert_owned_run(
+        self,
+        run_id: str,
+        *,
+        thread_id: str,
+        turn_id: str,
+        topic_id: str,
+        status: str,
+        request: Mapping[str, Any],
+        dispatch_owner_id: str,
+        lease_epoch: int,
+    ) -> None:
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        params = {
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "turn_id": turn_id or None,
+            "topic_id": topic_id or None,
+            "status": status,
+            "request": _json(dict(request)),
+            "owner_id": dispatch_owner_id,
+            "lease_epoch": lease_epoch,
+        }
+        try:
+            dispatch = self._fetchone(
+                """
+                /* generic_run_dispatch_owner_lock */
+                SELECT run_id, thread_id, dispatch_state, owner_id,
+                       lease_epoch, lease_expires_at > now() AS lease_active
+                FROM waje_runtime.run_dispatches
+                WHERE run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                params,
+            )
+            current = self._fetchone(
+                """
+                /* generic_run_dispatch_run_lock */
+                SELECT run_id, thread_id, turn_id, topic_id, status, request
+                FROM waje_runtime.analysis_runs
+                WHERE run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                params,
+            )
+            if (
+                dispatch is None
+                or current is None
+                or str(_field(dispatch, "dispatch_state", 2) or "") != "running"
+                or str(_field(dispatch, "owner_id", 3) or "")
+                != dispatch_owner_id
+                or int(_field(dispatch, "lease_epoch", 4) or 0) != lease_epoch
+                or not bool(_field(dispatch, "lease_active", 5))
+            ):
+                raise EvidenceIntegrityError("run_dispatch_owner_lost")
+            current_status = str(_field(current, "status", 4) or "")
+            action = validate_run_status_transition(
+                current_status=current_status,
+                next_status=status,
+                current_thread_id=str(_field(current, "thread_id", 1) or ""),
+                current_turn_id=str(_field(current, "turn_id", 2) or ""),
+                current_topic_id=str(_field(current, "topic_id", 3) or ""),
+                next_thread_id=thread_id,
+                next_turn_id=turn_id,
+                next_topic_id=topic_id,
+                current_request=_json_value(_field(current, "request", 5)) or {},
+                next_request=dict(request),
+            )
+            if action == "transition":
+                updated = self._execute(
+                    """
+                    /* owned_analysis_run_status_transition_cas */
+                    UPDATE waje_runtime.analysis_runs
+                    SET status = %(status)s, request = %(request)s::jsonb,
+                        turn_id = %(turn_id)s, topic_id = %(topic_id)s,
+                        updated_at = now()
+                    WHERE run_id = %(run_id)s
+                      AND status = %(current_status)s
+                    RETURNING status
+                    """,
+                    {**params, "current_status": current_status},
+                    commit=False,
+                ).fetchone()
+                if updated is None:
+                    raise EvidenceIntegrityError(
+                        "analysis_run_status_transition_conflict"
+                    )
+                self._audit(
+                    "run_status_changed",
+                    thread_id=thread_id,
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    ref=run_id,
+                    payload={"status": status},
+                    commit=False,
+                )
+            if status in {
+                "waiting_for_clarification",
+                "completed",
+                "completed_without_workflow",
+                "failed",
+            }:
+                terminal = self._execute(
+                    """
+                    /* owned_run_dispatch_terminal_cas */
+                    UPDATE waje_runtime.run_dispatches
+                    SET dispatch_state = 'terminal',
+                        terminal_status = %(status)s,
+                        lease_expires_at = NULL,
+                        heartbeat_at = now(), updated_at = now()
+                    WHERE run_id = %(run_id)s
+                      AND dispatch_state = 'running'
+                      AND owner_id = %(owner_id)s
+                      AND lease_epoch = %(lease_epoch)s
+                    RETURNING dispatch_state
+                    """,
+                    params,
+                    commit=False,
+                ).fetchone()
+                if terminal is None:
+                    raise EvidenceIntegrityError("run_dispatch_owner_lost")
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        if status in {
+            "waiting_for_clarification",
+            "completed",
+            "completed_without_workflow",
+            "failed",
+        }:
+            self._stop_run_dispatch_heartbeat(run_id)
+            self._active_run_dispatches.pop(run_id, None)
+
+    def _start_run_dispatch_heartbeat(
+        self,
+        *,
+        run_id: str,
+        dispatch_owner_id: str,
+        lease_epoch: int,
+    ) -> None:
+        if not (
+            os.environ.get("WAJE_RUNTIME_DATABASE_URL")
+            or os.environ.get("DATABASE_URL")
+        ):
+            return
+        stop = threading.Event()
+        self._run_dispatch_heartbeat_stops[run_id] = stop
+        interval = max(0.1, _run_dispatch_lease_ms() / 3000.0)
+
+        def heartbeat() -> None:
+            heartbeat_store: PostgresConversationStore | None = None
+            try:
+                heartbeat_store = PostgresConversationStore.from_env()
+                while not stop.wait(interval):
+                    if not heartbeat_store.renew_run_dispatch_lease(
+                        run_id=run_id,
+                        dispatch_owner_id=dispatch_owner_id,
+                        lease_epoch=lease_epoch,
+                    ):
+                        break
+            finally:
+                if heartbeat_store is not None:
+                    close = getattr(heartbeat_store.connection, "close", None)
+                    if callable(close):
+                        close()
+
+        threading.Thread(
+            target=heartbeat,
+            name=f"waje-run-dispatch-heartbeat-{run_id}",
+            daemon=True,
+        ).start()
+
+    def _stop_run_dispatch_heartbeat(self, run_id: str) -> None:
+        stop = self._run_dispatch_heartbeat_stops.pop(run_id, None)
+        if stop is not None:
+            stop.set()
+
+    def _lock_active_run_dispatch(
+        self,
+        *,
+        run_id: str,
+        dispatch_owner_id: str,
+        lease_epoch: int,
+    ) -> None:
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        dispatch = self._fetchone(
+            """
+            /* generic_run_dispatch_owner_lock */
+            SELECT run_id, thread_id, dispatch_state, owner_id,
+                   lease_epoch, lease_expires_at > now() AS lease_active
+            FROM waje_runtime.run_dispatches
+            WHERE run_id = %(run_id)s
+            FOR UPDATE
+            """,
+            {"run_id": run_id},
+        )
+        if (
+            dispatch is None
+            or str(_field(dispatch, "run_id", 0) or "") != run_id
+            or str(_field(dispatch, "dispatch_state", 2) or "") != "running"
+            or str(_field(dispatch, "owner_id", 3) or "")
+            != dispatch_owner_id
+            or int(_field(dispatch, "lease_epoch", 4) or 0) != lease_epoch
+            or not bool(_field(dispatch, "lease_active", 5))
+        ):
+            raise EvidenceIntegrityError("run_dispatch_owner_lost")
+
+    def _terminalize_active_run_dispatch(
+        self,
+        *,
+        run_id: str,
+        dispatch_owner_id: str,
+        lease_epoch: int,
+        status: str,
+        failure_reason: str = "",
+    ) -> None:
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        terminal = self._execute(
+            """
+            /* owned_run_dispatch_terminal_cas */
+            UPDATE waje_runtime.run_dispatches
+            SET dispatch_state = 'terminal',
+                terminal_status = %(status)s,
+                failure_reason = NULLIF(%(failure_reason)s, ''),
+                lease_expires_at = NULL,
+                heartbeat_at = now(), updated_at = now()
+            WHERE run_id = %(run_id)s
+              AND dispatch_state = 'running'
+              AND owner_id = %(owner_id)s
+              AND lease_epoch = %(lease_epoch)s
+            RETURNING dispatch_state
+            """,
+            {
+                "run_id": run_id,
+                "owner_id": dispatch_owner_id,
+                "lease_epoch": lease_epoch,
+                "status": status,
+                "failure_reason": failure_reason,
+            },
+            commit=False,
+        ).fetchone()
+        if terminal is None:
+            raise EvidenceIntegrityError("run_dispatch_owner_lost")
+
+    def finalize_run_failure(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        turn_id: str,
+        topic_id: str,
+        request: Mapping[str, Any],
+        failure_reason: str,
+        failure_stage: str,
+        failure_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        finalized_request = canonical_value(
+            {
+                **dict(request),
+                "failure_reason": failure_reason,
+                "failure_stage": failure_stage,
+            }
+        )
+        primary_payload = canonical_value(
+            {
+                **dict(failure_payload),
+                "failure_reason": failure_reason,
+                "failure_stage": failure_stage,
+            }
+        )
+        active_dispatch = self._active_run_dispatches.get(run_id)
+        try:
+            if active_dispatch is not None:
+                self._lock_active_run_dispatch(
+                    run_id=run_id,
+                    dispatch_owner_id=active_dispatch[0],
+                    lease_epoch=active_dispatch[1],
+                )
+            current = self._fetchone(
+                """
+                /* analysis_run_status_transition_lock */
+                SELECT status, thread_id, turn_id, topic_id, request
+                FROM waje_runtime.analysis_runs
+                WHERE run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                {"run_id": run_id},
+            )
+            if current is None:
+                raise EvidenceIntegrityError(
+                    "analysis_run_failure_source_missing"
+                )
+            current_status = str(_field(current, "status", 0) or "")
+            action = validate_run_status_transition(
+                current_status=current_status,
+                next_status="failed",
+                current_thread_id=str(_field(current, "thread_id", 1) or ""),
+                current_turn_id=str(_field(current, "turn_id", 2) or ""),
+                current_topic_id=str(_field(current, "topic_id", 3) or ""),
+                next_thread_id=thread_id,
+                next_turn_id=turn_id,
+                next_topic_id=topic_id,
+                current_request=_json_value(_field(current, "request", 4)) or {},
+                next_request=finalized_request,
+            )
+            if action == "replay":
+                primary_rows = self._fetchall(
+                    """
+                    /* analysis_run_failure_primary_audit */
+                    SELECT event_type, thread_id, topic_id, run_id, ref, payload
+                    FROM waje_runtime.audit_events
+                    WHERE run_id = %(run_id)s
+                      AND event_type = %(failure_reason)s
+                    FOR UPDATE
+                    """,
+                    {
+                        "run_id": run_id,
+                        "failure_reason": failure_reason,
+                    },
+                )
+                if len(primary_rows) != 1:
+                    raise EvidenceIntegrityError(
+                        "analysis_run_failure_record_conflict"
+                    )
+                primary = primary_rows[0]
+                if (
+                    str(_field(primary, "event_type", 0) or "")
+                    != failure_reason
+                    or str(_field(primary, "thread_id", 1) or "") != thread_id
+                    or str(_field(primary, "topic_id", 2) or "") != topic_id
+                    or str(_field(primary, "run_id", 3) or "") != run_id
+                    or str(_field(primary, "ref", 4) or "") != run_id
+                    or canonical_value(
+                        _json_value(_field(primary, "payload", 5)) or {}
+                    )
+                    != primary_payload
+                ):
+                    raise EvidenceIntegrityError(
+                        "analysis_run_failure_record_conflict"
+                    )
+                if active_dispatch is not None:
+                    self._terminalize_active_run_dispatch(
+                        run_id=run_id,
+                        dispatch_owner_id=active_dispatch[0],
+                        lease_epoch=active_dispatch[1],
+                        status="failed",
+                        failure_reason=failure_reason,
+                    )
+                self.connection.commit()
+                if active_dispatch is not None:
+                    self._stop_run_dispatch_heartbeat(run_id)
+                    self._active_run_dispatches.pop(run_id, None)
+                return dict(finalized_request)
+
+            updated = self._execute(
+                """
+                /* analysis_run_status_transition_cas */
+                UPDATE waje_runtime.analysis_runs
+                SET status = 'failed',
+                    request = %(request)s::jsonb,
+                    turn_id = %(turn_id)s,
+                    topic_id = %(topic_id)s,
+                    updated_at = now()
+                WHERE run_id = %(run_id)s
+                  AND status = %(current_status)s
+                RETURNING status
+                """,
+                {
+                    "run_id": run_id,
+                    "request": _json(finalized_request),
+                    "turn_id": turn_id or None,
+                    "topic_id": topic_id or None,
+                    "current_status": current_status,
+                    "status": "failed",
+                },
+                commit=False,
+            ).fetchone()
+            if updated is None:
+                raise EvidenceIntegrityError(
+                    "analysis_run_status_transition_conflict"
+                )
+            self._audit(
+                "run_status_changed",
+                thread_id=thread_id,
+                topic_id=topic_id,
+                run_id=run_id,
+                ref=run_id,
+                payload={"status": "failed"},
+                commit=False,
+            )
+            self._audit(
+                failure_reason,
+                thread_id=thread_id,
+                topic_id=topic_id,
+                run_id=run_id,
+                ref=run_id,
+                payload=dict(primary_payload),
+                commit=False,
+            )
+            if active_dispatch is not None:
+                self._terminalize_active_run_dispatch(
+                    run_id=run_id,
+                    dispatch_owner_id=active_dispatch[0],
+                    lease_epoch=active_dispatch[1],
+                    status="failed",
+                    failure_reason=failure_reason,
+                )
+            self.connection.commit()
+            if active_dispatch is not None:
+                self._stop_run_dispatch_heartbeat(run_id)
+                self._active_run_dispatches.pop(run_id, None)
+            return dict(finalized_request)
+        except Exception:
+            self.connection.rollback()
+            raise
+
     def get_run_request(self, run_id: str) -> dict[str, Any]:
         row = self._fetchone(
             "SELECT request, thread_id, topic_id FROM waje_runtime.analysis_runs WHERE run_id = %(run_id)s",
@@ -764,6 +1916,96 @@ class PostgresConversationStore:
         request["thread_id"] = str(_field(row, "thread_id", 1) or "") if row else ""
         request["topic_id"] = str(_field(row, "topic_id", 2) or "") if row else ""
         return request
+
+    def record_terminal_completion_conflict(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        turn_id: str,
+        topic_id: str,
+        failure_reason: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        conflict_payload = canonical_value(
+            {**dict(payload), "durable_run_status": "completed"}
+        )
+        try:
+            current = self._fetchone(
+                """
+                /* terminal_completion_conflict_owner_lock */
+                SELECT status, thread_id, turn_id, topic_id
+                FROM waje_runtime.analysis_runs
+                WHERE run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                {"run_id": run_id},
+            )
+            if (
+                current is None
+                or str(_field(current, "status", 0) or "") != "completed"
+                or str(_field(current, "thread_id", 1) or "") != thread_id
+                or str(_field(current, "turn_id", 2) or "") != turn_id
+                or str(_field(current, "topic_id", 3) or "") != topic_id
+            ):
+                raise EvidenceIntegrityError(
+                    "terminal_completion_conflict_owner_unproven"
+                )
+            rows = self._fetchall(
+                """
+                /* terminal_completion_conflict_audit */
+                SELECT event_type, thread_id, topic_id, run_id, ref, payload
+                FROM waje_runtime.audit_events
+                WHERE run_id = %(run_id)s
+                  AND event_type = %(failure_reason)s
+                FOR UPDATE
+                """,
+                {"run_id": run_id, "failure_reason": failure_reason},
+            )
+            if rows:
+                if len(rows) != 1:
+                    raise EvidenceIntegrityError(
+                        "terminal_completion_conflict_audit_mismatch"
+                    )
+                existing = rows[0]
+                if (
+                    str(_field(existing, "event_type", 0) or "")
+                    != failure_reason
+                    or str(_field(existing, "thread_id", 1) or "")
+                    != thread_id
+                    or str(_field(existing, "topic_id", 2) or "")
+                    != topic_id
+                    or str(_field(existing, "run_id", 3) or "") != run_id
+                    or str(_field(existing, "ref", 4) or "") != run_id
+                    or canonical_value(
+                        _json_value(_field(existing, "payload", 5)) or {}
+                    )
+                    != conflict_payload
+                ):
+                    raise EvidenceIntegrityError(
+                        "terminal_completion_conflict_audit_mismatch"
+                    )
+                self.connection.commit()
+                return dict(conflict_payload)
+            self._audit(
+                failure_reason,
+                thread_id=thread_id,
+                topic_id=topic_id,
+                run_id=run_id,
+                ref=run_id,
+                payload=dict(conflict_payload),
+                commit=False,
+            )
+            self.connection.commit()
+            return dict(conflict_payload)
+        except Exception:
+            self.connection.rollback()
+            raise
 
     def get_run_state(self, run_id: str) -> dict[str, Any] | None:
         from bi_agent.runtime.evidence_authority import (
@@ -799,6 +2041,201 @@ class PostgresConversationStore:
             }
         )
 
+    def claim_clarification_dispatch(
+        self,
+        *,
+        source_run_id: str,
+        resumed_run_id: str,
+        thread_id: str,
+        dispatch_owner_id: str,
+    ) -> dict[str, Any]:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (
+                source_run_id,
+                resumed_run_id,
+                thread_id,
+                dispatch_owner_id,
+            )
+        ):
+            raise EvidenceIntegrityError(
+                "clarification_dispatch_claim_invalid"
+            )
+        try:
+            row = self._fetchone(
+                """
+                /* clarification_dispatch_owner_lock */
+                SELECT c.source_run_id, c.resumed_run_id, c.thread_id,
+                       c.dispatch_state, c.dispatch_owner_id,
+                       r.status, r.request
+                FROM waje_runtime.clarification_resume_claims c
+                JOIN waje_runtime.analysis_runs r
+                  ON r.run_id = c.resumed_run_id
+                WHERE c.source_run_id = %(source_run_id)s
+                  AND c.resumed_run_id = %(resumed_run_id)s
+                FOR UPDATE OF c, r
+                """,
+                {
+                    "source_run_id": source_run_id,
+                    "resumed_run_id": resumed_run_id,
+                },
+            )
+            if row is None:
+                raise EvidenceIntegrityError(
+                    "clarification_dispatch_claim_missing"
+                )
+            resolved = {
+                "source_run_id": str(_field(row, "source_run_id", 0) or ""),
+                "resumed_run_id": str(_field(row, "resumed_run_id", 1) or ""),
+                "thread_id": str(_field(row, "thread_id", 2) or ""),
+                "dispatch_state": str(
+                    _field(row, "dispatch_state", 3) or ""
+                ),
+                "dispatch_owner_id": str(
+                    _field(row, "dispatch_owner_id", 4) or ""
+                ),
+                "run_status": str(_field(row, "status", 5) or ""),
+                "request": _json_value(_field(row, "request", 6)),
+            }
+            if (
+                resolved["source_run_id"] != source_run_id
+                or resolved["resumed_run_id"] != resumed_run_id
+                or resolved["thread_id"] != thread_id
+                or resolved["dispatch_state"] != "leased"
+                or resolved["dispatch_owner_id"] != dispatch_owner_id
+                or resolved["run_status"] != "queued"
+                or not isinstance(resolved["request"], Mapping)
+            ):
+                raise EvidenceIntegrityError(
+                    "clarification_dispatch_claim_rejected"
+                )
+            updated_run = self._execute(
+                """
+                /* clarification_dispatch_run_claim_cas */
+                UPDATE waje_runtime.analysis_runs
+                SET status = 'running', updated_at = now()
+                WHERE run_id = %(resumed_run_id)s
+                  AND thread_id = %(thread_id)s
+                  AND status = 'queued'
+                RETURNING status
+                """,
+                {
+                    "resumed_run_id": resumed_run_id,
+                    "thread_id": thread_id,
+                },
+                commit=False,
+            ).fetchone()
+            updated_dispatch = self._execute(
+                """
+                /* clarification_dispatch_owner_consume_cas */
+                UPDATE waje_runtime.clarification_resume_claims
+                SET dispatch_state = 'dispatched',
+                    dispatch_lease_expires_at = NULL,
+                    dispatched_at = now()
+                WHERE source_run_id = %(source_run_id)s
+                  AND resumed_run_id = %(resumed_run_id)s
+                  AND dispatch_state = 'leased'
+                  AND dispatch_owner_id = %(dispatch_owner_id)s
+                RETURNING dispatch_state
+                """,
+                {
+                    "source_run_id": source_run_id,
+                    "resumed_run_id": resumed_run_id,
+                    "dispatch_owner_id": dispatch_owner_id,
+                },
+                commit=False,
+            ).fetchone()
+            if updated_run is None or updated_dispatch is None:
+                raise EvidenceIntegrityError(
+                    "clarification_dispatch_claim_rejected"
+                )
+            self._audit(
+                "run_status_changed",
+                thread_id=thread_id,
+                run_id=resumed_run_id,
+                ref=resumed_run_id,
+                payload={
+                    "status": "running",
+                    "dispatch_owner_id": dispatch_owner_id,
+                },
+                commit=False,
+            )
+            self.connection.commit()
+            return canonical_value(
+                {
+                    "source_run_id": source_run_id,
+                    "resumed_run_id": resumed_run_id,
+                    "thread_id": thread_id,
+                    "dispatch_owner_id": dispatch_owner_id,
+                    "status": "running",
+                }
+            )
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def resolve_clarification_resume_claim(
+        self,
+        *,
+        source_run_id: str,
+        resumed_run_id: str,
+        thread_id: str,
+        answer: str,
+        selected_option_id: str | None,
+        source: str,
+    ) -> dict[str, Any]:
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        row = self._fetchone(
+            """
+            /* clarification_resume_claim_explicit_mapping */
+            SELECT source_run_id, resumed_run_id, thread_id, request_identity,
+                   submission ->> 'answer' AS answer,
+                   submission ->> 'selectedOptionId' AS selected_option_id,
+                   submission ->> 'source' AS source
+            FROM waje_runtime.clarification_resume_claims
+            WHERE source_run_id = %(source_run_id)s
+              AND resumed_run_id = %(resumed_run_id)s
+            """,
+            {
+                "source_run_id": source_run_id,
+                "resumed_run_id": resumed_run_id,
+            },
+        )
+        if row is None:
+            raise EvidenceIntegrityError("clarification_resume_claim_missing")
+        resolved = {
+            "source_run_id": str(_field(row, "source_run_id", 0) or ""),
+            "resumed_run_id": str(_field(row, "resumed_run_id", 1) or ""),
+            "thread_id": str(_field(row, "thread_id", 2) or ""),
+            "request_identity": str(
+                _field(row, "request_identity", 3) or ""
+            ),
+            "answer": str(_field(row, "answer", 4) or ""),
+            "selected_option_id": (
+                str(_field(row, "selected_option_id", 5))
+                if _field(row, "selected_option_id", 5) is not None
+                else None
+            ),
+            "source": str(_field(row, "source", 6) or ""),
+        }
+        if (
+            resolved["source_run_id"] != source_run_id
+            or resolved["resumed_run_id"] != resumed_run_id
+            or resolved["thread_id"] != thread_id
+            or resolved["answer"] != answer.strip()
+            or resolved["selected_option_id"] != selected_option_id
+            or resolved["source"] != source
+            or not resolved["request_identity"]
+        ):
+            raise EvidenceIntegrityError("clarification_resume_claim_conflict")
+        return resolved
+
     def record_clarification_outcome(
         self,
         *,
@@ -810,10 +2247,14 @@ class PostgresConversationStore:
         from bi_agent.conversation.clarification_authority import (
             build_clarification_outcome,
         )
-        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
 
         owner = self._fetchone(
             """
+            /* clarification_outcome_owner_lock */
             SELECT thread_id, topic_id, status
             FROM waje_runtime.analysis_runs
             WHERE run_id = %(source_run_id)s
@@ -840,6 +2281,36 @@ class PostgresConversationStore:
             topic_id=topic_id,
             choice=choice,
         )
+        existing = self._fetchall(
+            """
+            /* clarification_outcome_existing */
+            SELECT ref, payload, run_id, thread_id, topic_id
+            FROM waje_runtime.audit_events
+            WHERE event_type = 'clarification_outcome_recorded'
+              AND run_id = %(source_run_id)s
+            ORDER BY created_at
+            """,
+            {"source_run_id": source_run_id},
+        )
+        if existing:
+            if len(existing) != 1:
+                self.connection.rollback()
+                raise EvidenceIntegrityError("clarification_outcome_ambiguous")
+            event = existing[0]
+            if (
+                str(_field(event, "ref", 0) or "") == payload["outcome_ref"]
+                and canonical_value(
+                    _json_value(_field(event, "payload", 1)) or {}
+                )
+                == canonical_value(payload)
+                and str(_field(event, "run_id", 2) or "") == source_run_id
+                and str(_field(event, "thread_id", 3) or "") == thread_id
+                and str(_field(event, "topic_id", 4) or "") == topic_id
+            ):
+                self.connection.commit()
+                return str(payload["outcome_ref"])
+            self.connection.rollback()
+            raise EvidenceIntegrityError("clarification_outcome_conflict")
         self._audit(
             "clarification_outcome_recorded",
             thread_id=thread_id,
@@ -864,8 +2335,10 @@ class PostgresConversationStore:
         )
         from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
 
-        row = self._fetchone(
-            """
+        try:
+            rows = self._fetchall(
+                """
+            /* clarification_resume_authority_all_outcomes */
             SELECT ac.analysis_contract_id,
                    ac.run_id AS analysis_run_id,
                    ac.contract_signature AS stored_contract_signature,
@@ -885,41 +2358,54 @@ class PostgresConversationStore:
              AND ac.analysis_contract_id = %(analysis_contract_id)s
             JOIN waje_runtime.audit_events e
               ON e.event_type = 'clarification_outcome_recorded'
-             AND e.ref = %(outcome_ref)s
              AND e.run_id = r.run_id
             WHERE r.run_id = %(source_run_id)s
-            """,
-            {
-                "source_run_id": source_run_id,
-                "analysis_contract_id": f"analysis:{source_run_id}:1",
-                "outcome_ref": outcome_ref,
-            },
-        )
-        if row is None:
-            raise EvidenceIntegrityError("clarification_resume_authority_missing")
-        run_request = _json_value(_field(row, "run_request", 7)) or {}
-        return validate_clarification_resume_authority(
-            source_run_id=source_run_id,
-            thread_id=thread_id,
-            topic_id=topic_id,
-            choice=choice,
-            outcome_ref=outcome_ref,
-            analysis_contract=_json_value(_field(row, "contract_payload", 3)) or {},
-            stored_contract_signature=str(_field(row, "stored_contract_signature", 2) or ""),
-            analysis_run_id=str(_field(row, "analysis_run_id", 1) or ""),
-            run_status=str(_field(row, "run_status", 4) or ""),
-            run_thread_id=str(_field(row, "run_thread_id", 5) or ""),
-            run_topic_id=str(_field(row, "run_topic_id", 6) or ""),
-            clarification_outcome=_json_value(_field(row, "outcome_payload", 8)) or {},
-            outcome_run_id=str(_field(row, "outcome_run_id", 10) or ""),
-            outcome_thread_id=str(_field(row, "outcome_thread_id", 11) or ""),
-            outcome_topic_id=str(_field(row, "outcome_topic_id", 12) or ""),
-            material_authority=(
-                run_request.get("material_authority")
-                if isinstance(run_request, Mapping)
-                else None
-            ),
-        )
+            FOR UPDATE OF r
+                """,
+                {
+                    "source_run_id": source_run_id,
+                    "analysis_contract_id": f"analysis:{source_run_id}:1",
+                },
+            )
+            if not rows:
+                raise EvidenceIntegrityError("clarification_resume_authority_missing")
+            if len(rows) != 1:
+                raise EvidenceIntegrityError(
+                    "clarification_resume_outcome_ambiguous"
+                )
+            row = rows[0]
+            if str(_field(row, "outcome_ref", 9) or "") != outcome_ref:
+                raise EvidenceIntegrityError(
+                    "clarification_resume_outcome_missing"
+                )
+            run_request = _json_value(_field(row, "run_request", 7)) or {}
+            resolved = validate_clarification_resume_authority(
+                source_run_id=source_run_id,
+                thread_id=thread_id,
+                topic_id=topic_id,
+                choice=choice,
+                outcome_ref=outcome_ref,
+                analysis_contract=_json_value(_field(row, "contract_payload", 3)) or {},
+                stored_contract_signature=str(_field(row, "stored_contract_signature", 2) or ""),
+                analysis_run_id=str(_field(row, "analysis_run_id", 1) or ""),
+                run_status=str(_field(row, "run_status", 4) or ""),
+                run_thread_id=str(_field(row, "run_thread_id", 5) or ""),
+                run_topic_id=str(_field(row, "run_topic_id", 6) or ""),
+                clarification_outcome=_json_value(_field(row, "outcome_payload", 8)) or {},
+                outcome_run_id=str(_field(row, "outcome_run_id", 10) or ""),
+                outcome_thread_id=str(_field(row, "outcome_thread_id", 11) or ""),
+                outcome_topic_id=str(_field(row, "outcome_topic_id", 12) or ""),
+                material_authority=(
+                    run_request.get("material_authority")
+                    if isinstance(run_request, Mapping)
+                    else None
+                ),
+            )
+            self.connection.commit()
+            return resolved
+        except Exception:
+            self.connection.rollback()
+            raise
 
     def resolve_completed_material_authority(
         self,
@@ -1041,7 +2527,14 @@ class PostgresConversationStore:
             canonical_value,
         )
 
+        active_dispatch = self._active_run_dispatches.get(run_id)
         try:
+            if active_dispatch is not None:
+                self._lock_active_run_dispatch(
+                    run_id=run_id,
+                    dispatch_owner_id=active_dispatch[0],
+                    lease_epoch=active_dispatch[1],
+                )
             run_row = self._fetchone(
                 """
                 /* completed_material_authority_finalization_run_lock */
@@ -1235,7 +2728,17 @@ class PostgresConversationStore:
                 payload=record,
                 commit=False,
             )
+            if active_dispatch is not None:
+                self._terminalize_active_run_dispatch(
+                    run_id=run_id,
+                    dispatch_owner_id=active_dispatch[0],
+                    lease_epoch=active_dispatch[1],
+                    status="completed",
+                )
             self.connection.commit()
+            if active_dispatch is not None:
+                self._stop_run_dispatch_heartbeat(run_id)
+                self._active_run_dispatches.pop(run_id, None)
             return finalized_request
         except Exception:
             self.connection.rollback()
@@ -1245,33 +2748,129 @@ class PostgresConversationStore:
         self.save_context_manifest(manifest)
 
     def save_context_manifest(self, manifest: ContextManifest | dict[str, Any]) -> None:
+        from bi_agent.runtime.claim_provenance import (
+            validated_context_manifest_record,
+        )
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
         payload = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest)
-        self._execute(
-            """
-            INSERT INTO waje_runtime.context_manifests(
-              manifest_id, thread_id, turn_id, can_support_claims, items
+        runtime_signed = "manifest_digest" in payload
+        if runtime_signed:
+            payload = validated_context_manifest_record(payload)
+        payload = canonical_value(payload)
+        projection = {
+            "manifest_id": str(payload["manifest_id"]),
+            "thread_id": str(payload["thread_id"]),
+            "turn_id": None if runtime_signed else payload.get("turn_id"),
+            "topic_id": payload.get("topic_id") or None,
+            "run_id": payload.get("run_id") or None,
+            "can_support_claims": bool(payload.get("can_support_claims")),
+            "items": (
+                canonical_value(payload.get("sources") or ())
+                if runtime_signed
+                else payload
+            ),
+            "manifest_digest": (
+                str(payload["manifest_digest"]) if runtime_signed else ""
+            ),
+            "payload": payload if runtime_signed else {},
+        }
+        try:
+            self._execute(
+                """
+                SELECT pg_advisory_xact_lock(
+                  hashtextextended(%(lock_key)s, 0)
+                )
+                """,
+                {
+                    "lock_key": (
+                        "context_manifest_publication:"
+                        f"{projection['manifest_id']}"
+                    )
+                },
+                commit=False,
             )
-            VALUES (
-              %(manifest_id)s, %(thread_id)s, %(turn_id)s,
-              %(can_support_claims)s, %(items)s::jsonb
+            existing = self._fetchone(
+                """
+                /* context_manifest_publication_preflight */
+                SELECT manifest_id, thread_id, turn_id, topic_id, run_id,
+                       can_support_claims, items, manifest_digest, payload
+                FROM waje_runtime.context_manifests
+                WHERE manifest_id = %(manifest_id)s
+                FOR UPDATE
+                """,
+                {"manifest_id": projection["manifest_id"]},
             )
-            ON CONFLICT (manifest_id) DO UPDATE
-            SET can_support_claims = EXCLUDED.can_support_claims,
-                items = EXCLUDED.items
-            """,
-            {
-                "manifest_id": payload["manifest_id"],
-                "thread_id": payload["thread_id"],
-                "turn_id": payload.get("turn_id"),
-                "can_support_claims": bool(payload.get("can_support_claims")),
-                "items": _json(payload),
-            },
-        )
-        self._audit(
-            "context_manifest_recorded",
-            thread_id=payload.get("thread_id"),
-            ref=payload["manifest_id"],
-        )
+            if existing is not None:
+                stored = {
+                    "manifest_id": str(_field(existing, "manifest_id", 0)),
+                    "thread_id": str(_field(existing, "thread_id", 1)),
+                    "turn_id": _field(existing, "turn_id", 2),
+                    "topic_id": _field(existing, "topic_id", 3),
+                    "run_id": _field(existing, "run_id", 4),
+                    "can_support_claims": bool(
+                        _field(existing, "can_support_claims", 5)
+                    ),
+                    "items": canonical_value(
+                        _json_value(_field(existing, "items", 6))
+                    ),
+                    "manifest_digest": str(
+                        _field(existing, "manifest_digest", 7) or ""
+                    ),
+                    "payload": canonical_value(
+                        _json_value(_field(existing, "payload", 8)) or {}
+                    ),
+                }
+                if canonical_value(stored) == canonical_value(projection):
+                    self.connection.rollback()
+                    return
+                raise EvidenceIntegrityError(
+                    "context_manifest_publication_conflict"
+                )
+            self._insert_immutable(
+                """
+                INSERT INTO waje_runtime.context_manifests AS current(
+                  manifest_id, thread_id, turn_id, topic_id, run_id,
+                  can_support_claims, items, manifest_digest, payload
+                ) VALUES (
+                  %(manifest_id)s, %(thread_id)s, %(turn_id)s, %(topic_id)s,
+                  %(run_id)s, %(can_support_claims)s, %(items)s::jsonb,
+                  %(manifest_digest)s, %(payload)s::jsonb
+                )
+                ON CONFLICT (manifest_id) DO UPDATE
+                SET manifest_id = current.manifest_id
+                WHERE current.thread_id = EXCLUDED.thread_id
+                  AND current.turn_id IS NOT DISTINCT FROM EXCLUDED.turn_id
+                  AND current.topic_id IS NOT DISTINCT FROM EXCLUDED.topic_id
+                  AND current.run_id IS NOT DISTINCT FROM EXCLUDED.run_id
+                  AND current.can_support_claims = EXCLUDED.can_support_claims
+                  AND current.items = EXCLUDED.items
+                  AND current.manifest_digest = EXCLUDED.manifest_digest
+                  AND current.payload = EXCLUDED.payload
+                RETURNING manifest_id
+                """,
+                {
+                    **projection,
+                    "items": _json(projection["items"]),
+                    "payload": _json(projection["payload"]),
+                },
+                collision="context_manifest",
+            )
+            self._audit(
+                "context_manifest_recorded",
+                thread_id=projection["thread_id"],
+                run_id=projection["run_id"],
+                topic_id=projection["topic_id"],
+                ref=projection["manifest_id"],
+                commit=False,
+            )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
 
     def save_reuse_decisions(
         self,
@@ -1362,6 +2961,7 @@ class PostgresConversationStore:
         evidence_manifests: Sequence[Mapping[str, Any]],
         context_manifests: Sequence[Mapping[str, Any]],
         trusted_provenance_records: Sequence[Mapping[str, Any]],
+        answer_package_artifacts: Sequence[Mapping[str, Any]] | None = None,
         verified_claims: Sequence[Mapping[str, Any]],
         claim_links: Sequence[Mapping[str, Any]],
         repair_attempts: Sequence[Mapping[str, Any]],
@@ -1384,6 +2984,7 @@ class PostgresConversationStore:
             evidence_manifests=evidence_manifests,
             context_manifests=context_manifests,
             trusted_provenance_records=trusted_provenance_records,
+            answer_package_artifacts=answer_package_artifacts,
             verified_claims=verified_claims,
             claim_links=claim_links,
             repair_attempts=repair_attempts,
@@ -1686,6 +3287,19 @@ class PostgresConversationStore:
                     payload=provenance,
                     collision="claim_provenance_record",
                 )
+            for artifact in bundle["answer_package_artifacts"]:
+                self._insert_authority_record(
+                    table="answer_package_artifacts",
+                    primary="artifact_ref",
+                    columns={
+                        "artifact_ref": artifact["artifact_ref"],
+                        "run_id": run_id,
+                        "canonical_path": artifact["canonical_path"],
+                        "payload_digest": artifact["payload_digest"],
+                    },
+                    payload=artifact,
+                    collision="answer_package_artifact",
+                )
             for claim in bundle["verified_claims"]:
                 self._insert_authority_record(
                     table="verified_claims",
@@ -1774,6 +3388,7 @@ class PostgresConversationStore:
                        count(DISTINCT c.record_ref) AS completeness_count,
                        count(DISTINCT b.record_ref) AS binding_count,
                        count(DISTINCT e.evidence_ref) AS evidence_count,
+                       count(DISTINCT apa.artifact_ref) AS answer_package_artifact_count,
                        count(DISTINCT vc.claim_ref) AS verified_claim_count,
                        count(DISTINCT l.claim_ref || E'\\x1f' || l.evidence_ref) AS claim_link_count
                 FROM waje_runtime.analysis_runtime_publications p
@@ -1786,6 +3401,7 @@ class PostgresConversationStore:
                 LEFT JOIN waje_runtime.query_completeness_reports c ON c.run_id = p.run_id
                 LEFT JOIN waje_runtime.capability_binding_authority b ON b.run_id = p.run_id
                 LEFT JOIN waje_runtime.evidence_manifests e ON e.run_id = p.run_id
+                LEFT JOIN waje_runtime.answer_package_artifacts apa ON apa.run_id = p.run_id
                 LEFT JOIN waje_runtime.verified_claims vc ON vc.run_id = p.run_id
                 LEFT JOIN waje_runtime.claim_evidence_links l ON l.claim_ref = vc.claim_ref
                 WHERE p.run_id = %(run_id)s
@@ -1800,6 +3416,9 @@ class PostgresConversationStore:
                     "expected_completeness_count": len(bundle["completeness_records"]),
                     "expected_binding_count": len(bundle["capability_binding_records"]),
                     "expected_evidence_count": len(bundle["evidence_manifests"]),
+                    "expected_answer_package_artifact_count": len(
+                        bundle["answer_package_artifacts"]
+                    ),
                     "expected_verified_claim_count": len(bundle["verified_claims"]),
                     "expected_claim_link_count": len(bundle["claim_links"]),
                 },
@@ -1812,6 +3431,7 @@ class PostgresConversationStore:
                 len(bundle["completeness_records"]),
                 len(bundle["capability_binding_records"]),
                 len(bundle["evidence_manifests"]),
+                len(bundle["answer_package_artifacts"]),
                 len(bundle["verified_claims"]),
                 len(bundle["claim_links"]),
             )
@@ -1826,6 +3446,7 @@ class PostgresConversationStore:
                         "completeness_count",
                         "binding_count",
                         "evidence_count",
+                        "answer_package_artifact_count",
                         "verified_claim_count",
                         "claim_link_count",
                     )
@@ -2924,6 +4545,15 @@ def _json_value(value: Any) -> Any:
         except json.JSONDecodeError:
             return None
     return value
+
+
+def _run_dispatch_lease_ms() -> int:
+    raw = os.environ.get("WAJE_RUN_DISPATCH_LEASE_MS", "30000")
+    try:
+        value = int(raw)
+    except ValueError:
+        return 30000
+    return value if value > 0 else 30000
 
 
 def _field(row: Any, key: str, index: int) -> Any:

@@ -1139,7 +1139,7 @@ def test_route_design_resolves_obligations_after_capability_family_inference(
     monkeypatch.setattr(
         workflow,
         "_invoke_llm",
-        lambda state, node, payload: {
+        lambda state, node, payload, **kwargs: {
             "requested_nodes": ["segment_contribution"],
             "analysis_requirements": {
                 "target_metrics": ["paid_amount"],
@@ -1178,7 +1178,7 @@ def test_route_design_metric_only_context_fails_after_one_node_call(
 
     payloads = []
 
-    def invoke(state, node, payload):
+    def invoke(state, node, payload, **kwargs):
         payloads.append(payload)
         return {
             "requested_nodes": ["gameplay_activity_context"],
@@ -1233,7 +1233,7 @@ def test_route_baseline_proposals_are_bounded_by_the_reviewed_runtime_vocabulary
 
     payloads = []
 
-    def invoke(state, node, payload):
+    def invoke(state, node, payload, **kwargs):
         payloads.append(payload)
         return {
             "requested_nodes": ["data_quality_profile"],
@@ -1325,7 +1325,7 @@ def test_initial_route_preserves_all_authoritative_material_axes_in_contract(
     monkeypatch.setattr(
         workflow,
         "_invoke_llm",
-        lambda state, node, payload: {
+        lambda state, node, payload, **kwargs: {
             "requested_nodes": ["data_quality_profile"],
             "analysis_requirements": {
                 "target_metrics": ["paid_amount"],
@@ -1726,7 +1726,7 @@ def test_route_typed_list_failure_fails_after_one_node_call(
 
     payloads = []
 
-    def invoke(state, node, payload):
+    def invoke(state, node, payload, **kwargs):
         payloads.append(payload)
         return {
             "requested_nodes": ["data_quality_profile"],
@@ -1783,7 +1783,7 @@ def test_route_typed_list_failure_exhaustion_fails_closed(
     monkeypatch.setattr(
         workflow,
         "_invoke_llm",
-        lambda state, node, payload: {
+        lambda state, node, payload, **kwargs: {
             "requested_nodes": ["data_quality_profile"],
             "analysis_requirements": invalid_requirements,
         },

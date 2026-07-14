@@ -30,6 +30,17 @@ class ConversationSchemaLoaderTest(unittest.TestCase):
             schema,
         )
 
+    def test_clarification_dispatch_lease_schema_is_upgrade_safe(self):
+        schema = (ROOT / "tools" / "runtime" / "conversation-runtime.sql").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("dispatch_owner_id text", schema)
+        self.assertIn("dispatch_lease_expires_at timestamptz", schema)
+        self.assertIn("clarification_resume_dispatch_state_check", schema)
+        self.assertIn("clarification_resume_dispatch_lease_shape_check", schema)
+        self.assertIn("idx_clarification_resume_dispatch_recovery", schema)
+
 
 if __name__ == "__main__":
     unittest.main()

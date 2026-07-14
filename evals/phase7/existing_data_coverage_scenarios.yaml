@@ -1,5 +1,6 @@
 schema_version: "phase7-platform-current-data-v1"
 expectation_policy: structured_contracts_only
+permission_scope_default: analyst
 analysis_context_defaults:
   as_of: "2026-06-03T12:00:00+01:00"
   target_date: "2026-06-02"
@@ -97,6 +98,7 @@ conversation_cases:
     turns:
       - user: "按渠道拆昨天的收入贡献；如果我没有对应权限，请明确告诉我缺口。"
         scenario:
+          permission_scope: viewer
           question_family: segment_or_factor_attribution
           target_metrics: [paid_amount]
           requested_dimensions: [channel]

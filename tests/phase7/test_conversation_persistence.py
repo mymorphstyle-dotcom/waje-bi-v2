@@ -1033,6 +1033,9 @@ class FakeConnection:
                 "completeness_count": (params or {})["expected_completeness_count"],
                 "binding_count": (params or {})["expected_binding_count"],
                 "evidence_count": (params or {})["expected_evidence_count"],
+                "answer_package_artifact_count": (params or {})[
+                    "expected_answer_package_artifact_count"
+                ],
                 "verified_claim_count": (params or {})["expected_verified_claim_count"],
                 "claim_link_count": (params or {})["expected_claim_link_count"],
             }]

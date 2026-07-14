@@ -13,6 +13,36 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class GatewayTypeScriptContractTest(unittest.TestCase):
+    def test_gateway_spawn_failure_terminalizes_queued_run_idempotently(self):
+        result = _run_typescript(
+            textwrap.dedent(
+                """
+                const {
+                  createRun,
+                  createThread,
+                  failQueuedRunDispatch,
+                  requireRun,
+                } = await import("./app/api/_conversationStore.ts");
+                const thread = await createThread("dispatch-owner");
+                const run = await createRun(thread.id);
+                const failed = await failQueuedRunDispatch(
+                  run.id,
+                  "agent_core_spawn_failed",
+                );
+                const replay = await failQueuedRunDispatch(
+                  run.id,
+                  "agent_core_spawn_failed",
+                );
+                const persisted = await requireRun(run.id);
+                console.log(JSON.stringify({ failed, replay, persisted }));
+                """
+            )
+        )
+
+        self.assertEqual(result["failed"]["status"], "failed")
+        self.assertEqual(result["replay"]["status"], "failed")
+        self.assertEqual(result["persisted"]["status"], "failed")
+
     def test_inline_spawn_error_is_typed_failure(self):
         completed = _run_typescript_process(
             textwrap.dedent(

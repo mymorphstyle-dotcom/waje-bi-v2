@@ -13,6 +13,7 @@ from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
 )
+from tests.phase7.artifact_test_support import bind_answer_package_artifact
 
 
 def _analysis_contract_gap_authority(
@@ -405,32 +406,43 @@ def _reuse_case_lineage(
     }
 
 
-def _runtime_evaluation_projection_fixture():
+def _runtime_evaluation_projection_fixture(*, artifact_path=None):
     fixture = _authoritative_reuse_review_fixture()
     run_id = fixture.current_run_id
     evidence_ref = f"evidence:{fixture.current_binding.record_ref}"
+    answer_package = {
+        "run_id": run_id,
+        "status": "completed",
+        "admin_audit": {
+            "analysis_runtime_persistence": {
+                "status": "persisted",
+                "analysis_contract_ref": (
+                    fixture.current.analysis_contract.analysis_contract_id
+                ),
+            },
+        },
+        "sections": [
+            {
+                "section_id": "summary",
+                "payload": {"claims": [{
+                    "text": "复用后结论",
+                    "claim_type": "comparative_change",
+                    "claim_strength": "observed",
+                    "evidence_refs": [evidence_ref],
+                }]},
+            },
+            {
+                "section_id": "evidence",
+                "payload": {"evidence": [{
+                    "evidence_ref": evidence_ref,
+                    "binding_manifest_ref": fixture.current_binding.record_ref,
+                }]},
+            },
+        ],
+    }
     bundle = fixture.runtime.build_persistence_bundle(
         fixture.current,
-        answer_package={
-            "sections": [
-                {
-                    "section_id": "summary",
-                    "payload": {"claims": [{
-                        "text": "复用后结论",
-                        "claim_type": "comparative_change",
-                        "claim_strength": "observed",
-                        "evidence_refs": [evidence_ref],
-                    }]},
-                },
-                {
-                    "section_id": "evidence",
-                    "payload": {"evidence": [{
-                        "evidence_ref": evidence_ref,
-                        "binding_manifest_ref": fixture.current_binding.record_ref,
-                    }]},
-                },
-            ],
-        },
+        answer_package=answer_package,
         request={
             "run_id": run_id,
             "thread_id": fixture.thread_id,
@@ -440,6 +452,13 @@ def _runtime_evaluation_projection_fixture():
         },
         artifact_path="artifacts/phase7/runtime-eval/answer_package.json",
     )
+    fixture.runtime_artifact_path = bind_answer_package_artifact(
+        bundle,
+        run_id=run_id,
+        answer_package=answer_package,
+        artifact_path=artifact_path,
+    )
+    fixture.runtime_artifact_package = answer_package
     fixture.store.save_analysis_runtime_records(run_id=run_id, **bundle)
     fixture.store.add_audit_event(
         "delivery_verifier_completed",
@@ -479,6 +498,7 @@ _RUNTIME_EVALUATION_RECORD_REF_FIELDS = {
     "evidence_manifests": "evidence_ref",
     "context_manifests": "manifest_id",
     "trusted_provenance_records": "record_ref",
+    "answer_package_artifacts": "artifact_ref",
     "verified_claims": "claim_ref",
     "repair_attempts": "attempt_ref",
 }
@@ -579,6 +599,7 @@ def _postgres_runtime_evaluation_backend(fixture, run_id):
                 "evidence_manifests",
                 "context_manifests",
                 "claim_provenance_records",
+                "answer_package_artifacts",
                 "verified_claims",
                 "claim_evidence_links",
                 "query_repair_attempts",
@@ -1056,47 +1077,17 @@ def test_runtime_audit_reviews_use_persisted_projection_instead_of_artifact_prod
 ):
     from tools.phase7 import run_live_conversation_system_test as system_test
 
-    fixture, run_id = _runtime_evaluation_projection_fixture()
+    artifact_root = tmp_path / "artifacts"
+    artifact_path = artifact_root / "answer-package.json"
+    fixture, run_id = _runtime_evaluation_projection_fixture(
+        artifact_path=artifact_path,
+    )
     projection_resolver = system_test._runtime_authority_resolver_for_store(
         fixture.store
     )
     contract_ref = fixture.store.analysis_runtime_records[run_id]["payload"][
         "analysis_contract"
     ]["analysis_contract_id"]
-    artifact_root = tmp_path / "artifacts"
-    artifact_root.mkdir()
-    artifact_path = artifact_root / "answer-package.json"
-    artifact_path.write_text(
-        json.dumps(
-            {
-                "run_id": run_id,
-                "sections": [
-                    {
-                        "section_id": "summary",
-                        "payload": {
-                            "claims": [
-                                {
-                                    "claim_ref": "forged-client-claim",
-                                    "producer": "clickhouse",
-                                }
-                            ]
-                        },
-                    }
-                ],
-                "admin_audit": {
-                    "analysis_runtime_persistence": {
-                        "status": "persisted",
-                        "analysis_contract_ref": contract_ref,
-                    },
-                    "verifier": {"status": "passed"},
-                    "reuse_decisions": [
-                        {"decision": "reuse", "source_ref": "forged-client-ref"}
-                    ],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
     monkeypatch.setattr(system_test, "ROOT", tmp_path)
 
     authority = system_test._runtime_audit_package(
@@ -1104,6 +1095,13 @@ def test_runtime_audit_reviews_use_persisted_projection_instead_of_artifact_prod
             "run_id": run_id,
             "artifact_path": str(artifact_path),
             "answer_package": {
+                "sections": [{
+                    "section_id": "summary",
+                    "payload": {"claims": [{
+                        "claim_ref": "forged-client-claim",
+                        "producer": "clickhouse",
+                    }]},
+                }],
                 "admin_audit": {
                     "analysis_runtime_persistence": {
                         "status": "persisted",
@@ -3059,6 +3057,9 @@ def test_run_case_direct_failure_short_circuits_downstream_reviews(
             return []
 
         def runtime_evidence_resolver(self):
+            return object()
+
+        def runtime_evidence_resolver(self):
             calls["evidence_resolver"] += 1
             return object()
 
@@ -3268,6 +3269,127 @@ def test_run_case_resume_failure_uses_resume_as_primary_failure(
     assert turn["resumed_failure_reason"] == "clarification_resume_authority_failed"
     assert output["failure_reason"] == "clarification_resume_authority_failed"
     assert output["llm_calls"] == [{"task": "clarification", "attempt": 1}]
+
+
+def test_run_case_forwards_reviewed_permission_to_primary_resume_and_coverage(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    calls = []
+    coverage_scopes = []
+    results = iter((
+        {
+            "status": "waiting_for_clarification",
+            "run_id": "run:permission",
+            "topic_id": "topic:permission",
+            "answer_package": None,
+            "context_manifest": {},
+            "accepted_graph": [],
+            "artifact_path": "",
+            "llm_calls": [],
+            "clarification": {},
+        },
+        {
+            "status": "completed",
+            "run_id": "run:permission-resume",
+            "topic_id": "topic:permission",
+            "answer_package": {},
+            "context_manifest": {},
+            "accepted_graph": [],
+            "artifact_path": "artifact:permission",
+            "llm_calls": [],
+        },
+    ))
+
+    class Store:
+        def list_dataset_snapshots(self):
+            return []
+
+        def runtime_evidence_resolver(self):
+            return object()
+
+    class Core:
+        store = Store()
+        release_resolver = object()
+        evidence_resolver = None
+        rows_loader = None
+
+        def run_message(self, **kwargs):
+            calls.append(kwargs)
+            return next(results)
+
+    def coverage(*args, **kwargs):
+        coverage_scopes.append(kwargs["permission_scope"])
+        return {"cells": {}}
+
+    monkeypatch.setattr(system_test, "audit_existing_data_coverage", coverage)
+    monkeypatch.setattr(system_test, "_runtime_quality_review", lambda *a, **k: {})
+    monkeypatch.setattr(system_test, "_review_expectations", lambda *a, **k: {"passed": True})
+    monkeypatch.setattr(system_test, "_runtime_audit_package", lambda *a, **k: {})
+    monkeypatch.setattr(
+        system_test,
+        "_real_clickhouse_review",
+        lambda *a, **k: {
+            "required": True,
+            "real_clickhouse_verified": True,
+            "clickhouse_result_refs": [],
+            "observed_datasets": [],
+            "runtime_correctness": {
+                "all_required_queries_complete": True,
+                "all_capabilities_bound": True,
+                "all_claims_traceable": True,
+            },
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        system_test,
+        "review_case_obligations",
+        lambda *a, **k: {"hard_acceptance_passed": True},
+    )
+    monkeypatch.setattr(system_test, "_strict_quality_failed", lambda *a, **k: False)
+    monkeypatch.setattr(system_test, "_write_case_artifact", lambda *a, **k: None)
+
+    system_test.run_case(
+        Core(),
+        {
+            "id": "permission-forwarding",
+            "analysis_context": {"as_of": "2026-06-03T12:00:00+01:00"},
+            "turns": [{
+                "user": "按渠道看收入",
+                "clarification_response": "按推荐继续",
+                "scenario": {
+                    "question_family": "segment_or_factor_attribution",
+                    "permission_scope": "viewer",
+                    "expected_dataset_states": {
+                        "market_dashboard_channel": "permission_blocked",
+                    },
+                },
+            }],
+        },
+        tmp_path,
+        real_clickhouse=True,
+    )
+
+    assert [call["role"] for call in calls] == [
+        "business_reader", "business_reader",
+    ]
+    assert [call["runtime_permission_scope"] for call in calls] == [
+        "viewer", "viewer",
+    ]
+    assert coverage_scopes == ["viewer"]
+
+
+def test_platform_permission_boundary_has_reviewed_viewer_scope():
+    from tools.phase7.run_live_conversation_system_test import load_cases
+
+    cases = load_cases("evals/phase7/existing_data_coverage_scenarios.yaml")
+    permission_case = next(
+        case for case in cases if case["id"] == "platform_segment_permission"
+    )
+
+    assert permission_case["turns"][0]["scenario"]["permission_scope"] == "viewer"
 
 
 def test_failed_turn_is_excluded_from_mixed_turn_coverage_denominators(

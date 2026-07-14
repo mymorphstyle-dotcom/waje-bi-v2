@@ -11,6 +11,7 @@ from bi_agent.conversation.runtime import (
     ConversationRuntime,
     _can_read_scope,
     _classify_intent,
+    _looks_like_clarification_answer,
     _metric_business_label_vocabulary,
     _mentioned_metrics,
     _needs_clarification,
@@ -62,6 +63,24 @@ def _persist_clarification_source_envelope(
 
 
 class ConversationRuntimeTest(unittest.TestCase):
+    def test_exact_open_clarification_option_precedes_topic_heuristics(self):
+        option = "周末规律（周六/周日与工作日比较）"
+        state = conversation_models.ClarificationState(
+            run_id="run-pattern-choice",
+            topic_id="topic-pattern-choice",
+            question="优先分析哪种规律？",
+            options=[
+                conversation_models.ClarificationOption(
+                    option_id="pattern-choice-1",
+                    label=option,
+                    description=option,
+                    recommended=True,
+                )
+            ],
+        )
+
+        self.assertTrue(_looks_like_clarification_answer(option, state))
+
     def test_historical_write_action_descriptions_remain_business_analysis(self):
         for message in (
             "分析优惠券发放前后付费金额是否变化",

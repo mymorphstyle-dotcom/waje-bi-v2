@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { createHash } from "crypto";
 
 type ThreadRecord = {
   id: string;
@@ -15,11 +16,92 @@ type MessageRecord = {
   createdAt: string;
 };
 
+const RUN_STATUSES = [
+  "queued",
+  "running",
+  "running_workflow",
+  "waiting_for_clarification",
+  "completed",
+  "completed_without_workflow",
+  "failed",
+] as const;
+
+type RunStatus = (typeof RUN_STATUSES)[number];
+
 type RunRecord = {
   id: string;
   threadId: string;
-  status: "queued" | "running" | "completed" | "waiting_for_clarification";
+  status: RunStatus;
   createdAt: string;
+  request?: Record<string, unknown>;
+};
+
+type RunDispatchRecord = {
+  dispatchId: string;
+  producerKind: "thread_message" | "artifact_continue" | "clarification_resume";
+  scopeRef: string;
+  requestIdentity: string;
+  requestDigest: string;
+  requestPayload: Record<string, unknown>;
+  threadId: string;
+  runId: string;
+  messageId: string;
+  state: "pending" | "leased" | "running" | "terminal";
+  ownerId: string | null;
+  leaseEpoch: number;
+  leaseExpiresAt: string | null;
+  heartbeatAt: string | null;
+  terminalStatus: string | null;
+  failureReason: string | null;
+};
+
+type RunDispatchClaim = {
+  message: MessageRecord;
+  run: RunRecord;
+  dispatch: RunDispatchRecord;
+  replayed: boolean;
+};
+
+type RunDispatchLease = {
+  acquired: boolean;
+  ownerId: string | null;
+  leaseEpoch: number;
+  state: RunDispatchRecord["state"];
+  reason: "acquired" | "active_lease" | "already_running" | "terminal" | "run_not_queued";
+  run: RunRecord;
+};
+
+type ClarificationResumeClaim = {
+  sourceRunId: string;
+  resumedRunId: string;
+  threadId: string;
+  requestIdentity: string;
+  answer: string;
+  selectedOptionId: string | null;
+  source: string;
+  message: MessageRecord;
+  run: RunRecord;
+  replayed: boolean;
+  dispatchState: "pending" | "leased" | "dispatched";
+  dispatchOwnerId: string | null;
+  dispatchLeaseExpiresAt: string | null;
+};
+
+type ClarificationDispatchLease = {
+  acquired: boolean;
+  ownerId: string | null;
+  state: "pending" | "leased" | "dispatched";
+  reason: "acquired" | "active_lease" | "already_dispatched" | "run_not_queued";
+  run: RunRecord;
+};
+
+type MemoryAuditEvent = {
+  eventType: string;
+  threadId?: string;
+  topicId?: string;
+  runId?: string;
+  ref?: string;
+  payload?: unknown;
 };
 
 type MemoryProposalRecord = {
@@ -128,7 +210,26 @@ type MemoryStore = {
   runs: Map<string, RunRecord>;
   artifacts: Map<string, ArtifactRecord>;
   memoryProposals: Map<string, MemoryProposalRecord>;
+  clarificationResumeClaims: Map<string, ClarificationResumeClaim>;
+  runDispatches: Map<string, RunDispatchRecord>;
+  auditEvents: MemoryAuditEvent[];
 };
+
+export class GatewayRuntimeError extends Error {
+  readonly code: string;
+  readonly httpStatus: number;
+
+  constructor(code: string, httpStatus: number) {
+    super(code);
+    this.name = "GatewayRuntimeError";
+    this.code = code;
+    this.httpStatus = httpStatus;
+  }
+}
+
+export function gatewayError(code: string): GatewayRuntimeError {
+  return new GatewayRuntimeError(code, gatewayHttpStatus(code));
+}
 
 const globalStore = globalThis as typeof globalThis & {
   __wajeConversationMemoryStore?: MemoryStore;
@@ -246,6 +347,1127 @@ export async function createRun(threadId: string): Promise<RunRecord> {
   return run;
 }
 
+export async function claimRunDispatchRequest(input: {
+  producerKind: RunDispatchRecord["producerKind"];
+  scopeRef: string;
+  requestIdentity: string;
+  threadId: string;
+  text: string;
+  requestPayload?: Record<string, unknown>;
+}): Promise<RunDispatchClaim> {
+  const normalized = normalizeRunDispatchInput(input);
+  const requestDigest = runDispatchRequestDigest(normalized);
+  if (conversationStoreMode() === "postgres") {
+    const client = await pool().connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [runDispatchIdentityLock(normalized)],
+      );
+      const existingResult = await client.query(
+        `
+        SELECT d.*, m.role, m.text, m.created_at AS message_created_at,
+               r.status, r.request, r.created_at AS run_created_at
+        FROM waje_runtime.run_dispatches d
+        JOIN waje_runtime.conversation_messages m ON m.message_id = d.message_id
+        JOIN waje_runtime.analysis_runs r ON r.run_id = d.run_id
+        WHERE d.producer_kind = $1
+          AND d.scope_ref = $2
+          AND d.request_identity = $3
+        `,
+        [normalized.producerKind, normalized.scopeRef, normalized.requestIdentity],
+      );
+      const existing = existingResult.rows[0];
+      if (existing) {
+        if (
+          existing.request_digest !== requestDigest
+          || existing.thread_id !== normalized.threadId
+        ) {
+          throw gatewayError("run_dispatch_conflict");
+        }
+        await client.query("COMMIT");
+        return runDispatchClaimFromRow(existing, true);
+      }
+      const threadResult = await client.query(
+        `SELECT thread_id FROM waje_runtime.investigation_threads
+         WHERE thread_id = $1 FOR UPDATE`,
+        [normalized.threadId],
+      );
+      if (!threadResult.rows[0]) throw gatewayError("thread_not_found");
+      const createdAt = new Date().toISOString();
+      const messageId = `message-${crypto.randomUUID()}`;
+      const runId = `run-${crypto.randomUUID()}`;
+      const dispatchId = `dispatch-${crypto.randomUUID()}`;
+      await client.query(
+        `INSERT INTO waje_runtime.conversation_messages(message_id, thread_id, role, text)
+         VALUES ($1, $2, 'user', $3)`,
+        [messageId, normalized.threadId, normalized.text],
+      );
+      await client.query(
+        `INSERT INTO waje_runtime.analysis_runs(run_id, thread_id, status)
+         VALUES ($1, $2, 'queued')`,
+        [runId, normalized.threadId],
+      );
+      await client.query(
+        `
+        INSERT INTO waje_runtime.run_dispatches(
+          dispatch_id, producer_kind, scope_ref, request_identity,
+          request_digest, request_payload, thread_id, run_id, message_id
+        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
+        `,
+        [
+          dispatchId,
+          normalized.producerKind,
+          normalized.scopeRef,
+          normalized.requestIdentity,
+          requestDigest,
+          JSON.stringify(normalized.requestPayload),
+          normalized.threadId,
+          runId,
+          messageId,
+        ],
+      );
+      await client.query(
+        `
+        INSERT INTO waje_runtime.audit_events(event_type, thread_id, run_id, ref, payload)
+        VALUES
+          ('message_recorded', $1, $2, $3, $4::jsonb),
+          ('run_queued', $1, $2, $2, $5::jsonb)
+        `,
+        [
+          normalized.threadId,
+          runId,
+          messageId,
+          JSON.stringify({ producerKind: normalized.producerKind }),
+          JSON.stringify({ dispatchId, producerKind: normalized.producerKind }),
+        ],
+      );
+      await client.query("COMMIT");
+      return {
+        message: { id: messageId, role: "user", text: normalized.text, createdAt },
+        run: {
+          id: runId,
+          threadId: normalized.threadId,
+          status: "queued",
+          createdAt,
+          request: {},
+        },
+        dispatch: {
+          dispatchId,
+          producerKind: normalized.producerKind,
+          scopeRef: normalized.scopeRef,
+          requestIdentity: normalized.requestIdentity,
+          requestDigest,
+          requestPayload: normalized.requestPayload,
+          threadId: normalized.threadId,
+          runId,
+          messageId,
+          state: "pending",
+          ownerId: null,
+          leaseEpoch: 0,
+          leaseExpiresAt: null,
+          heartbeatAt: null,
+          terminalStatus: null,
+          failureReason: null,
+        },
+        replayed: false,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  const store = memoryStore();
+  const existing = [...store.runDispatches.values()].find(
+    (dispatch) => dispatch.producerKind === normalized.producerKind
+      && dispatch.scopeRef === normalized.scopeRef
+      && dispatch.requestIdentity === normalized.requestIdentity,
+  );
+  if (existing) {
+    if (
+      existing.requestDigest !== requestDigest
+      || existing.threadId !== normalized.threadId
+    ) {
+      throw gatewayError("run_dispatch_conflict");
+    }
+    const run = store.runs.get(existing.runId);
+    const thread = store.threads.get(existing.threadId);
+    const message = thread?.messages.find((item) => item.id === existing.messageId);
+    if (!run || !message) throw gatewayError("run_dispatch_invariant_failed");
+    return { message, run, dispatch: existing, replayed: true };
+  }
+  const thread = store.threads.get(normalized.threadId);
+  if (!thread) throw gatewayError("thread_not_found");
+  const createdAt = new Date().toISOString();
+  const message: MessageRecord = {
+    id: `message-${crypto.randomUUID()}`,
+    role: "user",
+    text: normalized.text,
+    createdAt,
+  };
+  const run: RunRecord = {
+    id: `run-${crypto.randomUUID()}`,
+    threadId: normalized.threadId,
+    status: "queued",
+    createdAt,
+    request: {},
+  };
+  const dispatch: RunDispatchRecord = {
+    dispatchId: `dispatch-${crypto.randomUUID()}`,
+    producerKind: normalized.producerKind,
+    scopeRef: normalized.scopeRef,
+    requestIdentity: normalized.requestIdentity,
+    requestDigest,
+    requestPayload: normalized.requestPayload,
+    threadId: normalized.threadId,
+    runId: run.id,
+    messageId: message.id,
+    state: "pending",
+    ownerId: null,
+    leaseEpoch: 0,
+    leaseExpiresAt: null,
+    heartbeatAt: null,
+    terminalStatus: null,
+    failureReason: null,
+  };
+  const stagedAudits: MemoryAuditEvent[] = [
+    ...store.auditEvents,
+    {
+      eventType: "message_recorded",
+      threadId: normalized.threadId,
+      runId: run.id,
+      ref: message.id,
+      payload: { producerKind: normalized.producerKind },
+    },
+    {
+      eventType: "run_queued",
+      threadId: normalized.threadId,
+      runId: run.id,
+      ref: run.id,
+      payload: { dispatchId: dispatch.dispatchId, producerKind: normalized.producerKind },
+    },
+  ];
+  thread.messages.push(message);
+  store.runs.set(run.id, run);
+  store.runDispatches.set(run.id, dispatch);
+  store.auditEvents = stagedAudits;
+  return { message, run, dispatch, replayed: false };
+}
+
+export async function acquireRunDispatchLease(input: {
+  runId: string;
+  requestIdentity: string;
+}): Promise<RunDispatchLease> {
+  const ownerId = `gateway-dispatch-${crypto.randomUUID()}`;
+  const leaseMs = runDispatchLeaseMs();
+  if (conversationStoreMode() === "postgres") {
+    const client = await pool().connect();
+    try {
+      await client.query("BEGIN");
+      const dispatchResult = await client.query(
+        `SELECT *, lease_expires_at > now() AS lease_active
+         FROM waje_runtime.run_dispatches
+         WHERE run_id = $1 FOR UPDATE`,
+        [input.runId],
+      );
+      const row = dispatchResult.rows[0];
+      if (!row) throw gatewayError("run_dispatch_not_found");
+      if (row.request_identity !== input.requestIdentity) {
+        throw gatewayError("run_dispatch_conflict");
+      }
+      const runResult = await client.query(
+        `SELECT run_id, thread_id, status, request, created_at
+         FROM waje_runtime.analysis_runs WHERE run_id = $1 FOR UPDATE`,
+        [input.runId],
+      );
+      const run = runRecordFromRow(runResult.rows[0]);
+      const state = runDispatchState(row.dispatch_state);
+      if (state === "terminal") {
+        await client.query("COMMIT");
+        return { acquired: false, ownerId: null, leaseEpoch: Number(row.lease_epoch), state, reason: "terminal", run };
+      }
+      if (state === "running") {
+        await client.query("COMMIT");
+        return { acquired: false, ownerId: null, leaseEpoch: Number(row.lease_epoch), state, reason: "already_running", run };
+      }
+      if (run.status !== "queued") {
+        await client.query("COMMIT");
+        return { acquired: false, ownerId: null, leaseEpoch: Number(row.lease_epoch), state, reason: "run_not_queued", run };
+      }
+      if (state === "leased" && row.lease_active === true) {
+        await client.query("COMMIT");
+        return { acquired: false, ownerId: null, leaseEpoch: Number(row.lease_epoch), state, reason: "active_lease", run };
+      }
+      const updated = await client.query(
+        `
+        UPDATE waje_runtime.run_dispatches
+        SET dispatch_state = 'leased', owner_id = $2,
+            lease_epoch = lease_epoch + 1,
+            lease_expires_at = now() + ($3 * interval '1 millisecond'),
+            heartbeat_at = now(), updated_at = now()
+        WHERE run_id = $1
+        RETURNING lease_epoch
+        `,
+        [input.runId, ownerId, leaseMs],
+      );
+      await client.query("COMMIT");
+      return { acquired: true, ownerId, leaseEpoch: Number(updated.rows[0].lease_epoch), state: "leased", reason: "acquired", run };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  const store = memoryStore();
+  const dispatch = store.runDispatches.get(input.runId);
+  const run = store.runs.get(input.runId);
+  if (!dispatch || !run) throw gatewayError("run_dispatch_not_found");
+  if (dispatch.requestIdentity !== input.requestIdentity) {
+    throw gatewayError("run_dispatch_conflict");
+  }
+  if (dispatch.state === "terminal") {
+    return { acquired: false, ownerId: null, leaseEpoch: dispatch.leaseEpoch, state: dispatch.state, reason: "terminal", run };
+  }
+  if (dispatch.state === "running") {
+    return { acquired: false, ownerId: null, leaseEpoch: dispatch.leaseEpoch, state: dispatch.state, reason: "already_running", run };
+  }
+  if (run.status !== "queued") {
+    return { acquired: false, ownerId: null, leaseEpoch: dispatch.leaseEpoch, state: dispatch.state, reason: "run_not_queued", run };
+  }
+  const expiry = dispatch.leaseExpiresAt ? Date.parse(dispatch.leaseExpiresAt) : 0;
+  if (dispatch.state === "leased" && Number.isFinite(expiry) && expiry > Date.now()) {
+    return { acquired: false, ownerId: null, leaseEpoch: dispatch.leaseEpoch, state: dispatch.state, reason: "active_lease", run };
+  }
+  dispatch.state = "leased";
+  dispatch.ownerId = ownerId;
+  dispatch.leaseEpoch += 1;
+  dispatch.leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+  dispatch.heartbeatAt = new Date().toISOString();
+  return { acquired: true, ownerId, leaseEpoch: dispatch.leaseEpoch, state: "leased", reason: "acquired", run };
+}
+
+export async function failOwnedRunDispatch(input: {
+  runId: string;
+  ownerId: string;
+  leaseEpoch: number;
+  failureReason: string;
+}): Promise<RunRecord> {
+  if (conversationStoreMode() === "postgres") {
+    const client = await pool().connect();
+    try {
+      await client.query("BEGIN");
+      const dispatchResult = await client.query(
+        `SELECT * FROM waje_runtime.run_dispatches
+         WHERE run_id = $1 FOR UPDATE`,
+        [input.runId],
+      );
+      const dispatch = dispatchResult.rows[0];
+      if (!dispatch) throw gatewayError("run_dispatch_not_found");
+      const runResult = await client.query(
+        `SELECT run_id, thread_id, status, request, created_at
+         FROM waje_runtime.analysis_runs WHERE run_id = $1 FOR UPDATE`,
+        [input.runId],
+      );
+      const current = runRecordFromRow(runResult.rows[0]);
+      if (
+        !["leased", "running"].includes(String(dispatch.dispatch_state))
+        || dispatch.owner_id !== input.ownerId
+        || Number(dispatch.lease_epoch) !== input.leaseEpoch
+        || !["queued", "running", "running_workflow"].includes(current.status)
+      ) {
+        await client.query("COMMIT");
+        return current;
+      }
+      const failedResult = await client.query(
+        `UPDATE waje_runtime.analysis_runs
+         SET status = 'failed',
+             request = COALESCE(request, '{}'::jsonb)
+               || jsonb_build_object('failure_reason', $2),
+             updated_at = now()
+         WHERE run_id = $1 AND status IN ('queued', 'running', 'running_workflow')
+         RETURNING run_id, thread_id, status, request, created_at`,
+        [input.runId, input.failureReason],
+      );
+      if (!failedResult.rows[0]) throw gatewayError("run_dispatch_lease_lost");
+      await client.query(
+        `UPDATE waje_runtime.run_dispatches
+         SET dispatch_state = 'terminal', terminal_status = 'failed',
+             failure_reason = $4, lease_expires_at = NULL, updated_at = now()
+         WHERE run_id = $1 AND owner_id = $2 AND lease_epoch = $3`,
+        [input.runId, input.ownerId, input.leaseEpoch, input.failureReason],
+      );
+      await client.query(
+        `INSERT INTO waje_runtime.audit_events(event_type, thread_id, run_id, ref, payload)
+         VALUES
+           ('run_status_changed', $1, $2, $2, $3::jsonb),
+           ('run_dispatch_failed', $1, $2, $2, $4::jsonb)`,
+        [
+          failedResult.rows[0].thread_id,
+          input.runId,
+          JSON.stringify({ status: "failed" }),
+          JSON.stringify({ failureReason: input.failureReason, leaseEpoch: input.leaseEpoch }),
+        ],
+      );
+      await client.query("COMMIT");
+      return runRecordFromRow(failedResult.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  const store = memoryStore();
+  const dispatch = store.runDispatches.get(input.runId);
+  const current = store.runs.get(input.runId);
+  if (!dispatch || !current) throw gatewayError("run_dispatch_not_found");
+  if (
+    !["leased", "running"].includes(dispatch.state)
+    || dispatch.ownerId !== input.ownerId
+    || dispatch.leaseEpoch !== input.leaseEpoch
+    || !["queued", "running", "running_workflow"].includes(current.status)
+  ) {
+    return current;
+  }
+  const failed: RunRecord = {
+    ...current,
+    status: "failed",
+    request: { ...(current.request ?? {}), failure_reason: input.failureReason },
+  };
+  dispatch.state = "terminal";
+  dispatch.terminalStatus = "failed";
+  dispatch.failureReason = input.failureReason;
+  dispatch.leaseExpiresAt = null;
+  store.runs.set(input.runId, failed);
+  store.auditEvents = [
+    ...store.auditEvents,
+    { eventType: "run_status_changed", threadId: current.threadId, runId: current.id, ref: current.id, payload: { status: "failed" } },
+    { eventType: "run_dispatch_failed", threadId: current.threadId, runId: current.id, ref: current.id, payload: { failureReason: input.failureReason, leaseEpoch: input.leaseEpoch } },
+  ];
+  return failed;
+}
+
+export async function observeOwnedRunDispatchExit(input: {
+  runId: string;
+  ownerId: string;
+  leaseEpoch: number;
+  failureReason?: string;
+}): Promise<RunRecord> {
+  return failOwnedRunDispatch({
+    ...input,
+    failureReason: input.failureReason ?? "agent_core_worker_exited",
+  });
+}
+
+export async function completeOwnedRunDispatch(input: {
+  runId: string;
+  ownerId: string;
+  leaseEpoch: number;
+  runStatus: "waiting_for_clarification" | "completed" | "completed_without_workflow" | "failed";
+}): Promise<RunRecord> {
+  if (conversationStoreMode() === "postgres") {
+    const client = await pool().connect();
+    try {
+      await client.query("BEGIN");
+      const dispatchResult = await client.query(
+        `SELECT * FROM waje_runtime.run_dispatches
+         WHERE run_id = $1 FOR UPDATE`,
+        [input.runId],
+      );
+      const dispatch = dispatchResult.rows[0];
+      if (!dispatch) throw gatewayError("run_dispatch_not_found");
+      const runResult = await client.query(
+        `SELECT run_id, thread_id, status, request, created_at
+         FROM waje_runtime.analysis_runs WHERE run_id = $1 FOR UPDATE`,
+        [input.runId],
+      );
+      let current = runRecordFromRow(runResult.rows[0]);
+      const ownsDispatch = dispatch.owner_id === input.ownerId
+        && Number(dispatch.lease_epoch) === input.leaseEpoch;
+      if (!ownsDispatch) {
+        await client.query("COMMIT");
+        return current;
+      }
+      if (dispatch.dispatch_state === "terminal") {
+        await client.query("COMMIT");
+        return current;
+      }
+      if (!["pending", "leased", "running"].includes(String(dispatch.dispatch_state))) {
+        throw gatewayError("run_dispatch_state_invalid");
+      }
+      const runCanFinish = ["queued", "running", "running_workflow"].includes(current.status);
+      if (runCanFinish) {
+        const updated = await client.query(
+          `UPDATE waje_runtime.analysis_runs
+           SET status = $2, updated_at = now()
+           WHERE run_id = $1 AND status IN ('queued', 'running', 'running_workflow')
+           RETURNING run_id, thread_id, status, request, created_at`,
+          [input.runId, input.runStatus],
+        );
+        if (!updated.rows[0]) throw gatewayError("run_dispatch_lease_lost");
+        current = runRecordFromRow(updated.rows[0]);
+      }
+      await client.query(
+        `UPDATE waje_runtime.run_dispatches
+         SET dispatch_state = 'terminal', terminal_status = $4,
+             lease_expires_at = NULL, heartbeat_at = now(), updated_at = now()
+         WHERE run_id = $1 AND owner_id = $2 AND lease_epoch = $3
+           AND dispatch_state IN ('leased', 'running')`,
+        [input.runId, input.ownerId, input.leaseEpoch, current.status],
+      );
+      await client.query(
+        `INSERT INTO waje_runtime.audit_events(event_type, thread_id, run_id, ref, payload)
+         VALUES ('run_dispatch_completed', $1, $2, $2, $3::jsonb)`,
+        [
+          current.threadId,
+          input.runId,
+          JSON.stringify({ status: current.status, leaseEpoch: input.leaseEpoch }),
+        ],
+      );
+      await client.query("COMMIT");
+      return current;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  const store = memoryStore();
+  const dispatch = store.runDispatches.get(input.runId);
+  const current = store.runs.get(input.runId);
+  if (!dispatch || !current) throw gatewayError("run_dispatch_not_found");
+  if (
+    dispatch.ownerId !== input.ownerId
+    || dispatch.leaseEpoch !== input.leaseEpoch
+    || dispatch.state === "terminal"
+  ) {
+    return current;
+  }
+  if (!["leased", "running"].includes(dispatch.state)) {
+    throw gatewayError("run_dispatch_state_invalid");
+  }
+  const completed = ["queued", "running", "running_workflow"].includes(current.status)
+    ? { ...current, status: input.runStatus }
+    : current;
+  dispatch.state = "terminal";
+  dispatch.terminalStatus = completed.status;
+  dispatch.leaseExpiresAt = null;
+  dispatch.heartbeatAt = new Date().toISOString();
+  store.runs.set(input.runId, completed);
+  store.auditEvents = [
+    ...store.auditEvents,
+    {
+      eventType: "run_dispatch_completed",
+      threadId: completed.threadId,
+      runId: input.runId,
+      ref: input.runId,
+      payload: { status: completed.status, leaseEpoch: input.leaseEpoch },
+    },
+  ];
+  return completed;
+}
+
+export function runDispatchRequestIdentity(
+  request: Request,
+  body: Record<string, unknown>,
+): string {
+  const headerIdentity = request.headers.get("idempotency-key")?.trim() ?? "";
+  const bodyValue = body.requestIdentity;
+  if (bodyValue !== undefined && !isNonEmptyGatewayString(bodyValue)) {
+    throw gatewayError("run_dispatch_request_identity_invalid");
+  }
+  const bodyIdentity = typeof bodyValue === "string" ? bodyValue.trim() : "";
+  if (headerIdentity && bodyIdentity && headerIdentity !== bodyIdentity) {
+    throw gatewayError("run_dispatch_request_identity_conflict");
+  }
+  const identity = headerIdentity || bodyIdentity;
+  if (!identity || identity.length > 256) {
+    throw gatewayError("run_dispatch_request_identity_required");
+  }
+  return identity;
+}
+
+export async function claimClarificationResume(input: {
+  sourceRunId: string;
+  requestIdentity: string;
+  answer: string;
+  selectedOptionId?: string | null;
+  source?: string;
+  runtimePermissionScope: RuntimePermissionScope;
+}): Promise<ClarificationResumeClaim> {
+  const normalized = normalizeClarificationResumeInput(input);
+  const sourceRunId = normalized.sourceRunId;
+  const requestIdentity = normalized.requestIdentity;
+  const answer = normalized.answer;
+  const selectedOptionId = normalized.selectedOptionId;
+  const source = normalized.source;
+  const runtimePermissionScope = normalized.runtimePermissionScope;
+  if (conversationStoreMode() === "postgres") {
+    const client = await pool().connect();
+    try {
+      await client.query("BEGIN");
+      const sourceResult = await client.query(
+        `
+        SELECT run_id, thread_id, status
+        FROM waje_runtime.analysis_runs
+        WHERE run_id = $1
+        FOR UPDATE
+        `,
+        [sourceRunId],
+      );
+      const sourceRun = sourceResult.rows[0];
+      if (!sourceRun) throw gatewayError("run_not_found");
+      const submission = {
+        runId: sourceRunId,
+        answer,
+        selectedOptionId,
+        source,
+      };
+      const normalizedDispatch = normalizeRunDispatchInput({
+        producerKind: "clarification_resume",
+        scopeRef: sourceRunId,
+        requestIdentity,
+        threadId: sourceRun.thread_id,
+        text: answer,
+        requestPayload: { ...submission, runtimePermissionScope },
+      });
+      const requestDigest = runDispatchRequestDigest(normalizedDispatch);
+      const existingResult = await client.query(
+        `
+        SELECT c.source_run_id, c.resumed_run_id, c.thread_id,
+               c.request_identity, c.submission, c.message_id,
+               c.dispatch_state, c.dispatch_owner_id, c.dispatch_lease_expires_at,
+               d.request_digest,
+               m.role, m.text, m.created_at AS message_created_at,
+               r.status, r.request, r.created_at AS run_created_at
+        FROM waje_runtime.clarification_resume_claims c
+        JOIN waje_runtime.conversation_messages m ON m.message_id = c.message_id
+        JOIN waje_runtime.analysis_runs r ON r.run_id = c.resumed_run_id
+        LEFT JOIN waje_runtime.run_dispatches d ON d.run_id = c.resumed_run_id
+        WHERE c.source_run_id = $1
+        `,
+        [sourceRunId],
+      );
+      const existing = existingResult.rows[0];
+      if (existing) {
+        if (existing.request_identity !== requestIdentity) {
+          throw gatewayError("clarification_resume_conflict");
+        }
+        if (existing.request_digest !== requestDigest) {
+          throw gatewayError("run_dispatch_conflict");
+        }
+        await client.query("COMMIT");
+        return clarificationClaimFromRow(existing, true);
+      }
+      if (sourceRun.status !== "waiting_for_clarification") {
+        throw gatewayError("clarification_source_not_waiting");
+      }
+
+      const resumedRunId = `run-${crypto.randomUUID()}`;
+      const messageId = `message-${crypto.randomUUID()}`;
+      const dispatchId = `dispatch-${crypto.randomUUID()}`;
+      const createdAt = new Date().toISOString();
+      await client.query(
+        `
+        INSERT INTO waje_runtime.conversation_messages(message_id, thread_id, role, text)
+        VALUES ($1, $2, 'user', $3)
+        `,
+        [messageId, sourceRun.thread_id, answer],
+      );
+      await client.query(
+        `
+        INSERT INTO waje_runtime.analysis_runs(run_id, thread_id, status)
+        VALUES ($1, $2, 'queued')
+        `,
+        [resumedRunId, sourceRun.thread_id],
+      );
+      await client.query(
+        `
+        INSERT INTO waje_runtime.clarification_resume_claims(
+          source_run_id, resumed_run_id, thread_id, request_identity,
+          submission, message_id
+        )
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+        `,
+        [
+          sourceRunId,
+          resumedRunId,
+          sourceRun.thread_id,
+          requestIdentity,
+          JSON.stringify(submission),
+          messageId,
+        ],
+      );
+      await client.query(
+        `INSERT INTO waje_runtime.run_dispatches(
+           dispatch_id, producer_kind, scope_ref, request_identity,
+           request_digest, request_payload, thread_id, run_id, message_id
+         ) VALUES ($1, 'clarification_resume', $2, $3, $4, $5::jsonb, $6, $7, $8)`,
+        [
+          dispatchId,
+          sourceRunId,
+          requestIdentity,
+          requestDigest,
+          JSON.stringify(normalizedDispatch.requestPayload),
+          sourceRun.thread_id,
+          resumedRunId,
+          messageId,
+        ],
+      );
+      await client.query(
+        `
+        INSERT INTO waje_runtime.audit_events(
+          event_type, thread_id, run_id, ref, payload
+        ) VALUES
+          ('clarification_answer_recorded', $1, $2, $2, $4::jsonb),
+          ('run_queued', $1, $3, $3, $5::jsonb)
+        `,
+        [
+          sourceRun.thread_id,
+          sourceRunId,
+          resumedRunId,
+          JSON.stringify(submission),
+          JSON.stringify({ dispatchId, producerKind: "clarification_resume" }),
+        ],
+      );
+      await client.query("COMMIT");
+      return {
+        sourceRunId,
+        resumedRunId,
+        threadId: sourceRun.thread_id,
+        requestIdentity,
+        answer,
+        selectedOptionId,
+        source,
+        message: {
+          id: messageId,
+          role: "user",
+          text: answer,
+          createdAt,
+        },
+        run: {
+          id: resumedRunId,
+          threadId: sourceRun.thread_id,
+          status: "queued",
+          createdAt,
+          request: {},
+        },
+        replayed: false,
+        dispatchState: "pending",
+        dispatchOwnerId: null,
+        dispatchLeaseExpiresAt: null,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  const store = memoryStore();
+  const sourceRun = store.runs.get(sourceRunId);
+  if (!sourceRun) throw gatewayError("run_not_found");
+  const submission = {
+    runId: sourceRunId,
+    answer,
+    selectedOptionId,
+    source,
+  };
+  const normalizedDispatch = normalizeRunDispatchInput({
+    producerKind: "clarification_resume",
+    scopeRef: sourceRunId,
+    requestIdentity,
+    threadId: sourceRun.threadId,
+    text: answer,
+    requestPayload: { ...submission, runtimePermissionScope },
+  });
+  const requestDigest = runDispatchRequestDigest(normalizedDispatch);
+  const existing = store.clarificationResumeClaims.get(sourceRunId);
+  if (existing) {
+    if (existing.requestIdentity !== requestIdentity) {
+      throw gatewayError("clarification_resume_conflict");
+    }
+    const existingDispatch = store.runDispatches.get(existing.resumedRunId);
+    if (!existingDispatch || existingDispatch.requestDigest !== requestDigest) {
+      throw gatewayError("run_dispatch_conflict");
+    }
+    return {
+      ...existing,
+      run: store.runs.get(existing.resumedRunId) ?? existing.run,
+      replayed: true,
+    };
+  }
+  if (sourceRun.status !== "waiting_for_clarification") {
+    throw gatewayError("clarification_source_not_waiting");
+  }
+  const thread = store.threads.get(sourceRun.threadId);
+  if (!thread) throw gatewayError("thread_not_found");
+  const createdAt = new Date().toISOString();
+  const message: MessageRecord = {
+    id: `message-${crypto.randomUUID()}`,
+    role: "user",
+    text: answer,
+    createdAt,
+  };
+  const run: RunRecord = {
+    id: `run-${crypto.randomUUID()}`,
+    threadId: sourceRun.threadId,
+    status: "queued",
+    createdAt,
+    request: {},
+  };
+  const claim: ClarificationResumeClaim = {
+    sourceRunId,
+    resumedRunId: run.id,
+    threadId: sourceRun.threadId,
+    requestIdentity,
+    answer,
+    selectedOptionId,
+    source,
+    message,
+    run,
+    replayed: false,
+    dispatchState: "pending",
+    dispatchOwnerId: null,
+    dispatchLeaseExpiresAt: null,
+  };
+  const dispatch: RunDispatchRecord = {
+    dispatchId: `dispatch-${crypto.randomUUID()}`,
+    producerKind: "clarification_resume",
+    scopeRef: sourceRunId,
+    requestIdentity,
+    requestDigest,
+    requestPayload: normalizedDispatch.requestPayload,
+    threadId: sourceRun.threadId,
+    runId: run.id,
+    messageId: message.id,
+    state: "pending",
+    ownerId: null,
+    leaseEpoch: 0,
+    leaseExpiresAt: null,
+    heartbeatAt: null,
+    terminalStatus: null,
+    failureReason: null,
+  };
+  thread.messages.push(message);
+  store.runs.set(run.id, run);
+  store.clarificationResumeClaims.set(sourceRunId, claim);
+  store.runDispatches.set(run.id, dispatch);
+  store.auditEvents.push(
+    {
+      eventType: "clarification_answer_recorded",
+      threadId: sourceRun.threadId,
+      runId: sourceRunId,
+      ref: sourceRunId,
+      payload: {
+        runId: sourceRunId,
+        answer,
+        selectedOptionId,
+        source,
+      },
+    },
+    {
+      eventType: "run_queued",
+      threadId: sourceRun.threadId,
+      runId: run.id,
+      ref: run.id,
+      payload: {
+        dispatchId: dispatch.dispatchId,
+        producerKind: dispatch.producerKind,
+      },
+    },
+  );
+  return claim;
+}
+
+export async function acquireClarificationResumeDispatch(input: {
+  sourceRunId: string;
+  resumedRunId: string;
+  requestIdentity: string;
+}): Promise<ClarificationDispatchLease> {
+  const ownerId = `gateway-dispatch-${crypto.randomUUID()}`;
+  const leaseMs = clarificationDispatchLeaseMs();
+  if (conversationStoreMode() === "postgres") {
+    const client = await pool().connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query(
+        `
+        SELECT c.source_run_id, c.resumed_run_id, c.request_identity,
+               c.dispatch_state, c.dispatch_owner_id, c.dispatch_lease_expires_at,
+               c.dispatch_lease_expires_at > now() AS dispatch_lease_active,
+               r.run_id, r.thread_id, r.status, r.request, r.created_at
+        FROM waje_runtime.clarification_resume_claims c
+        JOIN waje_runtime.analysis_runs r ON r.run_id = c.resumed_run_id
+        WHERE c.source_run_id = $1
+        FOR UPDATE OF c, r
+        `,
+        [input.sourceRunId],
+      );
+      const row = rows[0];
+      if (!row) throw gatewayError("clarification_resume_claim_not_found");
+      if (
+        row.resumed_run_id !== input.resumedRunId
+        || row.request_identity !== input.requestIdentity
+      ) {
+        throw gatewayError("clarification_resume_conflict");
+      }
+      const run = runRecordFromRow(row);
+      const state = clarificationDispatchState(row.dispatch_state);
+      if (run.status !== "queued") {
+        await client.query("COMMIT");
+        return { acquired: false, ownerId: null, state, reason: "run_not_queued", run };
+      }
+      if (state === "dispatched") {
+        await client.query("COMMIT");
+        return { acquired: false, ownerId: null, state, reason: "already_dispatched", run };
+      }
+      if (state === "leased" && row.dispatch_lease_active === true) {
+        await client.query("COMMIT");
+        return { acquired: false, ownerId: null, state, reason: "active_lease", run };
+      }
+      await client.query(
+        `
+        UPDATE waje_runtime.clarification_resume_claims
+        SET dispatch_state = 'leased',
+            dispatch_owner_id = $2,
+            dispatch_lease_expires_at = now() + ($3 * interval '1 millisecond')
+        WHERE source_run_id = $1
+        `,
+        [input.sourceRunId, ownerId, leaseMs],
+      );
+      await client.query("COMMIT");
+      return { acquired: true, ownerId, state: "leased", reason: "acquired", run };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  const store = memoryStore();
+  const claim = store.clarificationResumeClaims.get(input.sourceRunId);
+  if (!claim) throw gatewayError("clarification_resume_claim_not_found");
+  if (
+    claim.resumedRunId !== input.resumedRunId
+    || claim.requestIdentity !== input.requestIdentity
+  ) {
+    throw gatewayError("clarification_resume_conflict");
+  }
+  const run = store.runs.get(claim.resumedRunId) ?? claim.run;
+  const state = clarificationDispatchState(claim.dispatchState);
+  if (run.status !== "queued") {
+    return { acquired: false, ownerId: null, state, reason: "run_not_queued", run };
+  }
+  if (state === "dispatched") {
+    return { acquired: false, ownerId: null, state, reason: "already_dispatched", run };
+  }
+  const leaseExpiresAt = claim.dispatchLeaseExpiresAt
+    ? Date.parse(claim.dispatchLeaseExpiresAt)
+    : 0;
+  if (state === "leased" && Number.isFinite(leaseExpiresAt) && leaseExpiresAt > Date.now()) {
+    return { acquired: false, ownerId: null, state, reason: "active_lease", run };
+  }
+  claim.dispatchState = "leased";
+  claim.dispatchOwnerId = ownerId;
+  claim.dispatchLeaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+  return { acquired: true, ownerId, state: "leased", reason: "acquired", run };
+}
+
+export async function completeClarificationResumeDispatch(input: {
+  sourceRunId: string;
+  resumedRunId: string;
+  ownerId: string;
+}): Promise<void> {
+  if (conversationStoreMode() === "postgres") {
+    const { rowCount } = await pool().query(
+      `
+      UPDATE waje_runtime.clarification_resume_claims
+      SET dispatch_state = 'dispatched',
+          dispatch_lease_expires_at = NULL,
+          dispatched_at = now()
+      WHERE source_run_id = $1
+        AND resumed_run_id = $2
+        AND dispatch_state = 'leased'
+        AND dispatch_owner_id = $3
+      `,
+      [input.sourceRunId, input.resumedRunId, input.ownerId],
+    );
+    if (rowCount === 1) return;
+    const { rows } = await pool().query(
+      `
+      SELECT resumed_run_id, dispatch_state, dispatch_owner_id
+      FROM waje_runtime.clarification_resume_claims
+      WHERE source_run_id = $1
+      `,
+      [input.sourceRunId],
+    );
+    const current = rows[0];
+    if (
+      !current
+      || current.resumed_run_id !== input.resumedRunId
+      || current.dispatch_state !== "dispatched"
+      || current.dispatch_owner_id !== input.ownerId
+    ) {
+      throw gatewayError("clarification_dispatch_lease_lost");
+    }
+    return;
+  }
+  const claim = memoryStore().clarificationResumeClaims.get(input.sourceRunId);
+  if (
+    claim
+    && claim.resumedRunId === input.resumedRunId
+    && claim.dispatchState === "dispatched"
+    && claim.dispatchOwnerId === input.ownerId
+  ) {
+    return;
+  }
+  if (
+    !claim
+    || claim.resumedRunId !== input.resumedRunId
+    || claim.dispatchState !== "leased"
+    || claim.dispatchOwnerId !== input.ownerId
+  ) {
+    throw gatewayError("clarification_dispatch_lease_lost");
+  }
+  claim.dispatchState = "dispatched";
+  claim.dispatchLeaseExpiresAt = null;
+}
+
+export async function failClarificationResumeDispatch(input: {
+  sourceRunId: string;
+  resumedRunId: string;
+  ownerId: string;
+  failureReason: string;
+}): Promise<RunRecord> {
+  if (conversationStoreMode() === "postgres") {
+    const client = await pool().connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query(
+        `
+        SELECT c.dispatch_state, c.dispatch_owner_id,
+               r.run_id, r.thread_id, r.status, r.request, r.created_at
+        FROM waje_runtime.clarification_resume_claims c
+        JOIN waje_runtime.analysis_runs r ON r.run_id = c.resumed_run_id
+        WHERE c.source_run_id = $1 AND c.resumed_run_id = $2
+        FOR UPDATE OF c, r
+        `,
+        [input.sourceRunId, input.resumedRunId],
+      );
+      const row = rows[0];
+      if (!row) throw gatewayError("clarification_resume_claim_not_found");
+      const current = runRecordFromRow(row);
+      if (
+        row.dispatch_state !== "leased"
+        || row.dispatch_owner_id !== input.ownerId
+        || current.status !== "queued"
+      ) {
+        await client.query("COMMIT");
+        return current;
+      }
+      const failedResult = await client.query(
+        `
+        UPDATE waje_runtime.analysis_runs
+        SET status = 'failed',
+            request = COALESCE(request, '{}'::jsonb)
+              || jsonb_build_object('failure_reason', $2),
+            updated_at = now()
+        WHERE run_id = $1 AND status = 'queued'
+        RETURNING run_id, thread_id, status, request, created_at
+        `,
+        [input.resumedRunId, input.failureReason],
+      );
+      if (!failedResult.rows[0]) throw gatewayError("clarification_dispatch_lease_lost");
+      await client.query(
+        `
+        UPDATE waje_runtime.clarification_resume_claims
+        SET dispatch_state = 'dispatched',
+            dispatch_lease_expires_at = NULL,
+            dispatched_at = now()
+        WHERE source_run_id = $1
+          AND resumed_run_id = $2
+          AND dispatch_state = 'leased'
+          AND dispatch_owner_id = $3
+        `,
+        [input.sourceRunId, input.resumedRunId, input.ownerId],
+      );
+      await client.query(
+        `
+        INSERT INTO waje_runtime.audit_events(
+          event_type, thread_id, run_id, ref, payload
+        ) VALUES
+          ('run_status_changed', $1, $2, $2, $3::jsonb),
+          ('run_dispatch_failed', $1, $2, $2, $4::jsonb)
+        `,
+        [
+          failedResult.rows[0].thread_id,
+          input.resumedRunId,
+          JSON.stringify({ status: "failed" }),
+          JSON.stringify({ failureReason: input.failureReason }),
+        ],
+      );
+      await client.query("COMMIT");
+      return runRecordFromRow(failedResult.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  const store = memoryStore();
+  const claim = store.clarificationResumeClaims.get(input.sourceRunId);
+  const current = store.runs.get(input.resumedRunId);
+  if (!claim || !current || claim.resumedRunId !== input.resumedRunId) {
+    throw gatewayError("clarification_resume_claim_not_found");
+  }
+  if (
+    claim.dispatchState !== "leased"
+    || claim.dispatchOwnerId !== input.ownerId
+    || current.status !== "queued"
+  ) {
+    return current;
+  }
+  const failed: RunRecord = {
+    ...current,
+    status: "failed",
+    request: {
+      ...(current.request ?? {}),
+      failure_reason: input.failureReason,
+    },
+  };
+  claim.dispatchState = "dispatched";
+  claim.dispatchLeaseExpiresAt = null;
+  store.runs.set(input.resumedRunId, failed);
+  store.auditEvents = [
+    ...store.auditEvents,
+    {
+      eventType: "run_status_changed",
+      threadId: current.threadId,
+      runId: current.id,
+      ref: current.id,
+      payload: { status: "failed" },
+    },
+    {
+      eventType: "run_dispatch_failed",
+      threadId: current.threadId,
+      runId: current.id,
+      ref: current.id,
+      payload: { failureReason: input.failureReason },
+    },
+  ];
+  return failed;
+}
+
 export async function requireRun(runId: string): Promise<RunRecord> {
   if (conversationStoreMode() === "postgres") {
     const { rows } = await pool().query(
@@ -258,16 +1480,97 @@ export async function requireRun(runId: string): Promise<RunRecord> {
     );
     const row = rows[0];
     if (!row) throw new Error("run_not_found");
-    return {
-      id: row.run_id,
-      threadId: row.thread_id,
-      status: row.status,
-      createdAt: row.created_at,
-    } satisfies RunRecord;
+    return runRecordFromRow(row);
   }
   const run = memoryStore().runs.get(runId);
   if (!run) throw new Error("run_not_found");
   return run;
+}
+
+export async function failQueuedRunDispatch(
+  runId: string,
+  failureReason: string = "agent_core_spawn_failed",
+): Promise<RunRecord> {
+  if (conversationStoreMode() === "postgres") {
+    const client = await pool().connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query(
+        `
+        UPDATE waje_runtime.analysis_runs
+        SET status = 'failed',
+            request = COALESCE(request, '{}'::jsonb)
+              || jsonb_build_object('failure_reason', $2),
+            updated_at = now()
+        WHERE run_id = $1
+          AND status = 'queued'
+        RETURNING run_id, thread_id, status, request, created_at
+        `,
+        [runId, failureReason],
+      );
+      if (rows[0]) {
+        await client.query(
+          `
+          INSERT INTO waje_runtime.audit_events(
+            event_type, thread_id, run_id, ref, payload
+          ) VALUES
+            ('run_status_changed', $1, $2, $2, $3::jsonb),
+            ('run_dispatch_failed', $1, $2, $2, $4::jsonb)
+          `,
+          [
+            rows[0].thread_id,
+            runId,
+            JSON.stringify({ status: "failed" }),
+            JSON.stringify({ failureReason }),
+          ],
+        );
+        await client.query("COMMIT");
+        return runRecordFromRow(rows[0]);
+      }
+      const current = await client.query(
+        `SELECT run_id, thread_id, status, request, created_at
+         FROM waje_runtime.analysis_runs WHERE run_id = $1`,
+        [runId],
+      );
+      await client.query("COMMIT");
+      if (!current.rows[0]) throw gatewayError("run_not_found");
+      return runRecordFromRow(current.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  const store = memoryStore();
+  const current = store.runs.get(runId);
+  if (!current) throw gatewayError("run_not_found");
+  if (current.status !== "queued") return current;
+  const failed: RunRecord = {
+    ...current,
+    status: "failed",
+    request: { ...(current.request ?? {}), failure_reason: failureReason },
+  };
+  const stagedAudits = [
+    ...store.auditEvents,
+    {
+      eventType: "run_status_changed",
+      threadId: current.threadId,
+      runId,
+      ref: runId,
+      payload: { status: "failed" },
+    },
+    {
+      eventType: "run_dispatch_failed",
+      threadId: current.threadId,
+      runId,
+      ref: runId,
+      payload: { failureReason },
+    },
+  ];
+  store.runs.set(runId, failed);
+  store.auditEvents = stagedAudits;
+  return failed;
 }
 
 export async function runEvents(runId: string): Promise<RunEvent[]> {
@@ -714,7 +2017,7 @@ export async function requireArtifactForContinue(
       [artifactId],
     );
     const row = rows[0];
-    if (!row) throw new Error("artifact_not_found");
+    if (!row) throw gatewayError("artifact_not_found");
     if (!canReadScope(role, row.permission_scope)) {
       await audit("artifact_continue_blocked", {
         threadId: row.thread_id,
@@ -722,7 +2025,7 @@ export async function requireArtifactForContinue(
         ref: artifactId,
         payload: { role, permission_scope: row.permission_scope },
       });
-      throw new Error("artifact_permission_denied");
+      throw gatewayError("artifact_permission_denied");
     }
     await audit("artifact_continue_allowed", {
       threadId: row.thread_id,
@@ -741,10 +2044,24 @@ export async function requireArtifactForContinue(
     } satisfies ArtifactRecord;
   }
   const artifact = memoryStore().artifacts.get(artifactId);
-  if (!artifact) throw new Error("artifact_not_found");
+  if (!artifact) throw gatewayError("artifact_not_found");
   if (!canReadScope(role, artifact.permissionScope)) {
-    throw new Error("artifact_permission_denied");
+    memoryStore().auditEvents.push({
+      eventType: "artifact_continue_blocked",
+      threadId: artifact.threadId,
+      topicId: artifact.topicId,
+      ref: artifactId,
+      payload: { role, permission_scope: artifact.permissionScope },
+    });
+    throw gatewayError("artifact_permission_denied");
   }
+  memoryStore().auditEvents.push({
+    eventType: "artifact_continue_allowed",
+    threadId: artifact.threadId,
+    topicId: artifact.topicId,
+    ref: artifactId,
+    payload: { role, permission_scope: artifact.permissionScope },
+  });
   return artifact;
 }
 
@@ -778,7 +2095,7 @@ export async function readArtifactForRole(
       [artifactId],
     );
     const row = rows[0];
-    if (!row) throw new Error("artifact_not_found");
+    if (!row) throw gatewayError("artifact_not_found");
     if (!canReadScope(role, row.permission_scope)) {
       await audit(`artifact_${action}_blocked`, {
         threadId: row.thread_id,
@@ -786,7 +2103,7 @@ export async function readArtifactForRole(
         ref: artifactId,
         payload: { role, permission_scope: row.permission_scope },
       });
-      throw new Error("artifact_permission_denied");
+      throw gatewayError("artifact_permission_denied");
     }
     const answerPackage = filterAnswerPackageForRole(row.answer_package ?? {}, role);
     const visibleSectionIds = visibleSections(answerPackage);
@@ -810,6 +2127,13 @@ export async function readArtifactForRole(
     } satisfies VisibleArtifactRecord;
   }
   const artifact = await requireArtifactForContinue(artifactId, role);
+  memoryStore().auditEvents.push({
+    eventType: action === "export" ? "artifact_exported" : "artifact_opened",
+    threadId: artifact.threadId,
+    topicId: artifact.topicId,
+    ref: artifactId,
+    payload: { role, visibleSectionIds: [] },
+  });
   return {
     ...artifact,
     visibleSectionIds: [],
@@ -910,11 +2234,293 @@ export async function updateMemoryProposal(
   return proposal;
 }
 
-export function jsonError(error: unknown, status = 404) {
+export function jsonError(error: unknown, status?: number) {
+  const code = error instanceof GatewayRuntimeError
+    ? error.code
+    : error instanceof Error
+      ? error.message
+      : "unknown_error";
   return Response.json(
-    { error: error instanceof Error ? error.message : "unknown_error" },
-    { status },
+    { error: code },
+    {
+      status: status
+        ?? (error instanceof GatewayRuntimeError
+          ? error.httpStatus
+          : gatewayHttpStatus(code)),
+    },
   );
+}
+
+function gatewayHttpStatus(code: string) {
+  if (code.endsWith("_not_found")) {
+    return 404;
+  }
+  if (
+    [
+      "clarification_source_not_waiting",
+      "clarification_resume_conflict",
+      "clarification_dispatch_lease_lost",
+      "run_dispatch_conflict",
+      "run_dispatch_lease_lost",
+    ].includes(code)
+  ) {
+    return 409;
+  }
+  if (code === "artifact_thread_mismatch") {
+    return 409;
+  }
+  if (code === "artifact_permission_denied") {
+    return 403;
+  }
+  if (
+    code === "clarification_answer_required"
+    || code.startsWith("clarification_submission_")
+    || code === "clarification_selected_option_invalid"
+    || code.startsWith("run_dispatch_request_identity_")
+    || code === "run_dispatch_request_invalid"
+    || code === "run_dispatch_producer_invalid"
+  ) {
+    return 400;
+  }
+  if (
+    code === "agent_core_run_id_mismatch"
+    || code === "agent_core_process_failed"
+    || code.startsWith("agent_core_output_")
+  ) {
+    return 502;
+  }
+  if (["agent_core_spawn_failed", "agent_core_startup_failed"].includes(code)) {
+    return 503;
+  }
+  return 500;
+}
+
+function normalizeRunDispatchInput(input: {
+  producerKind: RunDispatchRecord["producerKind"];
+  scopeRef: string;
+  requestIdentity: string;
+  threadId: string;
+  text: string;
+  requestPayload?: Record<string, unknown>;
+}) {
+  if (!["thread_message", "artifact_continue", "clarification_resume"].includes(input.producerKind)) {
+    throw gatewayError("run_dispatch_producer_invalid");
+  }
+  if (
+    !isNonEmptyGatewayString(input.scopeRef)
+    || !isNonEmptyGatewayString(input.requestIdentity)
+    || !isNonEmptyGatewayString(input.threadId)
+    || !isNonEmptyGatewayString(input.text)
+  ) {
+    throw gatewayError("run_dispatch_request_invalid");
+  }
+  const requestPayload = canonicalGatewayRecord(input.requestPayload ?? {});
+  return {
+    producerKind: input.producerKind,
+    scopeRef: input.scopeRef.trim(),
+    requestIdentity: input.requestIdentity.trim(),
+    threadId: input.threadId.trim(),
+    text: input.text.trim(),
+    requestPayload,
+  };
+}
+
+function runDispatchRequestDigest(input: ReturnType<typeof normalizeRunDispatchInput>) {
+  return createHash("sha256").update(JSON.stringify(canonicalGatewayValue({
+    producerKind: input.producerKind,
+    scopeRef: input.scopeRef,
+    threadId: input.threadId,
+    text: input.text,
+    requestPayload: input.requestPayload,
+  }))).digest("hex");
+}
+
+function runDispatchIdentityLock(input: ReturnType<typeof normalizeRunDispatchInput>) {
+  return JSON.stringify([
+    input.producerKind,
+    input.scopeRef,
+    input.requestIdentity,
+  ]);
+}
+
+function canonicalGatewayRecord(value: Record<string, unknown>) {
+  return canonicalGatewayValue(value) as Record<string, unknown>;
+}
+
+function canonicalGatewayValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalGatewayValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalGatewayValue(item)]),
+    );
+  }
+  if (["string", "number", "boolean"].includes(typeof value) || value === null) {
+    return value;
+  }
+  throw gatewayError("run_dispatch_request_invalid");
+}
+
+function runDispatchState(value: unknown): RunDispatchRecord["state"] {
+  if (["pending", "leased", "running", "terminal"].includes(String(value))) {
+    return String(value) as RunDispatchRecord["state"];
+  }
+  throw gatewayError("run_dispatch_state_invalid");
+}
+
+function runDispatchClaimFromRow(
+  row: Record<string, unknown>,
+  replayed: boolean,
+): RunDispatchClaim {
+  const message: MessageRecord = {
+    id: String(row.message_id),
+    role: "user",
+    text: String(row.text ?? ""),
+    createdAt: String(row.message_created_at),
+  };
+  const run: RunRecord = {
+    id: String(row.run_id),
+    threadId: String(row.thread_id),
+    status: validatedRunStatus(row.status),
+    createdAt: String(row.run_created_at),
+    request: (row.request as Record<string, unknown>) ?? {},
+  };
+  return {
+    message,
+    run,
+    dispatch: {
+      dispatchId: String(row.dispatch_id),
+      producerKind: String(row.producer_kind) as RunDispatchRecord["producerKind"],
+      scopeRef: String(row.scope_ref),
+      requestIdentity: String(row.request_identity),
+      requestDigest: String(row.request_digest),
+      requestPayload: canonicalGatewayRecord(
+        (row.request_payload as Record<string, unknown>) ?? {},
+      ),
+      threadId: String(row.thread_id),
+      runId: String(row.run_id),
+      messageId: String(row.message_id),
+      state: runDispatchState(row.dispatch_state),
+      ownerId: typeof row.owner_id === "string" ? row.owner_id : null,
+      leaseEpoch: Number(row.lease_epoch ?? 0),
+      leaseExpiresAt: row.lease_expires_at ? String(row.lease_expires_at) : null,
+      heartbeatAt: row.heartbeat_at ? String(row.heartbeat_at) : null,
+      terminalStatus: typeof row.terminal_status === "string" ? row.terminal_status : null,
+      failureReason: typeof row.failure_reason === "string" ? row.failure_reason : null,
+    },
+    replayed,
+  };
+}
+
+function runDispatchLeaseMs() {
+  const configured = Number(process.env.WAJE_RUN_DISPATCH_LEASE_MS ?? "30000");
+  return Number.isFinite(configured) && configured > 0 ? configured : 30000;
+}
+
+function normalizeClarificationResumeInput(input: {
+  sourceRunId: unknown;
+  requestIdentity: unknown;
+  answer: unknown;
+  selectedOptionId?: unknown;
+  source?: unknown;
+  runtimePermissionScope: unknown;
+}) {
+  if (!isNonEmptyGatewayString(input.sourceRunId)) {
+    throw gatewayError("clarification_submission_source_run_invalid");
+  }
+  if (
+    !isNonEmptyGatewayString(input.requestIdentity)
+    || input.requestIdentity.trim().length > 256
+  ) {
+    throw gatewayError("run_dispatch_request_identity_invalid");
+  }
+  if (!isNonEmptyGatewayString(input.answer)) {
+    throw gatewayError("clarification_answer_required");
+  }
+  if (
+    input.selectedOptionId !== undefined
+    && input.selectedOptionId !== null
+    && !isNonEmptyGatewayString(input.selectedOptionId)
+  ) {
+    throw gatewayError("clarification_selected_option_invalid");
+  }
+  if (input.source !== undefined && input.source !== "user") {
+    throw gatewayError("clarification_submission_source_invalid");
+  }
+  if (
+    input.runtimePermissionScope !== "viewer"
+    && input.runtimePermissionScope !== "analyst"
+    && input.runtimePermissionScope !== "admin"
+  ) {
+    throw gatewayError("clarification_submission_permission_scope_invalid");
+  }
+  return {
+    sourceRunId: input.sourceRunId.trim(),
+    requestIdentity: input.requestIdentity.trim(),
+    answer: input.answer.trim(),
+    selectedOptionId: typeof input.selectedOptionId === "string"
+      ? input.selectedOptionId.trim()
+      : null,
+    source: "user",
+    runtimePermissionScope: input.runtimePermissionScope,
+  };
+}
+
+function clarificationDispatchState(
+  value: unknown,
+): "pending" | "leased" | "dispatched" {
+  if (value === undefined || value === null || value === "pending") return "pending";
+  if (value === "leased" || value === "dispatched") return value;
+  throw gatewayError("clarification_dispatch_state_invalid");
+}
+
+function clarificationDispatchLeaseMs() {
+  const configured = Number(process.env.WAJE_CLARIFICATION_DISPATCH_LEASE_MS ?? "30000");
+  return Number.isFinite(configured) && configured > 0 ? configured : 30000;
+}
+
+function isNonEmptyGatewayString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function clarificationClaimFromRow(
+  row: Record<string, unknown>,
+  replayed: boolean,
+): ClarificationResumeClaim {
+  const submission = row.submission as Record<string, unknown>;
+  return {
+    sourceRunId: String(row.source_run_id),
+    resumedRunId: String(row.resumed_run_id),
+    threadId: String(row.thread_id),
+    requestIdentity: String(row.request_identity),
+    answer: String(submission.answer ?? ""),
+    selectedOptionId: typeof submission.selectedOptionId === "string"
+      ? submission.selectedOptionId
+      : null,
+    source: String(submission.source ?? "user"),
+    message: {
+      id: String(row.message_id),
+      role: "user",
+      text: String(row.text ?? ""),
+      createdAt: String(row.message_created_at),
+    },
+    run: {
+      id: String(row.resumed_run_id),
+      threadId: String(row.thread_id),
+      status: String(row.status) as RunStatus,
+      createdAt: String(row.run_created_at),
+      request: row.request as Record<string, unknown>,
+    },
+    replayed,
+    dispatchState: clarificationDispatchState(row.dispatch_state),
+    dispatchOwnerId: typeof row.dispatch_owner_id === "string"
+      ? row.dispatch_owner_id
+      : null,
+    dispatchLeaseExpiresAt: row.dispatch_lease_expires_at
+      ? String(row.dispatch_lease_expires_at)
+      : null,
+  };
 }
 
 function memoryStore() {
@@ -923,8 +2529,15 @@ function memoryStore() {
     runs: new Map(),
     artifacts: new Map(),
     memoryProposals: new Map(),
+    clarificationResumeClaims: new Map(),
+    runDispatches: new Map(),
+    auditEvents: [],
   };
-  return globalStore.__wajeConversationMemoryStore;
+  const store = globalStore.__wajeConversationMemoryStore;
+  store.clarificationResumeClaims ??= new Map();
+  store.runDispatches ??= new Map();
+  store.auditEvents ??= [];
+  return store;
 }
 
 function pool() {
@@ -1201,6 +2814,7 @@ function reviewedAgentCoreError(value: unknown) {
 }
 
 const SAFE_AGENT_CORE_FAILURE_REASONS = new Set([
+  "analysis_delivery_persistence_failed",
   "analysis_runtime_persistence_failed",
   "clarification_resume_authority_failed",
   "delivery_verifier_failed",
@@ -1216,6 +2830,29 @@ const SAFE_AGENT_CORE_ERRORS = new Set([
 
 function businessString(value: unknown) {
   return typeof value === "string" ? value : undefined;
+}
+
+function validatedRunStatus(value: unknown): RunStatus {
+  if (typeof value === "string" && RUN_STATUSES.includes(value as RunStatus)) {
+    return value as RunStatus;
+  }
+  throw new Error("analysis_run_status_invalid");
+}
+
+function runRecordFromRow(row: {
+  run_id: string;
+  thread_id: string;
+  status: unknown;
+  created_at: string;
+  request?: Record<string, unknown>;
+}): RunRecord {
+  return {
+    id: row.run_id,
+    threadId: row.thread_id,
+    status: validatedRunStatus(row.status),
+    createdAt: row.created_at,
+    ...(row.request ? { request: row.request } : {}),
+  };
 }
 
 function isGatewayRecord(value: unknown): value is Record<string, unknown> {

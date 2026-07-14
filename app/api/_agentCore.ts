@@ -16,6 +16,15 @@ type AgentCoreOptions = {
     selectedOptionId?: string | null;
     source?: "user";
   };
+  clarificationDispatch?: {
+    sourceRunId: string;
+    ownerId: string;
+  };
+  runDispatch?: {
+    ownerId: string;
+    leaseEpoch: number;
+  };
+  onDetachedWorkerExit?: () => void | Promise<void>;
   forceInline?: boolean;
 };
 
@@ -27,7 +36,7 @@ export async function runAgentCore(
   options: AgentCoreOptions = {},
 ): Promise<AgentCoreResult> {
   if (process.env.WAJE_AGENT_CORE_COMMAND && process.env.WAJE_AGENT_CORE_COMMAND !== "python3") {
-    throw new Error("WAJE_AGENT_CORE_COMMAND currently supports python3");
+    return agentCoreSpawnFailure();
   }
   const expectedPermissionScope = runtimePermissionScopeForRole(role);
   if (
@@ -54,12 +63,28 @@ export async function runAgentCore(
   if (options.clarification) {
     args.push("--clarification", JSON.stringify(options.clarification));
   }
+  if (options.clarificationDispatch) {
+    args.push(
+      "--clarification-dispatch-source-run-id",
+      options.clarificationDispatch.sourceRunId,
+      "--clarification-dispatch-owner-id",
+      options.clarificationDispatch.ownerId,
+    );
+  }
+  if (options.runDispatch) {
+    args.push(
+      "--dispatch-owner-id",
+      options.runDispatch.ownerId,
+      "--dispatch-lease-epoch",
+      String(options.runDispatch.leaseEpoch),
+    );
+  }
 
   if (options.forceInline || process.env.WAJE_AGENT_CORE_INLINE === "1") {
     return await runAgentCoreInline(args);
   }
 
-  return await runAgentCoreDetached(args);
+  return await runAgentCoreDetached(args, options.onDetachedWorkerExit);
 }
 
 function runtimePermissionScopeForRole(role: string) {
@@ -68,25 +93,63 @@ function runtimePermissionScopeForRole(role: string) {
   return "viewer" as const;
 }
 
-function runAgentCoreDetached(args: string[]): Promise<AgentCoreResult> {
+function runAgentCoreDetached(
+  args: string[],
+  onWorkerExit?: () => void | Promise<void>,
+): Promise<AgentCoreResult> {
   return new Promise((resolve) => {
     const child = spawn("python3", args, {
       cwd: process.cwd(),
       detached: true,
-      stdio: "ignore",
-      env: process.env,
+      stdio: ["ignore", "ignore", "ignore", "pipe"],
+      env: { ...process.env, WAJE_AGENT_CORE_STARTUP_ACK_FD: "3" },
     });
     let settled = false;
+    let acknowledgment = "";
+    const startupPipe = child.stdio[3];
+    const configuredTimeout = Number(
+      process.env.WAJE_AGENT_CORE_STARTUP_ACK_TIMEOUT_MS ?? "15000",
+    );
+    const startupTimeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+      ? configuredTimeout
+      : 15000;
+    const startupTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.unref();
+      startupPipe?.destroy();
+      resolve(agentCoreStartupFailure());
+    }, startupTimeoutMs);
     child.once("error", () => {
       if (settled) return;
       settled = true;
+      clearTimeout(startupTimer);
       resolve(agentCoreSpawnFailure());
     });
-    child.once("spawn", () => {
-      child.unref();
+    startupPipe?.on("data", (chunk) => {
+      acknowledgment += chunk.toString();
+      if (!acknowledgment.includes("WAJE_AGENT_CORE_RUNNING\n")) return;
       if (settled) return;
       settled = true;
+      clearTimeout(startupTimer);
+      child.unref();
+      startupPipe.destroy();
       resolve({ status: "started", command: "bi_agent.conversation.agent_core" });
+    });
+    child.once("close", () => {
+      if (settled) {
+        if (onWorkerExit) {
+          try {
+            void Promise.resolve(onWorkerExit()).catch(() => undefined);
+          } catch {
+            // The durable lease sweeper remains the fallback for observer failure.
+          }
+        }
+        return;
+      }
+      settled = true;
+      clearTimeout(startupTimer);
+      resolve(agentCoreStartupFailure());
     });
   });
 }
@@ -116,18 +179,26 @@ function runAgentCoreInline(args: string[]): Promise<AgentCoreResult> {
       settled = true;
       const output = stdout.trim();
       const parsed = parseAgentCoreOutput(output);
-      const processError = stderr.trim();
       resolve({
         status: code === 0 ? parsed.status : "failed",
         command: "bi_agent.conversation.agent_core",
         output,
         result: parsed.result,
         error: parsed.error
-          || processError
           || (code === 0 ? undefined : "agent_core_process_failed"),
       });
     });
   });
+}
+
+function agentCoreStartupFailure(): AgentCoreResult {
+  return {
+    status: "failed",
+    command: "bi_agent.conversation.agent_core",
+    output: "",
+    result: null,
+    error: "agent_core_startup_failed",
+  };
 }
 
 function agentCoreSpawnFailure(): AgentCoreResult {

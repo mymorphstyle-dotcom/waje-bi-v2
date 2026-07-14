@@ -40,6 +40,7 @@ from tests.phase4.test_analysis_contract_compiler import (
     canonical_release_catalog,
     snapshot,
 )
+from tests.phase7.artifact_test_support import bind_answer_package_artifact
 
 
 class _CountingRowsRuntime:
@@ -759,6 +760,10 @@ def _physical_reuse_bundle_fixture(
     runtime, current, request = _physical_reuse_result_fixture(
         current_run_id=current_run_id,
     )
+    answer_package = {
+        **dict(answer_package),
+        "run_id": current_run_id,
+    }
     bundle = runtime.build_persistence_bundle(
         current,
         answer_package=answer_package,
@@ -767,6 +772,11 @@ def _physical_reuse_bundle_fixture(
             f"artifacts/phase7/{current_run_id}/answer_package.json"
         ),
         publication_mode=publication_mode,
+    )
+    bind_answer_package_artifact(
+        bundle,
+        run_id=current_run_id,
+        answer_package=answer_package,
     )
     return runtime, current, request, bundle
 
@@ -1187,6 +1197,10 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 "contract_versions": {"runtime": "contracts-v1"},
             },
         }
+        answer_package = {
+            **answer_package,
+            "run_id": request["run_id"],
+        }
         bundle = runtime.build_persistence_bundle(
             current,
             answer_package=answer_package,
@@ -1194,6 +1208,11 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
             artifact_path=(
                 "artifacts/phase7/multi-claim-authority/answer_package.json"
             ),
+        )
+        bind_answer_package_artifact(
+            bundle,
+            run_id=request["run_id"],
+            answer_package=answer_package,
         )
 
         self.assertEqual(len(current.reuse_decisions), 2)
@@ -2476,13 +2495,22 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
         runtime, current, request = _physical_reuse_result_fixture(
             current_run_id="run-claimed-physical-authority",
         )
+        answer_package = {
+            **_physical_claim_package(current),
+            "run_id": request["run_id"],
+        }
         bundle = runtime.build_persistence_bundle(
             current,
-            answer_package=_physical_claim_package(current),
+            answer_package=answer_package,
             request=request,
             artifact_path=(
                 "artifacts/phase7/claimed-physical-authority/answer_package.json"
             ),
+        )
+        bind_answer_package_artifact(
+            bundle,
+            run_id=request["run_id"],
+            answer_package=answer_package,
         )
 
         self.assertEqual(len(bundle["verified_claims"]), 1)
@@ -2577,11 +2605,20 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
             ],
         }
 
+        answer_package = {
+            **_physical_claim_package(current),
+            "run_id": run_id,
+        }
         bundle = runtime.build_persistence_bundle(
             current,
-            answer_package=_physical_claim_package(current),
+            answer_package=answer_package,
             request=request,
             artifact_path="artifacts/phase7/fresh-query/answer_package.json",
+        )
+        bind_answer_package_artifact(
+            bundle,
+            run_id=run_id,
+            answer_package=answer_package,
         )
 
         expected = [{"source_ref": "context-current", "decision": "fresh"}]
@@ -2688,9 +2725,14 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                     current.reuse_decisions[0]
                 )
                 current_run_id = f"run-drift-current-{name}"
+                answer_package = {
+                    "run_id": current_run_id,
+                    "status": "complete",
+                    "sections": [],
+                }
                 rerun_bundle = runtime.build_persistence_bundle(
                     current,
-                    answer_package={"status": "complete", "sections": []},
+                    answer_package=answer_package,
                     request={
                         "run_id": current_run_id,
                         "thread_id": "thread-reuse",
@@ -2700,6 +2742,11 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                     artifact_path=(
                         f"artifacts/phase7/{current_run_id}/answer_package.json"
                     ),
+                )
+                bind_answer_package_artifact(
+                    rerun_bundle,
+                    run_id=current_run_id,
+                    answer_package=answer_package,
                 )
                 self.assertEqual(
                     store.save_analysis_runtime_records(
@@ -3174,6 +3221,26 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                     current.reuse_decisions[0]["reason"],
                     "reuse_candidate_shape_invalid",
                 )
+
+    def test_ownerless_reuse_hint_does_not_block_fresh_result_delivery(self):
+        runtime, provider, _store, topic_id, _signed = _runtime_fixture()
+
+        current = runtime.execute(
+            AnalysisRuntimeRequest.create(
+                run_id="run-ownerless-hint-current",
+                topic_id=topic_id,
+                proposal=_proposal(),
+                accepted_graph=("compare_periods",),
+                as_of="2026-06-03T12:00:00+01:00",
+                permission_scope="analyst",
+                reuse_candidates=({},),
+            )
+        )
+
+        self.assertEqual(provider.calls, 1)
+        self.assertTrue(current.query_results)
+        self.assertEqual(current.reuse_decisions, ())
+        self.assertTrue(current.persistence_records["query_execution_records"])
 
     def test_source_run_analysis_and_topic_authority_drift_reruns(self):
         cases = (

@@ -19,6 +19,7 @@ RUNTIME_PUBLICATION_RECORD_GROUPS = (
     "evidence_manifests",
     "context_manifests",
     "trusted_provenance_records",
+    "answer_package_artifacts",
     "verified_claims",
     "claim_links",
     "repair_attempts",
@@ -35,6 +36,7 @@ _RECORD_REF_FIELDS = {
     "evidence_manifests": "evidence_ref",
     "context_manifests": "manifest_id",
     "trusted_provenance_records": "record_ref",
+    "answer_package_artifacts": "artifact_ref",
     "verified_claims": "claim_ref",
     "repair_attempts": "attempt_ref",
 }

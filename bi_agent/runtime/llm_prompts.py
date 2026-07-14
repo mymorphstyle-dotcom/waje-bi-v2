@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 from bi_agent.conversation.models import CLARIFICATION_ESCAPE_OPTION
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v53"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v54"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 CLARIFICATION_PROMPT_TASKS = frozenset(
     {"boundary_decision", "clarification_question", "query_gap_clarification"}
@@ -69,6 +69,7 @@ TASK_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
         "requested_nodes",
         "route_summary",
         "expected_evidence",
+        "capability_sections",
         "analysis_requirements",
         "decision_summary",
     ),
@@ -474,7 +475,22 @@ def _task_rules(task: str) -> str:
             "confidence levels, significance, or invented numeric thresholds in route "
             "summaries; say product default importance and stability rules instead. "
             "Machine/narrative separation is mandatory. Put capability ids only in requested_nodes "
-            "and, when expected_evidence is an object, its machine keys. Put metric ids, dataset ids, "
+            "and copy every capability id supplied in required_capability_ids exactly. Do not "
+            "add or guess any other obligation capability id. When "
+            "final_route_machine is supplied, copy its requested_nodes and "
+            "analysis_requirements exactly; update only the provider-authored route narrative "
+            "and one expected_evidence description for each final node. Treat the supplied "
+            "known_capabilities together with required_capability_ids as the complete final "
+            "capability world. Return capability_sections as an object keyed by every requested "
+            "capability id and no other id. Every section must contain exactly route_step and "
+            "expected_evidence as non-empty Simplified Chinese provider-authored prose. The local "
+            "runtime orders and projects these sections for display; do not return authority, "
+            "hard-authority, or narrative-ref metadata. Free-text summaries and section prose are "
+            "display advisory and cannot add execution, evidence, permission, or claim authority. "
+            "Use capability ids only "
+            "as the machine keys of expected_evidence. expected_evidence must be an object with "
+            "exactly one key for every requested_nodes item and no other keys; each value must be a "
+            "verbatim copy of that capability section's expected_evidence. Put metric ids, dataset ids, "
             "question-family ids, claim type ids, diagnostic ids, baseline ids, and other enum ids "
             "only in their typed machine fields. In route_summary, decision_summary, and "
             "display_summary, refer to capabilities with their supplied business_name and describe "
@@ -488,7 +504,7 @@ def _task_rules(task: str) -> str:
             "Use diagnostic_tags only for typed business diagnostics represented by the "
             "runtime contract and copy only exact ids supplied in allowed_diagnostic_ids; "
             "local reconciliation decides their capability obligations. "
-            "Do not reproduce or guess the obligation capability set. Use only exact machine "
+            "Use only exact machine "
             "ids already present in intent, capability cards, or the supplied allowed lists. "
             "claim_intents must come from allowed_claim_types of the selected capability "
             "cards; never write a Chinese sentence or invent an id there. target_metrics "
@@ -548,7 +564,9 @@ def _task_rules(task: str) -> str:
         "route_repair": (
             "Repair only the rejected or incomplete part of the route. Preserve valid "
             "accepted choices. Do not bypass compiler feedback, contracts, permissions, "
-            "or evidence requirements."
+            "or evidence requirements. Treat allowed_capability_ids as closed. Every "
+            "requested_nodes item must be copied from allowed_capability_ids, and capabilities "
+            "outside known_capabilities or required_capability_ids are unavailable."
         ),
         "data_coverage_interpretation": (
             "Translate local data coverage and binding checks into business impact. "

@@ -108,8 +108,33 @@ def _default_confirm_understanding(messages):
 def _default_analysis_route(messages, override):
     output = dict(DEFAULT_OUTPUTS["analysis_route"])
     output["analysis_requirements"] = dict(output["analysis_requirements"])
+    output["capability_sections"] = {
+        key: dict(value)
+        for key, value in output["capability_sections"].items()
+    }
     output.update(override if isinstance(override, dict) else {})
     if isinstance(override, dict) and "analysis_requirements" in override:
+        if "capability_sections" not in override:
+            selected = [
+                str(item)
+                for item in output.get("requested_nodes") or ()
+                if isinstance(item, str) and item
+            ]
+            evidence = output.get("expected_evidence") or {}
+            output["capability_sections"] = {
+                capability_id: {
+                    "route_step": "核对该业务能力对应的分析路径。",
+                    "expected_evidence": str(
+                        evidence.get(capability_id)
+                        or "产出该业务分析路径对应的证据与限制说明。"
+                    ),
+                }
+                for capability_id in selected
+            }
+            output["expected_evidence"] = {
+                capability_id: section["expected_evidence"]
+                for capability_id, section in output["capability_sections"].items()
+            }
         return output
     payload = _input_payload(messages)
     cards = {
@@ -140,6 +165,27 @@ def _default_analysis_route(messages, override):
                 "",
             )
         )
+    if not (
+        isinstance(override, dict)
+        and "expected_evidence" in override
+    ):
+        output["expected_evidence"] = {
+            capability_id: "产出该业务分析路径对应的证据与限制说明。"
+            for capability_id in selected
+            if capability_id
+        }
+    if not (
+        isinstance(override, dict)
+        and "capability_sections" in override
+    ):
+        output["capability_sections"] = {
+            capability_id: {
+                "route_step": "核对该业务能力对应的分析路径。",
+                "expected_evidence": str(output["expected_evidence"][capability_id]),
+            }
+            for capability_id in selected
+            if capability_id in output["expected_evidence"]
+        }
     claims = []
     for capability_id in selected:
         card = cards.get(capability_id) or {}
@@ -190,7 +236,15 @@ DEFAULT_OUTPUTS = {
     "analysis_route": {
         "requested_nodes": ["pattern_scan"],
         "route_summary": "先验证 pattern，再补充必要证据路径。",
-        "expected_evidence": ["pattern_scan"],
+        "expected_evidence": {
+            "pattern_scan": "产出模式判断所需的证据与限制说明。",
+        },
+        "capability_sections": {
+            "pattern_scan": {
+                "route_step": "核对该业务能力对应的分析路径。",
+                "expected_evidence": "产出模式判断所需的证据与限制说明。",
+            },
+        },
         "analysis_requirements": {
             "target_metrics": ["paid_amount"],
             "requested_components": [],
@@ -242,7 +296,7 @@ DEFAULT_OUTPUTS = {
     },
     "answer_synthesis": {
         "answer_text": "基于已验证证据引用生成答案草稿。",
-        "claims": None,
+        "claims": [],
     },
     "semantic_audit": {
         "audit_status": "passed",
@@ -261,7 +315,7 @@ DEFAULT_OUTPUTS = {
     },
     "answer_repair": {
         "answer_text": "已按校验反馈修正答案草稿。",
-        "claims": None,
+        "claims": [],
     },
     "final_business_summary": {
         "summary_text": "最终结论：当前证据能把排查方向收敛到已验证业务结论。",

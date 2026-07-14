@@ -101,7 +101,10 @@ class RuntimeContractRegistry:
             payload["metric_business_labels"],
             tuple(str(item) for item in payload["metrics"]),
         )
-        _validate_query_shapes(payload.get("query_shapes") or {})
+        _validate_query_shapes(
+            payload.get("query_shapes") or {},
+            payload["capability_inputs"],
+        )
         _validate_dataset_intent_roles(payload["datasets"])
         _validate_obligations(payload)
         maximum_ranks = payload["claim_strength_taxonomy"]["maximum_strength_ranks"]
@@ -222,6 +225,32 @@ class RuntimeContractRegistry:
 
     def diagnostic_obligation(self, tag: str) -> dict[str, Any]:
         return self._entry("diagnostic_obligations", tag, "diagnostic_obligation")
+
+    def obligation_condition_context_sources(
+        self,
+        condition: str,
+    ) -> tuple[str, ...]:
+        capabilities: set[str] = set()
+        for contract in self._payload["question_family_obligations"].values():
+            for rule in contract["conditional_rules"]:
+                if rule["condition"] == condition:
+                    capabilities.update(str(item) for item in rule["add"])
+        for contract in self._payload["diagnostic_obligations"].values():
+            if contract["condition"] == condition:
+                capabilities.update(
+                    str(item) for item in contract["required_capabilities"]
+                )
+        return tuple(
+            sorted(
+                {
+                    str(dataset_id)
+                    for capability_id in capabilities
+                    for dataset_id in self._payload["capability_inputs"]
+                    .get(capability_id, {})
+                    .get("allowed_context_datasets", ())
+                }
+            )
+        )
 
     def order_capabilities(self, capabilities: Any) -> tuple[str, ...]:
         requested = set(str(item) for item in capabilities)
@@ -531,9 +560,19 @@ def _validate_metric_business_labels(
             raise ValueError(f"runtime_metric_business_labels_invalid:{metric_id}")
 
 
-def _validate_query_shapes(value: Any) -> None:
+def _validate_query_shapes(
+    value: Any,
+    capability_inputs: Mapping[str, Any],
+) -> None:
     if not isinstance(value, Mapping):
         raise ValueError("runtime_query_shapes_invalid")
+    dimension_families = {
+        str(query_family)
+        for capability in capability_inputs.values()
+        if isinstance(capability, Mapping)
+        and capability.get("dimension_mode") == "requested"
+        for query_family in capability.get("query_families", ())
+    }
     for query_family, shape in value.items():
         policy = (
             shape.get("dimension_presence_policy")
@@ -563,6 +602,13 @@ def _validate_query_shapes(value: Any) -> None:
                 "runtime_query_shape_source_field_policy:"
                 f"{query_family}:{source_field_policy}"
             )
+        if query_family in dimension_families:
+            topology = shape.get("dimension_topology")
+            if topology not in {"independent", "joint"}:
+                raise ValueError(
+                    "runtime_query_shape_dimension_topology:"
+                    f"{query_family}:{topology or 'missing'}"
+                )
 
 
 def _validate_dataset_intent_roles(datasets: Mapping[str, Any]) -> None:

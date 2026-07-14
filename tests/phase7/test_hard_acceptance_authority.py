@@ -258,6 +258,7 @@ def test_obligation_review_uses_persisted_family_and_reports_authored_mismatch()
             "segment_shift_compare",
         ],
     }
+    assert review["hard_acceptance_passed"] is False
 
 
 @pytest.mark.parametrize(
@@ -532,6 +533,97 @@ def test_runtime_audit_package_resolves_completed_contract_by_run_when_artifact_
     assert audited["run_id"] == run_id
     assert audited["sections"] == package["sections"]
     assert audited["admin_audit"]["analysis_contract"] == contract
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("exact", ""),
+        ("sibling", "artifact_authority_path_mismatch"),
+        ("modified", "artifact_authority_digest_mismatch"),
+        ("duplicate", "artifact_authority_ambiguous"),
+        ("provenance_drift", "artifact_authority_provenance_mismatch"),
+    ],
+)
+def test_runtime_audit_package_binds_projection_to_unique_artifact_bytes(
+    tmp_path, monkeypatch, mutation, expected_error
+):
+    from bi_agent.runtime.evidence_authority import canonical_digest
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    monkeypatch.setattr(system_test, "ROOT", tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    run_id = "run-artifact-authority"
+    contract = {
+        **_analysis_contract(_canonical_gap()),
+        "analysis_contract_id": f"analysis:{run_id}:1",
+    }
+    signature = analysis_contract_signature(
+        analysis_contract_from_dict(contract)
+    )
+    package = {
+        "run_id": run_id,
+        "status": "completed",
+        "admin_audit": {
+            "analysis_runtime_persistence": {
+                "status": "persisted",
+                "analysis_contract_ref": contract["analysis_contract_id"],
+            }
+        },
+    }
+    canonical_path = artifact_root / "answer-package.json"
+    canonical_path.write_text(json.dumps(package), encoding="utf-8")
+    sibling_path = artifact_root / "answer-package-sibling.json"
+    sibling_path.write_text(json.dumps(package), encoding="utf-8")
+    artifact_ref = f"answer-package:{run_id}"
+    record = {
+        "schema_version": "answer-package-artifact.v1",
+        "artifact_ref": artifact_ref,
+        "run_id": run_id,
+        "canonical_path": str(canonical_path.resolve()),
+        "payload_digest": canonical_digest(package),
+    }
+    result_path = sibling_path if mutation == "sibling" else canonical_path
+    if mutation == "modified":
+        canonical_path.write_text(
+            json.dumps({**package, "status": "modified"}),
+            encoding="utf-8",
+        )
+    records = [record, dict(record)] if mutation == "duplicate" else [record]
+    provenance_ref = (
+        "answer-package:other"
+        if mutation == "provenance_drift"
+        else artifact_ref
+    )
+
+    audited = system_test._runtime_audit_package(
+        {
+            "run_id": run_id,
+            "artifact_path": str(result_path),
+            "answer_package": package,
+        },
+        authority_resolver=lambda _run_id: {
+            "projection_schema_version": "eval-runtime-authority.v1",
+            "run_id": run_id,
+            "analysis_contract": {
+                **contract,
+                "contract_signature": signature,
+            },
+            "stored_contract_signature": signature,
+            "answer_package_artifacts": records,
+            "trusted_provenance_records": [{
+                "artifact_refs": [provenance_ref],
+            }],
+            "admin_audit": {"analysis_contract": contract},
+        },
+    )
+
+    if expected_error:
+        assert audited == {"_authority_error": expected_error}
+    else:
+        assert audited["run_id"] == run_id
+        assert audited["answer_package_artifacts"] == [record]
 
 
 @pytest.mark.parametrize(
@@ -1440,9 +1532,13 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
     contract = AnalysisContract(
         **{
             **analysis_contract_from_dict(authority["analysis_contract"]).__dict__,
-            "question_families": ("revenue_health_review",),
+            "question_families": (
+                "revenue_health_review",
+                "business_object_impact_review",
+            ),
             "capability_requirements": (
                 "market_health_compare",
+                "gameplay_activity_context",
                 "source_reconciliation",
                 "data_quality_profile",
                 "formula_decompose",
@@ -1466,6 +1562,7 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
                     for capability_id in (
                         "data_quality_profile",
                         "formula_decompose",
+                        "gameplay_activity_context",
                     )
                 ),
             ),
@@ -1516,7 +1613,16 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
         "data_quality_profile": "blocked",
         "formula_decompose": "blocked",
         "market_health_compare": "executed",
+        "gameplay_activity_context": "blocked",
     }
+    assert review["question_families"] == [
+        "revenue_health_review",
+        "business_object_impact_review",
+    ]
+    assert review["capability_family_provenance"]["data_quality_profile"] == [
+        "revenue_health_review",
+        "business_object_impact_review",
+    ]
     assert review["authored_required_capability_mismatches"] == [
         "source_reconciliation"
     ]
@@ -1543,6 +1649,15 @@ def test_capability_state_gate_ignores_unrelated_dataset_partial_collapse():
     }
     assert review["dataset_obligation_gate_mode"] == "capability_authority"
     assert review["hard_acceptance_passed"] is True
+
+    turn["scenario"]["question_family"] = "custom_baseline_comparison"
+    mismatched = review_case_obligations(
+        turn,
+        registry,
+        coverage_authority=coverage_authority,
+    )
+    assert mismatched["question_family_authority_status"] == "mismatch"
+    assert mismatched["hard_acceptance_passed"] is False
 
 
 def test_capability_outcome_rejects_generic_execution_binding_fallback():

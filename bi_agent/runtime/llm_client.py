@@ -576,10 +576,7 @@ NARRATIVE_KEYS = frozenset(
 
 def _localize_narrative_fields(value: Any, key: str = "") -> Any:
     if key == "accepted_assumptions" and isinstance(value, str):
-        normalized = _normalize_business_narrative(value.strip())
-        if not normalized or _contains_unlocalized_narrative_tokens(normalized):
-            raise LLMOutputError("llm_narrative_invalid:accepted_assumptions")
-        return [normalized] if normalized else []
+        raise LLMOutputError("llm_narrative_invalid:accepted_assumptions")
     if key == "accepted_assumptions" and isinstance(value, list):
         normalized_items = []
         for item in value:

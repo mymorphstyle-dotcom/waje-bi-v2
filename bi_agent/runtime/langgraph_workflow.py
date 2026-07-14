@@ -171,6 +171,46 @@ _LOCAL_OBLIGATION_REJECTION_REASONS = frozenset(
         "unknown_diagnostic_rejected",
     }
 )
+_ROUTE_CAPABILITY_SECTION_FIELDS = frozenset(
+    {"route_step", "expected_evidence"}
+)
+_ANALYSIS_ROUTE_PROVIDER_FIELDS = frozenset(
+    {
+        "requested_nodes",
+        "route_summary",
+        "expected_evidence",
+        "capability_sections",
+        "analysis_requirements",
+        "decision_summary",
+        "display_summary",
+    }
+)
+_ROUTE_REPAIR_PROVIDER_FIELDS = frozenset(
+    {
+        "requested_nodes",
+        "analysis_requirements",
+        "repair_summary",
+        "decision_summary",
+        "display_summary",
+    }
+)
+_ROUTE_NARRATIVE_HARD_AUTHORITY_FIELDS = (
+    "requested_nodes",
+    "analysis_requirements",
+    "obligation_resolution",
+    "accepted_degradation_choice",
+    "capability_sections.keys",
+    "expected_evidence.keys",
+)
+_ROUTE_NARRATIVE_ADVISORY_FIELDS = (
+    "route_overview",
+    "route_summary",
+    "decision_summary",
+    "display_summary",
+    "capability_sections.*.route_step",
+    "capability_sections.*.expected_evidence",
+    "expected_evidence.values",
+)
 
 
 class WorkflowState(TypedDict, total=False):
@@ -2827,6 +2867,7 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
     budget = state.get("budget_state") or default_budget("ordinary")
     state["budget_state"] = budget
     resume = state.get("request", {}).get("clarification_resume_context") or {}
+    production_like = _production_like_request(state.get("request") or {})
     prior_route = resume.get("analysis_route") or {}
     prior_graph = tuple(resume.get("accepted_graph") or ())
     if isinstance(prior_route, Mapping) and prior_route and prior_graph:
@@ -2837,7 +2878,9 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             prior_graph,
             excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
         )
-        output = _align_route_output_to_requested(dict(prior_route), requested)
+        output = dict(prior_route)
+        if not production_like:
+            output = _align_route_output_to_requested(output, requested)
         output, material_conflicts = _merge_confirmed_material_requirements(
             output,
             state,
@@ -2888,6 +2931,7 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             output,
             route_action,
             registry,
+            preserve_narrative=production_like,
         )
         if accepted_choice:
             output["accepted_degradation_choice"] = accepted_choice
@@ -2896,7 +2940,23 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
                 **dict(state.get("clarification_outcome") or {}),
                 "accepted_degradation_choice": accepted_choice,
             }
+        if production_like:
+            output = _finalize_production_analysis_route_narrative(
+                state,
+                route=output,
+                requested=requested,
+                registry=registry,
+            )
+            if accepted_choice:
+                output["accepted_degradation_choice"] = accepted_choice
         state["analysis_route"] = {**output, "requested_nodes": requested}
+        if production_like:
+            _validate_final_analysis_route_mapping(
+                state["analysis_route"],
+                requested=requested,
+                known_capability_ids=frozenset(registry.capability_ids),
+                allow_empty=not requested,
+            )
         _record_obligation_rejection_authority(
             state, state["analysis_route"]
         )
@@ -2904,17 +2964,70 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         return state
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
     allowed_baseline_ids = list(CURRENT_DATA_BASELINES)
+    capability_cards = _route_capability_cards()
     route_payload = {
         "intent": state["intent"],
         "confirmed_understanding": state["confirmed_understanding"],
-        "known_capabilities": _route_capability_cards(),
+        "known_capabilities": capability_cards,
         "allowed_dataset_ids": registry.dataset_ids,
         "allowed_context_source_ids": registry.context_source_ids,
         "allowed_diagnostic_ids": registry.diagnostic_obligation_ids,
         "allowed_baseline_ids": allowed_baseline_ids,
         "budget_state": budget.to_llm_summary(),
     }
-    output = _invoke_llm(state, "analysis_route", route_payload)
+    required_capabilities = _deterministic_required_route_capabilities(
+        state,
+        registry,
+    )
+    allowed_provider_capability_ids = frozenset(
+        {
+            str(card.get("capability_id") or "")
+            for card in capability_cards
+            if str(card.get("capability_id") or "")
+        }
+        | set(required_capabilities)
+    )
+    known_capability_ids = frozenset(registry.capability_ids)
+    route_payload["required_capability_ids"] = list(required_capabilities)
+    route_payload["required_capabilities"] = [
+        dict(card)
+        for card in llm_capability_cards()
+        if str(card.get("capability_id") or "") in set(required_capabilities)
+    ]
+    output = _invoke_llm(
+        state,
+        "analysis_route",
+        route_payload,
+        output_validator=(
+            (
+                lambda candidate: _validate_analysis_route_provider_output(
+                    _reconciled_analysis_route_provider_candidate(
+                        candidate,
+                        state=state,
+                        registry=registry,
+                        allowed_provider_capability_ids=(
+                            allowed_provider_capability_ids
+                        ),
+                    ),
+                    allowed_provider_capability_ids,
+                )
+            )
+            if production_like
+            else None
+        ),
+    )
+    if production_like:
+        output = _reconciled_analysis_route_provider_candidate(
+            output,
+            state=state,
+            registry=registry,
+            allowed_provider_capability_ids=allowed_provider_capability_ids,
+        )
+        output = _validated_analysis_route_provider_output(
+            output,
+            allowed_provider_capability_ids,
+            require_capability_sections=True,
+        )
     output, material_conflicts = _merge_confirmed_material_requirements(
         output,
         state,
@@ -2939,7 +3052,8 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         )
     if not requested:
         requested = ("pattern_scan",)
-    _infer_question_families_from_requested_nodes(state["intent"], requested)
+    if not production_like:
+        _infer_question_families_from_requested_nodes(state["intent"], requested)
     requested, output = reconcile_analysis_route(
         requested,
         output,
@@ -2948,11 +3062,473 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         trusted_prior_route=_trusted_obligation_rejection_route(state),
     )
     _consume_obligation_route_conflict(state, output)
-    output = _align_route_output_to_requested(output, requested)
+    if production_like:
+        output = _reorder_projected_analysis_route_narrative(
+            output,
+            requested=requested,
+        )
+    else:
+        output = _align_route_output_to_requested(output, requested)
     state["analysis_route"] = {**output, "requested_nodes": requested}
+    if production_like:
+        _validate_final_analysis_route_mapping(
+            state["analysis_route"],
+            requested=requested,
+            known_capability_ids=known_capability_ids,
+        )
     _record_obligation_rejection_authority(state, state["analysis_route"])
     state["intent"]["requested_nodes"] = requested
     return state
+
+
+def _validate_analysis_route_provider_output(
+    output: Mapping[str, Any],
+    known_capability_ids: frozenset[str],
+    *,
+    expected_requested_nodes: Sequence[str] | None = None,
+    allow_empty: bool = False,
+    forbidden_narrative_terms: Sequence[str] = (),
+    require_capability_sections: bool = False,
+) -> None:
+    requested = output.get("requested_nodes")
+    if (
+        not isinstance(requested, (list, tuple))
+        or (not requested and not allow_empty)
+        or any(
+            not isinstance(item, str)
+            or not item
+            or item != item.strip()
+            or item not in known_capability_ids
+            for item in requested
+        )
+        or len(requested) != len(set(requested))
+        or (
+            expected_requested_nodes is not None
+            and tuple(requested) != tuple(expected_requested_nodes)
+        )
+    ):
+        raise LLMOutputError(
+            "analysis_route_provider_contract_invalid:requested_nodes"
+        )
+    for field in ("route_summary", "decision_summary", "display_summary"):
+        value = output.get(field)
+        if (
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or _route_narrative_has_machine_id(value, known_capability_ids)
+            or any(term and term in value for term in forbidden_narrative_terms)
+            or _has_internal_visible_token(value)
+        ):
+            raise LLMOutputError(
+                f"analysis_route_provider_contract_invalid:{field}"
+            )
+    expected_evidence = output.get("expected_evidence")
+    if (
+        not isinstance(expected_evidence, Mapping)
+        or set(expected_evidence) != set(requested)
+        or any(
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or not re.search(r"[\u3400-\u9fff]", value)
+            or _route_narrative_has_machine_id(value, known_capability_ids)
+            or any(term and term in value for term in forbidden_narrative_terms)
+            or _has_internal_visible_token(value)
+            for value in expected_evidence.values()
+        )
+    ):
+        raise LLMOutputError(
+            "analysis_route_provider_contract_invalid:expected_evidence"
+        )
+    if require_capability_sections:
+        _validate_route_capability_sections(
+            output,
+            requested=tuple(requested),
+            known_capability_ids=known_capability_ids,
+            forbidden_narrative_terms=forbidden_narrative_terms,
+        )
+
+
+def _validate_route_capability_sections(
+    output: Mapping[str, Any],
+    *,
+    requested: Sequence[str],
+    known_capability_ids: frozenset[str],
+    forbidden_narrative_terms: Sequence[str] = (),
+) -> None:
+    sections = output.get("capability_sections")
+    if not isinstance(sections, Mapping) or set(sections) != set(requested):
+        raise LLMOutputError(
+            "analysis_route_provider_contract_invalid:capability_sections"
+        )
+    normalized_expected: dict[str, str] = {}
+    for capability_id in requested:
+        section = sections.get(capability_id)
+        if (
+            not isinstance(section, Mapping)
+            or set(section) != _ROUTE_CAPABILITY_SECTION_FIELDS
+        ):
+            raise LLMOutputError(
+                "analysis_route_provider_contract_invalid:capability_sections"
+            )
+        for field in _ROUTE_CAPABILITY_SECTION_FIELDS:
+            value = section.get(field)
+            if (
+                not isinstance(value, str)
+                or not value
+                or value != value.strip()
+                or not re.search(r"[\u3400-\u9fff]", value)
+                or _route_narrative_has_machine_id(
+                    value, known_capability_ids
+                )
+                or any(
+                    term and term in value
+                    for term in forbidden_narrative_terms
+                )
+                or _has_internal_visible_token(value)
+            ):
+                raise LLMOutputError(
+                    "analysis_route_provider_contract_invalid:"
+                    "capability_sections"
+                )
+        normalized_expected[capability_id] = str(
+            section["expected_evidence"]
+        )
+    if canonical_value(output.get("expected_evidence")) != canonical_value(
+        normalized_expected
+    ):
+        raise LLMOutputError(
+            "analysis_route_provider_contract_invalid:capability_sections"
+        )
+
+
+def _validated_analysis_route_provider_output(
+    output: Mapping[str, Any],
+    known_capability_ids: frozenset[str],
+    *,
+    require_capability_sections: bool = False,
+) -> dict[str, Any]:
+    try:
+        _validate_analysis_route_provider_output(
+            output,
+            known_capability_ids,
+            require_capability_sections=require_capability_sections,
+        )
+    except LLMOutputError as exc:
+        raise WorkflowFailure(
+            str(exc),
+            failure_type="llm_contract",
+        ) from exc
+    return dict(output)
+
+
+def _deterministic_required_route_capabilities(
+    state: WorkflowState,
+    registry: RuntimeContractRegistry,
+) -> tuple[str, ...]:
+    seed_route = {
+        "analysis_requirements": _intent_material_slots(state.get("intent") or {})
+    }
+    requested, _ = reconcile_analysis_route(
+        (),
+        seed_route,
+        state.get("intent") or {},
+        registry,
+        trusted_prior_route=_trusted_obligation_rejection_route(state),
+    )
+    return requested
+
+
+def _reconciled_analysis_route_provider_candidate(
+    candidate: Mapping[str, Any],
+    *,
+    state: WorkflowState,
+    registry: RuntimeContractRegistry,
+    allowed_provider_capability_ids: frozenset[str],
+) -> dict[str, Any]:
+    provider_candidate = {
+        key: candidate[key]
+        for key in _ANALYSIS_ROUTE_PROVIDER_FIELDS
+        if key in candidate
+    }
+    _validate_analysis_route_provider_output(
+        provider_candidate,
+        allowed_provider_capability_ids,
+        require_capability_sections=True,
+    )
+    try:
+        output, _ = _merge_confirmed_material_requirements(
+            provider_candidate, state
+        )
+        _validate_route_analysis_requirements(output, registry)
+        provider_nodes = _requested_node_ids(output.get("requested_nodes"))
+        deterministic_nodes = _deterministic_required_route_capabilities(
+            state,
+            registry,
+        )
+        deterministic_set = set(deterministic_nodes)
+        proposed = tuple(
+            capability
+            for capability in provider_nodes
+            if capability not in deterministic_set
+        )
+        reconciled_intent = dict(state.get("intent") or {})
+        requested, reconciled = reconcile_analysis_route(
+            proposed,
+            output,
+            reconciled_intent,
+            registry,
+            trusted_prior_route=_trusted_obligation_rejection_route(state),
+        )
+    except (KeyError, TypeError, ValueError, WorkflowFailure) as exc:
+        raise LLMOutputError(_exception_reason(exc)) from exc
+    if set(provider_nodes) != set(requested):
+        raise LLMOutputError(
+            "analysis_route_provider_contract_invalid:final_requested_nodes"
+        )
+    normalized = {**reconciled, "requested_nodes": list(requested)}
+    _validate_analysis_route_provider_output(
+        normalized,
+        allowed_provider_capability_ids,
+        expected_requested_nodes=requested,
+        require_capability_sections=True,
+    )
+    return _project_final_analysis_route_narrative(
+        normalized,
+        normalized,
+        requested=requested,
+    )
+
+
+def _finalize_production_analysis_route_narrative(
+    state: WorkflowState,
+    *,
+    route: Mapping[str, Any],
+    requested: tuple[str, ...],
+    registry: RuntimeContractRegistry,
+) -> dict[str, Any]:
+    requested_set = set(requested)
+    capability_cards = [
+        dict(card)
+        for card in _route_capability_cards()
+        if str(card.get("capability_id") or "") in requested_set
+    ]
+    known_capability_ids = frozenset(registry.capability_ids)
+    payload = {
+        "intent": state.get("intent") or {},
+        "confirmed_understanding": state.get("confirmed_understanding") or {},
+        "known_capabilities": capability_cards,
+        "allowed_dataset_ids": registry.dataset_ids,
+        "allowed_context_source_ids": registry.context_source_ids,
+        "allowed_diagnostic_ids": registry.diagnostic_obligation_ids,
+        "allowed_baseline_ids": list(CURRENT_DATA_BASELINES),
+        "budget_state": (state.get("budget_state") or default_budget("ordinary")).to_llm_summary(),
+        "required_capability_ids": list(requested),
+        "required_capabilities": capability_cards,
+        "final_route_machine": {
+            "requested_nodes": list(requested),
+            "analysis_requirements": dict(route.get("analysis_requirements") or {}),
+            "obligation_resolution": dict(route.get("obligation_resolution") or {}),
+        },
+    }
+
+    def validate(candidate: Mapping[str, Any]) -> None:
+        _validate_analysis_route_provider_output(
+            candidate,
+            known_capability_ids,
+            expected_requested_nodes=requested,
+            allow_empty=not requested,
+            require_capability_sections=True,
+        )
+        if canonical_value(candidate.get("analysis_requirements") or {}) != (
+            canonical_value(route.get("analysis_requirements") or {})
+        ):
+            raise LLMOutputError(
+                "analysis_route_provider_contract_invalid:analysis_requirements"
+            )
+
+    narrative = _invoke_llm(
+        state,
+        "analysis_route",
+        payload,
+        output_validator=validate,
+    )
+    validate(narrative)
+    return _project_final_analysis_route_narrative(
+        route,
+        narrative,
+        requested=requested,
+    )
+
+
+def _project_final_analysis_route_narrative(
+    route: Mapping[str, Any],
+    narrative: Mapping[str, Any],
+    *,
+    requested: Sequence[str],
+) -> dict[str, Any]:
+    output = dict(route)
+    for field in (
+        "route_overview",
+        "route_summary",
+        "expected_evidence",
+        "decision_summary",
+        "display_summary",
+        "capability_sections",
+        "narrative_capability_refs",
+        "narrative_authority",
+    ):
+        output.pop(field, None)
+    sections = {
+        capability_id: dict(narrative["capability_sections"][capability_id])
+        for capability_id in requested
+    }
+    overview = str(narrative["route_summary"])
+    route_parts = [
+        overview,
+        *(
+            str(sections[capability_id]["route_step"])
+            for capability_id in requested
+        ),
+    ]
+    output.update(
+        {
+            "route_overview": overview,
+            "route_summary": "\n".join(route_parts),
+            "expected_evidence": {
+                capability_id: str(
+                    sections[capability_id]["expected_evidence"]
+                )
+                for capability_id in requested
+            },
+            "decision_summary": str(narrative["decision_summary"]),
+            "display_summary": str(narrative["display_summary"]),
+            "capability_sections": sections,
+            "narrative_capability_refs": (
+                _final_narrative_capability_refs(requested)
+            ),
+            "narrative_authority": _final_narrative_authority(),
+        }
+    )
+    return output
+
+
+def _reorder_projected_analysis_route_narrative(
+    route: Mapping[str, Any],
+    *,
+    requested: Sequence[str],
+) -> dict[str, Any]:
+    sections = route.get("capability_sections")
+    if not isinstance(sections, Mapping) or set(sections) != set(requested):
+        raise WorkflowFailure(
+            "analysis_route_provider_contract_invalid:capability_sections",
+            failure_type="llm_contract",
+        )
+    overview = route.get("route_overview")
+    if not isinstance(overview, str) or not overview:
+        raise WorkflowFailure(
+            "analysis_route_provider_contract_invalid:route_overview",
+            failure_type="llm_contract",
+        )
+    return _project_final_analysis_route_narrative(
+        route,
+        {
+            "route_summary": overview,
+            "decision_summary": route.get("decision_summary"),
+            "display_summary": route.get("display_summary"),
+            "capability_sections": sections,
+        },
+        requested=requested,
+    )
+
+
+def _final_narrative_capability_refs(
+    requested: Sequence[str],
+) -> dict[str, Any]:
+    capability_ids = list(requested)
+    return {
+        "route_summary_capability_ids": capability_ids,
+        "decision_summary_capability_ids": capability_ids,
+        "display_summary_capability_ids": capability_ids,
+        "expected_evidence_capability_ids": {
+            capability_id: [capability_id]
+            for capability_id in capability_ids
+        },
+    }
+
+
+def _final_narrative_authority() -> dict[str, Any]:
+    return {
+        "schema_version": "analysis_route_narrative.v1",
+        "authority_level": "display_advisory",
+        "hard_authority_fields": list(
+            _ROUTE_NARRATIVE_HARD_AUTHORITY_FIELDS
+        ),
+        "advisory_fields": list(_ROUTE_NARRATIVE_ADVISORY_FIELDS),
+    }
+
+
+def _validate_final_analysis_route_mapping(
+    route: Mapping[str, Any],
+    *,
+    requested: Sequence[str],
+    known_capability_ids: frozenset[str],
+    allow_empty: bool = False,
+) -> None:
+    try:
+        _validate_analysis_route_provider_output(
+            route,
+            known_capability_ids,
+            expected_requested_nodes=requested,
+            allow_empty=allow_empty,
+            require_capability_sections=True,
+        )
+        if canonical_value(route.get("narrative_capability_refs")) != (
+            canonical_value(_final_narrative_capability_refs(requested))
+        ):
+            raise LLMOutputError(
+                "analysis_route_provider_contract_invalid:"
+                "narrative_capability_refs"
+            )
+        if canonical_value(route.get("narrative_authority")) != canonical_value(
+            _final_narrative_authority()
+        ):
+            raise LLMOutputError(
+                "analysis_route_provider_contract_invalid:narrative_authority"
+            )
+        overview = route.get("route_overview")
+        if (
+            not isinstance(overview, str)
+            or not overview
+            or overview != overview.strip()
+        ):
+            raise LLMOutputError(
+                "analysis_route_provider_contract_invalid:route_overview"
+            )
+        sections = route.get("capability_sections") or {}
+        expected_summary = "\n".join(
+            [
+                overview,
+                *(
+                    str(sections[capability_id]["route_step"])
+                    for capability_id in requested
+                ),
+            ]
+        )
+        if route.get("route_summary") != expected_summary:
+            raise LLMOutputError(
+                "analysis_route_provider_contract_invalid:route_summary_projection"
+            )
+    except LLMOutputError as exc:
+        raise WorkflowFailure(str(exc), failure_type="llm_contract") from exc
+
+
+def _route_narrative_has_machine_id(
+    value: str,
+    known_capability_ids: frozenset[str],
+) -> bool:
+    return any(capability_id in value for capability_id in known_capability_ids)
 
 
 def _validate_route_analysis_requirements(
@@ -3666,6 +4242,8 @@ def _apply_query_gap_action_to_route(
     route: Mapping[str, Any],
     action: Mapping[str, Any],
     registry: RuntimeContractRegistry,
+    *,
+    preserve_narrative: bool = False,
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
     action_kind = str(action.get("action_kind") or "")
     if action_kind == "choose_supported_window":
@@ -3684,7 +4262,8 @@ def _apply_query_gap_action_to_route(
             if baseline in supported
         ]
         output["analysis_requirements"] = requirements
-        output["decision_summary"] = "已采用合同支持的业务时间窗口。"
+        if not preserve_narrative:
+            output["decision_summary"] = "已采用合同支持的业务时间窗口。"
         return requested, output
     if action_kind == "choose_supported_claim_intent":
         output = dict(route)
@@ -3705,7 +4284,8 @@ def _apply_query_gap_action_to_route(
             if str(claim_type) in supported_claims
         ]
         output["analysis_requirements"] = requirements
-        output["decision_summary"] = "已采用合同支持的声明强度继续。"
+        if not preserve_narrative:
+            output["decision_summary"] = "已采用合同支持的声明强度继续。"
         return requested, output
     if action_kind not in {
         "omit_unavailable_context",
@@ -3724,14 +4304,15 @@ def _apply_query_gap_action_to_route(
         return requested, dict(route)
     output = dict(route)
     output["requested_nodes"] = list(remaining)
-    output["route_summary"] = (
-        "按用户选择继续执行可验证的主指标分析，并在结论中保留缺失背景证据的限制。"
-    )
-    output["decision_summary"] = "已移除当前不可用的背景证据路径。"
-    output["expected_evidence"] = [
-        f"{label}：产出主指标判断及证据限制。"
-        for label in _capability_labels(remaining)
-    ]
+    if not preserve_narrative:
+        output["route_summary"] = (
+            "按用户选择继续执行可验证的主指标分析，并在结论中保留缺失背景证据的限制。"
+        )
+        output["decision_summary"] = "已移除当前不可用的背景证据路径。"
+        output["expected_evidence"] = [
+            f"{label}：产出主指标判断及证据限制。"
+            for label in _capability_labels(remaining)
+        ]
     return remaining, output
 
 
@@ -3739,6 +4320,18 @@ def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "accept_analysis_route")
     intent = state["intent"]
     request = state.get("request", {})
+    if _production_like_request(request):
+        registry = RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        )
+        accepted_route = state.get("analysis_route") or {}
+        requested = tuple(accepted_route.get("requested_nodes") or ())
+        _validate_final_analysis_route_mapping(
+            accepted_route,
+            requested=requested,
+            known_capability_ids=frozenset(registry.capability_ids),
+            allow_empty=not requested,
+        )
     analysis_runtime = request.get("analysis_runtime")
     analysis_outcome = None
     if analysis_runtime is not None:
@@ -4208,12 +4801,39 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "repair_analysis_route")
     state["repair_attempts"] = state.get("repair_attempts", 0) + 1
     current_route = dict(state["analysis_route"])
+    registry = RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
+    capability_cards = _route_capability_cards()
+    repair_required_capability_ids = tuple(
+        dict.fromkeys(
+            (
+                *_requested_node_ids(current_route.get("requested_nodes")),
+                *_deterministic_required_route_capabilities(state, registry),
+            )
+        )
+    )
+    allowed_repair_capability_ids = frozenset(
+        {
+            str(card.get("capability_id") or "")
+            for card in capability_cards
+            if str(card.get("capability_id") or "")
+        }
+        | set(repair_required_capability_ids)
+    )
     output = _invoke_llm(
         state,
         "route_repair",
         {
             "intent": state["intent"],
             "analysis_route": state["analysis_route"],
+            "known_capabilities": capability_cards,
+            "allowed_capability_ids": sorted(
+                allowed_repair_capability_ids
+            ),
+            "required_capability_ids": list(
+                repair_required_capability_ids
+            ),
             "compiler_feedback": to_jsonable(
                 state.get("request", {}).get("analysis_repair_feedback")
                 or state["compiled_graph"].mutations.records
@@ -4221,15 +4841,32 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
             "repair_attempt": state["repair_attempts"],
         },
         output_validator=lambda value: _validate_route_repair_provider_output(
-            value,
+            _project_route_repair_provider_output(value),
             current_route,
+            allowed_capability_ids=allowed_repair_capability_ids,
+            state=state,
+            registry=registry,
         ),
     )
+    output = _project_route_repair_provider_output(output)
     if _route_repair_has_material_conflict(output, current_route):
         raise WorkflowFailure(
             "analysis_route_repair_material_conflict:analysis_requirements",
             failure_type="contract",
         )
+    try:
+        _validate_route_repair_provider_output(
+            output,
+            current_route,
+            allowed_capability_ids=allowed_repair_capability_ids,
+            state=state,
+            registry=registry,
+        )
+    except LLMOutputError as exc:
+        raise WorkflowFailure(
+            str(exc),
+            failure_type="contract",
+        ) from exc
     repaired_route = {**current_route, **output}
     requested = _requested_node_ids(
         output.get("requested_nodes"),
@@ -4237,9 +4874,6 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
     )
     if not requested:
         requested = tuple(current_route.get("requested_nodes") or ())
-    registry = RuntimeContractRegistry.from_path(
-        CANONICAL_RUNTIME_BINDINGS_PATH
-    )
     requested, output = reconcile_analysis_route(
         requested,
         repaired_route,
@@ -4251,13 +4885,29 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
     accepted_choice = dict(
         state.get("request", {}).get("accepted_degradation_choice") or {}
     )
+    production_like = _production_like_request(state.get("request") or {})
     requested, output = _apply_query_gap_action_to_route(
         requested,
         output,
         accepted_choice,
         registry,
+        preserve_narrative=production_like,
     )
-    output = _align_route_output_to_requested(output, requested)
+    if production_like:
+        output = _finalize_production_analysis_route_narrative(
+            state,
+            route=output,
+            requested=requested,
+            registry=registry,
+        )
+        _validate_final_analysis_route_mapping(
+            {**output, "requested_nodes": requested},
+            requested=requested,
+            known_capability_ids=frozenset(registry.capability_ids),
+            allow_empty=not requested,
+        )
+    else:
+        output = _align_route_output_to_requested(output, requested)
     _infer_question_families_from_requested_nodes(state["intent"], requested)
     state["analysis_route"] = {**state["analysis_route"], **output, "requested_nodes": requested}
     _record_obligation_rejection_authority(state, state["analysis_route"])
@@ -4265,14 +4915,56 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
     return state
 
 
+def _project_route_repair_provider_output(
+    output: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        key: output[key]
+        for key in _ROUTE_REPAIR_PROVIDER_FIELDS
+        if key in output
+    }
+
+
 def _validate_route_repair_provider_output(
     output: Mapping[str, Any],
     current_route: Mapping[str, Any],
+    *,
+    allowed_capability_ids: frozenset[str],
+    state: WorkflowState,
+    registry: RuntimeContractRegistry,
 ) -> None:
     if _route_repair_has_material_conflict(output, current_route):
         raise LLMOutputError(
             "analysis_route_repair_material_conflict:analysis_requirements"
         )
+    proposed_nodes = output.get("requested_nodes")
+    if proposed_nodes is not None and (
+        not isinstance(proposed_nodes, (list, tuple))
+        or any(
+            not isinstance(item, str)
+            or not item
+            or item != item.strip()
+            or item not in allowed_capability_ids
+            for item in proposed_nodes
+        )
+        or len(proposed_nodes) != len(set(proposed_nodes))
+    ):
+        raise LLMOutputError(
+            "analysis_route_repair_contract_invalid:requested_nodes"
+        )
+    requested = _requested_node_ids(proposed_nodes)
+    if not requested:
+        requested = _requested_node_ids(current_route.get("requested_nodes"))
+    try:
+        reconcile_analysis_route(
+            requested,
+            {**dict(current_route), **dict(output)},
+            state.get("intent") or {},
+            registry,
+            trusted_prior_route=_trusted_obligation_rejection_route(state),
+        )
+    except (KeyError, TypeError, ValueError, WorkflowFailure) as exc:
+        raise LLMOutputError(_exception_reason(exc)) from exc
 
 
 def _route_repair_has_material_conflict(
@@ -6939,11 +7631,25 @@ def _synthesize_answer(state: WorkflowState) -> WorkflowState:
         "evidence_refs": [item.get("evidence_ref") for item in state["evidence"]],
         "answer_context": _answer_synthesis_context(state),
     }
-    output = _invoke_llm(state, "answer_synthesis", answer_payload)
+    output = _invoke_llm(
+        state,
+        "answer_synthesis",
+        answer_payload,
+        output_validator=_validate_answer_claims_provider_output,
+    )
     state["answer_text"] = _weaken_unsupported_causal_wording(output.get("answer_text", ""))
     requested_claims = state["request"].get("draft_claims")
+    provider_claims = _validated_answer_claims(output)
+    production_like = str(state["request"].get("run_mode") or "") in {
+        "live",
+        "production",
+    }
     state["draft_claims"] = _claims_from_llm_or_default(
-        requested_claims if requested_claims is not None else output.get("claims"),
+        (
+            provider_claims
+            if production_like or requested_claims is None
+            else requested_claims
+        ),
         state,
     )
     _ensure_business_narrative_answer(state)
@@ -7024,11 +7730,15 @@ def _repair_answer(state: WorkflowState) -> WorkflowState:
             "evidence_brief": state["evidence_brief"],
             "answer_context": _answer_synthesis_context(state),
         },
+        output_validator=_validate_answer_claims_provider_output,
     )
     state["answer_text"] = _weaken_unsupported_causal_wording(
         output.get("answer_text", state.get("answer_text", ""))
     )
-    state["draft_claims"] = _claims_from_llm_or_default(output.get("claims"), state)
+    state["draft_claims"] = _claims_from_llm_or_default(
+        _validated_answer_claims(output),
+        state,
+    )
     _ensure_business_narrative_answer(state)
     return state
 
@@ -7560,12 +8270,13 @@ def _delivery_reverify_with_answer_repair(state: WorkflowState) -> dict[str, Any
                 "answer_context": _answer_synthesis_context(state),
                 "repair_scope": "claim binding and answer wording only; do not rerun queries",
             },
+            output_validator=_validate_answer_claims_provider_output,
         )
         state["answer_text"] = _weaken_unsupported_causal_wording(
             output.get("answer_text", state.get("answer_text", ""))
         )
         state["draft_claims"] = _claims_from_llm_or_default(
-            output.get("claims"),
+            _validated_answer_claims(output),
             state,
         )
         state["final_business_summary"] = state["answer_text"]
@@ -9252,15 +9963,13 @@ def _claims_from_llm_or_default(claims: Any, state: WorkflowState) -> list[dict[
         return normalized
     existing = state.get("draft_claims")
     if isinstance(existing, Sequence) and not isinstance(existing, (str, bytes)):
-        if str(state.get("request", {}).get("run_mode") or "") in {
+        if str(state.get("request", {}).get("run_mode") or "") not in {
             "live",
             "production",
         }:
-            preserved = _preserved_authority_claims(state)
-        else:
             preserved = [dict(item) for item in existing if isinstance(item, Mapping)]
-        if preserved:
-            return preserved
+            if preserved:
+                return preserved
     if claim_candidates:
         return []
     if str(state.get("request", {}).get("run_mode") or "") in {
@@ -9269,6 +9978,66 @@ def _claims_from_llm_or_default(claims: Any, state: WorkflowState) -> list[dict[
     }:
         return []
     return [_default_claim_from_evidence(state)]
+
+
+def _validate_answer_claims_provider_output(
+    output: Mapping[str, Any],
+) -> None:
+    claims = output.get("claims")
+    required_keys = {
+        "text",
+        "evidence_refs",
+        "numbers",
+        "scope",
+        "time_window",
+        "claim_type",
+        "claim_strength",
+    }
+    scalar_fields = (
+        "text",
+        "scope",
+        "time_window",
+        "claim_type",
+        "claim_strength",
+    )
+    if not isinstance(claims, list):
+        raise LLMOutputError("answer_claims_contract_invalid:claims")
+    for claim in claims:
+        if not isinstance(claim, Mapping) or set(claim) != required_keys:
+            raise LLMOutputError("answer_claims_contract_invalid:claims")
+        if any(
+            not isinstance(claim[field], str)
+            or not claim[field]
+            or claim[field] != claim[field].strip()
+            for field in scalar_fields
+        ):
+            raise LLMOutputError("answer_claims_contract_invalid:claims")
+        evidence_refs = claim["evidence_refs"]
+        if (
+            not isinstance(evidence_refs, Sequence)
+            or isinstance(evidence_refs, (str, bytes, bytearray))
+            or not evidence_refs
+            or any(
+                not isinstance(ref, str)
+                or not ref
+                or ref != ref.strip()
+                for ref in evidence_refs
+            )
+        ):
+            raise LLMOutputError("answer_claims_contract_invalid:claims")
+        if not isinstance(claim["numbers"], Mapping):
+            raise LLMOutputError("answer_claims_contract_invalid:claims")
+
+
+def _validated_answer_claims(output: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    try:
+        _validate_answer_claims_provider_output(output)
+    except LLMOutputError as exc:
+        raise WorkflowFailure(
+            str(exc),
+            failure_type="llm_contract",
+        ) from exc
+    return list(output["claims"])
 
 
 def _authority_bound_claim_text(

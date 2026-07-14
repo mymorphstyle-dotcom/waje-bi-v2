@@ -98,12 +98,50 @@ class ConversationRuntime:
         run_id: str | None = None,
         prior_analysis_assets: tuple[Mapping[str, Any], ...] = (),
         analysis_context: Mapping[str, Any] | None = None,
+        clarification_resume_claim: Mapping[str, Any] | None = None,
     ) -> ConversationTurnResult:
         thread = self.store.get_thread(thread_id)
-        open_clarification = self.store.get_open_clarification(thread_id)
+        explicit_source_run_id = str(
+            (clarification_resume_claim or {}).get("source_run_id") or ""
+        )
+        if explicit_source_run_id:
+            if (
+                str(
+                    (clarification_resume_claim or {}).get("resumed_run_id")
+                    or ""
+                )
+                != str(run_id or "")
+                or str(
+                    (clarification_resume_claim or {}).get("thread_id") or ""
+                )
+                != thread_id
+            ):
+                raise ConversationOrchestrationError(
+                    "clarification_resume_claim_owner_mismatch"
+                )
+            get_clarification_state = getattr(
+                self.store,
+                "get_clarification_state",
+                None,
+            )
+            if not callable(get_clarification_state):
+                raise ConversationOrchestrationError(
+                    "clarification_source_state_resolver_missing"
+                )
+            open_clarification = get_clarification_state(
+                explicit_source_run_id
+            )
+            if open_clarification is None:
+                raise ConversationOrchestrationError(
+                    "clarification_source_state_missing"
+                )
+        else:
+            open_clarification = self.store.get_open_clarification(thread_id)
         text = user_message.strip()
         matches_open_clarification = (
-            _looks_like_clarification_answer(text, open_clarification)
+            True
+            if explicit_source_run_id and open_clarification
+            else _looks_like_clarification_answer(text, open_clarification)
             if open_clarification
             else False
         )
@@ -143,7 +181,12 @@ class ConversationRuntime:
             self.store.set_pending_clarification(
                 thread_id,
                 open_clarification.topic_id,
-                thread.pending_clarification_id or open_clarification.run_id,
+                (
+                    open_clarification.run_id
+                    if explicit_source_run_id
+                    else thread.pending_clarification_id
+                    or open_clarification.run_id
+                ),
             )
             thread = self.store.get_thread(thread_id)
         turn_id = f"turn-{uuid4().hex[:12]}"
@@ -168,7 +211,11 @@ class ConversationRuntime:
         )
         intent_name = orchestration["intent"]
         topic_relation = orchestration["topic_relation"]
-        pending_clarification_id = thread.pending_clarification_id
+        pending_clarification_id = (
+            open_clarification.run_id
+            if explicit_source_run_id and open_clarification
+            else thread.pending_clarification_id
+        )
         topic = self._resolve_topic(thread_id, topic_relation, user_message, intent_name)
         turn_intent = TurnIntent(
             intent=intent_name,
@@ -2114,8 +2161,6 @@ def _looks_like_clarification_answer(
     text: str,
     clarification: ClarificationState,
 ) -> bool:
-    if _looks_new_topic(text) or _is_mixed(text):
-        return False
     normalized = text.strip().rstrip("。")
     option_texts = {
         part.strip().rstrip("。")
@@ -2125,6 +2170,8 @@ def _looks_like_clarification_answer(
     }
     if normalized in option_texts:
         return True
+    if _looks_new_topic(text) or _is_mixed(text):
+        return False
     if normalized in {"按推荐继续", "推荐"}:
         return any(option.recommended for option in clarification.options)
 

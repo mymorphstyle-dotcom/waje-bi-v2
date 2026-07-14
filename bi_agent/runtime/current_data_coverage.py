@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+from itertools import combinations
 from typing import Any, Mapping
 
 from bi_agent.runtime.analysis_contracts import (
@@ -73,6 +74,8 @@ def current_data_coverage_cases(
         )
     )
     cases = [_adapter_case(registry, *pair) for pair in adapter_pairs]
+    for metric_id, dataset_id in adapter_pairs:
+        cases.extend(_dimension_coverage_cases(registry, metric_id, dataset_id))
 
     for dataset_id in registry.dataset_ids:
         dataset = registry.dataset(dataset_id)
@@ -163,13 +166,276 @@ def _adapter_query_family(
     metric_id: str,
     dataset_id: str,
 ) -> tuple[str, tuple[str, ...]]:
-    if dataset_id == "payment_attempt":
-        return "payment_success_scan", ()
-    if dataset_id == "market_dashboard_channel":
-        return "channel_context_probe", ("channel",)
-    if dataset_id in {"gameplay", "gameplay_channel"}:
-        return "gameplay_activity_probe", ("gameplay",)
-    return "daily_metric_baselines", ()
+    for capability_id in registry.capability_ids:
+        capability = registry.capability_inputs(capability_id)
+        for query_family in capability.get("query_families", ()):
+            dimension_mode = str(capability.get("dimension_mode") or "")
+            if _capability_accepts_adapter(
+                capability,
+                query_family=str(query_family),
+                metric_id=metric_id,
+                dataset_id=dataset_id,
+                require_dimension=dimension_mode == "requested",
+            ):
+                dimension_ids = tuple(
+                    dimension_id
+                    for dimension_id in registry.dimension_ids
+                    if dataset_id in registry.dimension_sources(dimension_id)
+                    and str(query_family) in tuple(
+                        registry.dimension(
+                            dimension_id,
+                            dataset_id=dataset_id,
+                        ).get("allowed_query_families")
+                        or (str(query_family),)
+                    )
+                ) if dimension_mode == "requested" else ()
+                if dimension_mode != "requested" or dimension_ids:
+                    return str(query_family), dimension_ids
+    for capability_id in registry.capability_ids:
+        capability = registry.capability_inputs(capability_id)
+        if dataset_id not in tuple(capability.get("allowed_datasets") or ()):
+            continue
+        dimension_mode = str(capability.get("dimension_mode") or "")
+        for query_family in capability.get("query_families", ()):
+            query_family = str(query_family)
+            dimension_ids = tuple(
+                dimension_id
+                for dimension_id in registry.dimension_ids
+                if dataset_id in registry.dimension_sources(dimension_id)
+                and query_family in tuple(
+                    registry.dimension(
+                        dimension_id,
+                        dataset_id=dataset_id,
+                    ).get("allowed_query_families")
+                    or (query_family,)
+                )
+            ) if dimension_mode == "requested" else ()
+            if dimension_mode != "requested" or dimension_ids:
+                return query_family, dimension_ids
+    raise ValueError(
+        f"current_data_adapter_query_family_missing:{metric_id}:{dataset_id}"
+    )
+
+
+def _dimension_coverage_cases(
+    registry: RuntimeContractRegistry,
+    metric_id: str,
+    dataset_id: str,
+) -> list[CurrentDataCoverageCase]:
+    dimensions = tuple(
+        dimension_id
+        for dimension_id in registry.dimension_ids
+        if dataset_id in registry.dimension_sources(dimension_id)
+    )
+    if not dimensions:
+        return []
+    output = []
+    if _query_family_for_topology(
+        registry, "independent", dataset_id=dataset_id
+    ):
+        output.extend(
+            _dimension_case(
+                registry,
+                metric_id=metric_id,
+                dataset_id=dataset_id,
+                dimension_ids=(dimension_id,),
+                topology="independent",
+            )
+            for dimension_id in dimensions
+        )
+    if _query_family_for_topology(registry, "joint", dataset_id=dataset_id):
+        output.extend(
+            _dimension_case(
+                registry,
+                metric_id=metric_id,
+                dataset_id=dataset_id,
+                dimension_ids=tuple(pair),
+                topology="joint",
+            )
+            for size in range(1, len(dimensions) + 1)
+            for pair in combinations(dimensions, size)
+        )
+    return output
+
+
+def _dimension_case(
+    registry: RuntimeContractRegistry,
+    *,
+    metric_id: str,
+    dataset_id: str,
+    dimension_ids: tuple[str, ...],
+    topology: str,
+) -> CurrentDataCoverageCase:
+    query_family = _dimension_query_family(
+        registry,
+        metric_id=metric_id,
+        dataset_id=dataset_id,
+        topology=topology,
+    )
+    capability_supported = bool(query_family)
+    if not query_family:
+        query_family = _query_family_for_topology(
+            registry,
+            topology,
+            dataset_id=dataset_id,
+        )
+    case_id = (
+        f"dimension:{metric_id}:{dataset_id}:{query_family}:"
+        + "+".join(dimension_ids)
+    )
+    metric = registry.metric(metric_id, dataset_id=dataset_id)
+    dataset_schema = set(registry.dataset(dataset_id).get("schema_fields", ()))
+    dimension_contracts = tuple(
+        registry.dimension(dimension_id, dataset_id=dataset_id)
+        for dimension_id in dimension_ids
+    )
+    required_fields = {
+        *(str(item) for item in metric.get("required_fields", ())),
+        *(str(item.get("source_field") or "") for item in dimension_contracts),
+    }
+    missing = tuple(sorted(required_fields - dataset_schema - {""}))
+    gap_type = ""
+    owner = ""
+    if missing:
+        gap_type = "source_schema_mismatch"
+        owner = "source_contract_owner"
+    elif any(
+        _permission_rank(str(item.get("permission_scope") or "analyst"))
+        > _permission_rank("analyst")
+        for item in dimension_contracts
+    ):
+        gap_type = "permission_blocked"
+        owner = "permission_contract_owner"
+    elif not capability_supported:
+        gap_type = "capability_contract_unsupported_metric"
+        owner = "analysis_contract_owner"
+    elif any(
+        "window_id" not in tuple(item.get("allowed_grains") or ())
+        for item in dimension_contracts
+    ):
+        gap_type = "unsupported_grain"
+        owner = "source_contract_owner"
+    elif any(
+        query_family not in tuple(item.get("allowed_query_families") or (query_family,))
+        for item in dimension_contracts
+    ):
+        gap_type = "contract_partial"
+        owner = "analysis_contract_owner"
+    if gap_type:
+        return CurrentDataCoverageCase(
+            case_id=case_id,
+            dataset_ids=(dataset_id,),
+            metric_ids=(metric_id,),
+            dimension_ids=dimension_ids,
+            query_family=query_family,
+            required_window_ids=tuple(
+                window.window_id for window in _coverage_windows(registry)
+            ),
+            expected_state="degraded",
+            claim_ceiling="insufficient",
+            gap_type=gap_type,
+            owner=owner,
+            source_fields=tuple(sorted(required_fields - {""})),
+        )
+    return _supported_case(
+        registry,
+        case_id,
+        (dataset_id,),
+        metric_id,
+        dimension_ids,
+        query_family,
+        str(metric.get("maximum_claim_strength") or "directional"),
+    )
+
+
+def _dimension_query_family(
+    registry: RuntimeContractRegistry,
+    *,
+    metric_id: str,
+    dataset_id: str,
+    topology: str,
+) -> str:
+    for capability_id in registry.capability_ids:
+        capability = registry.capability_inputs(capability_id)
+        if str(capability.get("dimension_mode") or "") != "requested":
+            continue
+        for query_family in capability.get("query_families", ()):
+            query_family = str(query_family)
+            try:
+                shape = registry.query_shape(query_family)
+            except KeyError:
+                continue
+            if str(shape.get("dimension_topology") or "") != topology:
+                continue
+            if _capability_accepts_adapter(
+                capability,
+                query_family=query_family,
+                metric_id=metric_id,
+                dataset_id=dataset_id,
+                require_dimension=True,
+            ):
+                return query_family
+    return ""
+
+
+def _query_family_for_topology(
+    registry: RuntimeContractRegistry,
+    topology: str,
+    *,
+    dataset_id: str,
+) -> str:
+    families = {
+        str(query_family)
+        for capability_id in registry.capability_ids
+        if dataset_id in tuple(
+            registry.capability_inputs(capability_id).get(
+                "allowed_datasets", ()
+            )
+        )
+        for query_family in registry.capability_inputs(capability_id).get(
+            "query_families", ()
+        )
+        if str(
+            registry.query_shape(str(query_family)).get("dimension_topology") or ""
+        ) == topology
+    }
+    if len(families) > 1:
+        raise ValueError(
+            f"current_data_dimension_topology_ambiguous:{topology}"
+        )
+    return next(iter(families), "")
+
+
+def _capability_accepts_adapter(
+    capability: Mapping[str, Any],
+    *,
+    query_family: str,
+    metric_id: str,
+    dataset_id: str,
+    require_dimension: bool,
+) -> bool:
+    allowed_datasets = tuple(capability.get("allowed_datasets") or ())
+    if dataset_id not in allowed_datasets:
+        return False
+    if require_dimension != (
+        str(capability.get("dimension_mode") or "") == "requested"
+    ):
+        return False
+    family_metrics = capability.get("query_family_metrics") or {}
+    if query_family in family_metrics:
+        return metric_id in tuple(family_metrics[query_family] or ())
+    allowed_metrics = tuple(capability.get("allowed_metrics") or ())
+    required_metrics = tuple(capability.get("required_metrics") or ())
+    optional_metrics = tuple(capability.get("optional_metrics") or ())
+    reviewed_metrics = (*allowed_metrics, *required_metrics, *optional_metrics)
+    return not reviewed_metrics or metric_id in reviewed_metrics
+
+
+def _permission_rank(scope: str) -> int:
+    try:
+        return ("viewer", "analyst", "admin").index(scope)
+    except ValueError:
+        return 99
 
 
 def _bind_overall_channel_reconciliation(

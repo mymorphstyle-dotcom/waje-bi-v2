@@ -129,6 +129,196 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             len({case.case_id for case in cases}),
         )
 
+    def test_generated_set_closes_registered_metric_dimension_cells_and_legal_joint_sets(self):
+        registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+        cases = current_data_coverage_cases(registry)
+        expected_cells = {
+            (metric_id, dataset_id, dimension_id)
+            for metric_id in registry.metric_ids
+            for dataset_id in registry.metric_sources(metric_id)
+            for dimension_id in registry.dimension_ids
+            if dataset_id in registry.dimension_sources(dimension_id)
+        }
+        covered_cells = {
+            (metric_id, dataset_id, dimension_id)
+            for case in cases
+            for metric_id in case.metric_ids
+            for dataset_id in case.dataset_ids
+            for dimension_id in case.dimension_ids
+            if len(case.dimension_ids) == 1
+        }
+
+        self.assertEqual(covered_cells, expected_cells)
+        paid_dimensions = {
+            "channel", "payment_method", "region", "device_brand",
+        }
+        paid_independent = {
+            frozenset(case.dimension_ids)
+            for case in cases
+            if case.dataset_ids == ("paid_order_success",)
+            and case.metric_ids == ("paid_amount",)
+            and case.query_family == "dimension_contribution_scan"
+            and case.expected_state == "supported"
+        }
+        paid_joint = {
+            frozenset(case.dimension_ids)
+            for case in cases
+            if case.dataset_ids == ("paid_order_success",)
+            and case.metric_ids == ("paid_amount",)
+            and case.query_family == "joint_candidate_scan"
+            and case.expected_state == "supported"
+        }
+        self.assertEqual(
+            paid_independent,
+            {frozenset((dimension_id,)) for dimension_id in paid_dimensions},
+        )
+        self.assertEqual(
+            paid_joint,
+            {
+                frozenset(group)
+                for size in range(1, len(paid_dimensions) + 1)
+                for group in __import__("itertools").combinations(
+                    sorted(paid_dimensions), size
+                )
+            },
+        )
+
+    def test_new_registered_dimension_is_generated_without_dataset_name_code(self):
+        payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
+        payload["datasets"]["paid_order_success"]["schema_fields"].append(
+            "campaign"
+        )
+        payload["dimensions"]["campaign"] = {
+            "contract_ref": "contracts/dimensions/dimensions.yaml#campaign",
+            "dataset_id": "paid_order_success",
+            "source_field": "campaign",
+            "allowed_grains": ["day", "window_id"],
+        }
+
+        cases = current_data_coverage_cases(RuntimeContractRegistry(payload))
+
+        paid_amount = [
+            case
+            for case in cases
+            if case.metric_ids == ("paid_amount",)
+            and case.dataset_ids == ("paid_order_success",)
+            and case.expected_state == "supported"
+        ]
+        self.assertTrue(any(
+            case.metric_ids == ("paid_amount",)
+            and case.dataset_ids == ("paid_order_success",)
+            and case.dimension_ids == ("campaign",)
+            and case.query_family == "dimension_contribution_scan"
+            and case.expected_state == "supported"
+            for case in paid_amount
+        ))
+        self.assertEqual(
+            len({
+                frozenset(case.dimension_ids)
+                for case in paid_amount
+                if case.query_family == "dimension_contribution_scan"
+            }),
+            5,
+        )
+        self.assertEqual(
+            len({
+                frozenset(case.dimension_ids)
+                for case in paid_amount
+                if case.query_family == "joint_candidate_scan"
+            }),
+            31,
+        )
+
+    def test_dimension_grain_and_query_family_legality_degrade_every_affected_set(self):
+        payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
+        payload["dimensions"]["channel"]["allowed_grains"] = ["day"]
+        payload["dimensions"]["payment_method"]["allowed_query_families"] = [
+            "dimension_contribution_scan"
+        ]
+
+        cases = current_data_coverage_cases(RuntimeContractRegistry(payload))
+        paid_amount = [
+            case
+            for case in cases
+            if case.metric_ids == ("paid_amount",)
+            and case.dataset_ids == ("paid_order_success",)
+            and case.dimension_ids
+        ]
+
+        channel_cases = [
+            case for case in paid_amount if "channel" in case.dimension_ids
+        ]
+        self.assertTrue(channel_cases)
+        self.assertTrue(all(
+            case.expected_state == "degraded"
+            and case.gap_type == "unsupported_grain"
+            for case in channel_cases
+        ))
+        payment_joint = [
+            case
+            for case in paid_amount
+            if case.query_family == "joint_candidate_scan"
+            and "payment_method" in case.dimension_ids
+            and "channel" not in case.dimension_ids
+        ]
+        self.assertTrue(payment_joint)
+        self.assertTrue(all(
+            case.expected_state == "degraded"
+            and case.gap_type == "contract_partial"
+            for case in payment_joint
+        ))
+        self.assertTrue(any(
+            case.query_family == "dimension_contribution_scan"
+            and case.dimension_ids == ("payment_method",)
+            and case.expected_state == "supported"
+            for case in paid_amount
+        ))
+
+    def test_requested_dimension_query_family_requires_reviewed_topology(self):
+        for topology in (None, "cartesian"):
+            with self.subTest(topology=topology):
+                payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
+                if topology is None:
+                    payload["query_shapes"]["joint_candidate_scan"].pop(
+                        "dimension_topology"
+                    )
+                else:
+                    payload["query_shapes"]["joint_candidate_scan"][
+                        "dimension_topology"
+                    ] = topology
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "runtime_query_shape_dimension_topology:joint_candidate_scan",
+                ):
+                    RuntimeContractRegistry(payload)
+
+    def test_dimension_schema_and_permission_boundaries_are_retained_as_typed_gaps(self):
+        payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
+        payload["datasets"]["paid_order_success"]["schema_fields"].remove(
+            "channel"
+        )
+        payload["dimensions"]["region"]["permission_scope"] = "admin"
+
+        cases = current_data_coverage_cases(RuntimeContractRegistry(payload))
+        paid_amount = [
+            case
+            for case in cases
+            if case.metric_ids == ("paid_amount",)
+            and case.dataset_ids == ("paid_order_success",)
+        ]
+
+        self.assertTrue(any(
+            case.dimension_ids == ("channel",)
+            and case.gap_type == "source_schema_mismatch"
+            for case in paid_amount
+        ))
+        self.assertTrue(any(
+            case.dimension_ids == ("region",)
+            and case.gap_type == "permission_blocked"
+            for case in paid_amount
+        ))
+
     def test_new_registered_adapter_pair_is_generated_without_case_code(self):
         payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
         payload["metrics"]["profit"]["source_adapters"] = {

@@ -20,7 +20,7 @@ class GatewayArtifactContinueTest(unittest.TestCase):
         try_block = route[route.index("try {") :]
         self.assertLess(
             try_block.index("requireArtifactForContinue"),
-            try_block.index("addUserMessage"),
+            try_block.index("claimRunDispatchRequest"),
         )
 
     def test_artifact_continue_does_not_trust_client_supplied_role(self):

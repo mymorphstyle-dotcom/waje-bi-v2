@@ -176,6 +176,9 @@ class AnswerPackageBuildContext:
                 "decision": "fresh",
             },
         )
+        run_id = str(request.get("run_id") or "")
+        if not run_id:
+            raise EvidenceIntegrityError("analysis_runtime_run_id_missing")
         return cls(
             context_owner=MappingProxyType(
                 {
@@ -186,8 +189,8 @@ class AnswerPackageBuildContext:
             ),
             trusted_provenance=MappingProxyType(
                 build_trusted_claim_provenance_record(
-                    run_id=str(request.get("run_id") or ""),
-                    artifact_refs=(artifact_path,),
+                    run_id=run_id,
+                    artifact_refs=(f"answer-package:{run_id}",),
                     memory_refs=memory_refs,
                     reuse_decisions=reuse,
                 )
@@ -639,6 +642,13 @@ class AnalysisRuntime:
         reasons: list[str] = []
         for raw_candidate in request.reuse_candidates:
             candidate = dict(raw_candidate)
+            source_run_id = candidate.get("source_run_id")
+            if (
+                not isinstance(source_run_id, str)
+                or not source_run_id
+                or source_run_id != source_run_id.strip()
+            ):
+                continue
             if first_candidate is None:
                 first_candidate = candidate
             try:

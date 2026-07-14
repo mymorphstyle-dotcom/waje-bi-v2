@@ -76,6 +76,49 @@ class AnalysisObligationsTest(unittest.TestCase):
             (*result.required_capabilities, *result.conditional_capabilities),
         )
 
+    def test_business_context_obligations_follow_compatible_source_roles(self):
+        registry = RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        )
+        gameplay = resolve_analysis_obligations(
+            ObligationRequest(
+                question_families=("business_object_impact_review",),
+                diagnostic_tags=(),
+                target_metrics=("paid_amount",),
+                requested_dimensions=("gameplay",),
+                baselines=(),
+                context_sources=("gameplay",),
+                claim_intents=("candidate_mechanism",),
+            ),
+            registry,
+        )
+        gameplay_capabilities = {
+            *gameplay.required_capabilities,
+            *gameplay.conditional_capabilities,
+            *gameplay.independent_capabilities,
+        }
+        self.assertIn("gameplay_activity_context", gameplay_capabilities)
+        self.assertNotIn("event_evidence", gameplay_capabilities)
+        self.assertNotIn("event_window_compare", gameplay_capabilities)
+
+        external_event = resolve_analysis_obligations(
+            ObligationRequest(
+                question_families=("business_object_impact_review",),
+                diagnostic_tags=(),
+                target_metrics=("paid_amount",),
+                requested_dimensions=(),
+                baselines=(),
+                context_sources=("external_event",),
+                claim_intents=("candidate_mechanism",),
+            ),
+            registry,
+        )
+        self.assertTrue(
+            {"event_evidence", "event_window_compare"}.issubset(
+                external_event.conditional_capabilities
+            )
+        )
+
     def test_from_intent_deduplicates_families_and_defaults_target_metric(self):
         request = ObligationRequest.from_intent(
             question_family="pattern_explanation",
@@ -367,9 +410,10 @@ class AnalysisObligationsTest(unittest.TestCase):
             )
         )
         self.assertTrue(
-            {"gameplay_activity_context", "event_window_compare", "metric_timeseries"}
+            {"gameplay_activity_context", "metric_timeseries"}
             .issubset(result.independent_capabilities)
         )
+        self.assertIn("event_window_compare", result.conditional_capabilities)
         self.assertEqual(result.applicable_diagnostic_tags, ("event_impact",))
         self.assertEqual(result.rejected_diagnostic_tags, ())
 

@@ -4,10 +4,14 @@ from copy import deepcopy
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
+import tempfile
 from io import StringIO
 from unittest.mock import patch
 
-from bi_agent.conversation.agent_core import ConversationAgentCore
+from bi_agent.conversation.agent_core import (
+    ConversationAgentCore,
+    _manifest_with_current_run_evidence,
+)
 from bi_agent.conversation.models import ConversationRunRequest
 from bi_agent.conversation.runtime import (
     ConversationOrchestrationError,
@@ -718,6 +722,94 @@ class AgentCoreBridgeTest(unittest.TestCase):
             )
         )
 
+    def test_post_publication_delivery_failures_are_typed_terminal_failures(self):
+        from tempfile import TemporaryDirectory
+
+        artifact_path = (
+            Path(self.enterContext(TemporaryDirectory())) / "answer_package.json"
+        )
+        artifact_path.write_text("{}", encoding="utf-8")
+
+        class FailingDeliveryStore(InMemoryConversationStore):
+            def __init__(self, failing_writer):
+                super().__init__()
+                self.failing_writer = failing_writer
+                self.runtime_published = False
+
+            def save_analysis_runtime_records(self, **kwargs):
+                result = super().save_analysis_runtime_records(**kwargs)
+                self.runtime_published = True
+                return result
+
+            def record_context_manifest(self, manifest):
+                if (
+                    self.runtime_published
+                    and self.failing_writer == "record_context_manifest"
+                ):
+                    raise RuntimeError("context manifest delivery unavailable")
+                return super().record_context_manifest(manifest)
+
+            def record_answer_package(self, run_id, package):
+                if self.failing_writer == "record_answer_package":
+                    raise RuntimeError("answer package delivery unavailable")
+                return super().record_answer_package(run_id, package)
+
+            def save_analysis_assets(self, thread_id, topic_id, assets):
+                if self.failing_writer == "save_analysis_assets":
+                    raise RuntimeError("analysis assets delivery unavailable")
+                return super().save_analysis_assets(thread_id, topic_id, assets)
+
+        def workflow(request):
+            result = fake_workflow(request)
+            records = _queryless_runtime_records_for_request(request)
+            return _completed_runtime_workflow_result(
+                request,
+                answer_package=result.answer_package,
+                records=records,
+                artifact_path=str(artifact_path),
+            )
+
+        for writer in (
+            "record_context_manifest",
+            "record_answer_package",
+            "save_analysis_assets",
+        ):
+            with self.subTest(writer=writer):
+                run_id = f"run-delivery-failure-{writer}"
+                store = FailingDeliveryStore(writer)
+
+                result = ConversationAgentCore(
+                    store,
+                    workflow_runner=workflow,
+                ).run_message(
+                    thread_id=f"thread-delivery-failure-{writer}",
+                    run_id=run_id,
+                    user_message="当前付费金额的数据边界是什么？",
+                )
+
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(
+                    result["failure_reason"],
+                    "analysis_delivery_persistence_failed",
+                )
+                self.assertEqual(store.runs[run_id]["status"], "failed")
+                self.assertEqual(
+                    store.runs[run_id]["request"]["artifact_path"],
+                    str(artifact_path),
+                )
+                self.assertIn(run_id, store.analysis_runtime_records)
+                self.assertIn(
+                    f"analysis:{run_id}:1",
+                    store.analysis_runtime_authority["analysis_contract"],
+                )
+                failure = next(
+                    event
+                    for event in store.audit_events
+                    if event["event_type"]
+                    == "analysis_delivery_persistence_failed"
+                )
+                self.assertIn("delivery unavailable", failure["payload"]["reason"])
+
     def test_completed_run_publishes_material_authority_after_verified_runtime_persistence(self):
         from bi_agent.conversation.clarification_authority import (
             build_material_authority,
@@ -770,12 +862,21 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 material_slots=material_slots,
                 runtime_material=_runtime_material_for_contract(contract),
             )
+            from tests.phase7.artifact_test_support import (
+                materialize_answer_package_artifact,
+            )
+
+            artifact_path, _ = materialize_answer_package_artifact(
+                run_id=run_id,
+                answer_package=package,
+            )
             return WorkflowRunResult(
                 status="draft",
                 run_id=run_id,
                 answer_package=package,
                 analysis_runtime_records=records,
                 completed_material_authority=material_authority,
+                artifact_path=artifact_path,
             )
 
         store = InMemoryConversationStore()
@@ -1888,6 +1989,82 @@ class AgentCoreBridgeTest(unittest.TestCase):
             "OSError",
         )
 
+    def test_verified_runtime_rejects_dangling_artifact_provenance(self):
+        package, context, _ = _verified_delivery_package(
+            run_id="run-dangling-artifact-provenance",
+        )
+
+        result, store = _run_verified_package_through_core(
+            package,
+            context,
+            thread_id="thread-dangling-artifact-provenance",
+            run_id="run-dangling-artifact-provenance",
+            artifact_path="",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["failure_reason"],
+            "analysis_runtime_persistence_failed",
+        )
+        self.assertEqual(
+            result["failure_subreason"],
+            "runtime_persistence_answer_package_artifact_missing",
+        )
+        self.assertNotIn(
+            "run-dangling-artifact-provenance",
+            store.analysis_runtime_records,
+        )
+        self.assertNotIn(
+            "run-dangling-artifact-provenance",
+            store.answer_packages,
+        )
+
+    def test_final_artifact_sync_publishes_canonical_artifact_authority(self):
+        from bi_agent.runtime.evidence_authority import canonical_digest
+        from tempfile import TemporaryDirectory
+
+        run_id = "run-artifact-authority"
+        artifact_path = (
+            Path(self.enterContext(TemporaryDirectory())) / "answer_package.json"
+        )
+        package = fake_workflow({"run_id": run_id}).answer_package
+        artifact_path.write_text(json.dumps(package), encoding="utf-8")
+
+        def workflow(request):
+            return _completed_runtime_workflow_result(
+                request,
+                answer_package=package,
+                records=_queryless_runtime_records_for_request(request),
+                artifact_path=str(artifact_path),
+                checkpoint_events=(),
+            )
+
+        store = InMemoryConversationStore()
+        result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
+            thread_id="thread-artifact-authority",
+            run_id=run_id,
+            user_message="当前付费金额的数据边界是什么？",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        persisted_package = json.loads(artifact_path.read_text(encoding="utf-8"))
+        artifact_ref = f"answer-package:{run_id}"
+        artifact = store.analysis_runtime_authority[
+            "answer_package_artifact"
+        ][artifact_ref]
+        self.assertEqual(artifact["canonical_path"], str(artifact_path.resolve()))
+        self.assertEqual(
+            artifact["payload_digest"],
+            canonical_digest(persisted_package),
+        )
+        self.assertEqual(
+            store.analysis_runtime_records[run_id]["payload"][
+                "answer_package_artifacts"
+            ],
+            [artifact],
+        )
+
     def test_analysis_asset_projection_failure_blocks_all_publication(self):
         from tempfile import TemporaryDirectory
 
@@ -2481,7 +2658,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                                     "choice_id": "use_complete_day",
                                     "action_kind": "omit_unavailable_context",
                                     "business_label": "改用最近完整业务日并重新编译。",
-                                    "affected_capabilities": ["event_evidence"],
+                                    "affected_capabilities": [],
                                 },
                             ],
                         },
@@ -2615,6 +2792,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
             captured[1]["context_manifest"]["permission_context"],
             {"role": "analyst"},
         )
+        self.assertEqual(len(recorded_outcomes), 1)
         self.assertEqual(recorded_outcomes[0]["choice"], accepted)
         self.assertEqual(
             captured[1]["accepted_terminal_gap_authority"],
@@ -4168,6 +4346,50 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertNotIn("evidence:fake-workflow", refs)
         self.assertFalse(result["context_manifest"]["can_support_claims"])
 
+    def test_current_run_evidence_derives_a_new_immutable_manifest(self):
+        store = InMemoryConversationStore()
+        manifest = {
+            "manifest_id": "context-parent",
+            "thread_id": "thread-manifest-version",
+            "turn_id": "turn-manifest-version",
+            "items": [],
+            "claim_use_policy": {"can_support_bi_claim": False},
+            "can_support_claims": False,
+        }
+        package = {
+            "snapshot_id": "snapshot-1",
+            "sections": [
+                {
+                    "payload": {
+                        "claims": [{"evidence_refs": ["evidence:current"]}],
+                        "evidence": [{"evidence_ref": "evidence:current"}],
+                    }
+                }
+            ],
+        }
+
+        store.record_context_manifest(manifest)
+        derived = _manifest_with_current_run_evidence(
+            manifest,
+            package,
+            "analyst",
+        )
+        store.record_context_manifest(derived)
+
+        self.assertNotEqual(derived["manifest_id"], manifest["manifest_id"])
+        self.assertEqual(
+            derived["manifest_id"],
+            _manifest_with_current_run_evidence(
+                manifest,
+                package,
+                "analyst",
+            )["manifest_id"],
+        )
+        self.assertEqual(
+            store.context_manifests["context-parent"],
+            canonical_value(manifest),
+        )
+
     def test_agent_core_creates_thread_before_initial_run_insert(self):
         store = StrictThreadStore()
         core = ConversationAgentCore(store, workflow_runner=fake_workflow)
@@ -4355,6 +4577,14 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 user_message="按付费总金额",
                 clarification={"answer_text": "按付费总金额"},
             )
+        failed_resume = store.runs[
+            "run-pre-workflow-missing-envelope-resume"
+        ]
+        self.assertEqual(failed_resume["status"], "failed")
+        self.assertEqual(
+            failed_resume["request"]["failure_reason"],
+            "clarification_source_envelope_invalid",
+        )
 
     def test_pre_workflow_source_envelope_binds_owner_and_content_digest(self):
         store = InMemoryConversationStore()
@@ -8393,8 +8623,18 @@ def _run_verified_package_through_core(
     thread_id,
     run_id,
     with_runtime_records=True,
-    artifact_path="",
+    artifact_path=None,
 ):
+    if artifact_path is None and with_runtime_records:
+        artifact_root = Path(tempfile.gettempdir()) / "waje-bi-v2-agent-core-artifacts"
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        artifact_file = artifact_root / f"{run_id}.json"
+        artifact_file.write_text(
+            json.dumps(package, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        artifact_path = str(artifact_file)
+    artifact_path = artifact_path or ""
     def workflow(request):
         records = None
         if with_runtime_records:
@@ -8634,6 +8874,7 @@ def _queryless_runtime_records_for_request(
         "evidence_manifests",
         "context_manifests",
         "trusted_provenance_records",
+        "answer_package_artifacts",
         "verified_claims",
         "claim_links",
         "repair_attempts",
@@ -8649,6 +8890,19 @@ def _completed_runtime_workflow_result(
     records,
     **result_fields,
 ):
+    if (
+        records.get("trusted_provenance_records")
+        and "artifact_path" not in result_fields
+    ):
+        from tests.phase7.artifact_test_support import (
+            materialize_answer_package_artifact,
+        )
+
+        artifact_path, _ = materialize_answer_package_artifact(
+            run_id=request["run_id"],
+            answer_package=answer_package,
+        )
+        result_fields["artifact_path"] = artifact_path
     return WorkflowRunResult(
         status="draft",
         run_id=request["run_id"],

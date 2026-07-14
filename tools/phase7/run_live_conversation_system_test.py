@@ -63,6 +63,7 @@ from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
 )
+from bi_agent.runtime.permission_roles import PRODUCT_ROLE_PERMISSION_SCOPES
 from bi_agent.runtime.runtime_publication_index import (
     RUNTIME_PUBLICATION_INDEX_SCHEMA_VERSION,
     RUNTIME_PUBLICATION_RECORD_GROUPS,
@@ -78,12 +79,33 @@ def load_cases(path: str) -> list[dict[str, Any]]:
     defaults = raw.get("analysis_context_defaults") or {}
     if not isinstance(defaults, Mapping):
         raise ValueError("eval_analysis_context_defaults_invalid")
+    permission_scope_default = str(
+        raw.get("permission_scope_default") or "analyst"
+    )
+    _permission_role_for_scope(permission_scope_default)
     cases = raw.get("conversation_cases", [])
     loaded = [deepcopy(case) for case in cases if isinstance(case, dict) and case.get("id")]
     for case in loaded:
         if defaults and not case.get("analysis_context"):
             case["analysis_context"] = dict(defaults)
+        for turn in case.get("turns") or ():
+            scenario = turn.get("scenario") if isinstance(turn, Mapping) else None
+            if not isinstance(scenario, dict):
+                continue
+            scenario.setdefault("permission_scope", permission_scope_default)
+            _permission_role_for_scope(str(scenario["permission_scope"]))
     return loaded
+
+
+def _permission_role_for_scope(permission_scope: str) -> str:
+    matches = tuple(
+        role
+        for role, scope in PRODUCT_ROLE_PERMISSION_SCOPES.items()
+        if scope == permission_scope
+    )
+    if len(matches) != 1:
+        raise ValueError("eval_permission_scope_invalid")
+    return matches[0]
 
 
 def select_cases(cases: list[dict[str, Any]], case_id: str | None) -> list[dict[str, Any]]:
@@ -355,6 +377,15 @@ def review_case_obligations(
         registry,
         authored_family=authored_family,
     )
+    authored_permission_scope = str(
+        scenario.get("permission_scope") or "analyst"
+    )
+    persisted_permission_scope, permission_authority_status = (
+        _persisted_permission_scope_authority(
+            authority,
+            authored_scope=authored_permission_scope,
+        )
+    )
     family = families[0] if families else ""
     request = ObligationRequest(
         question_families=families,
@@ -547,7 +578,8 @@ def review_case_obligations(
         and reuse_review["passed"] is True
     )
     hard_passed = (
-        family_authority_status in {"matched", "mismatch"}
+        family_authority_status == "matched"
+        and permission_authority_status == "matched"
         and not nonterminal_capabilities
         and not capability_state_mismatches
         and not unresolved_authority_capabilities
@@ -566,6 +598,9 @@ def review_case_obligations(
         "question_families": list(families),
         "question_family_authority_status": family_authority_status,
         "question_family_mismatch": family_authority_status == "mismatch",
+        "authored_permission_scope": authored_permission_scope,
+        "permission_scope": persisted_permission_scope,
+        "permission_scope_authority_status": permission_authority_status,
         "capability_family_provenance": {
             capability_id: list(source_families)
             for capability_id, source_families in capability_family_provenance.items()
@@ -667,6 +702,35 @@ def _persisted_question_family_authority(
     if any(family not in registry.question_family_ids for family in families):
         return (), "invalid"
     return families, "matched" if authored_family in families else "mismatch"
+
+
+def _persisted_permission_scope_authority(
+    authority: Mapping[str, Any],
+    *,
+    authored_scope: str,
+) -> tuple[str, str]:
+    try:
+        _permission_role_for_scope(authored_scope)
+    except ValueError:
+        return "", "invalid_authored"
+    authority_error = str(authority.get("_authority_error") or "")
+    if authority_error:
+        return "", authority_error
+    admin = authority.get("admin_audit") or authority
+    if not isinstance(admin, Mapping):
+        return "", "missing"
+    raw_contract = admin.get("analysis_contract")
+    if not isinstance(raw_contract, Mapping):
+        return "", "missing"
+    try:
+        contract = analysis_contract_from_dict(raw_contract)
+        _permission_role_for_scope(contract.permission_scope)
+    except (KeyError, TypeError, ValueError):
+        return "", "invalid_contract"
+    return (
+        contract.permission_scope,
+        "matched" if contract.permission_scope == authored_scope else "mismatch",
+    )
 
 
 def _resolve_family_set_obligations(
@@ -4360,6 +4424,19 @@ def _runtime_evaluation_inventory_sql() -> str:
             )
           )
         UNION ALL
+        SELECT 'answer_package_artifacts',
+               artifact.artifact_ref,
+               jsonb_build_array(artifact.run_id),
+               artifact.payload
+        FROM requested
+        JOIN waje_runtime.answer_package_artifacts artifact
+          ON artifact.run_id = requested.run_id
+          OR artifact.artifact_ref IN (
+            SELECT jsonb_array_elements_text(
+              requested.ordered_refs -> 'answer_package_artifacts'
+            )
+          )
+        UNION ALL
         SELECT 'verified_claims',
                claim.claim_ref,
                jsonb_build_array(
@@ -4604,7 +4681,7 @@ def _normalized_runtime_evaluation_projection(
         raise ValueError("runtime_evaluation_analysis_contract_digest_mismatch")
 
     def records(key: str) -> list[dict[str, Any]]:
-        raw = bundle.get(key)
+        raw = bundle.get(key, ()) if key == "answer_package_artifacts" else bundle.get(key)
         if not isinstance(raw, (list, tuple)) or any(
             not isinstance(item, Mapping) for item in raw
         ):
@@ -4628,6 +4705,7 @@ def _normalized_runtime_evaluation_projection(
             "evidence_manifests",
             "context_manifests",
             "trusted_provenance_records",
+            "answer_package_artifacts",
             "verified_claims",
             "claim_links",
             "repair_attempts",
@@ -4684,6 +4762,7 @@ def _normalized_runtime_evaluation_projection(
             evidence_manifests=raw_records["evidence_manifests"],
             context_manifests=raw_records["context_manifests"],
             trusted_provenance_records=raw_records["trusted_provenance_records"],
+            answer_package_artifacts=raw_records["answer_package_artifacts"],
             verified_claims=raw_records["verified_claims"],
             claim_links=raw_records["claim_links"],
             repair_attempts=raw_records["repair_attempts"],
@@ -4776,6 +4855,7 @@ def _normalized_runtime_evaluation_projection(
     capability_bindings = raw_records["capability_binding_records"]
     context_manifests = raw_records["context_manifests"]
     provenance_records = raw_records["trusted_provenance_records"]
+    answer_package_artifacts = raw_records["answer_package_artifacts"]
     verified_claims = raw_records["verified_claims"]
     claim_links = raw_records["claim_links"]
     projection = {
@@ -4795,6 +4875,7 @@ def _normalized_runtime_evaluation_projection(
         "evidence_manifests": evidence,
         "context_manifests": context_manifests,
         "trusted_provenance_records": provenance_records,
+        "answer_package_artifacts": answer_package_artifacts,
         "verified_claims": verified_claims,
         "claim_links": claim_links,
         "delivery_verifier": dict(delivery_verifier),
@@ -5031,6 +5112,14 @@ def _runtime_audit_package(
         resolved_authority.get("projection_schema_version")
         == "eval-runtime-authority.v1"
     ):
+        artifact_authority_issue = _runtime_artifact_authority_issue(
+            resolved_authority,
+            run_id=expected_run_id,
+            artifact_path=path,
+            artifact_payload=payload,
+        )
+        if artifact_authority_issue:
+            return failure(artifact_authority_issue)
         projection_admin = resolved_authority.get("admin_audit")
         if not isinstance(projection_admin, Mapping):
             return failure("runtime_evaluation_projection_invalid")
@@ -5046,6 +5135,52 @@ def _runtime_audit_package(
             "analysis_contract": persisted_contract.to_dict(),
         },
     }
+
+
+def _runtime_artifact_authority_issue(
+    authority: Mapping[str, Any],
+    *,
+    run_id: str,
+    artifact_path: Path,
+    artifact_payload: Mapping[str, Any],
+) -> str:
+    records = authority.get("answer_package_artifacts")
+    if not isinstance(records, (list, tuple)):
+        return "artifact_authority_missing"
+    if len(records) != 1:
+        return "artifact_authority_missing" if not records else "artifact_authority_ambiguous"
+    record = records[0]
+    if (
+        not isinstance(record, Mapping)
+        or set(record)
+        != {
+            "schema_version",
+            "artifact_ref",
+            "run_id",
+            "canonical_path",
+            "payload_digest",
+        }
+        or record.get("schema_version") != "answer-package-artifact.v1"
+        or record.get("run_id") != run_id
+        or record.get("artifact_ref") != f"answer-package:{run_id}"
+        or not isinstance(record.get("payload_digest"), str)
+    ):
+        return "artifact_authority_invalid"
+    if str(record.get("canonical_path") or "") != str(artifact_path.resolve()):
+        return "artifact_authority_path_mismatch"
+    if canonical_digest(artifact_payload) != record["payload_digest"]:
+        return "artifact_authority_digest_mismatch"
+    provenance_records = authority.get("trusted_provenance_records")
+    if not isinstance(provenance_records, (list, tuple)):
+        return "artifact_authority_provenance_mismatch"
+    expected_refs = [record["artifact_ref"]]
+    if any(
+        not isinstance(provenance, Mapping)
+        or provenance.get("artifact_refs") != expected_refs
+        for provenance in provenance_records
+    ):
+        return "artifact_authority_provenance_mismatch"
+    return ""
 
 
 def _clickhouse_query_intent_issues(answer_package: dict[str, Any]) -> list[str]:
@@ -5701,7 +5836,7 @@ def run_case(
     core_artifact_root = (ROOT / "artifacts" / "phase-7").resolve()
     analysis_context = dict(case.get("analysis_context") or {})
     coverage_authority = None
-    coverage_authority_initialized = False
+    coverage_authority_cache: dict[tuple[str, str], Mapping[str, Any]] = {}
     requires_coverage_authority = any(
         isinstance(turn.get("scenario"), Mapping)
         and bool((turn.get("scenario") or {}).get("expected_dataset_states"))
@@ -5716,9 +5851,16 @@ def run_case(
     prior_run_lineage: list[dict[str, str]] = []
     prior_topic_id: str | None = None
     for index, turn in enumerate(case["turns"], start=1):
+        scenario = turn.get("scenario") or {}
+        if not isinstance(scenario, Mapping):
+            raise ValueError("scenario_expectation_invalid")
+        permission_scope = str(scenario.get("permission_scope") or "analyst")
+        product_role = _permission_role_for_scope(permission_scope)
         result = core.run_message(
             thread_id=thread_id,
             user_message=turn["user"],
+            role=product_role,
+            runtime_permission_scope=permission_scope,
             artifact_root=str(core_artifact_root),
             analysis_context=analysis_context or None,
         )
@@ -5756,6 +5898,8 @@ def run_case(
             resumed = core.run_message(
                 thread_id=thread_id,
                 user_message=response,
+                role=product_role,
+                runtime_permission_scope=permission_scope,
                 artifact_root=str(core_artifact_root),
                 analysis_context=analysis_context or None,
             )
@@ -5810,24 +5954,25 @@ def run_case(
             if (
                 real_clickhouse
                 and requires_coverage_authority
-                and not coverage_authority_initialized
             ):
                 raw_as_of = analysis_context.get("as_of")
                 if not isinstance(raw_as_of, str):
                     raise RuntimeError("eval_coverage_authority_as_of_required")
-                try:
-                    coverage_authority = audit_existing_data_coverage(
-                        RuntimeContractRegistry.from_path(
-                            CANONICAL_RUNTIME_BINDINGS_PATH
-                        ),
-                        snapshot_records=core.store.list_dataset_snapshots(),
-                        release_resolver=core.release_resolver,
-                        as_of=datetime.fromisoformat(raw_as_of),
-                        permission_scope="analyst",
-                    )
-                except Exception as exc:
-                    raise RuntimeError("eval_coverage_authority_unavailable") from exc
-                coverage_authority_initialized = True
+                cache_key = (raw_as_of, permission_scope)
+                if cache_key not in coverage_authority_cache:
+                    try:
+                        coverage_authority_cache[cache_key] = audit_existing_data_coverage(
+                            RuntimeContractRegistry.from_path(
+                                CANONICAL_RUNTIME_BINDINGS_PATH
+                            ),
+                            snapshot_records=core.store.list_dataset_snapshots(),
+                            release_resolver=core.release_resolver,
+                            as_of=datetime.fromisoformat(raw_as_of),
+                            permission_scope=permission_scope,
+                        )
+                    except Exception as exc:
+                        raise RuntimeError("eval_coverage_authority_unavailable") from exc
+                coverage_authority = coverage_authority_cache[cache_key]
             if not runtime_resolvers_initialized:
                 runtime_authority_resolver = _runtime_authority_resolver_for_store(
                     getattr(core, "store", None)

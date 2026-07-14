@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from collections.abc import Mapping
@@ -29,6 +30,9 @@ from bi_agent.runtime.answer_package import (
     reproject_answer_package_from_persisted_authority,
     reverify_answer_package_for_delivery,
 )
+from bi_agent.runtime.answer_package_artifact import (
+    build_answer_package_artifact_record,
+)
 from bi_agent.runtime.analysis_contracts import (
     analysis_contract_from_dict,
     analysis_contract_signature,
@@ -54,6 +58,36 @@ from bi_agent.runtime.permission_roles import resolve_product_runtime_roles
 
 
 WorkflowRunner = Callable[[dict[str, Any]], Any]
+
+
+class RunFailureFinalizationError(RuntimeError):
+    code = "analysis_run_failure_finalization_unverified"
+
+    def __init__(
+        self,
+        *,
+        failure_reason: str,
+        failure_stage: str,
+        primary_error: Exception,
+        persistence_error: Exception,
+    ) -> None:
+        super().__init__(self.code)
+        self.failure_reason = failure_reason
+        self.failure_stage = failure_stage
+        self.primary_error = primary_error
+        self.persistence_error = persistence_error
+
+
+def _emit_agent_core_startup_ack() -> None:
+    raw_fd = os.getenv("WAJE_AGENT_CORE_STARTUP_ACK_FD", "").strip()
+    if not raw_fd:
+        return
+    try:
+        fd = int(raw_fd)
+        os.write(fd, b"WAJE_AGENT_CORE_RUNNING\n")
+        os.close(fd)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("agent_core_startup_ack_failed") from exc
 
 
 class ConversationAgentCore:
@@ -94,6 +128,8 @@ class ConversationAgentCore:
         runtime_permission_scope: str | None = None,
         artifact_root: str = "artifacts/phase-7",
         clarification: dict[str, Any] | None = None,
+        clarification_dispatch: dict[str, str] | None = None,
+        run_dispatch: dict[str, Any] | None = None,
         prior_analysis_assets: tuple[Mapping[str, Any], ...] = (),
         analysis_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -116,26 +152,109 @@ class ConversationAgentCore:
         }
         run_id = run_id or f"run-{uuid4().hex[:12]}"
         thread = self.store.get_thread(thread_id)
-        self.store.upsert_run(run_id, thread_id=thread_id, status="running")
-        if clarification:
-            self.store.add_audit_event(
-                "clarification_answer_submitted",
-                thread_id=thread_id,
+        if run_dispatch:
+            claim_dispatch = getattr(self.store, "claim_run_dispatch", None)
+            if not callable(claim_dispatch):
+                raise EvidenceIntegrityError(
+                    "run_dispatch_claim_resolver_missing"
+                )
+            claim_dispatch(
                 run_id=run_id,
-                ref=run_id,
-                payload=clarification,
+                thread_id=thread_id,
+                dispatch_owner_id=str(
+                    run_dispatch.get("dispatch_owner_id") or ""
+                ),
+                lease_epoch=run_dispatch.get("lease_epoch"),
             )
-        turn = ConversationRuntime(
-            self.store,
-            llm_client=self.conversation_llm_client,
-        ).handle_message(
-            thread_id,
-            user_message,
-            role=role,
-            run_id=run_id,
-            prior_analysis_assets=tuple(prior_analysis_assets or ()),
-            analysis_context=analysis_context,
-        )
+        elif clarification_dispatch:
+            claim_dispatch = getattr(
+                self.store,
+                "claim_clarification_dispatch",
+                None,
+            )
+            if not callable(claim_dispatch):
+                raise EvidenceIntegrityError(
+                    "clarification_dispatch_claim_resolver_missing"
+                )
+            claim_dispatch(
+                source_run_id=str(
+                    clarification_dispatch.get("source_run_id") or ""
+                ),
+                resumed_run_id=run_id,
+                thread_id=thread_id,
+                dispatch_owner_id=str(
+                    clarification_dispatch.get("dispatch_owner_id") or ""
+                ),
+            )
+        else:
+            self.store.upsert_run(run_id, thread_id=thread_id, status="running")
+        try:
+            _emit_agent_core_startup_ack()
+            clarification_resume_claim: dict[str, Any] = {}
+            if clarification and clarification.get("runId"):
+                resolve_resume_claim = getattr(
+                    self.store,
+                    "resolve_clarification_resume_claim",
+                    None,
+                )
+                if not callable(resolve_resume_claim):
+                    raise EvidenceIntegrityError(
+                        "clarification_resume_claim_resolver_missing"
+                    )
+                clarification_resume_claim = dict(
+                    resolve_resume_claim(
+                        source_run_id=str(clarification["runId"]),
+                        resumed_run_id=run_id,
+                        thread_id=thread_id,
+                        answer=str(
+                            clarification.get("answer") or user_message
+                        ).strip(),
+                        selected_option_id=(
+                            str(clarification["selectedOptionId"])
+                            if clarification.get("selectedOptionId") is not None
+                            else None
+                        ),
+                        source=str(clarification.get("source") or "user"),
+                    )
+                )
+            if clarification:
+                self.store.add_audit_event(
+                    "clarification_answer_submitted",
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    ref=run_id,
+                    payload=clarification,
+                )
+            turn = ConversationRuntime(
+                self.store,
+                llm_client=self.conversation_llm_client,
+            ).handle_message(
+                thread_id,
+                user_message,
+                role=role,
+                run_id=run_id,
+                prior_analysis_assets=tuple(prior_analysis_assets or ()),
+                analysis_context=analysis_context,
+                clarification_resume_claim=clarification_resume_claim,
+            )
+        except Exception as exc:
+            failure_reason = _conversation_entry_failure_reason(exc)
+            try:
+                self.store.upsert_run(
+                    run_id,
+                    thread_id=thread_id,
+                    status="failed",
+                    request={
+                        "failure_reason": failure_reason,
+                        "failure_type": "conversation_orchestration",
+                    },
+                )
+            except Exception as persistence_exc:
+                exc.add_note(
+                    "conversation_failure_persistence_failed:"
+                    + type(persistence_exc).__name__
+                )
+            raise
         context_manifest = turn.context_manifest.to_dict()
         if turn.run_request and self.workflow_runner is _dry_run_workflow:
             context_manifest = _manifest_with_dry_run_source(context_manifest, run_id, role)
@@ -264,8 +383,33 @@ class ConversationAgentCore:
                 )
             )
         if accepted_degradation_choice:
+            action_kind = str(
+                accepted_degradation_choice.get("action_kind") or ""
+            )
+            if action_kind in {
+                "omit_unavailable_context",
+                "continue_with_boundary_only",
+            }:
+                accepted_degradation_choice = (
+                    _authority_closed_degradation_choice(
+                        accepted_degradation_choice,
+                        {
+                            "analysis_contract": resume_context.get(
+                                "analysis_contract"
+                            )
+                        },
+                        self.runtime_registry,
+                    )
+                )
+                resume_context = {
+                    **dict(resume_context),
+                    "accepted_degradation_choice": (
+                        accepted_degradation_choice
+                    ),
+                }
+                request["clarification_resume_context"] = resume_context
             request["accepted_degradation_choice"] = accepted_degradation_choice
-            if str(accepted_degradation_choice.get("action_kind") or "") in {
+            if action_kind in {
                 "omit_unavailable_context",
                 "continue_with_boundary_only",
             }:
@@ -298,26 +442,6 @@ class ConversationAgentCore:
                         choice=accepted_degradation_choice,
                         outcome_ref=outcome_ref,
                     )
-                    normalized_choice = _authority_closed_degradation_choice(
-                        accepted_degradation_choice,
-                        authority,
-                        self.runtime_registry,
-                    )
-                    if normalized_choice != accepted_degradation_choice:
-                        accepted_degradation_choice = normalized_choice
-                        outcome_ref = record_outcome(
-                            source_run_id=source_run_id,
-                            thread_id=thread_id,
-                            topic_id=turn.topic_id or "",
-                            choice=accepted_degradation_choice,
-                        )
-                        authority = resolve_authority(
-                            source_run_id=source_run_id,
-                            thread_id=thread_id,
-                            topic_id=turn.topic_id or "",
-                            choice=accepted_degradation_choice,
-                            outcome_ref=outcome_ref,
-                        )
                 except Exception as exc:
                     self.store.upsert_run(
                         run_id,
@@ -515,6 +639,21 @@ class ConversationAgentCore:
                             artifact_path=result.artifact_path,
                             publication_mode="waiting_for_clarification",
                             publication_audit=partial_publication_audit,
+                        )
+                    if records.get("trusted_provenance_records"):
+                        if not result.artifact_path or not synchronize_existing_artifact(
+                            result.answer_package,
+                            result.artifact_path,
+                        ):
+                            raise EvidenceIntegrityError(
+                                "analysis_runtime_artifact_sync_failed"
+                            )
+                        records["answer_package_artifacts"] = (
+                            build_answer_package_artifact_record(
+                                run_id=run_id,
+                                artifact_path=result.artifact_path,
+                                answer_package=result.answer_package,
+                            ),
                         )
                     self.store.save_analysis_runtime_records(run_id=run_id, **records)
                     if partial_publication_audit.get("omitted_result_count"):
@@ -963,6 +1102,14 @@ class ConversationAgentCore:
                     raise EvidenceIntegrityError(
                         "analysis_runtime_artifact_sync_failed"
                     )
+                if result.artifact_path:
+                    records["answer_package_artifacts"] = (
+                        build_answer_package_artifact_record(
+                            run_id=run_id,
+                            artifact_path=result.artifact_path,
+                            answer_package=package,
+                        ),
+                    )
 
             context_manifest = (
                 persisted_context_manifest
@@ -1031,13 +1178,41 @@ class ConversationAgentCore:
                 "failure_subreason": failure_subreason,
                 "llm_calls": list(workflow_llm_calls),
             }
-        self.store.record_context_manifest(context_manifest)
-        self.store.record_answer_package(run_id, package)
-        if turn.topic_id and hasattr(self.store, "save_analysis_assets"):
-            self.store.save_analysis_assets(
-                thread_id,
-                turn.topic_id,
-                analysis_assets,
+        delivery_stage = "context_manifest"
+        try:
+            self.store.record_context_manifest(context_manifest)
+            delivery_stage = "answer_package"
+            self.store.record_answer_package(run_id, package)
+            if turn.topic_id and hasattr(self.store, "save_analysis_assets"):
+                delivery_stage = "analysis_assets"
+                self.store.save_analysis_assets(
+                    thread_id,
+                    turn.topic_id,
+                    analysis_assets,
+                )
+        except Exception as exc:
+            try:
+                self.store.recover_after_write_failure()
+            except Exception as recovery_exc:
+                exc.add_note(
+                    "delivery write recovery failed: "
+                    f"{type(recovery_exc).__name__}"
+                )
+            return _completed_material_authority_failure(
+                store=self.store,
+                failure_reason="analysis_delivery_persistence_failed",
+                failure_stage=delivery_stage,
+                exc=exc,
+                run_id=run_id,
+                thread_id=thread_id,
+                turn_id=turn.turn_id,
+                topic_id=turn.topic_id or "",
+                request=request,
+                artifact_path=result.artifact_path,
+                context_manifest=context_manifest,
+                intent=turn.turn_intent.intent,
+                topic_relation=turn.topic_relation,
+                llm_calls=workflow_llm_calls,
             )
         try:
             if isinstance(completed_material_authority, Mapping):
@@ -1063,6 +1238,7 @@ class ConversationAgentCore:
                     store=self.store,
                     run_id=run_id,
                     thread_id=thread_id,
+                    turn_id=turn.turn_id,
                     topic_id=turn.topic_id or "",
                     expected_material_authority=completed_material_authority,
                 )
@@ -1075,7 +1251,24 @@ class ConversationAgentCore:
                     topic_id=turn.topic_id or "",
                     expected_request=request,
                 )
-            if not recovered_completion:
+            if recovered_completion == "terminal_completed_conflict":
+                return _terminal_completed_conflict_result(
+                    store=self.store,
+                    failure_reason=(
+                        "completed_material_authority_finalization_failed"
+                    ),
+                    exc=exc,
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    turn_id=turn.turn_id,
+                    topic_id=turn.topic_id or "",
+                    artifact_path=result.artifact_path,
+                    context_manifest=context_manifest,
+                    intent=turn.turn_intent.intent,
+                    topic_relation=turn.topic_relation,
+                    llm_calls=workflow_llm_calls,
+                )
+            if recovered_completion != "completed_exact":
                 return _completed_material_authority_failure(
                     store=self.store,
                     failure_reason=(
@@ -1214,8 +1407,9 @@ def _record_workflow_failure_llm_audits(
     topic_id: str,
     run_id: str,
     llm_calls: tuple[dict[str, Any], ...],
+    start_index: int = 1,
 ) -> None:
-    for index, audit in enumerate(llm_calls, start=1):
+    for index, audit in enumerate(llm_calls, start=start_index):
         response_id = str(audit.get("response_id") or "")
         store.add_audit_event(
             "workflow_failure_llm_call_recorded",
@@ -1231,6 +1425,7 @@ def _completed_material_authority_failure(
     *,
     store: Any,
     failure_reason: str,
+    failure_stage: str = "",
     exc: Exception,
     run_id: str,
     thread_id: str,
@@ -1244,43 +1439,101 @@ def _completed_material_authority_failure(
     llm_calls: tuple[dict[str, Any], ...],
 ) -> dict[str, Any]:
     failure_subreason = _safe_completed_authority_subreason(exc)
-    _record_workflow_failure_llm_audits(
-        store,
-        thread_id=thread_id,
-        topic_id=topic_id,
-        run_id=run_id,
-        llm_calls=llm_calls,
-    )
+    finalized_request = {
+        **_persistable_request(request),
+        "failure_reason": failure_reason,
+        "failure_subreason": failure_subreason,
+        "failure_stage": failure_stage,
+        "artifact_path": artifact_path,
+    }
+    primary_failure_payload = {
+        "failure_subreason": failure_subreason,
+        "reason": str(exc),
+        "error_type": type(exc).__name__,
+        "failure_stage": failure_stage,
+        "artifact_path": artifact_path,
+    }
     try:
-        store.upsert_run(
-            run_id,
+        store.finalize_run_failure(
+            run_id=run_id,
             thread_id=thread_id,
             turn_id=turn_id,
             topic_id=topic_id,
-            status="failed",
-            request={
-                **_persistable_request(request),
-                "failure_reason": failure_reason,
-                "failure_subreason": failure_subreason,
-                "artifact_path": artifact_path,
-            },
+            request=finalized_request,
+            failure_reason=failure_reason,
+            failure_stage=failure_stage,
+            failure_payload=primary_failure_payload,
         )
-    except EvidenceIntegrityError as transition_exc:
-        if str(transition_exc) != "analysis_run_status_transition_conflict":
-            raise
-    store.add_audit_event(
-        failure_reason,
-        thread_id=thread_id,
-        topic_id=topic_id,
-        run_id=run_id,
-        ref=run_id,
-        payload={
-            "failure_subreason": failure_subreason,
-            "reason": str(exc),
-            "error_type": type(exc).__name__,
-            "artifact_path": artifact_path,
-        },
-    )
+        persisted = store.get_run_state(run_id)
+        persisted_request = (
+            persisted.get("request")
+            if isinstance(persisted, Mapping)
+            else None
+        )
+        if (
+            not isinstance(persisted, Mapping)
+            or str(persisted.get("status") or "") != "failed"
+            or str(persisted.get("thread_id") or "") != thread_id
+            or str(persisted.get("turn_id") or "") != turn_id
+            or str(persisted.get("topic_id") or "") != topic_id
+            or not isinstance(persisted_request, Mapping)
+            or str(persisted_request.get("failure_reason") or "")
+            != failure_reason
+            or str(persisted_request.get("failure_stage") or "")
+            != failure_stage
+        ):
+            raise EvidenceIntegrityError(
+                "analysis_run_failure_terminal_state_unproven"
+            )
+    except Exception as persistence_exc:
+        if _fresh_completed_terminal_state(
+            store=store,
+            run_id=run_id,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            topic_id=topic_id,
+        ):
+            return _terminal_completed_conflict_result(
+                store=store,
+                failure_reason=failure_reason,
+                failure_stage=failure_stage,
+                exc=exc,
+                run_id=run_id,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                topic_id=topic_id,
+                artifact_path=artifact_path,
+                context_manifest=context_manifest,
+                intent=intent,
+                topic_relation=topic_relation,
+                llm_calls=llm_calls,
+            )
+        raise RunFailureFinalizationError(
+            failure_reason=failure_reason,
+            failure_stage=failure_stage,
+            primary_error=exc,
+            persistence_error=persistence_exc,
+        ) from persistence_exc
+
+    audit_failures = []
+    for index, audit in enumerate(llm_calls, start=1):
+        try:
+            _record_workflow_failure_llm_audits(
+                store,
+                thread_id=thread_id,
+                topic_id=topic_id,
+                run_id=run_id,
+                llm_calls=(audit,),
+                start_index=index,
+            )
+        except Exception as audit_exc:
+            audit_failures.append(
+                {
+                    "index": index,
+                    "error_type": type(audit_exc).__name__,
+                    "reason": str(audit_exc),
+                }
+            )
     return {
         "status": "failed",
         "run_id": run_id,
@@ -1292,7 +1545,106 @@ def _completed_material_authority_failure(
         "context_manifest": dict(context_manifest),
         "failure_reason": failure_reason,
         "failure_subreason": failure_subreason,
+        "failure_stage": failure_stage,
         "llm_calls": list(llm_calls),
+        **(
+            {
+                "audit_persistence": {
+                    "status": "partial",
+                    "failures": audit_failures,
+                }
+            }
+            if audit_failures
+            else {"audit_persistence": {"status": "recorded"}}
+        ),
+    }
+
+
+def _terminal_completed_conflict_result(
+    *,
+    store: Any,
+    failure_reason: str,
+    exc: Exception,
+    run_id: str,
+    thread_id: str,
+    turn_id: str,
+    topic_id: str,
+    artifact_path: str,
+    context_manifest: Mapping[str, Any],
+    intent: str,
+    topic_relation: str,
+    llm_calls: tuple[dict[str, Any], ...],
+    failure_stage: str = "",
+) -> dict[str, Any]:
+    failure_subreason = _safe_completed_authority_subreason(exc)
+    primary_payload = {
+        "failure_subreason": failure_subreason,
+        "reason": str(exc),
+        "error_type": type(exc).__name__,
+        "failure_stage": failure_stage,
+        "artifact_path": artifact_path,
+        "durable_run_status": "completed",
+    }
+    try:
+        store.record_terminal_completion_conflict(
+            run_id=run_id,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            topic_id=topic_id,
+            failure_reason=failure_reason,
+            payload=primary_payload,
+        )
+    except Exception as persistence_exc:
+        raise RunFailureFinalizationError(
+            failure_reason=failure_reason,
+            failure_stage=failure_stage,
+            primary_error=exc,
+            persistence_error=persistence_exc,
+        ) from persistence_exc
+
+    audit_failures = []
+    for index, audit in enumerate(llm_calls, start=1):
+        try:
+            _record_workflow_failure_llm_audits(
+                store,
+                thread_id=thread_id,
+                topic_id=topic_id,
+                run_id=run_id,
+                llm_calls=(audit,),
+                start_index=index,
+            )
+        except Exception as audit_exc:
+            audit_failures.append(
+                {
+                    "index": index,
+                    "error_type": type(audit_exc).__name__,
+                    "reason": str(audit_exc),
+                }
+            )
+    return {
+        "status": "failed",
+        "run_id": run_id,
+        "turn_id": turn_id,
+        "topic_id": topic_id,
+        "intent": intent,
+        "topic_relation": topic_relation,
+        "artifact_path": artifact_path,
+        "context_manifest": dict(context_manifest),
+        "failure_reason": failure_reason,
+        "failure_subreason": failure_subreason,
+        "failure_stage": failure_stage,
+        "durable_run_status": "completed",
+        "llm_calls": list(llm_calls),
+        **(
+            {
+                "audit_persistence": {
+                    "status": "partial",
+                    "failures": audit_failures,
+                }
+            }
+            if audit_failures
+            else {"audit_persistence": {"status": "recorded"}}
+        ),
     }
 
 
@@ -1301,21 +1653,38 @@ def _recover_completed_material_authority(
     store: Any,
     run_id: str,
     thread_id: str,
+    turn_id: str,
     topic_id: str,
     expected_material_authority: Mapping[str, Any],
-) -> bool:
+) -> str:
     try:
         store.recover_after_write_failure()
+        state = store.get_run_state(run_id)
+    except Exception:
+        return "unproven"
+    ownership = _completion_state_ownership(
+        state=state,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        topic_id=topic_id,
+    )
+    if ownership == "nonterminal":
+        return "nonterminal"
+    if ownership != "completed":
+        return "unproven"
+    try:
         authority = store.resolve_completed_material_authority(
             source_run_id=run_id,
             thread_id=thread_id,
             topic_id=topic_id,
         )
     except Exception:
-        return False
-    return canonical_value(authority.get("material_authority") or {}) == (
+        return "terminal_completed_conflict"
+    if canonical_value(authority.get("material_authority") or {}) == (
         canonical_value(expected_material_authority)
-    )
+    ):
+        return "completed_exact"
+    return "terminal_completed_conflict"
 
 
 def _recover_generic_completion(
@@ -1326,22 +1695,79 @@ def _recover_generic_completion(
     turn_id: str,
     topic_id: str,
     expected_request: Mapping[str, Any],
-) -> bool:
+) -> str:
     try:
         store.recover_after_write_failure()
         state = store.get_run_state(run_id)
     except Exception:
-        return False
+        return "unproven"
     if not isinstance(state, Mapping):
-        return False
-    return (
-        str(state.get("status") or "") == "completed"
-        and str(state.get("thread_id") or "") == thread_id
-        and str(state.get("turn_id") or "") == turn_id
-        and str(state.get("topic_id") or "") == topic_id
-        and canonical_value(state.get("request") or {})
-        == canonical_value(_persistable_request(dict(expected_request)))
+        return "unproven"
+    ownership = _completion_state_ownership(
+        state=state,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        topic_id=topic_id,
     )
+    if ownership == "nonterminal":
+        return "nonterminal"
+    if ownership != "completed":
+        return "unproven"
+    if canonical_value(state.get("request") or {}) == canonical_value(
+        _persistable_request(dict(expected_request))
+    ):
+        return "completed_exact"
+    return "terminal_completed_conflict"
+
+
+def _completion_state_ownership(
+    *,
+    state: Any,
+    thread_id: str,
+    turn_id: str,
+    topic_id: str,
+) -> str:
+    if not isinstance(state, Mapping):
+        return "unproven"
+    status = str(state.get("status") or "")
+    if str(state.get("thread_id") or "") != thread_id:
+        return "unproven"
+    current_turn_id = str(state.get("turn_id") or "")
+    current_topic_id = str(state.get("topic_id") or "")
+    if status == "completed":
+        return (
+            "completed"
+            if current_turn_id == turn_id and current_topic_id == topic_id
+            else "unproven"
+        )
+    if status in {"queued", "running", "running_workflow"}:
+        return (
+            "nonterminal"
+            if current_turn_id in {"", turn_id}
+            and current_topic_id in {"", topic_id}
+            else "unproven"
+        )
+    return "unproven"
+
+
+def _fresh_completed_terminal_state(
+    *,
+    store: Any,
+    run_id: str,
+    thread_id: str,
+    turn_id: str,
+    topic_id: str,
+) -> bool:
+    try:
+        state = store.get_run_state(run_id)
+    except Exception:
+        return False
+    return _completion_state_ownership(
+        state=state,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        topic_id=topic_id,
+    ) == "completed"
 
 
 def _safe_completed_authority_subreason(exc: Exception) -> str:
@@ -1744,6 +2170,17 @@ def _authority_value(record: Any, field_name: str) -> Any:
     return getattr(record, field_name, None)
 
 
+def _conversation_entry_failure_reason(exc: Exception) -> str:
+    if isinstance(
+        exc,
+        (ConversationOrchestrationError, EvidenceIntegrityError),
+    ):
+        reason = str(exc).strip()
+        if re.fullmatch(r"[a-z][a-z0-9_]*(?::[a-z0-9_,.=-]+)*", reason):
+            return reason
+    return "conversation_orchestration_failed"
+
+
 def _authority_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
@@ -2046,7 +2483,15 @@ def _authority_closed_degradation_choice(
     if not isinstance(source, Mapping):
         return dict(choice)
     try:
-        contract = analysis_contract_from_dict(source)
+        contract_payload = dict(source)
+        stored_signature = str(
+            contract_payload.pop("contract_signature", "") or ""
+        )
+        contract = analysis_contract_from_dict(contract_payload)
+        if stored_signature and stored_signature != analysis_contract_signature(
+            contract
+        ):
+            return dict(choice)
     except (KeyError, TypeError, ValueError):
         return dict(choice)
     registry = registry or RuntimeContractRegistry.from_path(
@@ -2109,7 +2554,35 @@ def _manifest_with_accepted_choice(
 ) -> dict[str, Any]:
     updated = dict(manifest)
     updated["accepted_assumptions"] = [dict(choice)]
-    return updated
+    return _derived_context_manifest(manifest, updated)
+
+
+def _derived_context_manifest(
+    parent: Mapping[str, Any],
+    updated: Mapping[str, Any],
+) -> dict[str, Any]:
+    canonical_parent = canonical_value(parent)
+    child = canonical_value(updated)
+    child_payload = {
+        key: value for key, value in child.items() if key != "manifest_id"
+    }
+    parent_payload = {
+        key: value
+        for key, value in canonical_parent.items()
+        if key != "manifest_id"
+    }
+    if child_payload == parent_payload:
+        return canonical_parent
+    child["manifest_id"] = (
+        "context-"
+        + canonical_digest(
+            {
+                "parent_manifest_id": str(parent.get("manifest_id") or ""),
+                "manifest": child_payload,
+            }
+        )[:12]
+    )
+    return child
 
 
 def _manifest_with_dry_run_source(manifest: dict[str, Any], run_id: str, role: str) -> dict[str, Any]:
@@ -2134,8 +2607,10 @@ def _manifest_with_dry_run_source(manifest: dict[str, Any], run_id: str, role: s
         )
     updated["items"] = items
     updated["can_support_claims"] = True
-    updated.setdefault("claim_use_policy", {})["can_support_bi_claim"] = True
-    return updated
+    claim_use_policy = dict(updated.get("claim_use_policy") or {})
+    claim_use_policy["can_support_bi_claim"] = True
+    updated["claim_use_policy"] = claim_use_policy
+    return _derived_context_manifest(manifest, updated)
 
 
 def _manifest_with_current_run_evidence(
@@ -2169,8 +2644,10 @@ def _manifest_with_current_run_evidence(
         )
     updated["items"] = items
     updated["can_support_claims"] = True
-    updated.setdefault("claim_use_policy", {})["can_support_bi_claim"] = True
-    return updated
+    claim_use_policy = dict(updated.get("claim_use_policy") or {})
+    claim_use_policy["can_support_bi_claim"] = True
+    updated["claim_use_policy"] = claim_use_policy
+    return _derived_context_manifest(manifest, updated)
 
 
 def _claim_evidence_refs(package: dict[str, Any]) -> list[str]:
@@ -2226,11 +2703,41 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--runtime-permission-scope")
     parser.add_argument("--artifact-root", default="artifacts/phase-7")
     parser.add_argument("--clarification")
+    parser.add_argument("--clarification-dispatch-source-run-id")
+    parser.add_argument("--clarification-dispatch-owner-id")
+    parser.add_argument("--dispatch-owner-id")
+    parser.add_argument("--dispatch-lease-epoch", type=int)
     parser.add_argument("--prior-analysis-assets")
     parser.add_argument("--as-of")
     args = parser.parse_args(argv)
     clarification = json.loads(args.clarification) if args.clarification else None
     prior_analysis_assets = _parse_prior_analysis_assets(args.prior_analysis_assets)
+    if bool(args.clarification_dispatch_source_run_id) != bool(
+        args.clarification_dispatch_owner_id
+    ):
+        parser.error(
+            "clarification dispatch source run id and owner id must be provided together"
+        )
+    clarification_dispatch = (
+        {
+            "source_run_id": args.clarification_dispatch_source_run_id,
+            "dispatch_owner_id": args.clarification_dispatch_owner_id,
+        }
+        if args.clarification_dispatch_source_run_id
+        else None
+    )
+    if bool(args.dispatch_owner_id) != bool(args.dispatch_lease_epoch):
+        parser.error(
+            "dispatch owner id and positive lease epoch must be provided together"
+        )
+    run_dispatch = (
+        {
+            "dispatch_owner_id": args.dispatch_owner_id,
+            "lease_epoch": args.dispatch_lease_epoch,
+        }
+        if args.dispatch_owner_id
+        else None
+    )
 
     core = ConversationAgentCore.from_environment(
         real_llm=True,
@@ -2244,6 +2751,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         runtime_permission_scope=args.runtime_permission_scope,
         artifact_root=args.artifact_root,
         clarification=clarification,
+        clarification_dispatch=clarification_dispatch,
+        run_dispatch=run_dispatch,
         prior_analysis_assets=prior_analysis_assets,
         analysis_context={"as_of": args.as_of} if args.as_of else None,
     )

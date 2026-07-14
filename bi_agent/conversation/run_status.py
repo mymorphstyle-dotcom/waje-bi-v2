@@ -12,6 +12,7 @@ from bi_agent.runtime.evidence_authority import (
 
 RUN_STATUS_TRANSITIONS: Mapping[str, frozenset[str]] = MappingProxyType(
     {
+        "queued": frozenset({"running", "failed"}),
         "running": frozenset(
             {
                 "running_workflow",
