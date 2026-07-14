@@ -3004,6 +3004,569 @@ def test_run_case_passes_core_authority_chain_resolvers_to_obligation_review(
     assert captured["case_lineage"]["prior_runs"] == []
 
 
+def test_effective_result_preserves_direct_run_failure_reason():
+    from tools.phase7.run_live_conversation_system_test import _effective_result
+
+    assert _effective_result({
+        "status": "failed",
+        "run_id": "run:direct-failure",
+        "failure_reason": "llm_binding_failed:provider_contract_invalid",
+    })["failure_reason"] == "llm_binding_failed:provider_contract_invalid"
+
+
+def test_run_case_direct_failure_short_circuits_downstream_reviews(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    calls = {
+        key: 0
+        for key in (
+            "coverage_authority",
+            "evidence_resolver",
+            "expectation",
+            "runtime_authority",
+            "clickhouse",
+            "obligation",
+            "strict_quality",
+        )
+    }
+    audits = [
+        {
+            "task": "business_intent",
+            "attempt": attempt,
+            "response_id": f"response-{attempt}",
+            "validation_code": "provider_contract_invalid",
+        }
+        for attempt in range(1, 4)
+    ]
+
+    class Store:
+        def list_dataset_snapshots(self):
+            return []
+
+        def runtime_evidence_resolver(self):
+            calls["evidence_resolver"] += 1
+            return object()
+
+    class Core:
+        store = Store()
+        evidence_resolver = None
+        rows_loader = object()
+        release_resolver = object()
+
+        def run_message(self, **kwargs):
+            return {
+                "status": "failed",
+                "run_id": "run:direct-failure",
+                "topic_id": "topic:direct-failure",
+                "failure_reason": "llm_binding_failed:provider_contract_invalid",
+                "answer_package": None,
+                "context_manifest": None,
+                "accepted_graph": [],
+                "artifact_path": "",
+                "llm_calls": audits,
+            }
+
+    def called(name, value):
+        def review(*args, **kwargs):
+            calls[name] += 1
+            return value
+
+        return review
+
+    monkeypatch.setattr(
+        system_test,
+        "audit_existing_data_coverage",
+        called("coverage_authority", {}),
+    )
+    monkeypatch.setattr(system_test, "_runtime_quality_review", lambda *a, **k: {})
+    monkeypatch.setattr(
+        system_test,
+        "_review_expectations",
+        called("expectation", {"passed": False}),
+    )
+    monkeypatch.setattr(
+        system_test,
+        "_runtime_audit_package",
+        called("runtime_authority", {"_authority_error": "artifact_path_missing"}),
+    )
+    monkeypatch.setattr(
+        system_test,
+        "_real_clickhouse_review",
+        called("clickhouse", {
+            "required": True,
+            "real_clickhouse_verified": False,
+            "clickhouse_result_refs": [],
+            "observed_datasets": [],
+            "runtime_correctness": {
+                "all_required_queries_complete": False,
+                "all_capabilities_bound": False,
+                "all_claims_traceable": False,
+            },
+            "issues": ["missing_required_dataset:paid_order_success"],
+        }),
+    )
+    monkeypatch.setattr(
+        system_test,
+        "review_case_obligations",
+        called("obligation", {"hard_acceptance_passed": False}),
+    )
+    monkeypatch.setattr(
+        system_test,
+        "_strict_quality_failed",
+        called("strict_quality", True),
+    )
+    monkeypatch.setattr(system_test, "_write_case_artifact", lambda *a, **k: None)
+
+    output = system_test.run_case(
+        Core(),
+        {
+            "id": "direct-run-failure",
+            "required_datasets": ["paid_order_success"],
+            "analysis_context": {"as_of": "2026-06-03T12:00:00+01:00"},
+            "turns": [{
+                "user": "检查付费金额",
+                "expect": {},
+                "scenario": {
+                    "question_family": "data_quality_or_evidence_review",
+                    "expected_dataset_states": {
+                        "paid_order_success": "executable"
+                    },
+                },
+            }],
+        },
+        tmp_path,
+        strict_quality=True,
+        real_clickhouse=True,
+    )
+
+    marker = {
+        "status": "not_evaluated_due_to_run_failure",
+        "evaluated": False,
+        "primary_failure": {
+            "stage": "run",
+            "run_id": "run:direct-failure",
+            "reason": "llm_binding_failed:provider_contract_invalid",
+        },
+    }
+    turn = output["turns"][0]
+    assert calls == {key: 0 for key in calls}
+    assert turn["evaluation"] == marker
+    assert turn["expectation_review"] == {**marker, "passed": None}
+    assert turn["obligation_review"] == {
+        **marker,
+        "hard_acceptance_passed": None,
+    }
+    assert turn["real_clickhouse_review"]["real_clickhouse_verified"] is None
+    assert turn["real_clickhouse_review"]["runtime_correctness"] == {
+        "all_required_queries_complete": None,
+        "all_capabilities_bound": None,
+        "all_claims_traceable": None,
+    }
+    assert turn["real_clickhouse_review"]["issues"] == []
+    assert turn["strict_quality_failed"] is None
+    assert output["status"] == "failed"
+    assert output["primary_failure"] == marker["primary_failure"]
+    assert output["llm_calls"] == audits
+    assert output["real_clickhouse_verified"] is None
+    assert output["real_clickhouse_review"]["issues"] == []
+    assert output["coverage_summary"]["final_answer_audit_coverage"] == {
+        "reviewed": 0,
+        "total": 0,
+    }
+    assert output["coverage_summary"]["runtime_correctness"] == {
+        "all_required_queries_complete": None,
+        "all_capabilities_bound": None,
+        "all_claims_traceable": None,
+    }
+
+
+def test_run_case_resume_failure_uses_resume_as_primary_failure(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    results = iter((
+        {
+            "status": "waiting_for_clarification",
+            "run_id": "run:clarification",
+            "topic_id": "topic:clarification",
+            "failure_reason": "",
+            "answer_package": None,
+            "context_manifest": None,
+            "accepted_graph": [],
+            "artifact_path": "",
+            "llm_calls": [],
+            "clarification": {},
+        },
+        {
+            "status": "failed",
+            "run_id": "run:clarification-resume",
+            "topic_id": "topic:clarification",
+            "failure_reason": "clarification_resume_authority_failed",
+            "answer_package": None,
+            "context_manifest": None,
+            "accepted_graph": [],
+            "artifact_path": "",
+            "llm_calls": [{"task": "clarification", "attempt": 1}],
+        },
+    ))
+
+    class Core:
+        store = object()
+        evidence_resolver = None
+        rows_loader = None
+        release_resolver = None
+
+        def run_message(self, **kwargs):
+            return next(results)
+
+    forbidden = lambda *a, **k: pytest.fail("downstream review executed")
+    monkeypatch.setattr(system_test, "_runtime_quality_review", lambda *a, **k: {})
+    monkeypatch.setattr(system_test, "_review_expectations", forbidden)
+    monkeypatch.setattr(system_test, "_runtime_audit_package", forbidden)
+    monkeypatch.setattr(system_test, "_real_clickhouse_review", forbidden)
+    monkeypatch.setattr(system_test, "review_case_obligations", forbidden)
+    monkeypatch.setattr(system_test, "_strict_quality_failed", forbidden)
+    monkeypatch.setattr(system_test, "_write_case_artifact", lambda *a, **k: None)
+
+    output = system_test.run_case(
+        Core(),
+        {
+            "id": "resume-run-failure",
+            "turns": [{
+                "user": "继续分析",
+                "clarification_response": "按推荐继续",
+                "expect": {},
+                "scenario": {"question_family": "pattern_explanation"},
+            }],
+        },
+        tmp_path,
+        strict_quality=True,
+    )
+
+    turn = output["turns"][0]
+    assert turn["evaluation"]["primary_failure"] == {
+        "stage": "clarification_resume",
+        "run_id": "run:clarification-resume",
+        "reason": "clarification_resume_authority_failed",
+    }
+    assert turn["resumed_failure_reason"] == "clarification_resume_authority_failed"
+    assert output["failure_reason"] == "clarification_resume_authority_failed"
+    assert output["llm_calls"] == [{"task": "clarification", "attempt": 1}]
+
+
+def test_failed_turn_is_excluded_from_mixed_turn_coverage_denominators(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    results = iter((
+        {
+            "status": "failed",
+            "run_id": "run:mixed-failed",
+            "topic_id": "topic:mixed",
+            "failure_reason": "provider_attempts_exhausted",
+            "answer_package": None,
+            "context_manifest": None,
+            "accepted_graph": [],
+            "artifact_path": "",
+            "llm_calls": [],
+        },
+        {
+            "status": "completed",
+            "run_id": "run:mixed-completed",
+            "topic_id": "topic:mixed",
+            "failure_reason": "",
+            "answer_package": {},
+            "context_manifest": {},
+            "accepted_graph": ["compare_periods"],
+            "artifact_path": "artifact:completed",
+            "llm_calls": [],
+        },
+    ))
+
+    class Core:
+        store = object()
+        evidence_resolver = None
+        rows_loader = None
+        release_resolver = None
+
+        def run_message(self, **kwargs):
+            return next(results)
+
+    monkeypatch.setattr(system_test, "_runtime_quality_review", lambda *a, **k: {})
+    monkeypatch.setattr(system_test, "_review_expectations", lambda *a, **k: {"passed": True})
+    monkeypatch.setattr(system_test, "_runtime_audit_package", lambda *a, **k: {})
+    monkeypatch.setattr(
+        system_test,
+        "_real_clickhouse_review",
+        lambda *a, **k: {
+            "required": False,
+            "real_clickhouse_verified": True,
+            "clickhouse_result_refs": [],
+            "observed_datasets": [],
+            "runtime_correctness": {
+                "all_required_queries_complete": True,
+                "all_capabilities_bound": True,
+                "all_claims_traceable": True,
+            },
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        system_test,
+        "review_case_obligations",
+        lambda *a, **k: {
+            "required_capabilities": ["compare_periods"],
+            "capability_outcomes": {"compare_periods": "executed"},
+            "hard_acceptance_passed": True,
+        },
+    )
+    monkeypatch.setattr(system_test, "_strict_quality_failed", lambda *a, **k: False)
+    monkeypatch.setattr(system_test, "_has_completed_final_answer_audit", lambda *a, **k: True)
+    monkeypatch.setattr(system_test, "_write_case_artifact", lambda *a, **k: None)
+
+    output = system_test.run_case(
+        Core(),
+        {
+            "id": "mixed-run-failure",
+            "turns": [
+                {
+                    "user": "第一次分析",
+                    "expect": {},
+                    "scenario": {"question_family": "period_comparison"},
+                },
+                {
+                    "user": "第二次分析",
+                    "expect": {},
+                    "scenario": {"question_family": "period_comparison"},
+                },
+            ],
+        },
+        tmp_path,
+    )
+
+    assert output["status"] == "failed"
+    assert output["primary_failure"] == {
+        "stage": "run",
+        "run_id": "run:mixed-failed",
+        "reason": "provider_attempts_exhausted",
+    }
+    assert output["final_turn_status"] == "completed"
+    assert output["coverage_summary"]["obligation_coverage"]["required"] == 1
+    assert output["coverage_summary"]["final_answer_audit_coverage"] == {
+        "reviewed": 1,
+        "total": 1,
+    }
+
+
+def test_failed_run_without_reason_reports_primary_failure_contract_issue(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    class Core:
+        store = object()
+        evidence_resolver = None
+
+        def run_message(self, **kwargs):
+            return {
+                "status": "failed",
+                "run_id": "run:missing-reason",
+                "topic_id": "topic:missing-reason",
+                "failure_reason": "",
+                "answer_package": None,
+                "context_manifest": None,
+                "accepted_graph": [],
+                "artifact_path": "",
+                "llm_calls": [],
+            }
+
+    monkeypatch.setattr(system_test, "_runtime_quality_review", lambda *a, **k: {})
+    monkeypatch.setattr(system_test, "_write_case_artifact", lambda *a, **k: None)
+    output = system_test.run_case(
+        Core(),
+        {"id": "missing-primary-reason", "turns": [{"user": "分析", "expect": {}}]},
+        tmp_path,
+    )
+
+    assert output["status"] == "failed"
+    assert output["primary_failure"] == {
+        "stage": "run",
+        "run_id": "run:missing-reason",
+        "reason": "primary_failure_reason_missing",
+    }
+
+
+def test_completed_turn_without_scenario_still_requires_runtime_authority(
+    tmp_path, monkeypatch
+):
+    from tools.phase7 import run_live_conversation_system_test as system_test
+
+    class Core:
+        store = object()
+        evidence_resolver = None
+
+        def run_message(self, **kwargs):
+            return {
+                "status": "completed",
+                "run_id": "run:empty-scenario-missing-artifact",
+                "topic_id": "topic:empty-scenario-missing-artifact",
+                "failure_reason": "",
+                "answer_package": {},
+                "context_manifest": {},
+                "accepted_graph": [],
+                "artifact_path": "",
+                "llm_calls": [],
+            }
+
+    monkeypatch.setattr(system_test, "_runtime_quality_review", lambda *a, **k: {})
+    monkeypatch.setattr(
+        system_test,
+        "_review_expectations",
+        lambda *a, **k: {"passed": True},
+    )
+    monkeypatch.setattr(system_test, "_write_case_artifact", lambda *a, **k: None)
+
+    output = system_test.run_case(
+        Core(),
+        {
+            "id": "empty-scenario-missing-artifact",
+            "turns": [{"user": "继续", "expect": {}, "scenario": {}}],
+        },
+        tmp_path,
+    )
+
+    assert output["turns"][0]["runtime_authority"] == {
+        "_authority_error": "artifact_path_missing"
+    }
+    assert output["runtime_authority_failed"] is True
+    assert output["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "expectation_review",
+    (
+        {"passed": None},
+        {},
+        {"passed": "true"},
+    ),
+    ids=("none", "missing", "non_boolean"),
+)
+def test_completed_turn_expectation_verdict_fails_closed(expectation_review):
+    from tools.phase7.run_live_conversation_system_test import _case_output
+
+    output = _case_output(
+        case={"id": "completed-expectation-verdict"},
+        thread_id="thread:completed-expectation-verdict",
+        run_mode="dry_run",
+        strict_quality=False,
+        real_clickhouse=False,
+        turns=[{
+            "status": "completed",
+            "run_id": "run:completed-expectation-verdict",
+            "topic_id": "topic:completed-expectation-verdict",
+            "expectation_review": expectation_review,
+            "runtime_authority": {},
+            "obligation_review": {"hard_acceptance_passed": True},
+            "real_clickhouse_review": {
+                "required": False,
+                "real_clickhouse_verified": True,
+                "clickhouse_result_refs": [],
+                "observed_datasets": [],
+                "runtime_correctness": {
+                    "all_required_queries_complete": True,
+                    "all_capabilities_bound": True,
+                    "all_claims_traceable": True,
+                },
+                "issues": [],
+            },
+            "strict_quality_failed": False,
+        }],
+    )
+
+    assert output["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "expectation_review",
+    (
+        {"passed": None},
+        {},
+        {"passed": "true"},
+    ),
+    ids=("none", "missing", "non_boolean"),
+)
+def test_waiting_turn_expectation_verdict_fails_closed(expectation_review):
+    from tools.phase7.run_live_conversation_system_test import _case_output
+
+    output = _case_output(
+        case={"id": "waiting-expectation-verdict"},
+        thread_id="thread:waiting-expectation-verdict",
+        run_mode="dry_run",
+        strict_quality=False,
+        real_clickhouse=False,
+        turns=[{
+            "status": "waiting_for_clarification",
+            "run_id": "run:waiting-expectation-verdict",
+            "topic_id": "topic:waiting-expectation-verdict",
+            "expectation_review": expectation_review,
+            "obligation_review": {"hard_acceptance_passed": True},
+            "real_clickhouse_review": {
+                "required": False,
+                "real_clickhouse_verified": True,
+                "clickhouse_result_refs": [],
+                "observed_datasets": [],
+                "runtime_correctness": {
+                    "all_required_queries_complete": True,
+                    "all_capabilities_bound": True,
+                    "all_claims_traceable": True,
+                },
+                "issues": [],
+            },
+            "strict_quality_failed": False,
+        }],
+    )
+
+    assert output["status"] == "failed"
+
+
+def test_waiting_turn_with_valid_expectation_verdict_keeps_clarification_behavior():
+    from tools.phase7.run_live_conversation_system_test import _case_output
+
+    output = _case_output(
+        case={"id": "waiting-valid-expectation-verdict"},
+        thread_id="thread:waiting-valid-expectation-verdict",
+        run_mode="dry_run",
+        strict_quality=False,
+        real_clickhouse=False,
+        turns=[{
+            "status": "waiting_for_clarification",
+            "run_id": "run:waiting-valid-expectation-verdict",
+            "topic_id": "topic:waiting-valid-expectation-verdict",
+            "expectation_review": {"passed": True},
+            "obligation_review": {"hard_acceptance_passed": True},
+            "real_clickhouse_review": {
+                "required": False,
+                "real_clickhouse_verified": True,
+                "clickhouse_result_refs": [],
+                "observed_datasets": [],
+                "runtime_correctness": {
+                    "all_required_queries_complete": True,
+                    "all_capabilities_bound": True,
+                    "all_claims_traceable": True,
+                },
+                "issues": [],
+            },
+            "strict_quality_failed": False,
+        }],
+    )
+
+    assert output["status"] == "passed"
+
+
 def test_runtime_review_serializes_same_hard_acceptance_summary(tmp_path):
     from tools.phase7.run_live_conversation_system_test import _write_case_artifact
 
@@ -3274,7 +3837,8 @@ def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
     turns[1]["obligation_review"]["reuse_passed"] = False
     turns[1]["obligation_review"]["hard_acceptance_passed"] = False
     failed = _coverage_summary(turns)
-    assert failed["clarification_resume"] == {"required": 1, "passed": 0}
+    assert failed["clarification_resume"] == {"required": 0, "passed": 0}
+    assert failed["final_answer_audit_coverage"] == {"reviewed": 0, "total": 2}
     assert failed["reuse_coverage"] == {"required": 1, "passed": 0}
 
 

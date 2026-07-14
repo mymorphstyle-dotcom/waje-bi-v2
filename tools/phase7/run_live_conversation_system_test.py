@@ -177,12 +177,86 @@ def _effective_result(turn_record: dict[str, Any]) -> dict[str, Any]:
         "topic_id": turn_record.get("topic_id"),
         "intent": turn_record.get("intent"),
         "topic_relation": turn_record.get("topic_relation"),
+        "failure_reason": turn_record.get("failure_reason"),
         "answer_package": turn_record.get("answer_package"),
         "context_manifest": turn_record.get("context_manifest"),
         "accepted_graph": turn_record.get("accepted_graph") or [],
         "llm_calls": turn_record.get("llm_calls", []),
         "quality_review": turn_record.get("quality_review"),
         "artifact_path": turn_record.get("artifact_path"),
+    }
+
+
+_RUN_FAILURE_EVALUATION_STATUS = "not_evaluated_due_to_run_failure"
+_RUNTIME_CORRECTNESS_KEYS = (
+    "all_required_queries_complete",
+    "all_capabilities_bound",
+    "all_claims_traceable",
+)
+
+
+def _run_failure_evaluation(
+    turn_record: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    if turn_record.get("resumed_status") == "failed":
+        stage = "clarification_resume"
+        run_id = turn_record.get("resumed_run_id")
+        reason = turn_record.get("resumed_failure_reason")
+    elif turn_record.get("status") == "failed":
+        stage = "run"
+        run_id = turn_record.get("run_id")
+        reason = turn_record.get("failure_reason")
+    else:
+        return None
+    primary_reason = str(reason or "").strip() or "primary_failure_reason_missing"
+    return {
+        "status": _RUN_FAILURE_EVALUATION_STATUS,
+        "evaluated": False,
+        "primary_failure": {
+            "stage": stage,
+            "run_id": run_id,
+            "reason": primary_reason,
+        },
+    }
+
+
+def _turn_failure_evaluation(
+    turn_record: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    evaluation = turn_record.get("evaluation")
+    if (
+        isinstance(evaluation, Mapping)
+        and evaluation.get("status") == _RUN_FAILURE_EVALUATION_STATUS
+        and evaluation.get("evaluated") is False
+        and isinstance(evaluation.get("primary_failure"), Mapping)
+    ):
+        return dict(evaluation)
+    return _run_failure_evaluation(turn_record)
+
+
+def _evaluated_turns(
+    turns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [turn for turn in turns if _turn_failure_evaluation(turn) is None]
+
+
+def _failed_run_clickhouse_review(
+    evaluation: Mapping[str, Any],
+    *,
+    real_clickhouse: bool,
+    required_datasets: tuple[str, ...] | list[str],
+) -> dict[str, Any]:
+    return {
+        **dict(evaluation),
+        "required": bool(real_clickhouse),
+        "real_clickhouse_verified": None,
+        "clickhouse_result_refs": [],
+        "observed_datasets": [],
+        "required_datasets": list(required_datasets),
+        "runtime_correctness": {
+            key: None for key in _RUNTIME_CORRECTNESS_KEYS
+        },
+        "issues": [],
     }
 
 
@@ -5170,19 +5244,28 @@ def _aggregate_real_clickhouse_review(
     real_clickhouse: bool,
     required_datasets: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
+    evaluated_turns = _evaluated_turns(turns)
+    if not evaluated_turns:
+        return {
+            "required": bool(real_clickhouse),
+            "real_clickhouse_verified": None,
+            "clickhouse_result_refs": [],
+            "observed_datasets": [],
+            "required_datasets": list(required_datasets),
+            "runtime_correctness": {
+                key: None for key in _RUNTIME_CORRECTNESS_KEYS
+            },
+            "issues": [],
+        }
     refs: list[str] = []
     datasets: set[str] = set()
     issues: list[str] = []
     verified = True
     runtime_correctness = {
         key: True
-        for key in (
-            "all_required_queries_complete",
-            "all_capabilities_bound",
-            "all_claims_traceable",
-        )
+        for key in _RUNTIME_CORRECTNESS_KEYS
     }
-    for turn in turns:
+    for turn in evaluated_turns:
         review = turn.get("real_clickhouse_review") or {}
         refs.extend(str(ref) for ref in review.get("clickhouse_result_refs", []) if ref)
         datasets.update(
@@ -5219,6 +5302,24 @@ def _aggregate_real_clickhouse_review(
     }
 
 
+def _runtime_authority_failure_reason(
+    turn: Mapping[str, Any],
+) -> str:
+    if str(_effective_result(dict(turn)).get("status") or "") != "completed":
+        return ""
+    if "runtime_authority" not in turn:
+        return "runtime_authority_not_evaluated"
+    authority = turn.get("runtime_authority")
+    if not isinstance(authority, Mapping):
+        return "runtime_authority_invalid"
+    return str(authority.get("_authority_error") or "")
+
+
+def _expectation_review_passed(turn: Mapping[str, Any]) -> bool:
+    review = turn.get("expectation_review")
+    return isinstance(review, Mapping) and review.get("passed") is True
+
+
 def _case_output(
     *,
     case: dict[str, Any],
@@ -5230,22 +5331,50 @@ def _case_output(
     status: str | None = None,
 ) -> dict[str, Any]:
     final_result = _effective_result(turns[-1]) if turns else {}
-    expectation_failed = any(not turn["expectation_review"]["passed"] for turn in turns)
+    evaluated_turns = _evaluated_turns(turns)
+    failure_evaluations = tuple(
+        evaluation
+        for turn in turns
+        for evaluation in (_turn_failure_evaluation(turn),)
+        if evaluation is not None
+    )
+    primary_failures = [
+        dict(evaluation["primary_failure"])
+        for evaluation in failure_evaluations
+    ]
+    expectation_failed = any(
+        not _expectation_review_passed(turn) for turn in evaluated_turns
+    )
+    runtime_authority_errors = sorted(
+        {
+            reason
+            for turn in evaluated_turns
+            for reason in (_runtime_authority_failure_reason(turn),)
+            if reason
+        }
+    )
+    runtime_authority_failed = bool(runtime_authority_errors)
     obligation_failed = any(
         (turn.get("obligation_review") or {}).get("hard_acceptance_passed") is False
-        for turn in turns
+        for turn in evaluated_turns
     )
-    strict_quality_failed = any(turn.get("strict_quality_failed") for turn in turns)
+    strict_quality_failed = (
+        any(turn.get("strict_quality_failed") is True for turn in evaluated_turns)
+        if evaluated_turns
+        else None
+    )
     real_clickhouse_review = _aggregate_real_clickhouse_review(
         turns,
         real_clickhouse,
         case.get("required_datasets") or (),
     )
-    real_clickhouse_failed = not real_clickhouse_review["real_clickhouse_verified"]
+    real_clickhouse_failed = (
+        real_clickhouse_review["real_clickhouse_verified"] is False
+    )
     quality_warnings = sorted(
         {
             str(warning)
-            for turn in turns
+            for turn in evaluated_turns
             for warning in (
                 _effective_quality_review(turn).get("quality_warnings") or ()
             )
@@ -5261,7 +5390,14 @@ def _case_output(
         "status": status
         or (
             "failed"
-            if expectation_failed or obligation_failed or strict_quality_failed or real_clickhouse_failed
+            if (
+                failure_evaluations
+                or expectation_failed
+                or runtime_authority_failed
+                or obligation_failed
+                or strict_quality_failed is True
+                or real_clickhouse_failed
+            )
             else "passed"
         ),
         "strict_quality": strict_quality,
@@ -5271,6 +5407,13 @@ def _case_output(
         "real_clickhouse_review": real_clickhouse_review,
         "real_clickhouse_verified": real_clickhouse_review["real_clickhouse_verified"],
         "clickhouse_result_refs": real_clickhouse_review["clickhouse_result_refs"],
+        "primary_failure": primary_failures[0] if primary_failures else None,
+        "primary_failures": primary_failures,
+        "failure_reason": (
+            primary_failures[0]["reason"] if primary_failures else None
+        ),
+        "runtime_authority_failed": runtime_authority_failed,
+        "runtime_authority_errors": runtime_authority_errors,
         "final_turn_status": final_result.get("status"),
         "run_id": final_result.get("run_id"),
         "topic_id": final_result.get("topic_id"),
@@ -5285,9 +5428,10 @@ def _case_output(
 
 
 def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
+    evaluated_turns = _evaluated_turns(turns)
     obligations = [
         turn.get("obligation_review") or {}
-        for turn in turns
+        for turn in evaluated_turns
         if turn.get("obligation_review")
     ]
     required = sum(len(item.get("required_capabilities") or ()) for item in obligations)
@@ -5352,19 +5496,36 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
         )
     }
     runtime_correctness = {
-        key: bool(turns) and all(
-            ((turn.get("real_clickhouse_review") or {}).get("runtime_correctness") or {}).get(key)
-            is True
-            for turn in turns
+        key: (
+            all(
+                (
+                    (turn.get("real_clickhouse_review") or {}).get(
+                        "runtime_correctness"
+                    )
+                    or {}
+                ).get(key)
+                is True
+                for turn in evaluated_turns
+            )
+            if evaluated_turns
+            else None
         )
-        for key in (
-            "all_required_queries_complete",
-            "all_capabilities_bound",
-            "all_claims_traceable",
-        )
+        for key in _RUNTIME_CORRECTNESS_KEYS
     }
-    obligation_passed = bool(obligations) and all(
-        item.get("hard_acceptance_passed") is True for item in obligations
+    runtime_passed = (
+        all(runtime_correctness.values()) if evaluated_turns else None
+    )
+    obligation_passed = (
+        bool(obligations) and all(
+            item.get("hard_acceptance_passed") is True for item in obligations
+        )
+        if evaluated_turns
+        else None
+    )
+    hard_acceptance_passed = (
+        runtime_passed and obligation_passed
+        if runtime_passed is not None and obligation_passed is not None
+        else None
     )
     return {
         "question_family_coverage": {
@@ -5397,28 +5558,28 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "runtime_correctness": runtime_correctness,
         "hard_acceptance": {
-            "runtime_passed": all(runtime_correctness.values()),
+            "runtime_passed": runtime_passed,
             "obligation_passed": obligation_passed,
-            "passed": all(runtime_correctness.values()) and obligation_passed,
+            "passed": hard_acceptance_passed,
         },
         "answer_quality": {
             "blocking": False,
             "warning_count": sum(
                 len(_effective_quality_review(turn).get("quality_warnings") or ())
-                for turn in turns
+                for turn in evaluated_turns
             ),
         },
         "final_answer_audit_coverage": {
             "reviewed": sum(
                 _has_completed_final_answer_audit(turn)
-                for turn in turns
+                for turn in evaluated_turns
             ),
-            "total": len(turns),
+            "total": len(evaluated_turns),
         },
         "clarification_resume": {
             "required": sum(
                 (turn.get("scenario") or {}).get("clarification_resume") == "required"
-                for turn in turns
+                for turn in evaluated_turns
             ),
             "passed": sum(
                 (turn.get("scenario") or {}).get("clarification_resume") == "required"
@@ -5426,13 +5587,13 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
                 and (turn.get("obligation_review") or {}).get("clarification_resume_passed") is True
                 and turn.get("resumed_status") == "completed"
                 and turn.get("resumed_topic_id") == turn.get("topic_id")
-                for turn in turns
+                for turn in evaluated_turns
             ),
         },
         "reuse_coverage": {
             "required": sum(
                 (turn.get("scenario") or {}).get("reuse") == "required"
-                for turn in turns
+                for turn in evaluated_turns
             ),
             "passed": sum(
                 (turn.get("scenario") or {}).get("reuse") == "required"
@@ -5440,7 +5601,7 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
                 and (turn.get("obligation_review") or {}).get("reuse_passed") is True
                 and bool(turn.get("prior_topic_id"))
                 and turn.get("topic_id") == turn.get("prior_topic_id")
-                for turn in turns
+                for turn in evaluated_turns
             ),
         },
     }
@@ -5528,35 +5689,17 @@ def run_case(
     core_artifact_root = (ROOT / "artifacts" / "phase-7").resolve()
     analysis_context = dict(case.get("analysis_context") or {})
     coverage_authority = None
+    coverage_authority_initialized = False
     requires_coverage_authority = any(
         isinstance(turn.get("scenario"), Mapping)
         and bool((turn.get("scenario") or {}).get("expected_dataset_states"))
         for turn in case.get("turns") or ()
         if isinstance(turn, Mapping)
     )
-    if real_clickhouse and requires_coverage_authority:
-        raw_as_of = analysis_context.get("as_of")
-        if not isinstance(raw_as_of, str):
-            raise RuntimeError("eval_coverage_authority_as_of_required")
-        try:
-            coverage_authority = audit_existing_data_coverage(
-                RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
-                snapshot_records=core.store.list_dataset_snapshots(),
-                release_resolver=core.release_resolver,
-                as_of=datetime.fromisoformat(raw_as_of),
-                permission_scope="analyst",
-            )
-        except Exception as exc:
-            raise RuntimeError("eval_coverage_authority_unavailable") from exc
     required_datasets = tuple(case.get("required_datasets") or ())
-    runtime_authority_resolver = _runtime_authority_resolver_for_store(
-        getattr(core, "store", None)
-    )
-    runtime_evidence_resolver = _runtime_evidence_resolver_for_store(
-        getattr(core, "store", None),
-        fallback=getattr(core, "evidence_resolver", None),
-        required=real_clickhouse,
-    )
+    runtime_authority_resolver = None
+    runtime_evidence_resolver = None
+    runtime_resolvers_initialized = False
     turns: list[dict[str, Any]] = []
     prior_run_lineage: list[dict[str, str]] = []
     prior_topic_id: str | None = None
@@ -5633,45 +5776,104 @@ def run_case(
             current = resumed
         if clarification_resumes:
             turn_record["clarification_resumes"] = clarification_resumes
-        turn_record["expectation_review"] = _review_expectations(turn, turn_record)
         effective = _effective_result(turn_record)
-        runtime_authority = (
-            _runtime_audit_package(
-                effective,
-                authority_resolver=runtime_authority_resolver,
+        failure_evaluation = _run_failure_evaluation(turn_record)
+        if failure_evaluation is not None:
+            turn_record["evaluation"] = failure_evaluation
+            turn_record["expectation_review"] = {
+                **failure_evaluation,
+                "passed": None,
+            }
+            turn_record["obligation_review"] = {
+                **failure_evaluation,
+                "hard_acceptance_passed": None,
+            }
+            turn_record["real_clickhouse_review"] = _failed_run_clickhouse_review(
+                failure_evaluation,
+                real_clickhouse=real_clickhouse,
+                required_datasets=required_datasets,
             )
-            if turn_record["scenario"]
-            else None
-        )
-        turn_record["real_clickhouse_review"] = _real_clickhouse_review(
-            effective,
-            real_clickhouse=real_clickhouse,
-            evidence_resolver=runtime_evidence_resolver,
-            required_datasets=required_datasets,
-            analysis_context=analysis_context,
-            runtime_authority_resolver=runtime_authority_resolver,
-            runtime_authority=runtime_authority,
-        )
-        if turn_record["scenario"]:
-            turn_record["runtime_authority"] = runtime_authority
-            turn_record["obligation_review"] = review_case_obligations(
+            turn_record["strict_quality_failed"] = None
+        else:
+            if (
+                real_clickhouse
+                and requires_coverage_authority
+                and not coverage_authority_initialized
+            ):
+                raw_as_of = analysis_context.get("as_of")
+                if not isinstance(raw_as_of, str):
+                    raise RuntimeError("eval_coverage_authority_as_of_required")
+                try:
+                    coverage_authority = audit_existing_data_coverage(
+                        RuntimeContractRegistry.from_path(
+                            CANONICAL_RUNTIME_BINDINGS_PATH
+                        ),
+                        snapshot_records=core.store.list_dataset_snapshots(),
+                        release_resolver=core.release_resolver,
+                        as_of=datetime.fromisoformat(raw_as_of),
+                        permission_scope="analyst",
+                    )
+                except Exception as exc:
+                    raise RuntimeError("eval_coverage_authority_unavailable") from exc
+                coverage_authority_initialized = True
+            if not runtime_resolvers_initialized:
+                runtime_authority_resolver = _runtime_authority_resolver_for_store(
+                    getattr(core, "store", None)
+                )
+                runtime_evidence_resolver = _runtime_evidence_resolver_for_store(
+                    getattr(core, "store", None),
+                    fallback=getattr(core, "evidence_resolver", None),
+                    required=real_clickhouse,
+                )
+                runtime_resolvers_initialized = True
+            turn_record["expectation_review"] = _review_expectations(
+                turn,
                 turn_record,
-                RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
-                coverage_authority=coverage_authority,
-                evidence_resolver=runtime_evidence_resolver,
-                rows_loader=getattr(core, "rows_loader", None),
-                release_resolver=getattr(core, "release_resolver", None),
-                conversation_store=getattr(core, "store", None),
-                case_lineage={
-                    "thread_id": thread_id,
-                    "current_run_id": str(effective.get("run_id") or ""),
-                    "current_topic_id": str(effective.get("topic_id") or ""),
-                    "prior_runs": list(prior_run_lineage),
-                },
             )
-        turn_record["strict_quality_failed"] = bool(
-            strict_quality and _strict_quality_failed(turn_record)
-        )
+            requires_runtime_authority = (
+                str(effective.get("status") or "") == "completed"
+                or bool(turn_record["scenario"])
+            )
+            runtime_authority = (
+                _runtime_audit_package(
+                    effective,
+                    authority_resolver=runtime_authority_resolver,
+                )
+                if requires_runtime_authority
+                else None
+            )
+            turn_record["real_clickhouse_review"] = _real_clickhouse_review(
+                effective,
+                real_clickhouse=real_clickhouse,
+                evidence_resolver=runtime_evidence_resolver,
+                required_datasets=required_datasets,
+                analysis_context=analysis_context,
+                runtime_authority_resolver=runtime_authority_resolver,
+                runtime_authority=runtime_authority,
+            )
+            if requires_runtime_authority:
+                turn_record["runtime_authority"] = runtime_authority
+            if turn_record["scenario"]:
+                turn_record["obligation_review"] = review_case_obligations(
+                    turn_record,
+                    RuntimeContractRegistry.from_path(
+                        CANONICAL_RUNTIME_BINDINGS_PATH
+                    ),
+                    coverage_authority=coverage_authority,
+                    evidence_resolver=runtime_evidence_resolver,
+                    rows_loader=getattr(core, "rows_loader", None),
+                    release_resolver=getattr(core, "release_resolver", None),
+                    conversation_store=getattr(core, "store", None),
+                    case_lineage={
+                        "thread_id": thread_id,
+                        "current_run_id": str(effective.get("run_id") or ""),
+                        "current_topic_id": str(effective.get("topic_id") or ""),
+                        "prior_runs": list(prior_run_lineage),
+                    },
+                )
+            turn_record["strict_quality_failed"] = bool(
+                strict_quality and _strict_quality_failed(turn_record)
+            )
         turns.append(turn_record)
         prior_run_lineage.append({
             "run_id": str(effective.get("run_id") or ""),
