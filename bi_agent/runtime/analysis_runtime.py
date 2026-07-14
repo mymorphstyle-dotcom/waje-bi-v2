@@ -330,6 +330,7 @@ class AnalysisRuntime:
         registry_error = runtime_registry_integrity_error(registry)
         if registry_error:
             raise ValueError(registry_error)
+        executor.bind_runtime_registry(registry)
         self.catalog = catalog
         self.registry = registry
         self.executor = executor
@@ -358,6 +359,7 @@ class AnalysisRuntime:
             rows_loader=authority.rows_loader,
             evidence_writer=authority._runtime_writer(),
             release_resolver=store,
+            runtime_registry=registry,
         )
         return cls(
             catalog=catalog,
@@ -1223,21 +1225,22 @@ class AnalysisRuntime:
         verified_claims: tuple[Mapping[str, Any], ...] = ()
         claim_links: tuple[Mapping[str, Any], ...] = ()
         build_context: AnswerPackageBuildContext | None = None
-        provenance: dict[str, Any] | None = None
+        provenance_by_ref: dict[str, Mapping[str, Any]] = {}
+        assigned_reuse_decision_refs: set[str] = set()
         if claims or authoritative_reuse_decisions:
             provenance_request = dict(request)
-            if authoritative_reuse_decisions:
-                provenance_request["reuse_decisions"] = [
-                    dict(item) for item in authoritative_reuse_decisions
-                ]
+            # Conversation reuse markers describe topic/result selection and may
+            # legitimately carry no physical source. Claim provenance is owned
+            # by the runtime result, so only its validated physical decisions
+            # may cross this boundary. An empty set becomes the build context's
+            # explicit fresh-execution marker.
+            provenance_request["reuse_decisions"] = []
             build_context = AnswerPackageBuildContext.create(
                 request=provenance_request,
                 artifact_path=artifact_path,
             )
-            provenance = dict(build_context.trusted_provenance)
-            provenance_records = (provenance,)
         if claims:
-            if build_context is None or provenance is None:
+            if build_context is None:
                 raise EvidenceIntegrityError(
                     "analysis_runtime_claim_provenance_missing"
                 )
@@ -1279,16 +1282,45 @@ class AnalysisRuntime:
             )
             for manifest in evidence_manifests:
                 manifest["context_manifest_ref"] = context["manifest_id"]
-            built_claims = tuple(
-                build_verified_claim_record(
+            built_claims_list: list[Mapping[str, Any]] = []
+            for claim in claims:
+                claim_decisions = _claim_physical_reuse_decisions(
                     claim,
-                    run_id=str(request.get("run_id") or ""),
-                    context_manifest=context,
                     evidence_by_ref=evidence_by_ref,
-                    trusted_provenance=provenance,
+                    authoritative_reuse_decisions=(
+                        authoritative_reuse_decisions
+                    ),
                 )
-                for claim in claims
-            )
+                assigned_reuse_decision_refs.update(
+                    str(decision.get("decision_ref") or "")
+                    for decision in claim_decisions
+                )
+                if claim_decisions:
+                    claim_provenance = build_trusted_claim_provenance_record(
+                        run_id=str(request.get("run_id") or ""),
+                        artifact_refs=build_context.trusted_provenance[
+                            "artifact_refs"
+                        ],
+                        memory_refs=build_context.trusted_provenance[
+                            "memory_refs"
+                        ],
+                        reuse_decisions=claim_decisions,
+                    )
+                else:
+                    claim_provenance = dict(build_context.trusted_provenance)
+                provenance_by_ref[claim_provenance["record_ref"]] = (
+                    claim_provenance
+                )
+                built_claims_list.append(
+                    build_verified_claim_record(
+                        claim,
+                        run_id=str(request.get("run_id") or ""),
+                        context_manifest=context,
+                        evidence_by_ref=evidence_by_ref,
+                        trusted_provenance=claim_provenance,
+                    )
+                )
+            built_claims = tuple(built_claims_list)
             links = tuple(
                 {
                     "claim_ref": claim["claim_ref"],
@@ -1301,6 +1333,25 @@ class AnalysisRuntime:
             context_records = (context,)
             verified_claims = built_claims
             claim_links = links
+        unassigned_reuse_decisions = tuple(
+            decision
+            for decision in authoritative_reuse_decisions
+            if str(decision.get("decision_ref") or "")
+            not in assigned_reuse_decision_refs
+        )
+        if unassigned_reuse_decisions:
+            if build_context is None:
+                raise EvidenceIntegrityError(
+                    "analysis_runtime_claim_provenance_missing"
+                )
+            audit_provenance = build_trusted_claim_provenance_record(
+                run_id=str(request.get("run_id") or ""),
+                artifact_refs=build_context.trusted_provenance["artifact_refs"],
+                memory_refs=build_context.trusted_provenance["memory_refs"],
+                reuse_decisions=unassigned_reuse_decisions,
+            )
+            provenance_by_ref[audit_provenance["record_ref"]] = audit_provenance
+        provenance_records = tuple(provenance_by_ref.values())
         return {
             **base,
             "evidence_manifests": tuple(evidence_manifests),
@@ -1327,6 +1378,27 @@ def _mapping_value(value: Any) -> dict[str, Any]:
         payload = value.to_dict()
         return dict(payload) if isinstance(payload, Mapping) else {}
     return {}
+
+
+def _claim_physical_reuse_decisions(
+    claim: Mapping[str, Any],
+    *,
+    evidence_by_ref: Mapping[str, Mapping[str, Any]],
+    authoritative_reuse_decisions: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    claim_result_refs = {
+        str(result_ref)
+        for evidence_ref in claim.get("evidence_refs") or ()
+        for result_ref in (
+            evidence_by_ref.get(str(evidence_ref), {}).get("result_refs") or ()
+        )
+        if result_ref
+    }
+    return tuple(
+        decision
+        for decision in authoritative_reuse_decisions
+        if str(decision.get("result_ref") or "") in claim_result_refs
+    )
 
 
 def _validated_result_reuse_decisions(

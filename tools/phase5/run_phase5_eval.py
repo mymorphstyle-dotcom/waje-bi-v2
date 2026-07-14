@@ -15,6 +15,7 @@ def evaluate_boundary_case(case: Mapping[str, Any], *, llm_client: Any) -> dict[
     result = run_pattern_workflow(
         {
             "run_id": f"phase5-boundary-{case['case_id']}",
+            "run_mode": "fixture",
             "question": case["question"],
             "llm_client": llm_client,
             "allow_question_interrupt": True,
@@ -38,6 +39,9 @@ def evaluate_boundary_case(case: Mapping[str, Any], *, llm_client: Any) -> dict[
 
 
 def _boundary_status(package: Mapping[str, Any]) -> Any:
+    clarification = package.get("clarification", {})
+    if clarification.get("boundary_status"):
+        return clarification["boundary_status"]
     audit = package.get("admin_audit", {})
     outcome = audit.get("clarification_outcome", {})
     if outcome.get("boundary_status"):

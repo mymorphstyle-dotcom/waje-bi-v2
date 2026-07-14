@@ -6,13 +6,23 @@ import unittest
 import yaml
 
 from bi_agent.conversation import models as conversation_models
-from bi_agent.conversation.runtime import ConversationRuntime, _can_read_scope
+from bi_agent.conversation.agent_core import _build_clarification_source_envelope
+from bi_agent.conversation.runtime import (
+    ConversationRuntime,
+    _can_read_scope,
+    _classify_intent,
+    _metric_business_label_vocabulary,
+    _mentioned_metrics,
+    _needs_clarification,
+    _should_use_llm_orchestrator,
+)
 from bi_agent.conversation.runtime import _build_clarification
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     canonical_digest,
 )
+from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,7 +33,431 @@ def _cases():
     return yaml.safe_load(CASE_FILE.read_text(encoding="utf-8"))["cases"]
 
 
+def _persist_clarification_source_envelope(
+    runtime: ConversationRuntime,
+    result,
+    *,
+    question: str,
+    analysis_context=None,
+):
+    state = runtime.store.get_open_clarification(result.context_manifest.thread_id)
+    thread = runtime.store.get_thread(result.context_manifest.thread_id)
+    runtime.store.upsert_run(
+        state.run_id,
+        thread_id=thread.thread_id,
+        topic_id=state.topic_id,
+        status="waiting_for_clarification",
+        request={
+            "clarification_source_envelope": _build_clarification_source_envelope(
+                source_run_id=state.run_id,
+                source_thread_id=thread.thread_id,
+                source_topic_id=state.topic_id,
+                source_owner_id=thread.owner_id,
+                question=question,
+                analysis_context=analysis_context or {},
+                clarification=result.clarification.to_dict(),
+            )
+        },
+    )
+
+
 class ConversationRuntimeTest(unittest.TestCase):
+    def test_historical_write_action_descriptions_remain_business_analysis(self):
+        for message in (
+            "分析优惠券发放前后付费金额是否变化",
+            "复盘奖励下发期间的收入表现",
+            "分析消息发送实验对付费金额的影响",
+            "给实验组发放优惠券后的付费金额变化如何？",
+            "向召回用户发送消息前后，收入表现有什么差异？",
+            "对高价值用户下发奖励期间的收入进行复盘。",
+            "对比‘再发优惠券’实验组与对照组的收入表现",
+            "给实验组的报告里，发放优惠券数量是多少",
+            "分析“发送消息”活动的收入变化",
+            "发放优惠券之后的付费金额变化如何？",
+            "发放过优惠券，分析活动期间收入变化",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(_classify_intent(message, False), "follow_up")
+
+    def test_analysis_constraints_that_challenge_evidence_are_not_corrections(self):
+        for message in (
+            "不要直接归因，先检查证据是否充分",
+            "不要急着说活动导致增长，先看数据能否支撑",
+            "不要把相关性改成因果结论，先检查证据是否充分",
+            "不要调整为因果结论，先看数据能否支撑",
+            "不要把相关性改成因果结论，只报告观察到的差异",
+            "不要调整为因果结论，先报告相关性和限制",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(_classify_intent(message, False), "challenge")
+
+    def test_execution_write_requests_remain_unsupported(self):
+        for message in (
+            "给所有用户发优惠券。",
+            "请向实验组发送消息。",
+            "现在给高价值用户下发奖励。",
+            "请给实验组发优惠券后再分析效果。",
+            "现在下发奖励，然后看收入。",
+            "此前复盘过收入，现在给高价值用户下发奖励。",
+            "分析优惠券发放前后表现，然后向实验组推送消息。",
+            "请你给实验组发送消息。",
+            "麻烦你向高价值用户下发奖励。",
+            "帮忙给召回用户发优惠券。",
+            "分析优惠券发放前后表现，并向实验组推送消息。",
+            "分析优惠券发放前后表现，给新用户发送消息。",
+            "此前复盘过收入，给新用户发放优惠券。",
+            "给实验组把优惠券发放出去。",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    _classify_intent(message, False),
+                    "unsupported_request",
+                )
+
+    def test_current_write_action_clauses_remain_hard_guarded(self):
+        for message in (
+            "给实验组发放优惠券后直接分析效果。",
+            "发放优惠券后直接分析效果。",
+            "给实验组发送消息，随后分析付费变化。",
+            "向高价值用户下发奖励，同时查看收入表现。",
+            "发放优惠券，接着分析收入变化。",
+            "先分析收入并发放优惠券。",
+            "先分析收入：给实验组发放优惠券。",
+            "先看渠道\n请向实验组发送消息。",
+            "请向实验组发放一张仅限七天内使用且不能与其他活动叠加的召回优惠券。",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    _classify_intent(message, False),
+                    "unsupported_request",
+                )
+
+    def test_quoted_execution_payloads_do_not_bypass_write_guard(self):
+        for message in (
+            "请向实验组发送“召回消息”",
+            "请给实验组发放‘七日召回优惠券’",
+            "请执行“给实验组发放优惠券”",
+            "请执行《向高价值用户下发奖励》",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    _classify_intent(message, False),
+                    "unsupported_request",
+                )
+
+    def test_analytic_then_write_sequences_remain_hard_guarded(self):
+        for message in (
+            "分析收入后向实验组发送消息",
+            "先分析收入后给实验组发放优惠券",
+            "查看趋势后向高价值用户下发奖励",
+            "分析完收入就向实验组发送消息",
+            "分析完趋势便给实验组发券",
+            "统计完渠道表现随即向召回用户推送消息",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    _classify_intent(message, False),
+                    "unsupported_request",
+                )
+
+    def test_completed_actions_and_nominalized_statistics_remain_analysis(self):
+        for message in (
+            "昨天给实验组发了优惠券，分析今天收入变化",
+            "上周向召回用户发送了一条消息，复盘后续收入",
+            "给实验组的优惠券发放数量是多少",
+            "向高价值用户的奖励下发覆盖率是多少",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(_classify_intent(message, False), "follow_up")
+
+    def test_write_action_synonyms_follow_the_same_grammar_contract(self):
+        for message in (
+            "请向实验组发送召回通知",
+            "请向实验组发送短信",
+            "请给实验组发券",
+            "给实验组发提醒",
+            "向所有用户发送公告",
+            "给召回用户发站内信",
+            "给实验组发活动提醒",
+            "给所有用户发系统公告",
+            "给召回用户发召回站内信",
+            "根据分析结果给用户发活动提醒",
+            "请给过去三十天完成注册但尚未参与活动的高价值新用户发一张七日召回优惠券",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    _classify_intent(message, False),
+                    "unsupported_request",
+                )
+
+        for message in (
+            "分析召回通知发送前后的收入变化",
+            "短信发送数量是多少",
+            "发券后的收入表现如何",
+            "分析“给实验组发送召回通知”活动的收入表现",
+            "分析站内信发送前后的收入变化",
+            "上周给用户发了提醒",
+            "公告发送数量是多少",
+            "上周给用户发了系统公告",
+            "分析召回站内信发送前后的收入变化",
+            "活动提醒发送数量是多少",
+            "研发活动提醒的效果如何",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(_classify_intent(message, False), "follow_up")
+
+    def test_write_capability_boundary_uses_governing_business_grammar(self):
+        cases = (
+            ("分析收入后向实验组赠送权益", "unsupported_request"),
+            ("研究趋势后给高价值用户派发权益", "unsupported_request"),
+            ("先复盘收入，再向召回用户投放", "unsupported_request"),
+            ("请执行给实验组派送", "unsupported_request"),
+            ("向实验组通知", "unsupported_request"),
+            ("请执行“向实验组赠送权益”", "unsupported_request"),
+            ("请安排‘给高价值用户派发权益’", "unsupported_request"),
+            ("请分析“向实验组发送消息”活动效果", "follow_up"),
+            ("请统计‘给实验组发放优惠券’的覆盖人数", "follow_up"),
+            ("请看一下“向高价值用户下发奖励”的后续表现", "follow_up"),
+            ("给我看投资收益", "follow_up"),
+            ("给我分析推广效果", "follow_up"),
+            ("分析投产后的收入表现", "follow_up"),
+        )
+        for message, expected in cases:
+            with self.subTest(message=message):
+                self.assertEqual(_classify_intent(message, False), expected)
+
+    def test_completed_and_nominalized_write_events_stay_analytical(self):
+        for message in (
+            "上周向用户发送了一条消息",
+            "给实验组发过优惠券",
+            "给实验组的奖励发送比例是多少",
+            "给召回用户的消息推送情况如何",
+            "向实验组的优惠券发放量是多少",
+            "向高价值用户的权益赠送人数是多少",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(_classify_intent(message, False), "follow_up")
+
+        self.assertEqual(
+            _classify_intent("现在给实验组发了优惠券", False),
+            "unsupported_request",
+        )
+
+    def test_negative_causal_ceiling_is_order_independent(self):
+        for message in (
+            "归因结论不要超过现有证据",
+            "因果关系不得直接认定",
+            "归因需要避免过度",
+            "不能把增长解释为活动导致",
+            "结论无需做因果归因",
+            "不许直接归因于活动",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(_classify_intent(message, False), "challenge")
+
+    def test_write_governor_scope_stays_bound_to_its_event(self):
+        for message in (
+            "请根据刚才的分析结果向实验组发送消息",
+            "请根据上周的分析结果给实验组发券",
+            "请根据昨天的分析结果向高价值用户推送",
+            "请根据此前的分析结果向召回用户发送",
+            "按“向实验组发送消息”方案执行",
+            "“给实验组发券”请立即执行",
+            "帮我分析收入后向实验组发送消息",
+            "现在回看趋势后向高价值用户推送消息",
+            "发一封电子邮件",
+            "请根据分析得出的上周数据向实验组发送消息",
+            "请根据分析已确认的结论向实验组发送消息",
+            "把邮件发给实验组",
+            "把优惠券发给召回用户",
+            "请发给实验组",
+            "把奖励发到账户",
+            "发消息给实验组",
+            "发邮件给实验组",
+            "把消息发往实验组",
+            "把邮件发至实验组",
+            "发一下消息给实验组",
+            "请发一下给实验组",
+            "把消息发一下到实验组",
+            "把邮件发一下往实验组",
+            "把奖励发一下至账户",
+            "请根据分析结果向实验组发送消息",
+            "结合分析报告给实验组推送消息",
+            "按照分析结论向高价值用户下发奖励",
+            "基于分析数据给召回用户发券",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    _classify_intent(message, False),
+                    "unsupported_request",
+                )
+
+        for message in (
+            "“给实验组发放优惠券”活动的覆盖人数请统计",
+            "“向高价值用户推送消息”方案请分析效果",
+            "帮我分析向实验组发送消息的效果",
+            "麻烦复盘给实验组发放优惠券后的收入",
+            "现在回看向高价值用户推送消息的覆盖情况",
+            "研发投入变化如何",
+            "开发渠道表现如何",
+            "发现收入异常后分析原因",
+            "帮我基于上周发放数据分析收入",
+            "“向实验组发送消息”的执行效果如何",
+            "分析向实验组发送消息能否提升收入",
+            "请分析向实验组推送消息与收入变化的关系",
+            "研究给实验组发放优惠券是否影响收入",
+            "请分析上周活动向实验组发送消息与收入变化的关系",
+            "帮我研究活动期间给实验组推送消息的影响",
+            "麻烦复盘昨天向召回用户发送消息后的收入表现",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(_classify_intent(message, False), "follow_up")
+
+    def test_explicit_prior_answer_corrections_remain_corrections(self):
+        for message in (
+            "不要按自然月，按活动前后 14 天。",
+            "把统计口径调整为每位付费用户收入。",
+            "换成日均再看一遍。",
+            "把付费口径由总金额改为日均。",
+            "统计粒度调整到按周。",
+            "指标由付费总金额到每位付费用户收入。",
+            "别用自然月，用活动前后 14 天。",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(_classify_intent(message, False), "correction")
+
+    def test_local_intent_rules_cover_business_paraphrase_families(self):
+        cases = (
+            ("这个判断经得起换窗口复核吗？", "challenge"),
+            ("现有材料足以支撑这项结论吗？", "challenge"),
+            ("能把这次增长直接归因于该渠道吗？", "challenge"),
+            ("把统计口径调整为每位付费用户收入。", "correction"),
+            ("请比较 2025 年第四季度与第三季度的收入走势。", "new_topic"),
+            ("请分析全部历史覆盖里的月末收入规律。", "new_topic"),
+            ("请拆解渠道贡献并检查异常日期敏感性。", "mixed_question"),
+            (
+                "相比前一天、近 7 日均值、上周同日，昨天付费金额为什么变化？",
+                "follow_up",
+            ),
+            ("付费金额和付费人数分别为什么变化？", "mixed_question"),
+        )
+
+        for message, expected in cases:
+            with self.subTest(message=message):
+                self.assertEqual(_classify_intent(message, False), expected)
+
+    def test_material_analysis_goal_precedes_capability_boundary(self):
+        for message in (
+            "最近付费人数有没有明显变化，现有数据能支持判断到什么程度？",
+            "本季度活跃用户下降了吗，当前数据支持分析到哪一层？",
+            "付费金额最近波动明显，现有数据能支持分析到什么程度？",
+            "付费订单数是否持续回落，目前数据支持判断到哪一步？",
+            "收入上涨是否真实，现有字段可以支持哪些分析？",
+            "客单价下降的原因，当前数据支持到哪里？",
+            "付费人数持续下降，现有数据支持判断到哪一步？",
+            "付费频次最近波动，当前字段能支持哪些分析？",
+            "支付成功率明显回落，现有数据支持判断到什么程度？",
+            "新增用户持续上涨，当前数据可以支持分析到哪一层？",
+            "注册人数下降了吗，现有字段支持判断到哪里？",
+            "利润最近波动，当前数据能支持哪些分析？",
+            "营销成本持续上涨，现有数据支持判断到哪一步？",
+            "昨天玩法活跃变化能判断吗，现有数据支持到什么程度？",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(_classify_intent(message, False), "new_topic")
+
+        for message in (
+            "目前能看哪些数据和字段？",
+            "能否按渠道与支付方式组合分析？",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    _classify_intent(message, False),
+                    "capability_question",
+                )
+
+    def test_metric_vocabulary_matches_canonical_runtime_registry(self):
+        registry = RuntimeContractRegistry.from_path(
+            ROOT / "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        expected = {
+            label: metric_id
+            for metric_id in registry.metric_ids
+            for label in registry.metric_business_labels(metric_id)
+        }
+
+        self.assertEqual(dict(_metric_business_label_vocabulary()), expected)
+        for metric_id in (
+            "paid_users",
+            "paid_frequency",
+            "payment_success_rate",
+            "new_users",
+            "registrations",
+            "profit",
+            "aggregate_marketing_cost",
+        ):
+            label = registry.metric_business_labels(metric_id)[0]
+            with self.subTest(metric_id=metric_id, label=label):
+                self.assertIn(metric_id, _mentioned_metrics(f"查看{label}变化"))
+
+    def test_metric_vocabulary_prefers_longest_overlapping_business_label(self):
+        cases = (
+            ("首次付费人数持续回落", {"first_paid_users"}),
+            ("单笔付费金额最近下降", {"avg_order_amount"}),
+        )
+
+        for message, expected in cases:
+            with self.subTest(message=message):
+                self.assertEqual(_mentioned_metrics(message), expected)
+                self.assertEqual(
+                    _classify_intent(
+                        f"{message}，现有数据能支持判断到什么程度？",
+                        False,
+                    ),
+                    "new_topic",
+                )
+
+    def test_metric_health_ambiguity_clarifies_across_time_and_direction_paraphrases(self):
+        for message in (
+            "最近一个月业绩改善了吗？",
+            "本期整体表现更健康了吗？",
+            "这段时间经营结果有没有转好？",
+        ):
+            with self.subTest(message=message):
+                self.assertTrue(_needs_clarification(message))
+
+    def test_every_business_challenge_uses_semantic_orchestrator_policy(self):
+        for message in (
+            "这个结论受到渠道偏差干扰了吗？",
+            "现有证据足以支撑结论吗？",
+            "能把增长直接归因于活动吗？",
+        ):
+            with self.subTest(message=message):
+                self.assertTrue(
+                    _should_use_llm_orchestrator(
+                        "challenge",
+                        "inherit_current",
+                        message,
+                        False,
+                    )
+                )
+
+    def test_artifact_context_binding_uses_artifact_intent_across_paraphrases(self):
+        runtime = _seed_runtime()
+
+        result = runtime.handle_message(
+            "thread-phase7",
+            "沿用上一份报告继续分析支付方式。",
+        )
+
+        self.assertEqual(result.turn_intent.intent, "artifact_continue")
+        self.assertTrue(
+            any(
+                item.source_type == "artifact"
+                for item in result.context_manifest.items
+            )
+        )
+
     def test_every_local_clarification_surface_uses_exact_final_escape_token(self):
         escape = "tell the agent to do differently"
         self.assertEqual(
@@ -81,6 +515,16 @@ class ConversationRuntimeTest(unittest.TestCase):
         for case in _cases():
             with self.subTest(case=case["case_id"]):
                 runtime = _seed_runtime()
+                if case["case_id"] in {"ccc_003", "ccc_004"}:
+                    clarification = runtime.handle_message(
+                        "thread-phase7",
+                        "这个月是不是变好了？",
+                    )
+                    _persist_clarification_source_envelope(
+                        runtime,
+                        clarification,
+                        question="这个月是不是变好了？",
+                    )
                 result = runtime.handle_message(
                     "thread-phase7",
                     case["user_message"],
@@ -569,20 +1013,11 @@ class ConversationRuntimeTest(unittest.TestCase):
             result_ref="result:same-run-good",
             source_run_id="run-same-ref-group",
         )
-        bad = {
-            **good,
-            "result_ref": "result:same-run-bad",
-        }
-        bad.pop("candidate_signature")
-        bad["candidate_signature"] = canonical_digest(bad)
-        store.add_result_ref(
-            topic.topic_id,
-            result_ref=bad["result_ref"],
-            snapshot_id=bad["runtime_snapshot_id"],
-            contract_version=bad["runtime_contract_version"],
-            permission_scope=bad["permission_scope"],
-            semantic_scope=bad["semantic_scope_signature"],
-            payload=bad,
+        bad = _add_authoritative_result_candidate(
+            store,
+            topic_id=topic.topic_id,
+            result_ref="result:same-run-bad",
+            source_run_id="run-same-ref-group",
         )
 
         with self.assertRaisesRegex(
@@ -628,9 +1063,14 @@ class ConversationRuntimeTest(unittest.TestCase):
                     source_run_id=f"run-permission-{axis}",
                 )
 
+                expected_error = (
+                    "result_candidate_analysis_contract_mismatch"
+                    if axis == "contract"
+                    else "prior_topic_permission_scope_mismatch"
+                )
                 with self.assertRaisesRegex(
                     EvidenceIntegrityError,
-                    "prior_topic_permission_scope_mismatch",
+                    f"^{expected_error}$",
                 ):
                     ConversationRuntime(store).handle_message(
                         thread_id,
@@ -778,20 +1218,11 @@ class ConversationRuntimeTest(unittest.TestCase):
             result_ref="result:same-run-good-a",
             source_run_id="run-same-run-good",
         )
-        second = {
-            **first,
-            "result_ref": "result:same-run-good-b",
-        }
-        second.pop("candidate_signature")
-        second["candidate_signature"] = canonical_digest(second)
-        store.add_result_ref(
-            topic.topic_id,
-            result_ref=second["result_ref"],
-            snapshot_id=second["runtime_snapshot_id"],
-            contract_version=second["runtime_contract_version"],
-            permission_scope=second["permission_scope"],
-            semantic_scope=second["semantic_scope_signature"],
-            payload=second,
+        second = _add_authoritative_result_candidate(
+            store,
+            topic_id=topic.topic_id,
+            result_ref="result:same-run-good-b",
+            source_run_id="run-same-run-good",
         )
 
         turn = ConversationRuntime(store).handle_message(
@@ -846,25 +1277,6 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(item.ttl, "until_revoked")
         self.assertEqual(item.refresh_rule, "refresh_on_contract_or_scope_change")
         self.assertEqual(item.revocation_path, "memory_proposal_revoke_or_admin_action")
-
-    def test_clarification_answer_resumes_pending_topic_even_when_current_topic_changed(self):
-        store = InMemoryConversationStore()
-        runtime = ConversationRuntime(store)
-        store.create_thread("thread-clarify", owner_id="analyst-1")
-        q2_topic = store.create_topic("thread-clarify", title="Q2 vs Q1", summary="Q2/Q1")
-        month_topic = store.create_topic("thread-clarify", title="1 月月初", summary="1 月月初")
-        store.set_current_topic("thread-clarify", q2_topic.topic_id)
-        store.set_pending_clarification("thread-clarify", month_topic.topic_id, "metric_choice")
-
-        result = runtime.handle_message("thread-clarify", "日均。")
-
-        self.assertEqual(result.turn_intent.intent, "clarification_answer")
-        self.assertEqual(result.topic_id, month_topic.topic_id)
-        self.assertEqual(result.run_request.topic_id, month_topic.topic_id)
-        self.assertEqual(store.get_thread("thread-clarify").pending_clarification_id, "")
-        self.assertTrue(
-            any(item.source_type == "clarification" for item in result.context_manifest.items)
-        )
 
     def test_runtime_carries_prior_assets_into_run_request(self):
         store = InMemoryConversationStore()
@@ -923,6 +1335,11 @@ class ConversationRuntimeTest(unittest.TestCase):
             follow_up.clarification.reason,
             "outlier_removal_strategy_changes_business_answer",
         )
+        _persist_clarification_source_envelope(
+            runtime,
+            follow_up,
+            question="如果去掉异常天还成立吗？",
+        )
 
         resumed = runtime.handle_message(
             "thread-live-case",
@@ -948,6 +1365,11 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertIsNotNone(open_clarification)
         self.assertEqual(open_clarification.topic_id, first.topic_id)
         self.assertEqual(open_clarification.status, "waiting")
+        _persist_clarification_source_envelope(
+            runtime,
+            first,
+            question="如果去掉异常天还成立吗？",
+        )
 
         resumed = runtime.handle_message(
             "thread-live-case-2",
@@ -1071,6 +1493,11 @@ class ConversationRuntimeTest(unittest.TestCase):
         runtime = build_metric_clarification_runtime()
         first = runtime.handle_message("thread-metric-clarify", "这个月是不是变好了？")
         self.assertEqual(first.status, "waiting_for_clarification")
+        _persist_clarification_source_envelope(
+            runtime,
+            first,
+            question="这个月是不是变好了？",
+        )
 
         result = runtime.handle_message("thread-metric-clarify", "按付费总金额")
 
@@ -1371,7 +1798,6 @@ def _seed_runtime() -> ConversationRuntime:
         visibility="analyst",
         status="accepted",
     )
-    store.set_pending_clarification("thread-phase7", q2_topic.topic_id, "metric_choice")
     return runtime
 
 
@@ -1380,14 +1806,15 @@ def _result_candidate_payload(
     *,
     source_run_id: str = "run-candidate",
 ) -> dict:
+    chain_id = canonical_digest({"result_ref": result_ref})[:16]
     payload = {
         "schema_version": "result-reuse-candidate.v1",
         "source_run_id": source_run_id,
         "result_ref": result_ref,
-        "query_contract_ref": "query-contract:candidate",
-        "query_contract_signature": "query-signature",
-        "query_execution_record_ref": "query-execution-record:candidate",
-        "query_execution_record_digest": "query-execution-digest",
+        "query_contract_ref": f"query-contract:{chain_id}",
+        "query_contract_signature": f"query-signature:{chain_id}",
+        "query_execution_record_ref": f"query-execution-record:{chain_id}",
+        "query_execution_record_digest": f"query-execution-digest:{chain_id}",
         "analysis_contract_ref": f"analysis:{source_run_id}:1",
         "analysis_contract_signature": "analysis-signature",
         "runtime_snapshot_id": "2026H1",
@@ -1400,18 +1827,137 @@ def _result_candidate_payload(
         "source_schema_fingerprints": ["schema:paid-success"],
         "permission_scope": "analyst",
         "semantic_scope_signature": "analysis-contract:sha256:analysis-signature",
-        "rows_ref": "rows:candidate",
-        "rows_record_ref": "rows-record:candidate",
-        "rows_record_digest": "rows-record-digest",
-        "rows_content_hash": "rows-content-hash",
-        "completeness_report_ref": "completeness:candidate",
-        "completeness_record_refs": ["completeness-record:candidate"],
-        "completeness_record_digests": ["completeness-record-digest"],
-        "binding_record_refs": ["binding-record:candidate"],
-        "binding_record_digests": ["binding-record-digest"],
+        "rows_ref": f"rows:{chain_id}",
+        "rows_record_ref": f"rows-record:{chain_id}",
+        "rows_record_digest": f"rows-record-digest:{chain_id}",
+        "rows_content_hash": f"rows-content-hash:{chain_id}",
+        "completeness_report_ref": f"completeness:{chain_id}",
+        "completeness_record_refs": [f"completeness-record:{chain_id}"],
+        "completeness_record_digests": [
+            f"completeness-record-digest:{chain_id}"
+        ],
+        "binding_record_refs": [f"binding-record:{chain_id}"],
+        "binding_record_digests": [f"binding-record-digest:{chain_id}"],
     }
     payload["candidate_signature"] = canonical_digest(payload)
     return payload
+
+
+def _source_publication_payload(candidate, contract):
+    query_contract = {
+        "query_contract_id": candidate["query_contract_ref"],
+        "analysis_contract_ref": candidate["analysis_contract_ref"],
+        "contract_signature": candidate["query_contract_signature"],
+        "permission_scope": candidate["permission_scope"],
+        "dataset_snapshot_refs": candidate["source_snapshot_refs"],
+    }
+    result_payload = {
+        "result_ref": candidate["result_ref"],
+        "query_contract_ref": candidate["query_contract_ref"],
+        "rows_ref": candidate["rows_ref"],
+        "completeness_report_ref": candidate["completeness_report_ref"],
+        "source_snapshot_refs": candidate["source_snapshot_refs"],
+    }
+    snapshot = {
+        "snapshot_ref": candidate["source_snapshot_refs"][0],
+        "release_ref": candidate["source_release_refs"][0],
+        "authority_record_ref": candidate["source_release_authority_refs"][0],
+        "schema_fingerprint": candidate["source_schema_fingerprints"][0],
+        "permission_scopes": [candidate["permission_scope"]],
+    }
+    return {
+        "analysis_contract": contract,
+        "query_contracts": [query_contract],
+        "query_execution_records": [
+            {
+                "result_ref": candidate["result_ref"],
+                "record_ref": candidate["query_execution_record_ref"],
+                "record_digest": candidate["query_execution_record_digest"],
+                "execution_status": "succeeded",
+                "query_contract_ref": candidate["query_contract_ref"],
+                "contract_signature": candidate["query_contract_signature"],
+                "rows_ref": candidate["rows_ref"],
+                "rows_content_hash": candidate["rows_content_hash"],
+                "row_count": 1,
+                "completeness_report_ref": candidate["completeness_report_ref"],
+                "source_snapshot_refs": candidate["source_snapshot_refs"],
+                "source_snapshot_record_refs": candidate[
+                    "source_snapshot_record_refs"
+                ],
+                "source_snapshot_record_digests": candidate[
+                    "source_snapshot_record_digests"
+                ],
+                "contract": query_contract,
+                "query_contract": query_contract,
+                "result_payload": result_payload,
+            }
+        ],
+        "rows_records": [
+            {
+                "rows_ref": candidate["rows_ref"],
+                "record_ref": candidate["rows_record_ref"],
+                "record_digest": candidate["rows_record_digest"],
+                "rows_content_hash": candidate["rows_content_hash"],
+                "row_count": 1,
+                "metadata_payload": {
+                    "rows_ref": candidate["rows_ref"],
+                    "rows_content_hash": candidate["rows_content_hash"],
+                },
+            }
+        ],
+        "snapshot_records": [
+            {
+                "snapshot_ref": candidate["source_snapshot_refs"][0],
+                "record_ref": candidate["source_snapshot_record_refs"][0],
+                "record_digest": candidate["source_snapshot_record_digests"][0],
+                "snapshot": snapshot,
+                "payload": snapshot,
+            }
+        ],
+        "completeness_records": [
+            {
+                "result_ref": candidate["result_ref"],
+                "query_contract_ref": candidate["query_contract_ref"],
+                "report_ref": candidate["completeness_report_ref"],
+                "record_ref": candidate["completeness_record_refs"][0],
+                "report_digest": candidate["completeness_record_digests"][0],
+                "report_payload": {
+                    "completeness_status": "complete",
+                    "analysis_readiness": "ready",
+                },
+            }
+        ],
+        "capability_binding_records": [
+            {
+                "analysis_contract_ref": candidate["analysis_contract_ref"],
+                "record_ref": candidate["binding_record_refs"][0],
+                "binding_digest": candidate["binding_record_digests"][0],
+                "status": "ready",
+                "result_refs": [candidate["result_ref"]],
+                "query_contract_refs": [candidate["query_contract_ref"]],
+                "query_execution_record_refs": [
+                    candidate["query_execution_record_ref"]
+                ],
+                "query_execution_record_digests": [
+                    candidate["query_execution_record_digest"]
+                ],
+                "rows_refs": [candidate["rows_ref"]],
+                "rows_metadata_record_refs": [candidate["rows_record_ref"]],
+                "rows_metadata_record_digests": [
+                    candidate["rows_record_digest"]
+                ],
+                "rows_content_hashes": [candidate["rows_content_hash"]],
+                "completeness_report_refs": [
+                    candidate["completeness_report_ref"]
+                ],
+                "completeness_record_refs": candidate["completeness_record_refs"],
+                "completeness_record_digests": candidate[
+                    "completeness_record_digests"
+                ],
+                "source_snapshot_refs": candidate["source_snapshot_refs"],
+            }
+        ],
+    }
 
 
 def _add_authoritative_result_candidate(
@@ -1426,7 +1972,10 @@ def _add_authoritative_result_candidate(
     from bi_agent.conversation.clarification_authority import (
         build_material_authority,
     )
-    from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+    from bi_agent.runtime.analysis_contracts import (
+        analysis_contract_signature,
+        query_contract_signature,
+    )
     from tests.phase7.test_clarification_resume_authority import (
         _runtime_material_for_contract,
         _source_contract,
@@ -1476,27 +2025,35 @@ def _add_authoritative_result_candidate(
         material_slots=material_slots,
         runtime_material=_runtime_material_for_contract(contract),
     )
-    store.upsert_run(
-        source_run_id,
-        thread_id=topic.thread_id,
-        topic_id=topic_id,
-        status="running_workflow",
-        request={},
-    )
-    store.analysis_runtime_authority["analysis_contract"][
-        contract["analysis_contract_id"]
-    ] = contract
-    store.analysis_runtime_records[source_run_id] = {
-        "digest": f"publication:{source_run_id}",
-        "payload": {"analysis_contract": contract},
+    runtime_context = {
+        "context_manifest": {
+            "snapshot_version": "2026H1",
+            "contract_versions": {"runtime": "contracts-v1"},
+        }
     }
-    store.finalize_completed_material_authority(
-        run_id=source_run_id,
-        thread_id=topic.thread_id,
-        topic_id=topic_id,
-        request={},
-        material_authority=material_authority,
-    )
+    existing_run = store.runs.get(source_run_id)
+    if existing_run is None:
+        store.upsert_run(
+            source_run_id,
+            thread_id=topic.thread_id,
+            topic_id=topic_id,
+            status="running_workflow",
+            request=runtime_context,
+        )
+        store.analysis_runtime_authority["analysis_contract"][
+            contract["analysis_contract_id"]
+        ] = contract
+        store.finalize_completed_material_authority(
+            run_id=source_run_id,
+            thread_id=topic.thread_id,
+            topic_id=topic_id,
+            request=runtime_context,
+            material_authority=material_authority,
+        )
+    else:
+        contract = store.analysis_runtime_authority["analysis_contract"][
+            f"analysis:{source_run_id}:1"
+        ]
     candidate = _result_candidate_payload(
         result_ref,
         source_run_id=source_run_id,
@@ -1513,7 +2070,74 @@ def _add_authoritative_result_candidate(
             ),
         }
     )
+    query_windows = list(contract["resolved_windows"])
+    query_contract = {
+        "query_contract_id": candidate["query_contract_ref"],
+        "analysis_contract_ref": contract["analysis_contract_id"],
+        "query_intent": "business_object_impact_review",
+        "dataset_snapshot_refs": list(candidate["source_snapshot_refs"]),
+        "metric_bindings": list(contract["metric_bindings"]),
+        "dimension_bindings": list(contract["dimension_bindings"]),
+        "window_refs": [window["window_id"] for window in query_windows],
+        "resolved_windows": query_windows,
+        "filters": [],
+        "result_shape": {
+            "required_fields": ["window_id", "paid_amount"],
+            "unique_key": ["window_id"],
+            "grain": ["window_id"],
+            "required_window_ids": [
+                window["window_id"] for window in query_windows
+            ],
+            "result_semantics": "complete_aggregate",
+            "dimension_presence_policy": "paired_required",
+        },
+        "completeness_assertions": ["all_required_windows_present"],
+        "permission_scope": permission_scope,
+        "workload_class": "interactive",
+        "query_parameters": {},
+        "query_role_ref": "",
+        "reconciliation_binding": None,
+        "join_expectation": None,
+    }
+    query_contract["contract_signature"] = query_contract_signature(
+        query_contract
+    )
+    candidate["query_contract_signature"] = query_contract[
+        "contract_signature"
+    ]
     candidate["candidate_signature"] = canonical_digest(candidate)
+    publication_payload = _source_publication_payload(candidate, contract)
+    publication_payload["query_contracts"] = [query_contract]
+    publication_payload["query_execution_records"][0].update(
+        {
+            "contract_signature": query_contract["contract_signature"],
+            "contract": query_contract,
+            "query_contract": query_contract,
+        }
+    )
+    existing_publication = store.analysis_runtime_records.get(source_run_id)
+    if existing_publication is not None:
+        merged = {
+            key: (
+                dict(value)
+                if key == "analysis_contract"
+                else list(value)
+            )
+            for key, value in existing_publication["payload"].items()
+        }
+        for group, records in publication_payload.items():
+            if group == "analysis_contract":
+                if merged[group] != records:
+                    raise AssertionError("source publication contract drift")
+                continue
+            for record in records:
+                if record not in merged[group]:
+                    merged[group].append(record)
+        publication_payload = merged
+    store.analysis_runtime_records[source_run_id] = {
+        "digest": canonical_digest(publication_payload),
+        "payload": publication_payload,
+    }
     store.add_result_ref(
         topic_id,
         result_ref=result_ref,

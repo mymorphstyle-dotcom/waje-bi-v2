@@ -3822,6 +3822,11 @@ def _runtime_authority_resolver_for_store(conversation_store: Any):
                     indexed_contract.get("contract_signature") or ""
                 ),
                 delivery_verifier=delivery_verifier,
+                result_candidate_resolver=getattr(
+                    conversation_store,
+                    "resolve_result_candidate_authority",
+                    None,
+                ),
             )
 
         fetchall = getattr(conversation_store, "_fetchall", None)
@@ -3989,6 +3994,11 @@ def _runtime_authority_resolver_for_store(conversation_store: Any):
             bundle=bundle,
             stored_contract_signature=str(stored_signature or ""),
             delivery_verifier=delivery_verifier,
+            result_candidate_resolver=getattr(
+                conversation_store,
+                "resolve_result_candidate_authority",
+                None,
+            ),
         )
 
     return resolve
@@ -4545,6 +4555,7 @@ def _normalized_runtime_evaluation_projection(
     bundle: Mapping[str, Any],
     stored_contract_signature: str,
     delivery_verifier: Any,
+    result_candidate_resolver: Any = None,
 ) -> dict[str, Any]:
     """Validate and normalize the persisted authority consumed by live eval."""
     from bi_agent.runtime.runtime_persistence import (
@@ -4676,6 +4687,7 @@ def _normalized_runtime_evaluation_projection(
             verified_claims=raw_records["verified_claims"],
             claim_links=raw_records["claim_links"],
             repair_attempts=raw_records["repair_attempts"],
+            result_candidate_resolver=result_candidate_resolver,
         )
     except (EvidenceIntegrityError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("runtime_evaluation_authority_invalid") from exc

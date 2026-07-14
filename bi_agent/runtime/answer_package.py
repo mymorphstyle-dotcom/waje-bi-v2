@@ -16,6 +16,7 @@ from bi_agent.runtime.clickhouse_query_compiler import (
     validate_clickhouse_query_contract,
 )
 from bi_agent.runtime.evidence_authority import (
+    EvidenceIntegrityError,
     RowsPayloadLoader,
     RuntimeEvidenceResolver,
     canonical_digest,
@@ -789,6 +790,149 @@ def reverify_answer_package_for_delivery(
         runtime_registry=runtime_registry,
         release_resolver=release_resolver,
     )
+
+
+def reproject_answer_package_from_persisted_authority(
+    package: Mapping[str, Any],
+    *,
+    persistence_records: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Atomically replace every claim lineage view with persisted authority."""
+    final = dict(to_jsonable(package))
+    verifier = final.get("admin_audit", {}).get("verifier") or {}
+    if (
+        final.get("status") == "failed"
+        or verifier.get("status") not in {"passed", "passed_with_warnings"}
+        or verifier.get("errors")
+    ):
+        raise EvidenceIntegrityError(
+            "persisted_answer_package_verifier_not_passed"
+        )
+    claims = [
+        dict(to_jsonable(item))
+        for item in persistence_records.get("verified_claims") or ()
+        if isinstance(item, Mapping)
+    ]
+    provenance = [
+        dict(to_jsonable(item))
+        for item in persistence_records.get("trusted_provenance_records") or ()
+        if isinstance(item, Mapping)
+    ]
+    contexts = [
+        dict(to_jsonable(item))
+        for item in persistence_records.get("context_manifests") or ()
+        if isinstance(item, Mapping)
+    ]
+    context_manifest = contexts[0] if claims and len(contexts) == 1 else {}
+    if claims and not context_manifest:
+        raise EvidenceIntegrityError("persisted_answer_package_context_mismatch")
+    summary = _section_payload(final, "summary")
+    current_claims = [
+        item for item in summary.get("claims") or () if isinstance(item, Mapping)
+    ]
+    if len(current_claims) != len(claims) or any(
+        _claim_factual_projection(current) != _claim_factual_projection(persisted)
+        for current, persisted in zip(current_claims, claims)
+    ):
+        raise EvidenceIntegrityError(
+            "persisted_answer_package_claim_facts_mismatch"
+        )
+    evidence_refs = {
+        str(ref): str(ref)
+        for claim in claims
+        for ref in claim.get("evidence_refs") or ()
+    }
+    projected_claims = [
+        _client_claim_projection(claim, evidence_ref_map=evidence_refs)
+        for claim in claims
+    ]
+    summary["claims"] = projected_claims
+    summary["delivery_claim_ids"] = [
+        claim["claim_id"] for claim in projected_claims
+    ]
+    for collection_name in ("claim_groups",):
+        for item, claim in zip(summary.get(collection_name) or (), projected_claims):
+            item["claim_id"] = claim["claim_id"]
+    for item, claim in zip(
+        (summary.get("visualization_plan") or {}).get("blocks") or (),
+        projected_claims,
+    ):
+        item["claim_id"] = claim["claim_id"]
+    _replace_section_payload(final, "summary", summary)
+    final["delivery_claim_ids"] = list(summary["delivery_claim_ids"])
+
+    reuse_decisions = []
+    seen = set()
+    for record in provenance:
+        for decision in record.get("reuse_decisions") or ():
+            identity = str(decision.get("decision_ref") or "") or canonical_digest(
+                decision
+            )
+            if identity not in seen:
+                seen.add(identity)
+                reuse_decisions.append(dict(decision))
+    context_ref = str(context_manifest.get("manifest_id") or "")
+    final.update(
+        {
+            "verified_claims": claims,
+            "context_manifest_ref": context_ref,
+            "reuse_decisions": reuse_decisions,
+            "available_evidence_brief": {
+                **dict(final.get("available_evidence_brief") or {}),
+                "verified_claims": claims,
+            },
+        }
+    )
+    admin = {
+        **dict(final.get("admin_audit") or {}),
+        "context_manifest": context_manifest,
+        "verified_claims": claims,
+        "trusted_claim_provenance_records": provenance,
+        "reuse_decisions": reuse_decisions,
+        "analysis_runtime_persistence": {
+            "status": "persisted",
+            "analysis_contract_ref": str(
+                (persistence_records.get("analysis_contract") or {}).get(
+                    "analysis_contract_id"
+                )
+                or ""
+            ),
+            "verified_claim_refs": [claim.get("claim_ref", "") for claim in claims],
+        },
+    }
+    final["admin_audit"] = admin
+    _replace_section_payload(final, "admin_audit", admin)
+    return final
+
+
+def _claim_factual_projection(claim: Mapping[str, Any]) -> Any:
+    authority_fields = {
+        "run_id", "claim_ref", "claim_id", "claim_digest",
+        "context_manifest_ref", "artifact_refs", "memory_refs",
+        "reuse_decisions", "provenance_record_ref",
+    }
+    return canonical_value(
+        {key: value for key, value in claim.items() if key not in authority_fields}
+    )
+
+
+def _replace_section_payload(
+    package: dict[str, Any],
+    section_id: str,
+    payload: Mapping[str, Any],
+) -> None:
+    matches = [
+        section
+        for section in package.get("sections") or ()
+        if isinstance(section, dict)
+        and str(section.get("section_id") or section.get("id") or "")
+        == section_id
+    ]
+    if len(matches) != 1:
+        raise EvidenceIntegrityError(
+            f"persisted_answer_package_section_invalid:{section_id}"
+        )
+    matches[0]["payload"] = dict(to_jsonable(payload))
 
 
 def _section_payload(package: Mapping[str, Any], section_id: str) -> dict[str, Any]:

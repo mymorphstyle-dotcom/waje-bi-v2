@@ -27,6 +27,7 @@ from bi_agent.runtime.evidence_authority import (
     runtime_evidence_record_integrity_errors,
 )
 from bi_agent.runtime.query_audit import query_audit_refs, query_rows_ref
+from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from bi_agent.runtime.sql_safety import validate_select_only
 
 
@@ -71,6 +72,7 @@ class ClickHouseQueryExecutor:
         evidence_writer: RuntimeEvidenceWriter | None = None,
         rows_loader: RowsPayloadLoader | None = None,
         release_resolver: DatasetReleaseResolver | None = None,
+        runtime_registry: RuntimeContractRegistry | None = None,
     ) -> None:
         self.runtime = runtime
         self.rows_store = rows_store or AggregateRowsStore()
@@ -88,8 +90,21 @@ class ClickHouseQueryExecutor:
             authority.rows_loader if authority is not None else None
         )
         self.release_resolver = release_resolver
+        self._runtime_registry: RuntimeContractRegistry | None = None
+        if runtime_registry is not None:
+            self.bind_runtime_registry(runtime_registry)
         if self.evidence_writer is None:
             raise ValueError("runtime_evidence_writer_missing")
+
+    def bind_runtime_registry(self, registry: RuntimeContractRegistry) -> None:
+        if type(registry) is not RuntimeContractRegistry:
+            raise TypeError("clickhouse_query_executor_registry_type_invalid")
+        if (
+            self._runtime_registry is not None
+            and self._runtime_registry is not registry
+        ):
+            raise ValueError("clickhouse_query_executor_registry_authority_mismatch")
+        self._runtime_registry = registry
 
     def execute(
         self,
@@ -115,6 +130,7 @@ class ClickHouseQueryExecutor:
             compiled = compile_clickhouse_query(
                 contract,
                 snapshots,
+                registry=self._runtime_registry,
                 release_resolver=release_resolver or self.release_resolver,
             )
         except (KeyError, PermissionError, TypeError, ValueError) as exc:
@@ -294,6 +310,7 @@ class ClickHouseQueryExecutor:
         compiled = compile_clickhouse_query(
             contract,
             snapshots,
+            registry=self._runtime_registry,
             release_resolver=release_resolver or self.release_resolver,
         )
         query_hash = audit_query_hash(compiled.sql_text, compiled.parameters)

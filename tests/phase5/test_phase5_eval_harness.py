@@ -19,6 +19,12 @@ class NeedsQuestionLLM:
                     "time_window": "current_period",
                     "target_claim": "渠道表现对比",
                     "baseline_candidates": [],
+                    "analysis_requirements": {
+                        "context_sources": [],
+                        "claim_intents": [],
+                        "requested_dimensions": [],
+                        "requested_components": [],
+                    },
                     "status_message": "已识别为渠道对比。",
                 }
             )
@@ -26,11 +32,15 @@ class NeedsQuestionLLM:
             output.update(
                 {
                     "boundary_status": "needs_question",
-                    "recommended_assumption": {"metric": "日均付费金额"},
+                    "recommended_assumption": {"option": "按日均付费金额比较"},
                     "clarification_questions": [
                         {
                             "question": "你想看总金额还是日均金额？",
-                            "options": ["日均金额", "总金额"],
+                            "options": [
+                                "按日均付费金额比较",
+                                "按总付费金额比较",
+                                "tell the agent to do differently",
+                            ],
                         }
                     ],
                     "decision_summary": "指标口径会影响结论。",
@@ -42,10 +52,14 @@ class NeedsQuestionLLM:
                     "questions": [
                         {
                             "question": "你想看总金额还是日均金额？",
-                            "options": ["日均金额", "总金额"],
+                            "options": [
+                                "按日均付费金额比较",
+                                "按总付费金额比较",
+                                "tell the agent to do differently",
+                            ],
                         }
                     ],
-                    "recommended_assumption": {"metric": "日均付费金额"},
+                    "recommended_assumption": {"option": "按日均付费金额比较"},
                     "status_message": "需要先确认指标口径。",
                 }
             )

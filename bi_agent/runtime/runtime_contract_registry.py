@@ -273,6 +273,18 @@ class RuntimeContractRegistry:
     def metric_sources(self, metric_id: str) -> dict[str, dict[str, Any]]:
         return self._source_entries("metrics", metric_id, "metric")
 
+    def metric_ids_for_contract_ref(self, contract_ref: str) -> tuple[str, ...]:
+        if not isinstance(contract_ref, str) or not contract_ref:
+            return ()
+        return tuple(
+            metric_id
+            for metric_id in self.metric_ids
+            if any(
+                str(source.get("contract_ref") or "") == contract_ref
+                for source in self.metric_sources(metric_id).values()
+            )
+        )
+
     def metric_business_labels(self, metric_id: str) -> tuple[str, ...]:
         try:
             labels = self._payload["metric_business_labels"]["labels"][metric_id]

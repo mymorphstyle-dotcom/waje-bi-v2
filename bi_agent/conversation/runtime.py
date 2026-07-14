@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import lru_cache
 import re
+from types import MappingProxyType
 from typing import Any, Mapping, Optional
 from uuid import uuid4
 
@@ -29,9 +31,14 @@ from bi_agent.runtime.analysis_assets import merge_analysis_assets
 from bi_agent.runtime.compiler import suggest_revenue_diagnostic_nodes
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
+    canonical_digest,
     canonical_value,
 )
 from bi_agent.runtime.permission_roles import can_read_scope as _can_read_permission_scope
+from bi_agent.runtime.runtime_contract_registry import (
+    CANONICAL_RUNTIME_BINDINGS_PATH,
+    RuntimeContractRegistry,
+)
 
 
 ALLOWED_INTENTS = frozenset(
@@ -100,30 +107,38 @@ class ConversationRuntime:
             if open_clarification
             else False
         )
-        matches_legacy_pending = (
-            not open_clarification
-            and bool(thread.pending_clarification_id)
-            and _looks_like_legacy_clarification_answer(text)
-        )
         prior_request: dict[str, Any] = {}
+        clarification_source: dict[str, Any] = {}
         selected_query_gap_action: dict[str, Any] = {}
         accepted_degradation_choice: dict[str, Any] = {}
         if open_clarification and matches_open_clarification:
             get_run_request = getattr(self.store, "get_run_request", None)
-            if callable(get_run_request):
-                prior_request = dict(get_run_request(open_clarification.run_id) or {})
-                prior_clarification = dict(prior_request.get("clarification") or {})
-                selected_query_gap_action = _selected_query_gap_action(
-                    prior_clarification,
-                    user_message,
+            if not callable(get_run_request):
+                raise ConversationOrchestrationError(
+                    "clarification_source_envelope_invalid"
                 )
-                if selected_query_gap_action and str(
-                    selected_query_gap_action.get("action_kind") or ""
-                ) not in {"wait_for_source", "user_redirect"}:
-                    accepted_degradation_choice = {
-                        **selected_query_gap_action,
-                        "source_run_id": open_clarification.run_id,
-                    }
+            prior_request = dict(get_run_request(open_clarification.run_id) or {})
+            clarification_source = _clarification_source_from_request(
+                prior_request,
+                source_run_id=open_clarification.run_id,
+                source_thread_id=thread_id,
+                source_topic_id=open_clarification.topic_id,
+                source_owner_id=thread.owner_id,
+            )
+            prior_clarification = dict(
+                clarification_source.get("clarification") or {}
+            )
+            selected_query_gap_action = _selected_query_gap_action(
+                prior_clarification,
+                user_message,
+            )
+            if selected_query_gap_action and str(
+                selected_query_gap_action.get("action_kind") or ""
+            ) not in {"wait_for_source", "user_redirect"}:
+                accepted_degradation_choice = {
+                    **selected_query_gap_action,
+                    "source_run_id": open_clarification.run_id,
+                }
         if open_clarification and matches_open_clarification:
             self.store.set_pending_clarification(
                 thread_id,
@@ -132,7 +147,7 @@ class ConversationRuntime:
             )
             thread = self.store.get_thread(thread_id)
         turn_id = f"turn-{uuid4().hex[:12]}"
-        allow_clarification_answer = matches_open_clarification or matches_legacy_pending
+        allow_clarification_answer = matches_open_clarification
         local_intent = _classify_intent(user_message, allow_clarification_answer)
         local_topic_relation = _topic_relation(local_intent, user_message, active_run_status)
         if (
@@ -205,6 +220,7 @@ class ConversationRuntime:
             combined_prior_assets,
             pending_clarification_id if intent_name == "clarification_answer" else "",
             prior_topic_material_context=prior_topic_material_context,
+            intent=intent_name,
             accepted_assumptions=(
                 (accepted_degradation_choice,)
                 if isinstance(accepted_degradation_choice, Mapping)
@@ -252,36 +268,62 @@ class ConversationRuntime:
             if intent_name == "clarification_answer" and open_clarification:
                 if prior_request:
                     prior_clarification = dict(
-                        prior_request.get("clarification") or {}
+                        clarification_source.get("clarification") or {}
+                    )
+                    source_material = dict(
+                        clarification_source.get("source_material") or {}
                     )
                     clarification_resume_context = {
-                        "resume_run_id": open_clarification.run_id,
+                        "resume_run_id": str(
+                            clarification_source.get("source_run_id") or ""
+                        ),
                         "source_thread_id": str(
-                            prior_request.get("thread_id") or ""
+                            clarification_source.get("source_thread_id") or ""
                         ),
                         "source_topic_id": str(
-                            prior_request.get("topic_id") or ""
+                            clarification_source.get("source_topic_id") or ""
                         ),
-                        "question": str(prior_request.get("question") or ""),
-                        "accepted_graph": tuple(prior_request.get("accepted_graph") or ()),
-                        "analysis_contract": dict(prior_request.get("analysis_contract") or {}),
-                        "analysis_route": dict(prior_request.get("analysis_route") or {}),
-                        "analysis_context": dict(prior_request.get("analysis_context") or {}),
-                        "original_intent": dict(prior_request.get("original_intent") or {}),
-                        "material_slots": dict(prior_request.get("material_slots") or {}),
+                        "question": clarification_source["question"],
+                        "accepted_graph": tuple(
+                            source_material.get("accepted_graph") or ()
+                        ),
+                        "analysis_contract": dict(
+                            source_material.get("analysis_contract") or {}
+                        ),
+                        "analysis_route": dict(
+                            source_material.get("analysis_route") or {}
+                        ),
+                        "analysis_context": dict(
+                            clarification_source.get("analysis_context") or {}
+                        ),
+                        "original_intent": dict(
+                            source_material.get("original_intent") or {}
+                        ),
+                        "material_slots": dict(
+                            source_material.get("material_slots") or {}
+                        ),
                         "clarification": prior_clarification,
                         "selected_query_gap_action": selected_query_gap_action,
                         "accepted_degradation_choice": accepted_degradation_choice,
                     }
+            request_analysis_context = dict(analysis_context or {})
+            request_user_message = user_message
+            if clarification_resume_context:
+                request_analysis_context = dict(
+                    clarification_resume_context.get("analysis_context") or {}
+                )
+                request_user_message = str(
+                    clarification_resume_context["question"]
+                )
             run_request = ConversationRunRequest(
                 thread_id=thread_id,
                 turn_id=turn_id,
                 topic_id=topic.topic_id if topic else None,
-                user_message=user_message,
+                user_message=request_user_message,
                 context_manifest=manifest.to_dict(),
                 permission_context={"role": role},
                 runtime_budget=_runtime_budget(user_message),
-                analysis_context=dict(analysis_context or {}),
+                analysis_context=request_analysis_context,
                 clarification_resume_context=clarification_resume_context,
                 prior_analysis_assets=combined_prior_assets,
                 reuse_candidates=reuse_candidates,
@@ -733,6 +775,7 @@ class ConversationRuntime:
         analysis_assets: tuple[dict[str, Any], ...],
         pending_clarification_id: str = "",
         prior_topic_material_context: Mapping[str, Any] | None = None,
+        intent: str = "",
         accepted_assumptions: tuple[Mapping[str, Any], ...] = (),
     ) -> ContextManifest:
         items: list[ContextItem] = []
@@ -810,7 +853,7 @@ class ConversationRuntime:
                 )
             )
         artifact = self.store.latest_artifact_for_topic(topic.topic_id if topic else None)
-        if artifact and ("基于这个结果" in message or "保存" in message or "打开" in message):
+        if artifact and intent == "artifact_continue":
             artifact_can_support = (
                 artifact.snapshot_id == current_snapshot
                 and _can_read_scope(role, artifact.permission_scope)
@@ -988,7 +1031,7 @@ def _should_use_llm_orchestrator(
     if local_intent in {"mixed_question", "capability_question", "memory_update"}:
         return True
     if local_intent == "challenge":
-        return "是不是被" in message
+        return True
     return False
 
 
@@ -1066,39 +1109,604 @@ def _confidence(value: Any) -> float:
     return max(0.0, min(1.0, confidence))
 
 
+def _has_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term in text for term in terms)
+
+
+def _has_all_concepts(text: str, *concepts: tuple[str, ...]) -> bool:
+    return all(_has_any(text, concept) for concept in concepts)
+
+
+_WRITE_CAPABILITY_ROOTS = (
+    "下发",
+    "发放",
+    "发送",
+    "推送",
+    "投放",
+    "触达",
+    "通知",
+    "赠送",
+    "派发",
+    "派送",
+)
+_WRITE_OBJECT_CONTRACT = (
+    "优惠券",
+    "券",
+    "奖励",
+    "消息",
+    "通知",
+    "短信",
+    "权益",
+    "福利",
+    "提醒",
+    "公告",
+    "站内信",
+)
+_WRITE_COMMUNICATION_OBJECT_CONTRACT = (
+    "提醒",
+    "公告",
+    "站内信",
+    "消息",
+    "通知",
+    "短信",
+    "邮件",
+)
+_WRITE_EXECUTION_GOVERNORS = ("执行", "安排")
+_WRITE_CURRENT_MODALS = (
+    "现在",
+    "马上",
+    "立即",
+    "立刻",
+    "帮我",
+    "帮忙",
+    "麻烦",
+    "执行",
+    "安排",
+)
+_WRITE_ANALYTIC_GOVERNORS = (
+    "分析",
+    "统计",
+    "研究",
+    "查看",
+    "看一下",
+    "回看",
+    "复盘",
+    "回顾",
+    "评估",
+    "比较",
+    "对比",
+    "检查",
+    "核对",
+)
+_WRITE_HISTORY_ANCHORS = (
+    "昨天",
+    "前天",
+    "上周",
+    "上个月",
+    "上月",
+    "去年",
+    "此前",
+    "先前",
+    "曾经",
+    "历史上",
+    "刚才",
+)
+_WRITE_STATISTICAL_HEADS = (
+    "人数",
+    "比例",
+    "情况",
+    "变化",
+    "表现",
+    "规模",
+    "次数",
+    "覆盖",
+    "效果",
+    "影响",
+    "趋势",
+    "率",
+    "量",
+    "数",
+)
+_WRITE_INTERROGATIVES = ("多少", "如何", "怎么样", "是否", "为什么")
+
+
+def _regex_terms(terms: tuple[str, ...]) -> str:
+    return "(?:" + "|".join(
+        re.escape(term) for term in sorted(terms, key=len, reverse=True)
+    ) + ")"
+
+
+_WRITE_OBJECT = _regex_terms(_WRITE_OBJECT_CONTRACT)
+_WRITE_COMMUNICATION_OBJECT = _regex_terms(
+    _WRITE_COMMUNICATION_OBJECT_CONTRACT
+)
+_WRITE_BARE_FA_LIGHT = r"(?:了|过|一下)?"
+_WRITE_BARE_FA_DIRECTIONAL_COMPLEMENT = (
+    rf"{_WRITE_BARE_FA_LIGHT}(?:给|到|往|至)"
+)
+_WRITE_BARE_FA_COMMUNICATION_PAYLOAD = (
+    rf"{_WRITE_BARE_FA_LIGHT}[\u4e00-\u9fff]{{0,4}}"
+    rf"{_WRITE_COMMUNICATION_OBJECT}"
+)
+_WRITE_BARE_FA_COMPLEMENT = (
+    rf"(?:{_WRITE_BARE_FA_DIRECTIONAL_COMPLEMENT}|"
+    rf"{_WRITE_BARE_FA_COMMUNICATION_PAYLOAD}|"
+    rf"{_WRITE_BARE_FA_LIGHT}(?:[0-9零一二三四五六七八九十百千万两几]+|"
+    rf"(?:一|两|几)?(?:封|张|条|份|批|个)|电子邮件|邮件|{_WRITE_OBJECT})"
+    rf")"
+)
+_WRITE_PREDICATE = (
+    rf"(?:{_regex_terms(_WRITE_CAPABILITY_ROOTS)}|"
+    rf"发(?={_WRITE_BARE_FA_COMPLEMENT}))"
+)
+_WRITE_DIRECT_TARGET = rf"(?:{_WRITE_OBJECT}|电子邮件|邮件)"
+_WRITE_ANALYTIC = _regex_terms(_WRITE_ANALYTIC_GOVERNORS)
+_WRITE_STATISTICAL_HEAD = _regex_terms(_WRITE_STATISTICAL_HEADS)
+_WRITE_INTERROGATIVE = _regex_terms(_WRITE_INTERROGATIVES)
+_WRITE_RECIPIENT = r"(?:给|向|为|对(?!比|照|于))"
+_WRITE_CLAUSE_BODY = r"[^，,；;。！？!?:：\r\n]*"
+_WRITE_PREDICATE_RE = re.compile(_WRITE_PREDICATE)
+_WRITE_RECIPIENT_PREDICATE_RE = re.compile(
+    rf"{_WRITE_RECIPIENT}{_WRITE_CLAUSE_BODY}{_WRITE_PREDICATE}"
+)
+_WRITE_DIRECT_REQUEST_RE = re.compile(
+    rf"^\s*(?:请(?:你|您)?\s*)?"
+    rf"{_WRITE_PREDICATE}{_WRITE_CLAUSE_BODY}{_WRITE_DIRECT_TARGET}"
+)
+_WRITE_BARE_FA_TRANSFER_RE = re.compile(
+    rf"(?:^\s*请(?:你|您)?\s*发(?={_WRITE_BARE_FA_DIRECTIONAL_COMPLEMENT})|"
+    rf"(?:把|将){_WRITE_CLAUSE_BODY}{_WRITE_DIRECT_TARGET}"
+    rf"{_WRITE_CLAUSE_BODY}发(?={_WRITE_BARE_FA_DIRECTIONAL_COMPLEMENT}))"
+)
+_WRITE_SEQUENCE_RE = re.compile(
+    rf"{_WRITE_ANALYTIC}{_WRITE_CLAUSE_BODY}"
+    rf"(?:然后|随后|同时|接着|并且|再|并|之后|后|"
+    rf"完{_WRITE_CLAUSE_BODY}(?:就|便|随即))"
+    rf"\s*(?:{_WRITE_RECIPIENT}{_WRITE_CLAUSE_BODY})?"
+    rf"{_WRITE_PREDICATE}"
+)
+_WRITE_RECIPIENT_NOMINAL_RE = re.compile(
+    rf"{_WRITE_RECIPIENT}{_WRITE_CLAUSE_BODY}的{_WRITE_CLAUSE_BODY}"
+    rf"{_WRITE_PREDICATE}{_WRITE_CLAUSE_BODY}{_WRITE_STATISTICAL_HEAD}"
+)
+_WRITE_NOMINAL_QUERY_RE = re.compile(
+    rf"{_WRITE_PREDICATE}{_WRITE_CLAUSE_BODY}{_WRITE_STATISTICAL_HEAD}"
+    rf"{_WRITE_CLAUSE_BODY}{_WRITE_INTERROGATIVE}"
+)
+_WRITE_EVENT_REFERENCE_RE = re.compile(
+    rf"{_WRITE_PREDICATE}{_WRITE_CLAUSE_BODY}"
+    rf"(?:之后的|后的|前后|期间|以来|实验(?!组)|的{_WRITE_STATISTICAL_HEAD})"
+)
+_WRITE_POLITE_PREFIX = r"(?:(?:请(?:你|您)?|帮我|帮忙|麻烦(?:你|您)?)\s*)?"
+_WRITE_CLAUSE_ANALYTIC_RE = re.compile(
+    rf"^\s*{_WRITE_POLITE_PREFIX}{_WRITE_ANALYTIC}{_WRITE_CLAUSE_BODY}"
+    rf"{_WRITE_RECIPIENT}{_WRITE_CLAUSE_BODY}{_WRITE_PREDICATE}"
+)
+_WRITE_MATERIAL_REFERENCE_RE = re.compile(
+    rf"^\s*{_WRITE_POLITE_PREFIX}(?:基于|根据|按照|结合)"
+    rf"{_WRITE_CLAUSE_BODY}分析(?:结果|结论|报告|数据)"
+    rf"{_WRITE_CLAUSE_BODY}{_WRITE_RECIPIENT}"
+    rf"{_WRITE_CLAUSE_BODY}{_WRITE_PREDICATE}"
+)
+_WRITE_ANALYTIC_REFERENCE_RE = re.compile(
+    rf"{_WRITE_ANALYTIC}{_WRITE_CLAUSE_BODY}{_WRITE_PREDICATE}"
+)
+_WRITE_QUOTE_RE = re.compile(
+    r"""“([^”]*)”|‘([^’]*)’|"([^"]*)"|'([^']*)'|"""
+    r"""「([^」]*)」|『([^』]*)』|《([^》]*)》"""
+)
+
+
+def _last_term_position(text: str, terms: tuple[str, ...]) -> int:
+    return max((text.rfind(term) for term in terms), default=-1)
+
+
+def _nearest_quote_governor(text: str, match: re.Match[str]) -> str | None:
+    prefix = re.split(r"[，,；;。！？!?:：\r\n]", text[: match.start()])[-1]
+    suffix = re.split(r"[，,；;。！？!?:：\r\n]", text[match.end() :])[0]
+    candidates: list[tuple[int, int, str]] = []
+    for kind, terms in (
+        ("execute", _WRITE_EXECUTION_GOVERNORS),
+        ("analyze", _WRITE_ANALYTIC_GOVERNORS),
+    ):
+        for term in terms:
+            before = prefix.rfind(term)
+            if before >= 0:
+                candidates.append(
+                    (len(prefix) - before - len(term), kind != "execute", kind)
+                )
+            after = suffix.find(term)
+            if after >= 0:
+                suffix_kind = kind
+                if kind == "execute" and re.search(
+                    rf"{_WRITE_CLAUSE_BODY}"
+                    rf"(?:{_WRITE_STATISTICAL_HEAD}|{_WRITE_INTERROGATIVE})",
+                    suffix[after + len(term) :],
+                ):
+                    suffix_kind = "analyze"
+                candidates.append(
+                    (after, suffix_kind != "execute", suffix_kind)
+                )
+    return min(candidates)[2] if candidates else None
+
+
+def _quoted_write_is_current(text: str) -> bool:
+    for match in _WRITE_QUOTE_RE.finditer(text):
+        content = next(group for group in match.groups() if group is not None)
+        if _WRITE_PREDICATE_RE.search(content) is None:
+            continue
+        if _nearest_quote_governor(text, match) == "execute":
+            return True
+    return False
+
+
+def _without_quoted_segments(text: str) -> str:
+    return _WRITE_QUOTE_RE.sub(
+        lambda match: " " * (match.end() - match.start()),
+        text,
+    )
+
+
+def _write_predicate_has_current_modal(
+    clause: str,
+    predicate: re.Match[str],
+) -> bool:
+    prefix = clause[: predicate.start()]
+    modal = _last_term_position(prefix, _WRITE_CURRENT_MODALS)
+    analytic = _last_term_position(clause, _WRITE_ANALYTIC_GOVERNORS)
+    return modal > analytic
+
+
+def _write_predicate_is_historical(
+    clause: str,
+    predicate: re.Match[str],
+) -> bool:
+    prefix = clause[: predicate.start()]
+    analytic = _last_term_position(prefix, _WRITE_ANALYTIC_GOVERNORS)
+    anchor = _last_term_position(prefix, _WRITE_HISTORY_ANCHORS)
+    completed_prefix = _last_term_position(
+        prefix,
+        ("已经", "已", "曾经", "曾"),
+    )
+    completed_suffix = clause[predicate.end() :].lstrip().startswith(("了", "过"))
+    return analytic < 0 and (
+        anchor >= 0 or completed_prefix >= 0 or completed_suffix
+    )
+
+
+def _write_clause_is_current(clause: str) -> bool:
+    predicates = tuple(_WRITE_PREDICATE_RE.finditer(clause))
+    bare_fa_transfer = _WRITE_BARE_FA_TRANSFER_RE.search(clause) is not None
+    if not predicates:
+        return bare_fa_transfer
+    if any(
+        _write_predicate_has_current_modal(clause, predicate)
+        for predicate in predicates
+    ):
+        return True
+    if _WRITE_SEQUENCE_RE.search(clause):
+        return True
+    if all(
+        _write_predicate_is_historical(clause, predicate)
+        for predicate in predicates
+    ):
+        return False
+    if bare_fa_transfer:
+        return True
+    if (
+        _WRITE_RECIPIENT_NOMINAL_RE.search(clause)
+        or _WRITE_NOMINAL_QUERY_RE.search(clause)
+        or _WRITE_EVENT_REFERENCE_RE.search(clause)
+    ):
+        return False
+    if _WRITE_MATERIAL_REFERENCE_RE.search(clause):
+        return True
+    if _WRITE_CLAUSE_ANALYTIC_RE.search(clause):
+        return False
+    if _WRITE_RECIPIENT_PREDICATE_RE.search(clause):
+        return True
+    if _WRITE_ANALYTIC_REFERENCE_RE.search(clause):
+        return False
+    return bool(
+        _WRITE_DIRECT_REQUEST_RE.search(clause)
+        or _WRITE_BARE_FA_TRANSFER_RE.search(clause)
+    )
+
+
+def _is_write_action_request(text: str) -> bool:
+    if _quoted_write_is_current(text):
+        return True
+    outside_quotes = _without_quoted_segments(text)
+    return any(
+        _write_clause_is_current(clause)
+        for clause in re.split(r"[，,；;。！？!?:：\r\n]+", outside_quotes)
+        if clause.strip()
+    )
+
+
+def _is_unsupported_request(text: str) -> bool:
+    raw_identifier = _has_all_concepts(
+        text,
+        ("用户 ID", "用户ID", "用户标识", "设备 ID", "设备ID", "IP"),
+        ("原始", "明细", "逐条", "导出", "列出"),
+    )
+    raw_sql = _has_all_concepts(
+        text.upper(),
+        ("SQL", "查询语句"),
+        ("直接", "执行", "运行", "写", "查询"),
+    )
+    write_action = _is_write_action_request(text)
+    forecast = _has_all_concepts(
+        text,
+        ("预测", "预估", "预判", "推演"),
+        ("下个月", "未来", "明年", "下一季度"),
+    )
+    return raw_identifier or raw_sql or write_action or forecast
+
+
+def _is_off_topic_request(text: str) -> bool:
+    food_request = _has_all_concepts(
+        text,
+        ("吃", "午饭", "晚饭", "餐"),
+        ("什么", "推荐", "选择"),
+    )
+    creative_request = _has_all_concepts(
+        text,
+        ("写", "创作", "生成"),
+        ("诗", "故事", "小说"),
+    )
+    return food_request or creative_request
+
+
+def _is_capability_question(text: str) -> bool:
+    data_visibility = _has_all_concepts(
+        text,
+        ("能", "可以", "支持", "可用"),
+        ("数据", "字段", "来源", "维度"),
+    )
+    supported_analysis = _has_all_concepts(
+        text,
+        ("能", "可以", "支持"),
+        ("分析", "拆解", "组合"),
+        ("按", "维度", "渠道", "支付方式"),
+    )
+    proof_boundary = _has_all_concepts(
+        text,
+        ("为什么", "为何"),
+        ("不能", "无法", "不支持"),
+        ("证明", "因果", "归因"),
+    )
+    external_access = _has_all_concepts(
+        text,
+        ("联网", "新闻", "外部信息", "外部数据"),
+        ("能", "会", "可以", "支持"),
+    )
+    sharing_visibility = _is_sharing_visibility_question(text)
+    return (
+        data_visibility
+        or supported_analysis
+        or proof_boundary
+        or external_access
+        or sharing_visibility
+    )
+
+
+def _has_material_analysis_objective(text: str) -> bool:
+    has_change_objective = _has_any(
+        text,
+        (
+            "变化",
+            "变差",
+            "改善",
+            "上涨",
+            "下降",
+            "增加",
+            "减少",
+            "趋势",
+            "表现",
+            "波动",
+            "提升",
+            "回落",
+        ),
+    )
+    return (
+        (
+            _looks_new_topic(text)
+            or bool(_mentioned_metrics(text)) and has_change_objective
+        )
+        and _has_all_concepts(
+            text,
+            ("数据", "字段", "证据", "材料"),
+            ("支持", "能", "可以", "到哪", "边界"),
+        )
+    )
+
+
+def _is_sharing_visibility_question(text: str) -> bool:
+    return _has_all_concepts(
+        text,
+        ("分享", "转给", "给老板", "给管理层"),
+        ("看到", "可见", "展示", "能看"),
+    )
+
+
+def _is_memory_request(text: str) -> bool:
+    return _has_all_concepts(
+        text,
+        ("默认", "偏好", "习惯", "记忆"),
+        ("以后", "记住", "保存", "删除", "删掉", "撤销"),
+    )
+
+
+def _is_artifact_continuation(text: str) -> bool:
+    return _has_all_concepts(
+        text,
+        ("结果", "结论", "报告", "保存"),
+        ("基于", "继续", "打开", "接着", "重新查看"),
+    )
+
+
+def _is_correction_request(text: str) -> bool:
+    explicit_revision = _has_any(
+        text,
+        (
+            "改成",
+            "改为",
+            "换成",
+            "调整为",
+            "调整到",
+            "切换为",
+            "切到",
+            "不再按",
+            "说错",
+            "纠正",
+            "改看",
+            "改用",
+        ),
+    )
+    binding_context = _has_any(
+        text,
+        (
+            "口径",
+            "指标",
+            "基线",
+            "窗口",
+            "粒度",
+            "范围",
+            "维度",
+            "统计方式",
+            "计算方式",
+            "总金额",
+            "总额",
+            "日均",
+            "每位付费用户",
+            "自然月",
+            "活动前后",
+            "按周",
+            "按日",
+        ),
+    )
+    source_to_target = binding_context and bool(
+        re.search(
+            r"(?:由|从).{1,32}(?:改成|改为|调整为|调整到|切换为|切到|到).{1,32}",
+            text,
+        )
+    )
+    negative_binding = bool(
+        re.search(r"(?:不要|别再|不再|别)\s*(?:按|看|用|采用)", text)
+    )
+    replacement_binding = bool(
+        re.search(
+            r"(?:换成|调整为|调整到|切换为|切到|改看|改用|"
+            r"[，,；;]\s*(?:改?按|改?看|改用|采用|用|按|看))",
+            text,
+        )
+    )
+    return (
+        explicit_revision
+        or source_to_target
+        or (negative_binding and replacement_binding)
+    )
+
+
+def _is_data_freshness_request(text: str) -> bool:
+    return _has_all_concepts(
+        text,
+        ("数据更新", "最新数据", "新快照", "刷新后", "更新后"),
+        ("还成立", "仍成立", "对比", "变化", "现在", "重新"),
+    )
+
+
+def _is_evidence_sufficiency_challenge(text: str) -> bool:
+    return _has_all_concepts(
+        text,
+        ("证据", "材料", "数据"),
+        ("足以", "足够", "充分", "够不够", "能否支撑", "可以支撑"),
+    )
+
+
+def _is_analysis_constraint_challenge(text: str) -> bool:
+    negative_modal = bool(
+        re.search(
+            r"(?:先不要|不要|别|禁止|不得|避免|不应|(?<!能)不能|无需|不许)",
+            text,
+        )
+    )
+    causal_semantics = _has_any(
+        text,
+        ("因果", "归因", "导致", "造成", "认定", "断言", "解释为"),
+    )
+    capability_explanation = _has_all_concepts(
+        text,
+        ("为什么", "为何"),
+        ("不能", "无法", "不支持"),
+        ("证明", "因果", "归因"),
+    )
+    return (
+        negative_modal
+        and causal_semantics
+        and not capability_explanation
+    )
+
+
+def _is_challenge(text: str) -> bool:
+    if _is_outlier_removal_question(text):
+        return True
+    robustness = _has_all_concepts(
+        text,
+        ("结论", "判断", "结果", "方向"),
+        ("稳", "可靠", "敏感", "经得起", "复核", "还成立", "仍成立"),
+    )
+    evidence_sufficiency = _is_evidence_sufficiency_challenge(text)
+    causal_attribution = _has_all_concepts(
+        text,
+        ("归因", "导致", "造成", "因果"),
+        ("能", "可以", "是否", "吗", "直接"),
+    )
+    interference = _has_all_concepts(
+        text,
+        ("干扰", "偏差", "误导", "带偏"),
+        ("结论", "判断", "结果", "这个"),
+    )
+    decision_readiness = _has_all_concepts(
+        text,
+        ("指导", "执行", "采取", "用于"),
+        ("投放", "决策", "运营动作", "活动"),
+    )
+    return (
+        robustness
+        or evidence_sufficiency
+        or causal_attribution
+        or interference
+        or decision_readiness
+    )
+
+
 def _classify_intent(message: str, allow_clarification_answer: bool) -> str:
     text = message.strip()
     if allow_clarification_answer:
         return "clarification_answer"
-    if any(token in text for token in ("原始用户 ID", "直接写 SQL", "所有订单", "发优惠券", "预测下个月")):
+    if _is_analysis_constraint_challenge(text):
+        return "challenge"
+    if _is_unsupported_request(text):
         return "unsupported_request"
-    if any(token in text for token in ("中午吃什么", "写一首诗")):
+    if _is_off_topic_request(text):
         return "off_topic"
-    if any(token in text for token in ("能看哪些数据", "能不能按", "为什么不能证明", "会不会联网", "分享给老板")):
-        return "capability_question"
-    if any(token in text for token in ("以后默认", "记住", "删掉以后默认")):
+    if _is_memory_request(text):
         return "memory_update"
-    if any(token in text for token in ("基于这个结果", "打开之前保存")):
+    if _is_artifact_continuation(text):
         return "artifact_continue"
-    if any(token in text for token in ("口径改成", "换成日均", "不要按", "说错了", "改看")):
+    if _is_correction_request(text):
         return "correction"
+    if _is_data_freshness_request(text):
+        return "follow_up"
     if _is_mixed(text):
         return "mixed_question"
-    if _is_outlier_removal_question(text) or any(
-        token in text
-        for token in (
-            "是不是被",
-            "去掉",
-            "有多稳",
-            "指导投放",
-            "就是主要原因",
-            "直接说",
-            "活动有效",
-            "异常波动",
-            "证据够不够",
-            "数据证据够不够",
-        )
-    ):
+    if _has_material_analysis_objective(text):
+        return "new_topic"
+    if _is_capability_question(text):
+        return "capability_question"
+    if _is_challenge(text):
         return "challenge"
     if _looks_new_topic(text):
         return "new_topic"
@@ -1109,66 +1717,260 @@ def _topic_relation(intent: str, message: str, active_run_status: str) -> str:
     if intent in {"off_topic", "unsupported_request"}:
         return "rejected"
     if intent == "capability_question":
-        return "inherit_current" if "分享给老板" in message else "rejected"
-    if "刚才第二个" in message:
+        return "inherit_current" if _is_sharing_visibility_question(message) else "rejected"
+    if _references_prior_topic_position(message):
         return "select_referenced_topic"
-    if "刚才那个" in message:
+    if _has_ambiguous_prior_reference(message):
         return "ask_topic_choice"
     if active_run_status == "running" and intent == "new_topic":
         return "queued_new_topic"
     if intent == "mixed_question":
-        if "顺便" in message and "1 月" in message:
+        objectives = _analysis_objectives(message)
+        if "顺便" in message and "pattern" in objectives and _mentions_named_period(message):
             return "split_topics"
-        if any(token in message for token in ("按渠道、支付方式和新老用户", "检查未知渠道", "给老板看")):
+        if (
+            (
+                len(_mentioned_dimensions(message)) >= 2
+                and _has_any(message, ("一起", "同时", "组合", "联合", "分别"))
+            )
+            or {"contribution", "data_quality"}.issubset(objectives)
+            or "delivery" in objectives
+        ):
             return "inherit_current"
-        if "这个月有没有变好" in message or "月初模式和周末模式" in message:
+        if _is_metric_health_question(message) or len(_mentioned_patterns(message)) >= 2:
             return "new_topic"
         return "split_subintents"
     if intent == "new_topic":
         return "new_topic"
-    if intent == "correction" and any(token in message for token in ("改看", "退款", "留存")):
+    if intent == "correction" and _has_all_concepts(
+        message,
+        ("改看", "换看", "切换"),
+        ("退款", "留存", "活跃", "新指标"),
+    ):
         return "new_topic"
     if intent == "memory_update":
         return "inherit_current"
     return "inherit_current"
 
 
-def _is_mixed(text: str) -> bool:
-    mixed_tokens = (
-        "是否上涨",
-        "顺便",
-        "一起",
-        "同时",
-        "前后 14 天",
-        "三个口径",
-        "哪个更明显",
-        "检查未知渠道",
-        "观察什么",
-        "原因和风险",
-        "跟其他渠道比",
-        "再看支付方式",
+def _analysis_objectives(text: str) -> set[str]:
+    objectives: set[str] = set()
+    if _mentions_period_comparison(text) or _is_metric_health_question(text):
+        objectives.add("comparison")
+    if _has_all_concepts(
+        text,
+        ("渠道", "支付方式", "新用户", "老用户", "分群", "业务对象"),
+        ("贡献", "影响", "拆解", "拉动", "拉低", "解释"),
+    ):
+        objectives.add("contribution")
+    if _has_any(text, ("异常", "离群", "波峰", "极端日期")):
+        objectives.add("outlier")
+    if _has_any(text, ("原因", "为什么", "驱动", "解释变化", "归因")):
+        objectives.add("driver")
+    if _has_any(text, ("风险", "限制", "隐患")):
+        objectives.add("risk")
+    if _has_any(text, ("证明", "因果", "导致", "归因")):
+        objectives.add("causal")
+    if _has_all_concepts(
+        text,
+        ("活动", "事件"),
+        ("前后", "窗口", "期间", "相对"),
+    ):
+        objectives.add("event_window")
+    if _has_all_concepts(
+        text,
+        ("未知", "缺失", "完整", "质量"),
+        ("渠道", "数据", "来源", "字段"),
+    ):
+        objectives.add("data_quality")
+    if _has_any(text, ("老板", "管理层", "分享", "汇报")):
+        objectives.add("delivery")
+    if _has_any(text, ("还要观察", "下一步", "后续观察", "继续关注")):
+        objectives.add("next_action")
+    if _has_any(text, ("敏感", "稳健", "可靠", "经得起")):
+        objectives.add("robustness")
+    if _mentioned_patterns(text):
+        objectives.add("pattern")
+    return objectives
+
+
+def _mentioned_dimensions(text: str) -> set[str]:
+    dimensions: set[str] = set()
+    for dimension, terms in {
+        "channel": ("渠道",),
+        "payment_method": ("支付方式", "支付渠道"),
+        "user_tenure": ("新老用户", "新用户", "老用户"),
+    }.items():
+        if _has_any(text, terms):
+            dimensions.add(dimension)
+    return dimensions
+
+
+def _mentioned_metrics(text: str) -> set[str]:
+    return {
+        metric_id
+        for metric_id, _, _ in _metric_business_label_matches(text)
+    }
+
+
+@lru_cache(maxsize=1)
+def _metric_business_label_vocabulary() -> Mapping[str, str]:
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    return MappingProxyType(
+        {
+            label: metric_id
+            for metric_id in registry.metric_ids
+            for label in registry.metric_business_labels(metric_id)
+        }
     )
-    return any(token in text for token in mixed_tokens)
+
+
+def _metric_business_label_matches(text: str) -> tuple[tuple[str, int, int], ...]:
+    occupied = [False] * len(text)
+    matches: list[tuple[str, int, int]] = []
+    vocabulary = _metric_business_label_vocabulary()
+    for label in sorted(vocabulary, key=lambda item: (-len(item), item)):
+        start = 0
+        while (index := text.find(label, start)) >= 0:
+            end = index + len(label)
+            if not any(occupied[index:end]):
+                matches.append((vocabulary[label], index, end))
+                occupied[index:end] = [True] * len(label)
+            start = end
+    return tuple(matches)
+
+
+def _mentioned_aggregation_scopes(text: str) -> set[str]:
+    residual = list(text)
+    for _, start, end in _metric_business_label_matches(text):
+        residual[start:end] = " " * (end - start)
+    residual_text = "".join(residual)
+
+    return {
+        scope
+        for scope, terms in {
+            "aggregation_total": ("总额", "总金额", "合计金额"),
+            "aggregation_daily_average": ("日均", "每日平均"),
+            "aggregation_order_count": ("订单数", "订单量", "笔数"),
+        }.items()
+        if _has_any(residual_text, terms)
+    }
+
+
+def _mentioned_patterns(text: str) -> set[str]:
+    patterns: set[str] = set()
+    for pattern, terms in {
+        "month_start": ("月初",),
+        "month_mid": ("月中",),
+        "month_end": ("月末", "月底"),
+        "weekend": ("周末",),
+        "weekday": ("工作日",),
+    }.items():
+        if _has_any(text, terms):
+            patterns.add(pattern)
+    return patterns
+
+
+def _is_mixed(text: str) -> bool:
+    objectives = _analysis_objectives(text)
+    connectors = _has_any(
+        text,
+        ("顺便", "一起", "同时", "并且", "并", "再看", "还要", "以及", "分别"),
+    )
+    if len(_mentioned_dimensions(text)) >= 2 and connectors:
+        return True
+    if len(_mentioned_metrics(text)) >= 2:
+        return True
+    if len(_mentioned_aggregation_scopes(text)) >= 2:
+        return True
+    if len(_mentioned_patterns(text)) >= 2 and _has_any(
+        text, ("哪个更", "比较", "对比", "与", "和")
+    ):
+        return True
+    inquiry_clauses = sum(
+        text.count(term)
+        for term in ("是否", "哪些", "有没有", "为什么", "能不能", "检查", "拆解")
+    )
+    return (connectors and len(objectives) >= 2) or (
+        inquiry_clauses >= 2 and len(objectives) >= 2
+    )
+
+
+_PERIOD_COMPARISON_RE = re.compile(
+    r"(?:(?:20\d{2}\s*年)?(?:第?[一二三四1-4]\s*季度|Q[1-4]))"
+    r".{0,16}(?:相比|对比|比较|比|与|和|VS\.?)"
+    r".{0,16}(?:(?:20\d{2}\s*年)?(?:第?[一二三四1-4]\s*季度|Q[1-4]))",
+    re.IGNORECASE,
+)
+
+
+def _mentions_period_comparison(text: str) -> bool:
+    if _PERIOD_COMPARISON_RE.search(text):
+        return True
+    return bool(
+        re.search(
+            r"\bQ[1-4]\b.{0,12}(?:变化|走势|表现|金额|收入|上涨|下降)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _mentions_named_period(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:\bQ[1-4]\b|第?[一二三四1-4]\s*季度|\d{1,2}\s*月)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _is_metric_health_question(text: str) -> bool:
+    return _has_all_concepts(
+        text,
+        ("这个月", "本月", "最近一个月", "本期", "这段时间", "近期", "当前周期"),
+        ("表现", "业绩", "经营", "结果", "整体", "业务", "变"),
+        ("变好", "改善", "转好", "更健康", "好转", "回升"),
+    )
+
+
+def _references_prior_topic_position(text: str) -> bool:
+    return bool(
+        re.search(r"(?:刚才|之前|上面).{0,8}(?:第二|第2|另一个).{0,6}(?:问题|主题|分析)?", text)
+    )
+
+
+def _has_ambiguous_prior_reference(text: str) -> bool:
+    return bool(
+        re.search(r"(?:刚才|之前|上面).{0,8}(?:那个|哪个|哪一个)(?:问题|主题|分析)?", text)
+    )
 
 
 def _looks_new_topic(text: str) -> bool:
     if "刚才" in text:
         return False
-    if re.search(r"Q\d+\s*(相比|比)\s*Q\d+", text):
+    if _mentions_period_comparison(text):
         return True
-    return any(
-        token in text
-        for token in (
-            "Q2 比 Q1",
-            "Q2 相比 Q1",
-            "Q2 变化",
-            "全样本看月初",
-            "全量样本里，月初",
-            "留存有没有变差",
-            "另外看一下",
-            "这个月是不是变好了",
-            "我又发一个新问题",
-        )
+    full_scope_pattern = _has_all_concepts(
+        text,
+        ("全样本", "全量", "全部数据", "历史覆盖", "完整样本"),
+        ("月初", "月中", "月末", "月底", "月内阶段"),
+    )
+    explicit_new_request = _has_any(
+        text,
+        ("另外", "新问题", "换个问题", "再开一个", "另一个问题"),
+    )
+    standalone_domain_health = _has_all_concepts(
+        text,
+        ("留存", "退款", "活跃"),
+        ("变差", "变化", "改善", "上涨", "下降"),
+    )
+    return (
+        full_scope_pattern
+        or explicit_new_request
+        or standalone_domain_health
+        or _is_metric_health_question(text)
     )
 
 
@@ -1177,32 +1979,43 @@ def _must_rerun(message: str, intent: str, relation: str) -> bool:
         return True
     if intent in {"correction", "clarification_answer"}:
         return True
-    return any(
-        token in message
-        for token in (
+    if len(_mentioned_dimensions(message)) >= 2:
+        return True
+    if _has_all_concepts(
+        message,
+        ("每天", "每日", "逐日"),
+        ("变化", "走势", "趋势", "图"),
+    ):
+        return True
+    return _has_any(
+        message,
+        (
             "换成",
+            "调整为",
             "只看",
-            "按渠道、支付方式和新老用户",
+            "过滤",
             "去掉",
+            "剔除",
             "按周",
+            "按天",
             "失败支付",
-            "每天变化",
             "活动前后",
+            "事件窗口",
             "日均",
+            "每日平均",
             "数据更新",
             "最新数据",
-        )
+            "新快照",
+        ),
     )
 
 
 def _needs_clarification(message: str) -> bool:
-    return _is_outlier_removal_question(message) or any(
-        token in message
-        for token in (
-            "这个月是不是变好了",
-            "这个月有没有变好",
-        )
+    ambiguous_outlier_strategy = (
+        _is_outlier_removal_question(message)
+        and not re.search(r"\d{1,2}\s*月\s*\d{1,2}\s*(?:日|号)", message)
     )
+    return ambiguous_outlier_strategy or _is_metric_health_question(message)
 
 
 def _build_clarification(
@@ -1299,10 +2112,8 @@ def _build_clarification(
 
 def _looks_like_clarification_answer(
     text: str,
-    clarification: ClarificationState | None = None,
+    clarification: ClarificationState,
 ) -> bool:
-    if clarification is None:
-        return _looks_like_legacy_clarification_answer(text)
     if _looks_new_topic(text) or _is_mixed(text):
         return False
     normalized = text.strip().rstrip("。")
@@ -1329,6 +2140,99 @@ def _looks_like_clarification_answer(
     if "日均" in scope or "总金额" in scope or "口径" in scope:
         return _looks_like_metric_clarification_answer(normalized)
     return False
+
+
+def _clarification_source_from_request(
+    prior_request: Mapping[str, Any],
+    *,
+    source_run_id: str,
+    source_thread_id: str,
+    source_topic_id: str,
+    source_owner_id: str,
+) -> dict[str, Any]:
+    raw_envelope = prior_request.get("clarification_source_envelope")
+    if raw_envelope is None:
+        raise ConversationOrchestrationError(
+            "clarification_source_envelope_invalid"
+        )
+    if not isinstance(raw_envelope, Mapping):
+        raise ConversationOrchestrationError(
+            "clarification_source_envelope_invalid"
+        )
+    unsigned_envelope = dict(raw_envelope)
+    source_digest = unsigned_envelope.pop("source_digest", None)
+    expected_fields = {
+        "schema_version",
+        "source_run_id",
+        "source_thread_id",
+        "source_topic_id",
+        "source_owner_id",
+        "question",
+        "analysis_context",
+        "source_material",
+        "clarification",
+    }
+    try:
+        valid_source_digest = (
+            isinstance(source_digest, str)
+            and bool(source_digest)
+            and source_digest == canonical_digest(unsigned_envelope)
+        )
+    except EvidenceIntegrityError:
+        valid_source_digest = False
+    source_material = raw_envelope.get("source_material")
+    analysis_context = raw_envelope.get("analysis_context")
+    clarification = raw_envelope.get("clarification")
+    question = raw_envelope.get("question")
+    if (
+        raw_envelope.get("schema_version")
+        != "clarification-source-envelope.v1"
+        or set(unsigned_envelope) != expected_fields
+        or not valid_source_digest
+        or str(raw_envelope.get("source_run_id") or "") != source_run_id
+        or str(raw_envelope.get("source_thread_id") or "")
+        != source_thread_id
+        or str(raw_envelope.get("source_topic_id") or "") != source_topic_id
+        or str(raw_envelope.get("source_owner_id") or "") != source_owner_id
+        or not isinstance(question, str)
+        or not question
+        or question != question.strip()
+        or not isinstance(analysis_context, Mapping)
+        or not isinstance(source_material, Mapping)
+        or not isinstance(clarification, Mapping)
+    ):
+        raise ConversationOrchestrationError(
+            "clarification_source_envelope_invalid"
+        )
+    accepted_graph = source_material.get("accepted_graph")
+    material_mappings = (
+        "analysis_contract",
+        "analysis_route",
+        "original_intent",
+        "material_slots",
+    )
+    if (
+        not isinstance(accepted_graph, (list, tuple))
+        or any(
+            not isinstance(source_material.get(key), Mapping)
+            for key in material_mappings
+        )
+    ):
+        raise ConversationOrchestrationError(
+            "clarification_source_envelope_invalid"
+        )
+    return {
+        "source_run_id": source_run_id,
+        "source_thread_id": source_thread_id,
+        "source_topic_id": source_topic_id,
+        "question": question,
+        "analysis_context": dict(analysis_context),
+        "source_material": {
+            "accepted_graph": list(accepted_graph),
+            **{key: dict(source_material[key]) for key in material_mappings},
+        },
+        "clarification": dict(clarification),
+    }
 
 
 def _selected_query_gap_action(
@@ -1369,13 +2273,6 @@ def _selected_query_gap_action(
     )
 
 
-def _looks_like_legacy_clarification_answer(text: str) -> bool:
-    return text in {"日均。", "日均", "按推荐继续。", "按推荐继续"} or (
-        any(token in text for token in ("按日", "复算", "移除", "异常"))
-        and any(token in text for token in ("粒度", "日期", "订单级", "明细"))
-    )
-
-
 def _looks_like_outlier_clarification_answer(text: str) -> bool:
     return (
         any(token in text for token in ("移除", "剔除", "排除", "去掉", "排掉"))
@@ -1400,8 +2297,11 @@ def _looks_like_metric_clarification_answer(text: str) -> bool:
 def _is_outlier_removal_question(text: str) -> bool:
     removal_tokens = ("移除", "剔除", "排除", "去掉", "排掉")
     outlier_tokens = ("异常", "波峰", "波动", "日期", "天", "日")
-    return any(token in text for token in removal_tokens) and any(
-        token in text for token in outlier_tokens
+    date_selection = bool(
+        re.search(r"\d{1,2}\s*月\s*\d{1,2}\s*(?:日|号)", text)
+    )
+    return _has_any(text, removal_tokens) and (
+        _has_any(text, outlier_tokens) or date_selection
     )
 
 

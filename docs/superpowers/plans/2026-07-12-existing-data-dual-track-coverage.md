@@ -1412,6 +1412,10 @@ Expected: contract, schema, compile, test, build, and diff checks pass. Record e
 
 - [x] **Step 3: Run fixed-eight evaluation twice with real services**
 
+Launch the two independent fixed-eight runs concurrently. Keep the eight turns
+inside each run sequential because they share one conversation thread and reuse
+state. Each process writes to its own artifact directory.
+
 ```bash
 export WAJE_LLM_TIMEOUT_SECONDS=300
 /tmp/waje-bi-v2-py312/bin/python3 tools/phase7/run_live_conversation_system_test.py \
@@ -1429,11 +1433,26 @@ explained; do not convert it to success.
 
 - [x] **Step 4: Run the platform current-data suite**
 
+Shard the platform suite by case and run up to two independent cases
+concurrently. A case keeps its own turns sequential; every shard uses the same
+suite contract, a unique thread/run identity, and a case-specific artifact file
+under the shared directory. P4 diagnostic runs exhausted the provider's
+connection capacity across all three centralized attempts; P2 preserves useful
+overlap without turning provider saturation into false product failures. This is
+equivalent to the aggregate command below for coverage, while avoiding fully
+serial LLM wait time.
+
 ```bash
 /tmp/waje-bi-v2-py312/bin/python3 tools/phase7/run_live_conversation_system_test.py \
   --suite platform-current-data --real-llm --real-clickhouse --strict-quality \
   --artifact-dir artifacts/phase7/existing-data-platform-run-1
 ```
+
+The case shards are `platform_paid_amount_change`, `platform_pattern_channel`,
+`platform_business_object_partial`, `platform_revenue_health`,
+`platform_market_health_independent`, `platform_segment_permission`,
+`platform_anomaly_event`, `platform_baseline_reuse`, and
+`platform_quality_clarification_resume`. Use `--case <case-id>` for each shard.
 
 - [x] **Step 5: Review and compare all artifacts**
 

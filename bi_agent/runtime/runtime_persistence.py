@@ -4,7 +4,7 @@ from dataclasses import fields, replace
 import json
 from pathlib import Path
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from bi_agent.runtime.canonical_values import canonical_thaw
 from bi_agent.runtime.clickhouse_revenue_rows import _query_contract_from_mapping
@@ -13,9 +13,13 @@ from bi_agent.runtime.analysis_contracts import (
     QueryContract,
     analysis_contract_from_dict,
     analysis_contract_signature,
+    query_contract_semantic_body,
     query_contract_signature,
 )
-from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.dataset_catalog import (
+    DatasetSnapshot,
+    immutable_dataset_snapshot_projection,
+)
 from bi_agent.runtime.authoritative_query_chain import (
     AuthoritativeQueryChainError,
     validate_capability_binding_plan_semantics,
@@ -28,6 +32,10 @@ from bi_agent.runtime.contract_gaps import (
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
+)
+from bi_agent.runtime.runtime_publication_index import (
+    RUNTIME_PUBLICATION_INDEX_SCHEMA_VERSION,
+    RUNTIME_PUBLICATION_RECORD_GROUPS,
 )
 from bi_agent.runtime.claim_provenance import (
     validate_context_manifest_record,
@@ -80,6 +88,446 @@ def authority_record_payload(kind: str, record: Any) -> dict[str, Any]:
     return canonical_value({"kind": kind, "record": record})
 
 
+def _result_candidate_publication_authority_projection(
+    candidate: Mapping[str, Any],
+    publication_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind a signed reuse candidate to one reconstructed source authority graph."""
+    from bi_agent.conversation.models import validate_result_reuse_candidate
+
+    normalized = validate_result_reuse_candidate(candidate)
+    if not isinstance(publication_payload, Mapping):
+        _source_publication_mismatch("payload")
+
+    analysis = publication_payload.get("analysis_contract")
+    if not isinstance(analysis, Mapping):
+        _source_publication_mismatch("analysis_missing")
+    try:
+        typed_analysis = analysis_contract_from_dict(
+            {
+                key: value
+                for key, value in analysis.items()
+                if key != "contract_signature"
+            }
+        )
+    except (TypeError, ValueError):
+        _source_publication_mismatch("analysis")
+    analysis_signature = str(analysis.get("contract_signature") or "")
+    if (
+        typed_analysis.analysis_contract_id
+        != normalized["analysis_contract_ref"]
+        or analysis_signature != normalized["analysis_contract_signature"]
+        or analysis_contract_signature(typed_analysis) != analysis_signature
+        or typed_analysis.permission_scope
+        != normalized["permission_scope"]
+        or normalized["semantic_scope_signature"]
+        != f"analysis-contract:sha256:{analysis_signature}"
+    ):
+        _source_publication_mismatch("analysis")
+
+    query_contracts = _publication_records(
+        publication_payload,
+        "query_contracts",
+        "query_contract_id",
+    )
+    query_contract_payload = query_contracts.get(normalized["query_contract_ref"])
+    try:
+        typed_query_contract = _query_contract_from_mapping(
+            query_contract_payload or {}
+        )
+        _validate_query_contract_analysis_semantics(
+            typed_analysis,
+            typed_query_contract,
+        )
+    except (EvidenceIntegrityError, TypeError, ValueError):
+        _source_publication_mismatch("query_contract")
+    if (
+        query_contract_payload is None
+        or canonical_value(query_contract_payload)
+        != canonical_value(typed_query_contract.to_dict())
+        or typed_query_contract.query_contract_id
+        != normalized["query_contract_ref"]
+        or typed_query_contract.analysis_contract_ref
+        != normalized["analysis_contract_ref"]
+        or typed_query_contract.contract_signature
+        != normalized["query_contract_signature"]
+        or query_contract_signature(typed_query_contract)
+        != typed_query_contract.contract_signature
+        or typed_query_contract.permission_scope
+        != normalized["permission_scope"]
+        or typed_query_contract.dataset_snapshot_refs
+        != tuple(normalized["source_snapshot_refs"])
+    ):
+        _source_publication_mismatch("query_contract")
+    query_contract = typed_query_contract.to_dict()
+
+    query_execution_records = _publication_records(
+        publication_payload,
+        "query_execution_records",
+        "record_ref",
+    )
+    query_matches = tuple(
+        record
+        for record in query_execution_records.values()
+        if str(record.get("result_ref") or "") == normalized["result_ref"]
+    )
+    if len(query_matches) != 1:
+        _source_publication_mismatch("query_execution_missing")
+    query_execution = query_matches[0]
+    if (
+        str(query_execution.get("record_ref") or "")
+        != normalized["query_execution_record_ref"]
+        or str(query_execution.get("record_digest") or "")
+        != normalized["query_execution_record_digest"]
+        or str(query_execution.get("execution_status") or "") != "succeeded"
+        or str(query_execution.get("query_contract_ref") or "")
+        != normalized["query_contract_ref"]
+        or str(query_execution.get("contract_signature") or "")
+        != normalized["query_contract_signature"]
+        or str(query_execution.get("rows_ref") or "") != normalized["rows_ref"]
+        or str(query_execution.get("rows_content_hash") or "")
+        != normalized["rows_content_hash"]
+        or str(query_execution.get("completeness_report_ref") or "")
+        != normalized["completeness_report_ref"]
+        or tuple(query_execution.get("source_snapshot_refs") or ())
+        != tuple(normalized["source_snapshot_refs"])
+        or tuple(query_execution.get("source_snapshot_record_refs") or ())
+        != tuple(normalized["source_snapshot_record_refs"])
+        or tuple(query_execution.get("source_snapshot_record_digests") or ())
+        != tuple(normalized["source_snapshot_record_digests"])
+        or canonical_value(query_execution.get("contract"))
+        != canonical_value(query_contract)
+        or canonical_value(query_execution.get("query_contract"))
+        != canonical_value(query_contract)
+    ):
+        _source_publication_mismatch("query_execution")
+    result_payload = query_execution.get("result_payload")
+    if (
+        not isinstance(result_payload, Mapping)
+        or str(result_payload.get("result_ref") or "") != normalized["result_ref"]
+        or str(result_payload.get("query_contract_ref") or "")
+        != normalized["query_contract_ref"]
+        or str(result_payload.get("rows_ref") or "") != normalized["rows_ref"]
+        or str(result_payload.get("completeness_report_ref") or "")
+        != normalized["completeness_report_ref"]
+        or tuple(result_payload.get("source_snapshot_refs") or ())
+        != tuple(normalized["source_snapshot_refs"])
+    ):
+        _source_publication_mismatch("query_result")
+
+    rows_records = _publication_records(
+        publication_payload,
+        "rows_records",
+        "record_ref",
+    )
+    rows_matches = tuple(
+        record
+        for record in rows_records.values()
+        if str(record.get("rows_ref") or "") == normalized["rows_ref"]
+    )
+    if len(rows_matches) != 1:
+        _source_publication_mismatch("rows_missing")
+    rows = rows_matches[0]
+    if (
+        str(rows.get("record_ref") or "") != normalized["rows_record_ref"]
+        or str(rows.get("record_digest") or "")
+        != normalized["rows_record_digest"]
+        or str(rows.get("rows_content_hash") or "")
+        != normalized["rows_content_hash"]
+        or str((rows.get("metadata_payload") or {}).get("rows_ref") or "")
+        != normalized["rows_ref"]
+        or str(
+            (rows.get("metadata_payload") or {}).get("rows_content_hash") or ""
+        )
+        != normalized["rows_content_hash"]
+        or rows.get("row_count") != query_execution.get("row_count")
+    ):
+        _source_publication_mismatch("rows")
+
+    snapshot_records = _publication_records(
+        publication_payload,
+        "snapshot_records",
+        "snapshot_ref",
+    )
+    matching_snapshots = []
+    for index, snapshot_ref in enumerate(normalized["source_snapshot_refs"]):
+        snapshot_record = snapshot_records.get(snapshot_ref)
+        snapshot = (
+            snapshot_record.get("snapshot")
+            if isinstance(snapshot_record, Mapping)
+            else None
+        )
+        if (
+            not isinstance(snapshot, Mapping)
+            or str(snapshot_record.get("record_ref") or "")
+            != normalized["source_snapshot_record_refs"][index]
+            or str(snapshot_record.get("record_digest") or "")
+            != normalized["source_snapshot_record_digests"][index]
+            or canonical_value(snapshot_record.get("payload"))
+            != canonical_value(snapshot)
+            or str(snapshot.get("snapshot_ref") or "") != snapshot_ref
+            or str(snapshot.get("release_ref") or "")
+            != normalized["source_release_refs"][index]
+            or str(snapshot.get("authority_record_ref") or "")
+            != normalized["source_release_authority_refs"][index]
+            or str(snapshot.get("schema_fingerprint") or "")
+            != normalized["source_schema_fingerprints"][index]
+            or normalized["permission_scope"]
+            not in tuple(str(item) for item in snapshot.get("permission_scopes") or ())
+        ):
+            _source_publication_mismatch("snapshot_release")
+        matching_snapshots.append(snapshot_record)
+
+    completeness_records = _publication_records(
+        publication_payload,
+        "completeness_records",
+        "record_ref",
+    )
+    completeness_refs = tuple(normalized["completeness_record_refs"])
+    completeness_digests = tuple(normalized["completeness_record_digests"])
+    if (
+        len(set(completeness_refs)) != len(completeness_refs)
+        or completeness_refs != tuple(sorted(completeness_refs))
+    ):
+        _source_publication_mismatch("completeness_order")
+    matching_completeness = tuple(
+        completeness_records.get(record_ref) for record_ref in completeness_refs
+    )
+    if (
+        any(record is None for record in matching_completeness)
+        or any(
+            str(record.get("result_ref") or "") != normalized["result_ref"]
+            or str(record.get("query_contract_ref") or "")
+            != normalized["query_contract_ref"]
+            or str(record.get("report_ref") or "")
+            != normalized["completeness_report_ref"]
+            or str(record.get("report_digest") or "") != record_digest
+            or str((record.get("report_payload") or {}).get("completeness_status") or "")
+            != "complete"
+            or str((record.get("report_payload") or {}).get("analysis_readiness") or "")
+            != "ready"
+            for record, record_digest in zip(
+                matching_completeness,
+                completeness_digests,
+            )
+        )
+    ):
+        _source_publication_mismatch("completeness")
+
+    binding_records = _publication_records(
+        publication_payload,
+        "capability_binding_records",
+        "record_ref",
+    )
+    binding_refs = tuple(normalized["binding_record_refs"])
+    binding_digests = tuple(normalized["binding_record_digests"])
+    if (
+        len(set(binding_refs)) != len(binding_refs)
+        or binding_refs != tuple(sorted(binding_refs))
+    ):
+        _source_publication_mismatch("binding_order")
+    matching_bindings = tuple(
+        binding_records.get(record_ref) for record_ref in binding_refs
+    )
+    if (
+        any(record is None for record in matching_bindings)
+        or any(
+            str(record.get("binding_digest") or "") != binding_digest
+            or str(record.get("status") or "") != "ready"
+            or str(record.get("analysis_contract_ref") or "")
+            != normalized["analysis_contract_ref"]
+            or not _publication_binding_supports_candidate(
+                record,
+                normalized,
+                query_execution=query_execution,
+                rows=rows,
+                completeness=matching_completeness,
+            )
+            for record, binding_digest in zip(
+                matching_bindings,
+                binding_digests,
+            )
+        )
+    ):
+        _source_publication_mismatch("binding")
+    return canonical_value(
+        {
+            "candidate": normalized,
+            "analysis_contract": analysis,
+            "query_contract": query_contract,
+            "query_execution_record": query_execution,
+            "rows_record": rows,
+            "snapshot_records": matching_snapshots,
+            "completeness_records": matching_completeness,
+            "binding_records": matching_bindings,
+        }
+    )
+
+
+def validate_result_candidate_publication_authority(
+    candidate: Mapping[str, Any],
+    publication_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate and return the exact signed candidate from source authority."""
+    projection = _result_candidate_publication_authority_projection(
+        candidate,
+        publication_payload,
+    )
+    return dict(projection["candidate"])
+
+
+def result_candidate_publication_authority_projection(
+    candidate: Mapping[str, Any],
+    publication_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the validated source records needed for cache equivalence checks."""
+    return _result_candidate_publication_authority_projection(
+        candidate,
+        publication_payload,
+    )
+
+
+def validate_result_candidate_publication_index(
+    candidate: Mapping[str, Any],
+    publication_index: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the compact PG index and selected-record membership exactly."""
+    from bi_agent.conversation.models import validate_result_reuse_candidate
+
+    normalized = validate_result_reuse_candidate(candidate)
+    if (
+        not isinstance(publication_index, Mapping)
+        or set(publication_index)
+        != {"schema_version", "analysis_contract_id", "ordered_refs"}
+        or publication_index.get("schema_version")
+        != RUNTIME_PUBLICATION_INDEX_SCHEMA_VERSION
+        or str(publication_index.get("analysis_contract_id") or "")
+        != normalized["analysis_contract_ref"]
+    ):
+        _source_publication_mismatch("index")
+    raw_groups = publication_index.get("ordered_refs")
+    if not isinstance(raw_groups, Mapping) or set(raw_groups) != set(
+        RUNTIME_PUBLICATION_RECORD_GROUPS
+    ):
+        _source_publication_mismatch("index")
+    ordered_refs: dict[str, list[str]] = {}
+    for group in RUNTIME_PUBLICATION_RECORD_GROUPS:
+        values = raw_groups.get(group)
+        if (
+            not isinstance(values, (list, tuple))
+            or isinstance(values, (str, bytes))
+            or any(not isinstance(value, str) or not value for value in values)
+            or len(values) != len(set(values))
+        ):
+            _source_publication_mismatch("index")
+        ordered_refs[group] = list(values)
+    selected = {
+        "query_contracts": (normalized["query_contract_ref"],),
+        "query_execution_records": (
+            normalized["query_execution_record_ref"],
+        ),
+        "rows_records": (normalized["rows_record_ref"],),
+        "snapshot_records": tuple(normalized["source_snapshot_record_refs"]),
+        "completeness_records": tuple(normalized["completeness_record_refs"]),
+        "capability_binding_records": tuple(normalized["binding_record_refs"]),
+    }
+    if any(
+        any(ref not in ordered_refs[group] for ref in refs)
+        for group, refs in selected.items()
+    ):
+        _source_publication_mismatch("index_membership")
+    return canonical_value(
+        {
+            "schema_version": RUNTIME_PUBLICATION_INDEX_SCHEMA_VERSION,
+            "analysis_contract_id": normalized["analysis_contract_ref"],
+            "ordered_refs": ordered_refs,
+        }
+    )
+
+
+def _publication_records(
+    publication_payload: Mapping[str, Any],
+    group: str,
+    identity_field: str,
+) -> dict[str, Mapping[str, Any]]:
+    raw_records = publication_payload.get(group)
+    if (
+        not isinstance(raw_records, (list, tuple))
+        or isinstance(raw_records, (str, bytes))
+        or any(not isinstance(record, Mapping) for record in raw_records)
+    ):
+        _source_publication_mismatch(f"{group}_shape")
+    records: dict[str, Mapping[str, Any]] = {}
+    for record in raw_records:
+        identity = str(record.get(identity_field) or "")
+        if not identity or identity in records:
+            _source_publication_mismatch(f"{group}_identity")
+        records[identity] = record
+    return records
+
+
+def _publication_binding_supports_candidate(
+    binding: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    query_execution: Mapping[str, Any],
+    rows: Mapping[str, Any],
+    completeness: Sequence[Mapping[str, Any]],
+) -> bool:
+    expected_completeness = {
+        (
+            str(record.get("record_ref") or ""),
+            str(record.get("report_digest") or ""),
+        )
+        for record in completeness
+    }
+    groups = (
+        "",
+        "validation_",
+    )
+    for prefix in groups:
+        result_refs = tuple(
+            str(ref) for ref in binding.get(f"{prefix}result_refs") or ()
+        )
+        if candidate["result_ref"] not in result_refs:
+            continue
+        index = result_refs.index(candidate["result_ref"])
+        fields = (
+            f"{prefix}query_execution_record_refs",
+            f"{prefix}query_execution_record_digests",
+            f"{prefix}rows_refs",
+            f"{prefix}rows_metadata_record_refs",
+            f"{prefix}rows_metadata_record_digests",
+            f"{prefix}rows_content_hashes",
+            f"{prefix}completeness_report_refs",
+            f"{prefix}completeness_record_refs",
+            f"{prefix}completeness_record_digests",
+        )
+        aligned = [tuple(binding.get(field) or ()) for field in fields]
+        if any(index >= len(values) for values in aligned):
+            continue
+        actual = tuple(str(values[index]) for values in aligned)
+        if actual[:7] != (
+            str(query_execution.get("record_ref") or ""),
+            str(query_execution.get("record_digest") or ""),
+            str(rows.get("rows_ref") or ""),
+            str(rows.get("record_ref") or ""),
+            str(rows.get("record_digest") or ""),
+            str(rows.get("rows_content_hash") or ""),
+            str(query_execution.get("completeness_report_ref") or ""),
+        ):
+            continue
+        if (actual[7], actual[8]) in expected_completeness:
+            return True
+    return False
+
+
+def _source_publication_mismatch(component: str) -> None:
+    raise EvidenceIntegrityError(
+        f"result_candidate_source_publication_mismatch:{component}"
+    )
+
+
 def validate_analysis_runtime_records(
     *,
     run_id: str,
@@ -96,6 +544,7 @@ def validate_analysis_runtime_records(
     verified_claims: Sequence[Mapping[str, Any]],
     claim_links: Sequence[Mapping[str, Any]],
     repair_attempts: Sequence[Mapping[str, Any]],
+    result_candidate_resolver: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Close the persistence graph before any database statement is issued."""
     if not run_id:
@@ -362,6 +811,15 @@ def validate_analysis_runtime_records(
         if ref in provenance_by_ref:
             raise EvidenceIntegrityError("runtime_persistence_claim_provenance_duplicate")
         provenance_by_ref[ref] = payload
+    if (
+        not has_verified_claims
+        and provenance_by_ref
+        and not _zero_claim_provenance_is_final_physical_reuse(
+            provenance_by_ref,
+            run_id=run_id,
+        )
+    ):
+        raise EvidenceIntegrityError("runtime_persistence_zero_claim_provenance_invalid")
     _validate_physical_reuse_provenance(
         provenance_by_ref,
         run_id=run_id,
@@ -369,6 +827,8 @@ def validate_analysis_runtime_records(
         query_by_ref=query_by_ref,
         query_records=query_records,
         reports_by_result=reports_by_result,
+        snapshots_by_ref=snapshots_by_ref,
+        result_candidate_resolver=result_candidate_resolver,
     )
 
     claims_by_ref: dict[str, Mapping[str, Any]] = {}
@@ -386,6 +846,7 @@ def validate_analysis_runtime_records(
         provenance = provenance_by_ref.get(str(payload.get("provenance_record_ref") or ""))
         if context is None or provenance is None:
             raise EvidenceIntegrityError("runtime_persistence_verified_claim_provenance_missing")
+        _validate_claim_reuse_membership(payload, provenance)
         validate_verified_claim_record(
             payload,
             context_manifest=context,
@@ -408,15 +869,6 @@ def validate_analysis_runtime_records(
             raise EvidenceIntegrityError("runtime_persistence_verified_claim_duplicate")
         claims_by_ref[ref] = payload
     if not has_verified_claims and claim_links:
-        raise EvidenceIntegrityError("runtime_persistence_zero_claim_provenance_invalid")
-    if (
-        not has_verified_claims
-        and provenance_by_ref
-        and not _zero_claim_provenance_is_final_physical_reuse(
-            provenance_by_ref,
-            run_id=run_id,
-        )
-    ):
         raise EvidenceIntegrityError("runtime_persistence_zero_claim_provenance_invalid")
 
     expected_sources_by_context: dict[str, set[tuple[str, str]]] = {
@@ -534,6 +986,27 @@ def _zero_claim_provenance_is_final_physical_reuse(
     return bool(decision_refs)
 
 
+def _validate_claim_reuse_membership(
+    claim: Mapping[str, Any],
+    provenance: Mapping[str, Any],
+) -> None:
+    result_refs = {
+        str(ref) for ref in claim.get("result_refs") or () if str(ref)
+    }
+    for raw in provenance.get("reuse_decisions") or ():
+        if (
+            not isinstance(raw, Mapping)
+            or raw.get("schema_version")
+            != PHYSICAL_QUERY_REUSE_DECISION_SCHEMA_VERSION
+        ):
+            continue
+        decision = validated_physical_query_reuse_decision_record(raw)
+        if str(decision.get("result_ref") or "") not in result_refs:
+            raise EvidenceIntegrityError(
+                "runtime_persistence_claim_reuse_result_mismatch"
+            )
+
+
 def _validate_physical_reuse_provenance(
     provenance_by_ref: Mapping[str, Mapping[str, Any]],
     *,
@@ -542,6 +1015,8 @@ def _validate_physical_reuse_provenance(
     query_by_ref: Mapping[str, QueryContract],
     query_records: Mapping[str, QueryExecutionRecord],
     reports_by_result: Mapping[str, CompletenessRecord],
+    snapshots_by_ref: Mapping[str, SnapshotRecord],
+    result_candidate_resolver: Callable[..., Mapping[str, Any]] | None,
 ) -> None:
     decision_refs: set[str] = set()
     for provenance in provenance_by_ref.values():
@@ -560,7 +1035,6 @@ def _validate_physical_reuse_provenance(
                 raise EvidenceIntegrityError(
                     "runtime_persistence_reuse_decision_owner_mismatch"
                 )
-
             contract = query_by_ref.get(decision["query_contract_ref"])
             query = query_records.get(decision["result_ref"])
             if (
@@ -601,6 +1075,15 @@ def _validate_physical_reuse_provenance(
                 raise EvidenceIntegrityError(
                     "runtime_persistence_reuse_decision_cache_mismatch"
                 )
+            if decision.get("decision") == "reuse":
+                _validate_physical_reuse_source_authority(
+                    decision,
+                    current_contract=contract,
+                    current_query=query,
+                    current_report=report,
+                    current_snapshots=snapshots_by_ref,
+                    result_candidate_resolver=result_candidate_resolver,
+                )
 
             decision_ref = decision["decision_ref"]
             if decision_ref in decision_refs:
@@ -608,6 +1091,205 @@ def _validate_physical_reuse_provenance(
                     "runtime_persistence_reuse_decision_duplicate"
                 )
             decision_refs.add(decision_ref)
+
+
+def _validate_physical_reuse_source_authority(
+    decision: Mapping[str, Any],
+    *,
+    current_contract: QueryContract,
+    current_query: QueryExecutionRecord,
+    current_report: CompletenessRecord,
+    current_snapshots: Mapping[str, SnapshotRecord],
+    result_candidate_resolver: Callable[..., Mapping[str, Any]] | None,
+) -> None:
+    if not callable(result_candidate_resolver):
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_source_authority_unavailable"
+        )
+    try:
+        authority = result_candidate_resolver(
+            result_ref=str(decision.get("source_ref") or ""),
+            topic_id=str(decision.get("topic_id") or ""),
+        )
+    except EvidenceIntegrityError as exc:
+        if str(exc).startswith("result_candidate_source_publication_mismatch"):
+            raise
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_source_authority_missing"
+        ) from exc
+    except Exception as exc:
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_source_authority_missing"
+        ) from exc
+    if not isinstance(authority, Mapping):
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_source_authority_missing"
+        )
+    result_ref_record = authority.get("result_ref_record") or {}
+    candidate = (
+        result_ref_record.get("payload")
+        if isinstance(result_ref_record, Mapping)
+        else None
+    )
+    source_contract = authority.get("analysis_contract") or {}
+    source_cache_authority = authority.get("cache_authority") or {}
+    expected = {
+        "source_run_id": decision.get("source_run_id"),
+        "result_ref": decision.get("source_ref"),
+        "analysis_contract_ref": decision.get(
+            "source_analysis_contract_ref"
+        ),
+        "query_contract_ref": decision.get("source_query_contract_ref"),
+        "query_execution_record_ref": decision.get(
+            "source_query_execution_record_ref"
+        ),
+        "completeness_record_refs": list(
+            decision.get("source_completeness_record_refs") or ()
+        ),
+        "candidate_signature": decision.get("candidate_signature"),
+    }
+    if (
+        not isinstance(candidate, Mapping)
+        or not isinstance(source_contract, Mapping)
+        or not isinstance(source_cache_authority, Mapping)
+        or str(authority.get("run_status") or "") != "completed"
+        or str(authority.get("run_topic_id") or "")
+        != str(decision.get("topic_id") or "")
+        or str(source_contract.get("analysis_contract_id") or "")
+        != str(decision.get("source_analysis_contract_ref") or "")
+        or any(
+            canonical_value(candidate.get(field))
+            != canonical_value(value)
+            for field, value in expected.items()
+        )
+    ):
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_source_authority_mismatch"
+        )
+    _validate_physical_reuse_cache_equivalence(
+        source_cache_authority,
+        current_contract=current_contract,
+        current_query=current_query,
+        current_report=current_report,
+        current_snapshots=current_snapshots,
+    )
+
+
+def _validate_physical_reuse_cache_equivalence(
+    source: Mapping[str, Any],
+    *,
+    current_contract: QueryContract,
+    current_query: QueryExecutionRecord,
+    current_report: CompletenessRecord,
+    current_snapshots: Mapping[str, SnapshotRecord],
+) -> None:
+    candidate = source.get("candidate")
+    source_contract = source.get("query_contract")
+    source_query = source.get("query_execution_record")
+    source_rows = source.get("rows_record")
+    source_snapshots = source.get("snapshot_records")
+    source_completeness = source.get("completeness_records")
+    if (
+        not isinstance(candidate, Mapping)
+        or not isinstance(source_contract, Mapping)
+        or not isinstance(source_query, Mapping)
+        or not isinstance(source_rows, Mapping)
+        or not isinstance(source_snapshots, (list, tuple))
+        or not isinstance(source_completeness, (list, tuple))
+    ):
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_cache_equivalence_mismatch:source"
+        )
+    try:
+        typed_source_contract = _query_contract_from_mapping(source_contract)
+    except (TypeError, ValueError) as exc:
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_cache_equivalence_mismatch:query_contract"
+        ) from exc
+    if (
+        query_contract_signature(current_contract)
+        != query_contract_signature(typed_source_contract)
+        or canonical_value(query_contract_semantic_body(current_contract))
+        != canonical_value(query_contract_semantic_body(typed_source_contract))
+    ):
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_cache_equivalence_mismatch:query_contract"
+        )
+    if (
+        current_query.execution_status != "succeeded"
+        or str(source_query.get("execution_status") or "") != "succeeded"
+        or current_query.rows_content_hash
+        != str(source_rows.get("rows_content_hash") or "")
+        or current_query.row_count != source_rows.get("row_count")
+    ):
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_cache_equivalence_mismatch:result"
+        )
+    report_payload = canonical_value(current_report.report_payload)
+    if (
+        report_payload.get("completeness_status") != "complete"
+        or report_payload.get("analysis_readiness") != "ready"
+        or any(
+            not isinstance(record, Mapping)
+            or (record.get("report_payload") or {}).get("completeness_status")
+            != "complete"
+            or (record.get("report_payload") or {}).get("analysis_readiness")
+            != "ready"
+            for record in source_completeness
+        )
+    ):
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_cache_equivalence_mismatch:completeness"
+        )
+    current_snapshot_records = tuple(
+        current_snapshots.get(ref) for ref in current_query.source_snapshot_refs
+    )
+    if any(record is None for record in current_snapshot_records):
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_cache_equivalence_mismatch:snapshot_release"
+        )
+    current_snapshot_axes = tuple(
+        (
+            record.snapshot.snapshot_ref,
+            record.snapshot.release_ref,
+            record.snapshot.authority_record_ref,
+            record.snapshot.schema_fingerprint,
+        )
+        for record in current_snapshot_records
+    )
+    source_snapshot_axes = tuple(
+        zip(
+            candidate.get("source_snapshot_refs") or (),
+            candidate.get("source_release_refs") or (),
+            candidate.get("source_release_authority_refs") or (),
+            candidate.get("source_schema_fingerprints") or (),
+        )
+    )
+    if current_snapshot_axes != source_snapshot_axes:
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_cache_equivalence_mismatch:snapshot_release"
+        )
+    try:
+        current_snapshot_authority = tuple(
+            immutable_dataset_snapshot_projection(record.snapshot)
+            for record in current_snapshot_records
+        )
+        source_snapshot_authority = tuple(
+            immutable_dataset_snapshot_projection(record.get("snapshot"))
+            for record in source_snapshots
+            if isinstance(record, Mapping)
+        )
+    except (TypeError, ValueError) as exc:
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_cache_equivalence_mismatch:snapshot_release"
+        ) from exc
+    if (
+        len(source_snapshot_authority) != len(source_snapshots)
+        or current_snapshot_authority != source_snapshot_authority
+    ):
+        raise EvidenceIntegrityError(
+            "runtime_persistence_reuse_decision_cache_equivalence_mismatch:snapshot_release"
+        )
 
 
 def _unique_by(records: Sequence[Any], field: str, code: str) -> dict[str, Any]:
@@ -988,6 +1670,26 @@ def _validate_analysis_target_metric_refs(analysis: AnalysisContract) -> None:
         *ambiguity_refs_by_metric,
     )))
     expected_refs: list[str] = []
+    queryless_review = not analysis.metric_bindings
+    if queryless_review and target_refs:
+        target_owner_metric_ids: list[str] = []
+        for target_ref in target_refs:
+            owners = registry.metric_ids_for_contract_ref(target_ref)
+            if len(owners) != 1:
+                raise EvidenceIntegrityError(
+                    "runtime_persistence_analysis_target_metric_mismatch"
+                )
+            if owners[0] not in target_owner_metric_ids:
+                target_owner_metric_ids.append(owners[0])
+        if metric_order and any(
+            metric_id not in metric_order
+            for metric_id in target_owner_metric_ids
+        ):
+            raise EvidenceIntegrityError(
+                "runtime_persistence_analysis_target_metric_mismatch"
+            )
+        if not metric_order:
+            metric_order = tuple(target_owner_metric_ids)
 
     def extend_distinct(refs: Sequence[str]) -> None:
         for ref in refs:
@@ -998,16 +1700,32 @@ def _validate_analysis_target_metric_refs(analysis: AnalysisContract) -> None:
         bound_refs = tuple(bound_refs_by_metric.get(metric_id, ()))
         if any(ref in target_ref_membership for ref in bound_refs):
             extend_distinct(bound_refs)
-        for selected_refs, mandatory in ambiguity_refs_by_metric.get(
+        ambiguity_refs = ambiguity_refs_by_metric.get(
             metric_id,
             (),
-        ):
+        )
+        for selected_refs, mandatory in ambiguity_refs:
             if mandatory:
                 extend_distinct(selected_refs)
             else:
                 extend_distinct(tuple(
                     ref for ref in selected_refs if ref in target_ref_membership
                 ))
+        if queryless_review and not bound_refs and not ambiguity_refs:
+            try:
+                reviewed_refs = {
+                    str(source.get("contract_ref") or "")
+                    for source in registry.metric_sources(metric_id).values()
+                }
+            except (KeyError, TypeError, ValueError):
+                reviewed_refs = set()
+            extend_distinct(
+                tuple(
+                    ref
+                    for ref in target_refs
+                    if ref in reviewed_refs and ref
+                )
+            )
 
     if target_refs != tuple(expected_refs):
         raise EvidenceIntegrityError(

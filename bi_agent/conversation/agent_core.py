@@ -19,10 +19,16 @@ from bi_agent.conversation.models import (
     ClarificationState,
     sign_result_reuse_candidate,
 )
-from bi_agent.conversation.runtime import ConversationRuntime
+from bi_agent.conversation.runtime import (
+    ConversationOrchestrationError,
+    ConversationRuntime,
+)
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.analysis_assets import build_analysis_assets
-from bi_agent.runtime.answer_package import reverify_answer_package_for_delivery
+from bi_agent.runtime.answer_package import (
+    reproject_answer_package_from_persisted_authority,
+    reverify_answer_package_for_delivery,
+)
 from bi_agent.runtime.analysis_contracts import (
     analysis_contract_from_dict,
     analysis_contract_signature,
@@ -35,6 +41,8 @@ from bi_agent.runtime.compiler import compile_graph
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     RuntimeEvidenceAuthority,
+    canonical_digest,
+    canonical_value,
 )
 from bi_agent.runtime.artifacts import synchronize_existing_artifact
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult, run_pattern_workflow
@@ -107,7 +115,7 @@ class ConversationAgentCore:
             "role": role,
         }
         run_id = run_id or f"run-{uuid4().hex[:12]}"
-        self.store.get_thread(thread_id)
+        thread = self.store.get_thread(thread_id)
         self.store.upsert_run(run_id, thread_id=thread_id, status="running")
         if clarification:
             self.store.add_audit_event(
@@ -135,13 +143,27 @@ class ConversationAgentCore:
 
         if not turn.run_request:
             if turn.needs_clarification:
+                clarification_payload = (
+                    turn.clarification.to_dict() if turn.clarification else None
+                )
                 request = {
                     "reason": "needs_clarification",
                     "intent": turn.turn_intent.intent,
-                    "clarification": turn.clarification.to_dict() if turn.clarification else None,
+                    "clarification": clarification_payload,
                     "clarification_answer": clarification,
                     "user_id": user_id,
                     "permission_context": permission_context,
+                    "clarification_source_envelope": (
+                        _build_clarification_source_envelope(
+                            source_run_id=run_id,
+                            source_thread_id=thread_id,
+                            source_topic_id=turn.topic_id or "",
+                            source_owner_id=thread.owner_id,
+                            question=user_message,
+                            analysis_context=analysis_context,
+                            clarification=clarification_payload or {},
+                        )
+                    ),
                 }
                 self.store.upsert_run(
                     run_id,
@@ -196,13 +218,24 @@ class ConversationAgentCore:
         request["context_manifest"] = context_manifest
         request["reuse_decisions"] = [decision.to_dict() for decision in turn.reuse_decisions]
         resume_context = request.get("clarification_resume_context") or {}
-        original_question = str(resume_context.get("question") or "")
+        original_question = ""
+        if resume_context:
+            raw_original_question = resume_context.get("question")
+            if (
+                not isinstance(raw_original_question, str)
+                or not raw_original_question
+                or raw_original_question != raw_original_question.strip()
+            ):
+                raise ConversationOrchestrationError(
+                    "clarification_source_envelope_invalid"
+                )
+            original_question = raw_original_question
         request.update(
             {
                 "run_id": run_id,
-                "question": original_question or user_message,
+                "question": original_question if resume_context else user_message,
                 "clarification_user_message": (
-                    user_message if original_question else ""
+                    user_message if resume_context else ""
                 ),
                 "role": role,
                 "runtime_permission_scope": runtime_permission_scope,
@@ -211,7 +244,7 @@ class ConversationAgentCore:
                 "artifact_root": artifact_root,
                 "clarification_answer": clarification,
                 "prior_analysis_assets": tuple(turn.run_request.prior_analysis_assets or ()),
-                "analysis_context": dict(analysis_context),
+                "analysis_context": dict(turn.run_request.analysis_context or {}),
             }
         )
         if clarification_choice:
@@ -347,6 +380,20 @@ class ConversationAgentCore:
         action_kind = str(selected_action.get("action_kind") or "")
         if action_kind in {"wait_for_source", "user_redirect"}:
             prior_clarification = dict(resume_context.get("clarification") or {})
+            clarification_source_envelope = _build_clarification_source_envelope(
+                source_run_id=run_id,
+                source_thread_id=thread_id,
+                source_topic_id=turn.topic_id or "",
+                source_owner_id=thread.owner_id,
+                question=str(request.get("question") or ""),
+                analysis_context=request.get("analysis_context") or {},
+                accepted_graph=resume_context.get("accepted_graph") or (),
+                analysis_contract=resume_context.get("analysis_contract") or {},
+                analysis_route=resume_context.get("analysis_route") or {},
+                original_intent=resume_context.get("original_intent") or {},
+                material_slots=resume_context.get("material_slots") or {},
+                clarification=prior_clarification,
+            )
             if action_kind == "wait_for_source":
                 questions = tuple(prior_clarification.get("questions") or ())
                 first_question = next(
@@ -394,6 +441,9 @@ class ConversationAgentCore:
                     **_persistable_request(request),
                     "clarification": prior_clarification,
                     "selected_query_gap_action": dict(selected_action),
+                    "clarification_source_envelope": (
+                        clarification_source_envelope
+                    ),
                 },
             )
             return {
@@ -604,6 +654,22 @@ class ConversationAgentCore:
                     options=options,
                 )
             )
+            clarification_source_envelope = _build_clarification_source_envelope(
+                source_run_id=run_id,
+                source_thread_id=thread_id,
+                source_topic_id=turn.topic_id or "",
+                source_owner_id=thread.owner_id,
+                question=str(request.get("question") or ""),
+                analysis_context=request.get("analysis_context") or {},
+                accepted_graph=result.answer_package.get("accepted_graph") or (),
+                analysis_contract=(
+                    result.answer_package.get("analysis_contract") or {}
+                ),
+                analysis_route=result.answer_package.get("analysis_route") or {},
+                original_intent=result.answer_package.get("original_intent") or {},
+                material_slots=result.answer_package.get("material_slots") or {},
+                clarification=clarification_payload,
+            )
             self.store.upsert_run(
                 run_id,
                 thread_id=thread_id,
@@ -629,6 +695,9 @@ class ConversationAgentCore:
                     ),
                     "material_authority": material_authority,
                     "clarification": clarification_payload,
+                    "clarification_source_envelope": (
+                        clarification_source_envelope
+                    ),
                 },
             )
             return {
@@ -800,6 +869,8 @@ class ConversationAgentCore:
             and evidence.get("binding_manifest_ref")
         )
         persisted_context_manifest = None
+        records: dict[str, Any] | None = None
+        analysis_assets: tuple[dict[str, Any], ...] = ()
         result_candidate_records: Mapping[str, Any] | None = None
         completed_material_authority = getattr(
             result,
@@ -881,30 +952,39 @@ class ConversationAgentCore:
                     persisted_context_manifest = dict(
                         contexts_by_ref[next(iter(context_refs))]
                     )
-                self.store.save_analysis_runtime_records(run_id=run_id, **records)
-                package["verified_claims"] = list(verified_claims)
-                package.setdefault("admin_audit", {})[
-                    "analysis_runtime_persistence"
-                ] = {
-                    "status": "persisted",
-                    "analysis_contract_ref": str(
-                        records.get("analysis_contract", {}).get(
-                            "analysis_contract_id"
-                        )
-                        or ""
-                    ),
-                    "verified_claim_refs": [
-                        str(item.get("claim_ref") or "")
-                        for item in records.get("verified_claims") or ()
-                    ],
-                }
+                package = reproject_answer_package_from_persisted_authority(
+                    package,
+                    persistence_records=records,
+                )
                 if result.artifact_path and not synchronize_existing_artifact(
                     package,
                     result.artifact_path,
                 ):
-                    raise ValueError("analysis_runtime_artifact_sync_failed")
+                    raise EvidenceIntegrityError(
+                        "analysis_runtime_artifact_sync_failed"
+                    )
+
+            context_manifest = (
+                persisted_context_manifest
+                or _manifest_with_current_run_evidence(
+                    context_manifest,
+                    package,
+                    role,
+                )
+            )
+            if turn.topic_id and hasattr(self.store, "save_analysis_assets"):
+                analysis_assets = build_analysis_assets(
+                    package,
+                    evidence_resolver=self.evidence_resolver,
+                    rows_loader=self.rows_loader,
+                    runtime_registry=self.runtime_registry,
+                    release_resolver=self.release_resolver,
+                )
+            if records is not None:
+                self.store.save_analysis_runtime_records(run_id=run_id, **records)
                 result_candidate_records = records
         except Exception as exc:
+            failure_subreason = _safe_completed_authority_subreason(exc)
             _record_workflow_failure_llm_audits(
                 self.store,
                 thread_id=thread_id,
@@ -921,6 +1001,8 @@ class ConversationAgentCore:
                 request={
                     **_persistable_request(request),
                     "failure_reason": "analysis_runtime_persistence_failed",
+                    "failure_subreason": failure_subreason,
+                    "artifact_path": result.artifact_path,
                 },
             )
             self.store.add_audit_event(
@@ -932,6 +1014,8 @@ class ConversationAgentCore:
                 payload={
                     "reason": str(exc),
                     "error_type": type(exc).__name__,
+                    "failure_subreason": failure_subreason,
+                    "artifact_path": result.artifact_path,
                 },
             )
             return {
@@ -941,28 +1025,19 @@ class ConversationAgentCore:
                 "topic_id": turn.topic_id,
                 "intent": turn.turn_intent.intent,
                 "topic_relation": turn.topic_relation,
+                "artifact_path": result.artifact_path,
                 "context_manifest": context_manifest,
                 "failure_reason": "analysis_runtime_persistence_failed",
+                "failure_subreason": failure_subreason,
                 "llm_calls": list(workflow_llm_calls),
             }
-        context_manifest = persisted_context_manifest or _manifest_with_current_run_evidence(
-            context_manifest,
-            package,
-            role,
-        )
         self.store.record_context_manifest(context_manifest)
         self.store.record_answer_package(run_id, package)
         if turn.topic_id and hasattr(self.store, "save_analysis_assets"):
             self.store.save_analysis_assets(
                 thread_id,
                 turn.topic_id,
-                build_analysis_assets(
-                    package,
-                    evidence_resolver=self.evidence_resolver,
-                    rows_loader=self.rows_loader,
-                    runtime_registry=self.runtime_registry,
-                    release_resolver=self.release_resolver,
-                ),
+                analysis_assets,
             )
         try:
             if isinstance(completed_material_authority, Mapping):
@@ -983,23 +1058,41 @@ class ConversationAgentCore:
                     request=_persistable_request(request),
                 )
         except Exception as exc:
-            return _completed_material_authority_failure(
-                store=self.store,
-                failure_reason=(
-                    "completed_material_authority_finalization_failed"
-                ),
-                exc=exc,
-                run_id=run_id,
-                thread_id=thread_id,
-                turn_id=turn.turn_id,
-                topic_id=turn.topic_id or "",
-                request=request,
-                artifact_path=result.artifact_path,
-                context_manifest=context_manifest,
-                intent=turn.turn_intent.intent,
-                topic_relation=turn.topic_relation,
-                llm_calls=workflow_llm_calls,
-            )
+            if isinstance(completed_material_authority, Mapping):
+                recovered_completion = _recover_completed_material_authority(
+                    store=self.store,
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    topic_id=turn.topic_id or "",
+                    expected_material_authority=completed_material_authority,
+                )
+            else:
+                recovered_completion = _recover_generic_completion(
+                    store=self.store,
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    turn_id=turn.turn_id,
+                    topic_id=turn.topic_id or "",
+                    expected_request=request,
+                )
+            if not recovered_completion:
+                return _completed_material_authority_failure(
+                    store=self.store,
+                    failure_reason=(
+                        "completed_material_authority_finalization_failed"
+                    ),
+                    exc=exc,
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    turn_id=turn.turn_id,
+                    topic_id=turn.topic_id or "",
+                    request=request,
+                    artifact_path=result.artifact_path,
+                    context_manifest=context_manifest,
+                    intent=turn.turn_intent.intent,
+                    topic_relation=turn.topic_relation,
+                    llm_calls=workflow_llm_calls,
+                )
         followup_index_failure: dict[str, str] | None = None
         if result_candidate_records is not None:
             try:
@@ -1158,19 +1251,23 @@ def _completed_material_authority_failure(
         run_id=run_id,
         llm_calls=llm_calls,
     )
-    store.upsert_run(
-        run_id,
-        thread_id=thread_id,
-        turn_id=turn_id,
-        topic_id=topic_id,
-        status="failed",
-        request={
-            **_persistable_request(request),
-            "failure_reason": failure_reason,
-            "failure_subreason": failure_subreason,
-            "artifact_path": artifact_path,
-        },
-    )
+    try:
+        store.upsert_run(
+            run_id,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            topic_id=topic_id,
+            status="failed",
+            request={
+                **_persistable_request(request),
+                "failure_reason": failure_reason,
+                "failure_subreason": failure_subreason,
+                "artifact_path": artifact_path,
+            },
+        )
+    except EvidenceIntegrityError as transition_exc:
+        if str(transition_exc) != "analysis_run_status_transition_conflict":
+            raise
     store.add_audit_event(
         failure_reason,
         thread_id=thread_id,
@@ -1199,6 +1296,54 @@ def _completed_material_authority_failure(
     }
 
 
+def _recover_completed_material_authority(
+    *,
+    store: Any,
+    run_id: str,
+    thread_id: str,
+    topic_id: str,
+    expected_material_authority: Mapping[str, Any],
+) -> bool:
+    try:
+        store.recover_after_write_failure()
+        authority = store.resolve_completed_material_authority(
+            source_run_id=run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+        )
+    except Exception:
+        return False
+    return canonical_value(authority.get("material_authority") or {}) == (
+        canonical_value(expected_material_authority)
+    )
+
+
+def _recover_generic_completion(
+    *,
+    store: Any,
+    run_id: str,
+    thread_id: str,
+    turn_id: str,
+    topic_id: str,
+    expected_request: Mapping[str, Any],
+) -> bool:
+    try:
+        store.recover_after_write_failure()
+        state = store.get_run_state(run_id)
+    except Exception:
+        return False
+    if not isinstance(state, Mapping):
+        return False
+    return (
+        str(state.get("status") or "") == "completed"
+        and str(state.get("thread_id") or "") == thread_id
+        and str(state.get("turn_id") or "") == turn_id
+        and str(state.get("topic_id") or "") == topic_id
+        and canonical_value(state.get("request") or {})
+        == canonical_value(_persistable_request(dict(expected_request)))
+    )
+
+
 def _safe_completed_authority_subreason(exc: Exception) -> str:
     if isinstance(exc, EvidenceIntegrityError):
         reason = str(exc).strip()
@@ -1208,12 +1353,17 @@ def _safe_completed_authority_subreason(exc: Exception) -> str:
 
 
 def _conversation_llm_from_env() -> Any:
-    try:
-        from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
+    from bi_agent.runtime.llm_client import (
+        LLMConfigurationError,
+        OpenAICompatibleLLMClient,
+    )
 
+    try:
         return OpenAICompatibleLLMClient.from_env()
-    except Exception:
-        return None
+    except LLMConfigurationError:
+        raise
+    except Exception as exc:
+        raise LLMConfigurationError("llm_client_initialization_failed") from exc
 
 
 def _validated_analysis_context(
@@ -1598,6 +1748,46 @@ def _authority_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
     return {}
+
+
+def _build_clarification_source_envelope(
+    *,
+    source_run_id: str,
+    source_thread_id: str,
+    source_topic_id: str,
+    source_owner_id: str,
+    question: str,
+    analysis_context: Mapping[str, Any],
+    accepted_graph: Any = (),
+    analysis_contract: Mapping[str, Any] | None = None,
+    analysis_route: Mapping[str, Any] | None = None,
+    original_intent: Mapping[str, Any] | None = None,
+    material_slots: Mapping[str, Any] | None = None,
+    clarification: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(question, str) or not question.strip():
+        raise ConversationOrchestrationError(
+            "clarification_source_envelope_invalid"
+        )
+    normalized_question = question.strip()
+    envelope = {
+        "schema_version": "clarification-source-envelope.v1",
+        "source_run_id": source_run_id,
+        "source_thread_id": source_thread_id,
+        "source_topic_id": source_topic_id,
+        "source_owner_id": source_owner_id,
+        "question": normalized_question,
+        "analysis_context": dict(analysis_context),
+        "source_material": {
+            "accepted_graph": list(accepted_graph or ()),
+            "analysis_contract": dict(analysis_contract or {}),
+            "analysis_route": dict(analysis_route or {}),
+            "original_intent": dict(original_intent or {}),
+            "material_slots": dict(material_slots or {}),
+        },
+        "clarification": dict(clarification or {}),
+    }
+    return {**envelope, "source_digest": canonical_digest(envelope)}
 
 
 def _persistable_request(request: dict[str, Any]) -> dict[str, Any]:

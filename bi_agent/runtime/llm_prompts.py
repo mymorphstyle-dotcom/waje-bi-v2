@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 from bi_agent.conversation.models import CLARIFICATION_ESCAPE_OPTION
 
 
-PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v50"
+PROMPT_VERSION = "phase4.agent_workflow.2026-07-14.v53"
 TRACE_DISPLAY_KEYS = ("display_summary",)
 CLARIFICATION_PROMPT_TASKS = frozenset(
     {"boundary_decision", "clarification_question", "query_gap_clarification"}
@@ -368,8 +368,12 @@ def _task_rules(task: str) -> str:
             "never translate or paraphrase the reviewed clarification escape option. "
             "clarification_questions must be an array containing that one question; the "
             "question object must contain question and options, and options must be an "
-            "array of strings. recommended_assumption must be an object containing only "
-            "option, copied exactly from one business option. For clear, "
+            "array of strings. For needs_question, recommended_assumption must be an object "
+            "containing only option, copied exactly from one business option. For "
+            "low_risk_assumption, recommended_assumption must be an object containing only "
+            "option whose value is one non-empty Simplified Chinese business assumption. "
+            "For clear or cannot_answer, return recommended_assumption as {}. Never return "
+            "recommended_assumption as null, a list, or a string. For clear, "
             "low_risk_assumption, or cannot_answer, clarification_questions must be []. "
             "For Phase 4 pattern_explanation, supplied pattern_params and supplied "
             "time_window are already bound business inputs. If a standard capability "
@@ -396,6 +400,9 @@ def _task_rules(task: str) -> str:
             "pattern_params, target_claim, baseline_candidates, mid_phase, boundary_status, "
             "phase4_policy, or claim strength. Use business wording instead: 全样本, "
             "已绑定的窗口规则, 月中窗口, 结论强度, 时间口径, and 业务边界. "
+            "Business options must not contain machine ids such as metric ids, dataset ids, "
+            "capability ids, question-family ids, or enum tokens; use their Chinese business "
+            "labels while preserving only the reviewed clarification escape option verbatim. "
             "Avoid awkward mistranslations such as 对账单强度; say 结论强度 or "
             "稳定性要求 when discussing how strong the answer must be."
         ),
@@ -409,11 +416,17 @@ def _task_rules(task: str) -> str:
             "intent values needed by downstream planning, including question_family, "
             "target_metric, pattern_family, scope, time_window, target_claim, baseline, "
             "target, and pattern_params when present. Do not translate or rewrite machine "
-            "ids inside machine_intent. status_message and accepted_assumptions are shown "
+            "ids inside machine_intent. accepted_assumptions must be a flat JSON array of "
+            "zero or more non-empty Simplified Chinese business strings; use [] when no "
+            "assumption was accepted, and return never null, an object, or a nested array. "
+            "Machine ids belong only inside confirmed_intent.machine_intent and must not be "
+            "copied into accepted_assumptions. status_message and accepted_assumptions are shown "
             "to business users; write them in natural Simplified Chinese and do not expose "
             "internal field names, enum tokens, raw ids, p-values, confidence levels, "
-            "significance wording, min_periods, or English capability terms. Use business "
-            "phrases such as 全样本、窗口规则、付费金额、重要性和稳定性规则、业务理解已确认."
+            "significance wording, min_periods, or English capability terms. Always derive "
+            "business wording from the supplied structured fields and reviewed business "
+            "labels. Do not copy a fixed sample sentence or force a preselected metric, "
+            "scope, window, or conclusion phrase."
         ),
         "clarification_question": (
             "Generate the user-facing clarification package from the boundary decision. "
@@ -460,6 +473,13 @@ def _task_rules(task: str) -> str:
             "direct comparison path. Do not mention p-values, "
             "confidence levels, significance, or invented numeric thresholds in route "
             "summaries; say product default importance and stability rules instead. "
+            "Machine/narrative separation is mandatory. Put capability ids only in requested_nodes "
+            "and, when expected_evidence is an object, its machine keys. Put metric ids, dataset ids, "
+            "question-family ids, claim type ids, diagnostic ids, baseline ids, and other enum ids "
+            "only in their typed machine fields. In route_summary, decision_summary, and "
+            "display_summary, refer to capabilities with their supplied business_name and describe "
+            "metrics and datasets with concise Simplified Chinese business labels; never repeat any "
+            "capability id or other English machine token in those narrative fields. "
             "Return analysis_requirements as a typed JSON object with target_metrics, "
             "requested_components, requested_dimensions, baselines, context_sources, "
             "dataset_requirements, diagnostic_tags, "

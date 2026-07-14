@@ -19,6 +19,10 @@ from bi_agent.conversation.models import (
     TopicState,
     validate_result_reuse_candidate,
 )
+from bi_agent.conversation.run_status import (
+    validate_run_status_transition,
+    validate_run_status_value,
+)
 from bi_agent.runtime.analysis_assets import merge_analysis_assets
 from bi_agent.runtime.dataset_catalog import (
     DatasetReleaseAuthorityRecord,
@@ -137,19 +141,50 @@ class InMemoryConversationStore:
         status: str,
         request: dict | None = None,
     ) -> None:
-        self.runs[run_id] = {
+        validate_run_status_value(status)
+        staged_runs = dict(self.runs)
+        staged_events = deepcopy(self._audit_events)
+        existing = staged_runs.get(run_id)
+        if existing:
+            action = validate_run_status_transition(
+                current_status=str(existing.get("status") or ""),
+                next_status=status,
+                current_thread_id=str(existing.get("thread_id") or ""),
+                current_turn_id=str(existing.get("turn_id") or ""),
+                current_topic_id=str(existing.get("topic_id") or ""),
+                next_thread_id=thread_id,
+                next_turn_id=turn_id,
+                next_topic_id=topic_id,
+                current_request=existing.get("request") or {},
+                next_request=request or {},
+            )
+            if action == "replay":
+                return
+        staged_runs[run_id] = {
             "run_id": run_id,
             "thread_id": thread_id,
             "turn_id": turn_id,
             "topic_id": topic_id,
             "status": status,
-            "request": request or {},
-            "answer_package": self.runs.get(run_id, {}).get("answer_package"),
-            "checkpoint_events": self.runs.get(run_id, {}).get(
+            "request": deepcopy(request or {}),
+            "answer_package": staged_runs.get(run_id, {}).get("answer_package"),
+            "checkpoint_events": staged_runs.get(run_id, {}).get(
                 "checkpoint_events", []
             ),
         }
-        self.add_audit_event("run_status_changed", thread_id=thread_id, topic_id=topic_id, run_id=run_id)
+        self._append_staged_audit_event(
+            staged_events,
+            {
+                "event_type": "run_status_changed",
+                "thread_id": thread_id,
+                "topic_id": topic_id,
+                "run_id": run_id,
+                "ref": "",
+                "payload": {},
+            },
+        )
+        self.runs = staged_runs
+        self._audit_events = staged_events
 
     def get_run_request(self, run_id: str) -> dict[str, Any]:
         run = self.runs.get(run_id) or {}
@@ -157,6 +192,21 @@ class InMemoryConversationStore:
         request["thread_id"] = str(run.get("thread_id") or "")
         request["topic_id"] = str(run.get("topic_id") or "")
         return request
+
+    def get_run_state(self, run_id: str) -> dict[str, Any] | None:
+        run = self.runs.get(run_id)
+        if not isinstance(run, Mapping):
+            return None
+        return deepcopy(
+            {
+                "run_id": str(run.get("run_id") or ""),
+                "thread_id": str(run.get("thread_id") or ""),
+                "turn_id": str(run.get("turn_id") or ""),
+                "topic_id": str(run.get("topic_id") or ""),
+                "status": str(run.get("status") or ""),
+                "request": run.get("request") or {},
+            }
+        )
 
     def record_clarification_outcome(
         self,
@@ -542,6 +592,7 @@ class InMemoryConversationStore:
             verified_claims=verified_claims,
             claim_links=claim_links,
             repair_attempts=repair_attempts,
+            result_candidate_resolver=self.resolve_result_candidate_authority,
         )
         frozen = canonical_value(bundle)
         digest = canonical_digest(frozen)
@@ -894,10 +945,14 @@ class InMemoryConversationStore:
         result_ref: str,
         topic_id: str,
     ) -> dict[str, Any]:
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
         from bi_agent.runtime.evidence_authority import (
             EvidenceIntegrityError,
+            canonical_digest,
             canonical_value,
+        )
+        from bi_agent.runtime.runtime_persistence import (
+            result_candidate_publication_authority_projection,
+            validate_result_candidate_publication_authority,
         )
 
         matches = tuple(
@@ -919,6 +974,22 @@ class InMemoryConversationStore:
             if isinstance(publication, Mapping)
             else None
         )
+        publication_digest = (
+            str(publication.get("digest") or "")
+            if isinstance(publication, Mapping)
+            else ""
+        )
+        if (
+            not isinstance(publication_payload, Mapping)
+            or publication_digest != canonical_digest(publication_payload)
+        ):
+            raise EvidenceIntegrityError(
+                "result_candidate_source_publication_mismatch:digest"
+            )
+        validate_result_candidate_publication_authority(
+            payload,
+            publication_payload,
+        )
         contract = (
             publication_payload.get("analysis_contract")
             if isinstance(publication_payload, Mapping)
@@ -939,9 +1010,42 @@ class InMemoryConversationStore:
         ):
             raise EvidenceIntegrityError("result_candidate_analysis_contract_mismatch")
         stored_signature = str(contract.get("contract_signature") or "")
+        try:
+            completed_authority = self.resolve_completed_material_authority(
+                source_run_id=source_run_id,
+                thread_id=str(run.get("thread_id") or ""),
+                topic_id=topic_id,
+            )
+        except EvidenceIntegrityError as exc:
+            raise EvidenceIntegrityError(
+                "result_candidate_completed_authority_invalid"
+            ) from exc
+        completed_contract = {
+            **dict(completed_authority.get("analysis_contract") or {}),
+            "contract_signature": str(
+                completed_authority.get("analysis_contract_signature") or ""
+            ),
+        }
+        context_manifest = run.get("request", {}).get("context_manifest", {})
+        contract_versions = (
+            context_manifest.get("contract_versions", {})
+            if isinstance(context_manifest, Mapping)
+            else {}
+        )
         if (
             stored_signature != payload["analysis_contract_signature"]
-            or analysis_contract_signature(contract) != stored_signature
+            or record.result_ref != payload["result_ref"]
+            or record.snapshot_id != payload["runtime_snapshot_id"]
+            or record.contract_version != payload["runtime_contract_version"]
+            or record.permission_scope != payload["permission_scope"]
+            or record.semantic_scope != payload["semantic_scope_signature"]
+            or not isinstance(context_manifest, Mapping)
+            or str(context_manifest.get("snapshot_version") or "")
+            != payload["runtime_snapshot_id"]
+            or not isinstance(contract_versions, Mapping)
+            or str(contract_versions.get("runtime") or "")
+            != payload["runtime_contract_version"]
+            or canonical_value(completed_contract) != canonical_value(contract)
         ):
             raise EvidenceIntegrityError("result_candidate_analysis_contract_mismatch")
         return canonical_value(
@@ -954,6 +1058,12 @@ class InMemoryConversationStore:
                 "source_run_request": dict(run.get("request") or {}),
                 "analysis_contract": dict(contract),
                 "stored_analysis_contract_signature": stored_signature,
+                "cache_authority": (
+                    result_candidate_publication_authority_projection(
+                        payload,
+                        publication_payload,
+                    )
+                ),
             }
         )
 

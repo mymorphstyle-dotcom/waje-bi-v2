@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date, timedelta
-from types import SimpleNamespace
+import json
+from types import MappingProxyType, SimpleNamespace
 import unittest
 
 from bi_agent.conversation.store import InMemoryConversationStore
-from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+from bi_agent.runtime.analysis_contracts import (
+    analysis_contract_signature,
+    query_contract_signature,
+)
 from bi_agent.runtime.analysis_runtime import (
     AnalysisRuntime,
     AnalysisRuntimeRequest,
     AnswerPackageBuildContext,
+    _claim_physical_reuse_decisions,
 )
 from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult
 from bi_agent.runtime.claim_provenance import (
@@ -76,6 +83,32 @@ class _CountingRowsRuntime:
     bounded_context = aggregate
 
 
+class _MultiQueryRowsRuntime(_CountingRowsRuntime):
+    def aggregate(self, sql, query_id, **kwargs):
+        result = super().aggregate(sql, query_id, **kwargs)
+        if ":2:" not in query_id:
+            return result
+        rows = []
+        for row in result.rows:
+            enriched = dict(row)
+            enriched.update(
+                {
+                    "calendar_week": enriched["observation_key"][:7],
+                    "weekday": "monday",
+                    "month_phase": "month_start",
+                }
+            )
+            rows.append(enriched)
+        return ClickHouseQueryResult(
+            ok=result.ok,
+            query_id=result.query_id,
+            rows=tuple(rows),
+            execution_attempt_ref=result.execution_attempt_ref,
+        )
+
+    bounded_context = aggregate
+
+
 class _CompositeReleaseResolver:
     def __init__(self, *resolvers) -> None:
         self._records = {
@@ -97,6 +130,20 @@ def _proposal(baselines=("previous_day", "rolling_7_day_baseline")):
         "scope": {"type": "full_sample"},
         "target_semantic": "yesterday",
         "baselines": list(baselines),
+    }
+
+
+def _multi_query_proposal():
+    return {
+        **_proposal(),
+        "question_families": [
+            "custom_baseline_comparison",
+            "recurring_pattern_analysis",
+        ],
+        "claim_intents": [
+            "comparative_change",
+            "recurring_pattern_existence",
+        ],
     }
 
 
@@ -140,8 +187,23 @@ def _source_request(run_id, topic_id, baselines=("previous_day", "rolling_7_day_
     )
 
 
-def _publish_source(runtime, store, topic_id, result, candidate):
+def _publish_source(
+    runtime,
+    store,
+    topic_id,
+    result,
+    candidate,
+    *,
+    proposal=None,
+    accepted_graph=("compare_periods",),
+):
+    from bi_agent.conversation.clarification_authority import (
+        build_execution_material,
+        build_material_authority,
+    )
+
     analysis_signature = analysis_contract_signature(result.analysis_contract)
+    source_run_id = result.analysis_contract.analysis_contract_id.split(":")[1]
     source_request_payload = {
         "context_manifest": {
             "snapshot_version": "2026H1",
@@ -149,17 +211,17 @@ def _publish_source(runtime, store, topic_id, result, candidate):
         }
     }
     store.upsert_run(
-        result.analysis_contract.analysis_contract_id.split(":")[1],
+        source_run_id,
         thread_id="thread-reuse",
         topic_id=topic_id,
-        status="completed",
+        status="running_workflow",
         request=source_request_payload,
     )
     bundle = runtime.build_persistence_bundle(
         result,
         answer_package={"status": "draft", "sections": []},
         request={
-            "run_id": result.analysis_contract.analysis_contract_id.split(":")[1],
+            "run_id": source_run_id,
             "thread_id": "thread-reuse",
             "topic_id": topic_id,
             "permission_context": {"role": "analyst"},
@@ -168,23 +230,80 @@ def _publish_source(runtime, store, topic_id, result, candidate):
         artifact_path="artifacts/phase7/source-reuse/answer_package.json",
     )
     store.save_analysis_runtime_records(
-        run_id=result.analysis_contract.analysis_contract_id.split(":")[1],
+        run_id=source_run_id,
         **bundle,
     )
-    source_result = result.query_results[0]
-    store.add_result_ref(
-        topic_id,
-        result_ref=source_result.result_ref,
-        snapshot_id="2026H1",
-        contract_version="contracts-v1",
-        permission_scope="analyst",
-        semantic_scope=f"analysis-contract:sha256:{analysis_signature}",
-        payload=candidate,
+    contract = result.analysis_contract
+    metric_ids = tuple(
+        dict.fromkeys(binding.metric_id for binding in contract.metric_bindings)
     )
+    families = tuple(contract.question_families)
+    scope_payload = canonical_value(contract.scope)
+    scope = str(scope_payload.get("type") or "full_sample")
+    proposal = dict(proposal or _proposal())
+    execution_material = build_execution_material(
+        proposal=proposal,
+        accepted_graph=accepted_graph,
+        as_of=contract.as_of,
+        permission_scope=contract.permission_scope,
+        run_mode="production",
+        runtime_contract_version=runtime.registry.contract_version,
+        runtime_registry_digest=runtime.registry.source_payload_digest,
+        analysis_contract=contract,
+        query_contracts=result.query_contracts,
+        capability_execution_plans=result.capability_plans,
+    )
+    material_authority = build_material_authority(
+        source_run_id=source_run_id,
+        thread_id="thread-reuse",
+        topic_id=topic_id,
+        original_intent={
+            "question_family": families[0],
+            "question_families": list(families),
+            "primary_question_family": families[0],
+            "secondary_question_families": list(families[1:]),
+            "target_metric": metric_ids[0],
+            "requested_components": [],
+            "requested_dimensions": [],
+            "baseline_candidates": list(proposal["baselines"]),
+            "context_sources": [],
+            "claim_intents": list(contract.claim_intents),
+            "scope": scope,
+        },
+        material_slots={
+            "target_metrics": list(metric_ids),
+            "requested_components": [],
+            "requested_dimensions": [],
+            "baselines": list(proposal["baselines"]),
+            "context_sources": [],
+            "claim_intents": list(contract.claim_intents),
+            "diagnostic_tags": [],
+            "scope": scope,
+        },
+        runtime_material=execution_material,
+    )
+    store.finalize_completed_material_authority(
+        run_id=source_run_id,
+        thread_id="thread-reuse",
+        topic_id=topic_id,
+        request=source_request_payload,
+        material_authority=material_authority,
+    )
+    candidates = (candidate,) if isinstance(candidate, Mapping) else tuple(candidate)
+    for item in candidates:
+        store.add_result_ref(
+            topic_id,
+            result_ref=item["result_ref"],
+            snapshot_id="2026H1",
+            contract_version="contracts-v1",
+            permission_scope="analyst",
+            semantic_scope=f"analysis-contract:sha256:{analysis_signature}",
+            payload=item,
+        )
 
 
-def _candidate(runtime, result, signed_snapshots):
-    source_result = result.query_results[0]
+def _candidate(runtime, result, signed_snapshots, *, result_index=0):
+    source_result = result.query_results[result_index]
     query = runtime.evidence_resolver.resolve_query_execution(source_result.result_ref)
     rows = runtime.evidence_resolver.resolve_rows(query.rows_ref)
     completeness = runtime.evidence_authority.resolve_latest_completeness(
@@ -280,8 +399,8 @@ def _physical_claim_package(result, text="复用后的新结论"):
     }
 
 
-def _resigned_physical_decision(decision, **changes):
-    payload = {**decision, **changes}
+def _resigned_physical_decision(record, **changes):
+    payload = {**record, **changes}
     return build_physical_query_reuse_decision_record(
         run_id=payload["run_id"],
         topic_id=payload["topic_id"],
@@ -435,6 +554,202 @@ def _bundle_with_resigned_query_provider_stats(bundle, **provider_changes):
     )
 
 
+def _bundle_with_current_completeness_state(
+    bundle,
+    *,
+    completeness_status,
+    analysis_readiness,
+):
+    from tests.phase4.test_authoritative_query_chain import _resign_binding
+
+    report = bundle["completeness_records"][0]
+    report_payload = dict(report.report_payload)
+    report_payload.update(
+        {
+            "completeness_status": completeness_status,
+            "analysis_readiness": analysis_readiness,
+        }
+    )
+    report_payload = canonical_value(report_payload)
+    report_digest = canonical_digest(report_payload)
+    changed_report = replace(
+        report,
+        record_ref=(
+            f"completeness-record:{report.report_ref}:{report_digest}"
+        ),
+        report_digest=report_digest,
+        report_payload=report_payload,
+    )
+    binding_ref_changes = {}
+    changed_bindings = []
+    for binding in bundle["capability_binding_records"]:
+        if report.result_ref in binding.result_refs:
+            prefix = ""
+        elif report.result_ref in binding.validation_result_refs:
+            prefix = "validation_"
+        else:
+            changed_bindings.append(binding)
+            continue
+        refs_field = f"{prefix}completeness_record_refs"
+        digests_field = f"{prefix}completeness_record_digests"
+        refs = tuple(
+            changed_report.record_ref if ref == report.record_ref else ref
+            for ref in getattr(binding, refs_field)
+        )
+        digests = tuple(
+            changed_report.report_digest if ref == report.record_ref else digest
+            for ref, digest in zip(
+                getattr(binding, refs_field),
+                getattr(binding, digests_field),
+            )
+        )
+        binding_payload = dict(binding.binding_payload)
+        binding_payload[refs_field] = refs
+        binding_payload[digests_field] = digests
+        changed = _resign_binding(
+            binding,
+            **{
+                refs_field: refs,
+                digests_field: digests,
+                "binding_payload": binding_payload,
+            },
+        )
+        binding_ref_changes[binding.record_ref] = changed.record_ref
+        changed_bindings.append(changed)
+    evidence = tuple(
+        {
+            **manifest,
+            "binding_record_ref": binding_ref_changes.get(
+                manifest["binding_record_ref"],
+                manifest["binding_record_ref"],
+            ),
+            "completeness_record_refs": [
+                changed_report.record_ref
+                if ref == report.record_ref
+                else ref
+                for ref in manifest["completeness_record_refs"]
+            ],
+        }
+        for manifest in bundle["evidence_manifests"]
+    )
+    decision = _resigned_physical_decision(
+        bundle["trusted_provenance_records"][0]["reuse_decisions"][0],
+        completeness_record_refs=(changed_report.record_ref,),
+    )
+    return _bundle_with_physical_decision(
+        {
+            **bundle,
+            "completeness_records": (changed_report,),
+            "capability_binding_records": tuple(changed_bindings),
+            "evidence_manifests": evidence,
+        },
+        decision,
+    )
+
+
+def _bundle_with_current_snapshot_axis(bundle, **snapshot_changes):
+    from bi_agent.runtime.evidence_authority import snapshot_authority_record
+    from tests.phase4.test_authoritative_query_chain import _resign_binding
+
+    snapshot_record = bundle["snapshot_records"][0]
+    changed_snapshot_record = snapshot_authority_record(
+        replace(snapshot_record.snapshot, **snapshot_changes)
+    )
+    query = bundle["query_execution_records"][0]
+    snapshot_refs = tuple(query.source_snapshot_refs)
+    record_refs = tuple(
+        changed_snapshot_record.record_ref
+        if ref == snapshot_record.snapshot_ref
+        else record_ref
+        for ref, record_ref in zip(
+            snapshot_refs,
+            query.source_snapshot_record_refs,
+        )
+    )
+    record_digests = tuple(
+        changed_snapshot_record.record_digest
+        if ref == snapshot_record.snapshot_ref
+        else record_digest
+        for ref, record_digest in zip(
+            snapshot_refs,
+            query.source_snapshot_record_digests,
+        )
+    )
+    record_payload = dict(query.record_payload)
+    record_payload["source_snapshot_record_refs"] = record_refs
+    record_payload["source_snapshot_record_digests"] = record_digests
+    record_payload = canonical_value(record_payload)
+    record_digest = canonical_digest(record_payload)
+    changed_query = replace(
+        query,
+        record_ref=f"query-execution:{query.result_ref}:{record_digest}",
+        record_digest=record_digest,
+        record_payload=record_payload,
+        source_snapshot_record_refs=record_refs,
+        source_snapshot_record_digests=record_digests,
+    )
+    binding_ref_changes = {}
+    changed_bindings = []
+    for binding in bundle["capability_binding_records"]:
+        if query.result_ref in binding.result_refs:
+            prefix = ""
+        elif query.result_ref in binding.validation_result_refs:
+            prefix = "validation_"
+        else:
+            changed_bindings.append(binding)
+            continue
+        refs_field = f"{prefix}query_execution_record_refs"
+        digests_field = f"{prefix}query_execution_record_digests"
+        refs = tuple(
+            changed_query.record_ref if ref == query.record_ref else ref
+            for ref in getattr(binding, refs_field)
+        )
+        digests = tuple(
+            changed_query.record_digest if ref == query.record_ref else digest
+            for ref, digest in zip(
+                getattr(binding, refs_field),
+                getattr(binding, digests_field),
+            )
+        )
+        binding_payload = dict(binding.binding_payload)
+        binding_payload[refs_field] = refs
+        binding_payload[digests_field] = digests
+        changed = _resign_binding(
+            binding,
+            **{
+                refs_field: refs,
+                digests_field: digests,
+                "binding_payload": binding_payload,
+            },
+        )
+        binding_ref_changes[binding.record_ref] = changed.record_ref
+        changed_bindings.append(changed)
+    evidence = tuple(
+        {
+            **manifest,
+            "binding_record_ref": binding_ref_changes.get(
+                manifest["binding_record_ref"],
+                manifest["binding_record_ref"],
+            ),
+        }
+        for manifest in bundle["evidence_manifests"]
+    )
+    decision = _resigned_physical_decision(
+        bundle["trusted_provenance_records"][0]["reuse_decisions"][0],
+        query_execution_record_ref=changed_query.record_ref,
+    )
+    return _bundle_with_physical_decision(
+        {
+            **bundle,
+            "query_execution_records": (changed_query,),
+            "snapshot_records": (changed_snapshot_record,),
+            "capability_binding_records": tuple(changed_bindings),
+            "evidence_manifests": evidence,
+        },
+        decision,
+    )
+
+
 def _physical_reuse_bundle_fixture(
     *,
     current_run_id,
@@ -453,7 +768,7 @@ def _physical_reuse_bundle_fixture(
         ),
         publication_mode=publication_mode,
     )
-    return current, request, bundle
+    return runtime, current, request, bundle
 
 
 def _physical_reuse_result_fixture(*, current_run_id):
@@ -486,7 +801,423 @@ def _physical_reuse_result_fixture(*, current_run_id):
     return runtime, current, request
 
 
+def _pg_candidate_authority_row(runtime, decision):
+    from bi_agent.runtime.runtime_publication_index import (
+        runtime_publication_index,
+    )
+
+    authority = runtime.store.resolve_result_candidate_authority(
+        result_ref=decision["source_ref"],
+        topic_id=decision["topic_id"],
+    )
+    record = authority["result_ref_record"]
+    publication = runtime.store.analysis_runtime_records[
+        authority["source_run_id"]
+    ]
+    completion_event = next(
+        event
+        for event in runtime.store.audit_events
+        if event["event_type"] == "completed_material_authority_recorded"
+        and event["run_id"] == authority["source_run_id"]
+    )
+    return {
+        "topic_id": record["topic_id"],
+        "result_ref": record["result_ref"],
+        "snapshot_id": record["snapshot_id"],
+        "contract_version": record["contract_version"],
+        "permission_scope": record["permission_scope"],
+        "semantic_scope": record["semantic_scope"],
+        "result_ref_payload": record["payload"],
+        "source_run_id": authority["source_run_id"],
+        "run_thread_id": authority["run_thread_id"],
+        "run_topic_id": authority["run_topic_id"],
+        "run_status": authority["run_status"],
+        "source_run_request": authority["source_run_request"],
+        "analysis_contract": authority["analysis_contract"],
+        "stored_analysis_contract_signature": authority[
+            "stored_analysis_contract_signature"
+        ],
+        "source_publication_payload": runtime_publication_index(
+            publication["payload"]
+        ),
+        "source_publication_digest": publication["digest"],
+        "authority_record_payload": completion_event["payload"],
+        "authority_record_ref": completion_event["ref"],
+        "authority_event_run_id": completion_event["run_id"],
+        "authority_event_thread_id": completion_event["thread_id"],
+        "authority_event_topic_id": completion_event["topic_id"],
+    }
+
+
+class _NormalizedPgCandidateConnection:
+    def __init__(self, runtime, decision):
+        from tests.phase7.test_conversation_persistence import FakeConnection
+
+        self._delegate = FakeConnection()
+        self.root_row = _pg_candidate_authority_row(runtime, decision)
+        self.source_run_id = decision["source_run_id"]
+        self.publication_bundle = deepcopy(
+            runtime.store.analysis_runtime_records[self.source_run_id]["payload"]
+        )
+        candidate = self.root_row["result_ref_payload"]
+        resolver = runtime.evidence_resolver
+        self.query = resolver.resolve_query_execution_record(
+            candidate["query_execution_record_ref"]
+        )
+        self.rows = resolver.resolve_rows_record(candidate["rows_record_ref"])
+        self.snapshots = {
+            ref: resolver.resolve_snapshot(ref)
+            for ref in candidate["source_snapshot_refs"]
+        }
+        self.completeness = {
+            ref: resolver.resolve_completeness(ref)
+            for ref in candidate["completeness_record_refs"]
+        }
+        self.bindings = {
+            ref: resolver.resolve_capability_binding(ref)
+            for ref in candidate["binding_record_refs"]
+        }
+
+    @property
+    def statements(self):
+        return self._delegate.statements
+
+    @property
+    def commits(self):
+        return self._delegate.commits
+
+    @property
+    def rollbacks(self):
+        return self._delegate.rollbacks
+
+    def execute(self, statement, params=None):
+        from bi_agent.runtime.runtime_persistence import authority_record_payload
+        from bi_agent.runtime.runtime_publication_index import (
+            RUNTIME_PUBLICATION_RECORD_GROUPS,
+            runtime_publication_record_ref,
+        )
+        from tests.phase7.test_analysis_runtime_persistence import (
+            _binding_resolver_row,
+            _completeness_resolver_row,
+            _query_resolver_row,
+            _rows_resolver_row,
+        )
+        from tests.phase7.test_conversation_persistence import FakeCursor
+
+        params = params or {}
+        self._delegate.statements.append((statement, params))
+        if "/* result_candidate_authority */" in statement:
+            return FakeCursor([deepcopy(self.root_row)])
+        if "/* result_candidate_publication_inventory */" in statement:
+            wrapped_kinds = {
+                "query_execution_records": "query_execution",
+                "rows_records": "rows",
+                "snapshot_records": "snapshot",
+                "completeness_records": "completeness",
+                "capability_binding_records": "capability_binding",
+            }
+            inventory = []
+            for group in RUNTIME_PUBLICATION_RECORD_GROUPS:
+                for record in self.publication_bundle[group]:
+                    payload = deepcopy(record)
+                    if group in wrapped_kinds:
+                        payload = {
+                            "kind": wrapped_kinds[group],
+                            "record": payload,
+                        }
+                    inventory.append(
+                        {
+                            "record_group": group,
+                            "record_ref": runtime_publication_record_ref(
+                                group,
+                                record,
+                            ),
+                            "owner_run_ids": [self.source_run_id],
+                            "payload": payload,
+                        }
+                    )
+            same_run_extra = getattr(
+                self,
+                "same_run_extra_inventory",
+                None,
+            )
+            if (
+                same_run_extra is not None
+                and "JOIN waje_runtime.query_repair_attempts record\n"
+                "      ON record.run_id = requested.run_id" in statement
+            ):
+                inventory.append(deepcopy(same_run_extra))
+            return FakeCursor(inventory)
+        if "/* completed_material_authority */" in statement:
+            return FakeCursor(
+                [
+                    {
+                        "analysis_contract_id": self.root_row[
+                            "analysis_contract"
+                        ]["analysis_contract_id"],
+                        "analysis_run_id": self.source_run_id,
+                        "stored_contract_signature": self.root_row[
+                            "stored_analysis_contract_signature"
+                        ],
+                        "contract_payload": self.root_row[
+                            "analysis_contract"
+                        ],
+                        "run_status": self.root_row["run_status"],
+                        "run_thread_id": self.root_row["run_thread_id"],
+                        "run_topic_id": self.root_row["run_topic_id"],
+                        "run_request": self.root_row["source_run_request"],
+                        "authority_record_payload": self.root_row[
+                            "authority_record_payload"
+                        ],
+                        "authority_record_ref": self.root_row[
+                            "authority_record_ref"
+                        ],
+                        "authority_event_run_id": self.root_row[
+                            "authority_event_run_id"
+                        ],
+                        "authority_event_thread_id": self.root_row[
+                            "authority_event_thread_id"
+                        ],
+                        "authority_event_topic_id": self.root_row[
+                            "authority_event_topic_id"
+                        ],
+                    }
+                ]
+            )
+        if "FROM waje_runtime.query_execution_authority q" in statement:
+            row = _query_resolver_row(
+                self.query,
+                run_id=self.source_run_id,
+            )
+            row.update(
+                {
+                    "analysis_payload": json.dumps(
+                        self.root_row["analysis_contract"]
+                    ),
+                    "stored_analysis_signature": self.root_row[
+                        "stored_analysis_contract_signature"
+                    ],
+                    "thread_id": self.root_row["run_thread_id"],
+                    "topic_id": self.root_row["run_topic_id"],
+                }
+            )
+            return FakeCursor([row])
+        if "FROM waje_runtime.rows_metadata_authority r" in statement:
+            return FakeCursor(
+                [_rows_resolver_row(self.rows, run_id=self.source_run_id)]
+            )
+        if "FROM waje_runtime.snapshot_authority s" in statement:
+            record = self.snapshots.get(str(params.get("ref") or ""))
+            if record is None:
+                return FakeCursor([])
+            return FakeCursor(
+                [
+                    {
+                        "record_ref": record.record_ref,
+                        "record_digest": record.record_digest,
+                        "snapshot_ref": record.snapshot_ref,
+                        "payload": json.dumps(
+                            authority_record_payload("snapshot", record)
+                        ),
+                    }
+                ]
+            )
+        if "FROM waje_runtime.query_completeness_reports c" in statement:
+            record = self.completeness.get(str(params.get("ref") or ""))
+            if record is None:
+                return FakeCursor([])
+            row = _completeness_resolver_row(
+                record,
+                self.query,
+                run_id=self.source_run_id,
+            )
+            row.update(
+                {
+                    "analysis_payload": json.dumps(
+                        self.root_row["analysis_contract"]
+                    ),
+                    "stored_analysis_signature": self.root_row[
+                        "stored_analysis_contract_signature"
+                    ],
+                }
+            )
+            return FakeCursor([row])
+        if "FROM waje_runtime.capability_binding_authority b" in statement:
+            record = self.bindings.get(str(params.get("ref") or ""))
+            if record is None:
+                return FakeCursor([])
+            row = _binding_resolver_row(
+                record,
+                run_id=self.source_run_id,
+            )
+            row.update(
+                {
+                    "analysis_payload": json.dumps(
+                        self.root_row["analysis_contract"]
+                    ),
+                    "stored_analysis_signature": self.root_row[
+                        "stored_analysis_contract_signature"
+                    ],
+                }
+            )
+            return FakeCursor([row])
+        self._delegate.statements.pop()
+        return self._delegate.execute(statement, params)
+
+    def commit(self):
+        return self._delegate.commit()
+
+    def rollback(self):
+        return self._delegate.rollback()
+
+
 class AnalysisRuntimeReuseTest(unittest.TestCase):
+    def test_claim_reuse_lineage_only_keeps_claim_result_refs(self):
+        decisions = (
+            {"decision_ref": "reuse:a", "result_ref": "result:a"},
+            {"decision_ref": "reuse:b", "result_ref": "result:b"},
+        )
+        evidence = {
+            "evidence:a": {"result_refs": ["result:a"]},
+            "evidence:b": {"result_refs": ["result:b"]},
+        }
+
+        selected = _claim_physical_reuse_decisions(
+            {"evidence_refs": ["evidence:a"]},
+            evidence_by_ref=evidence,
+            authoritative_reuse_decisions=decisions,
+        )
+
+        self.assertEqual(selected, (decisions[0],))
+
+    def test_claim_scoped_physical_decisions_have_one_global_provenance_owner(self):
+        runtime, _, store, topic_id, signed = _runtime_fixture()
+        provider = _MultiQueryRowsRuntime()
+        runtime.executor.runtime = provider
+        proposal = _multi_query_proposal()
+        accepted_graph = ("compare_periods", "pattern_scan")
+        source = runtime.execute(
+            AnalysisRuntimeRequest.create(
+                run_id="run-multi-claim-source",
+                topic_id=topic_id,
+                proposal=proposal,
+                accepted_graph=accepted_graph,
+                as_of="2026-06-03T12:00:00+01:00",
+                permission_scope="analyst",
+            )
+        )
+        candidates = tuple(
+            _candidate(runtime, source, signed, result_index=index)
+            for index in range(len(source.query_results))
+        )
+        _publish_source(
+            runtime,
+            store,
+            topic_id,
+            source,
+            candidates,
+            proposal=proposal,
+            accepted_graph=accepted_graph,
+        )
+        current = runtime.execute(
+            AnalysisRuntimeRequest.create(
+                run_id="run-multi-claim-current",
+                topic_id=topic_id,
+                proposal=proposal,
+                accepted_graph=accepted_graph,
+                as_of="2026-06-03T12:00:00+01:00",
+                permission_scope="analyst",
+                reuse_candidates=candidates,
+            )
+        )
+        completeness_by_result = {
+            record.result_ref: record
+            for record in current.persistence_records["completeness_records"]
+        }
+        current = replace(
+            current,
+            reuse_decisions=tuple(
+                _resigned_physical_decision(
+                    decision,
+                    completeness_record_refs=(
+                        completeness_by_result[decision["result_ref"]].record_ref,
+                    ),
+                )
+                for decision in current.reuse_decisions
+            ),
+        )
+        bindings = tuple(current.persistence_records["capability_binding_records"])
+        evidence = tuple(
+            {
+                "evidence_ref": f"evidence:{binding.record_ref}",
+                "binding_manifest_ref": binding.record_ref,
+            }
+            for binding in bindings
+        )
+        answer_package = {
+            "status": "complete",
+            "sections": [
+                {
+                    "section_id": "summary",
+                    "payload": {
+                        "claims": [
+                            {
+                                "text": f"{binding.capability_id} 形成可验证结论。",
+                                "claim_type": binding.supported_claim_types[0],
+                                "claim_strength": "observed",
+                                "evidence_refs": [item["evidence_ref"]],
+                            }
+                            for binding, item in zip(bindings, evidence)
+                        ]
+                    },
+                },
+                {
+                    "section_id": "evidence",
+                    "payload": {"evidence": list(evidence)},
+                },
+            ],
+        }
+        request = {
+            "run_id": "run-multi-claim-current",
+            "thread_id": "thread-reuse",
+            "topic_id": topic_id,
+            "permission_context": {"role": "analyst"},
+            "context_manifest": {
+                "snapshot_version": "2026H1",
+                "contract_versions": {"runtime": "contracts-v1"},
+            },
+        }
+        bundle = runtime.build_persistence_bundle(
+            current,
+            answer_package=answer_package,
+            request=request,
+            artifact_path=(
+                "artifacts/phase7/multi-claim-authority/answer_package.json"
+            ),
+        )
+
+        self.assertEqual(len(current.reuse_decisions), 2)
+        self.assertEqual(len(bundle["verified_claims"]), 2)
+        self.assertEqual(
+            store.save_analysis_runtime_records(run_id=request["run_id"], **bundle),
+            "published",
+        )
+        persisted_decision_refs = [
+            decision["decision_ref"]
+            for provenance in bundle["trusted_provenance_records"]
+            for decision in provenance["reuse_decisions"]
+        ]
+        self.assertCountEqual(
+            persisted_decision_refs,
+            [decision["decision_ref"] for decision in current.reuse_decisions],
+        )
+        self.assertTrue(
+            all(
+                len(claim["reuse_decisions"]) == 1
+                for claim in bundle["verified_claims"]
+            )
+        )
+
     def test_exact_authority_candidate_materializes_current_run_without_provider_call(self):
         runtime, provider, store, topic_id, signed = _runtime_fixture()
         source = runtime.execute(_source_request("run-source", topic_id))
@@ -744,7 +1475,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
         )
 
     def test_zero_claim_run_keeps_final_physical_reuse_decision_provenance(self):
-        current, request, bundle = _physical_reuse_bundle_fixture(
+        _, current, request, bundle = _physical_reuse_bundle_fixture(
             current_run_id="run-zero-claim-reuse",
             answer_package={"status": "complete", "sections": []},
         )
@@ -761,7 +1492,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
         )
 
     def test_waiting_claim_filter_keeps_final_physical_reuse_decision_provenance(self):
-        current, request, bundle = _physical_reuse_bundle_fixture(
+        _, current, request, bundle = _physical_reuse_bundle_fixture(
             current_run_id="run-filtered-claim-reuse",
             answer_package={
                 "status": "waiting_for_clarification",
@@ -908,6 +1639,609 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                             run_id=request["run_id"],
                             **invalid_bundle,
                         )
+
+    def test_store_closes_physical_reuse_source_candidate_authority(self):
+        cases = (
+            ("source_run_id", "run-forged-source"),
+            (
+                "source_analysis_contract_ref",
+                "analysis:run-forged-source:1",
+            ),
+            ("source_query_contract_ref", "query:forged-source"),
+            (
+                "source_query_execution_record_ref",
+                "query-execution:forged-source",
+            ),
+            (
+                "source_completeness_record_refs",
+                ("completeness-record:forged-source",),
+            ),
+        )
+        for field, value in cases:
+            with self.subTest(field=field):
+                runtime, current, request = _physical_reuse_result_fixture(
+                    current_run_id=f"run-store-source-gate-{field}",
+                )
+                bundle = runtime.build_persistence_bundle(
+                    current,
+                    answer_package=_physical_claim_package(current),
+                    request=request,
+                    artifact_path=(
+                        f"artifacts/phase7/source-gate-{field}/answer_package.json"
+                    ),
+                )
+                current_decision = bundle["trusted_provenance_records"][0][
+                    "reuse_decisions"
+                ][0]
+                decision = _resigned_physical_decision(
+                    current_decision,
+                    **{field: value},
+                )
+                invalid_bundle = _bundle_with_physical_decision(bundle, decision)
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_reuse_decision_source_authority_mismatch",
+                ):
+                    runtime.store.save_analysis_runtime_records(
+                        run_id=request["run_id"],
+                        **invalid_bundle,
+                    )
+
+    def test_store_requires_completed_material_authority_anchor_for_reuse_source(self):
+        cases = (
+            (
+                "missing_event",
+                lambda store, source_run_id: setattr(
+                    store,
+                    "_audit_events",
+                    [
+                        event
+                        for event in store._audit_events
+                        if not (
+                            event.get("event_type")
+                            == "completed_material_authority_recorded"
+                            and event.get("run_id") == source_run_id
+                        )
+                    ],
+                ),
+            ),
+            (
+                "duplicate_event",
+                lambda store, source_run_id: store._audit_events.append(
+                    deepcopy(
+                        next(
+                            event
+                            for event in store._audit_events
+                            if event.get("event_type")
+                            == "completed_material_authority_recorded"
+                            and event.get("run_id") == source_run_id
+                        )
+                    )
+                ),
+            ),
+            (
+                "request_contract_drift",
+                lambda store, source_run_id: store.runs[source_run_id][
+                    "request"
+                ]["analysis_contract"].update({"permission_scope": "viewer"}),
+            ),
+            (
+                "request_material_drift",
+                lambda store, source_run_id: store.runs[source_run_id][
+                    "request"
+                ]["material_authority"]["route_material_slots"].update(
+                    {"diagnostic_tags": ["unreviewed"]}
+                ),
+            ),
+            (
+                "thread_owner_drift",
+                lambda store, source_run_id: store.runs[source_run_id].update(
+                    {"thread_id": "thread-forged"}
+                ),
+            ),
+        )
+        for case, mutate in cases:
+            with self.subTest(case=case):
+                runtime, current, request, bundle = _physical_reuse_bundle_fixture(
+                    current_run_id=f"run-source-completion-anchor-{case}",
+                    answer_package={"status": "complete", "sections": []},
+                )
+                source_run_id = current.reuse_decisions[0]["source_run_id"]
+                mutate(runtime.store, source_run_id)
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_reuse_decision_source_authority_missing",
+                ):
+                    runtime.store.save_analysis_runtime_records(
+                        run_id=request["run_id"],
+                        **bundle,
+                    )
+
+    def test_postgres_candidate_authority_rebuilds_compact_publication_index(self):
+        from bi_agent.conversation.postgres_store import PostgresConversationStore
+
+        runtime, current, request = _physical_reuse_result_fixture(
+            current_run_id="run-pg-compact-publication-source"
+        )
+        decision = current.reuse_decisions[0]
+        connection = _NormalizedPgCandidateConnection(runtime, decision)
+        publication_index = connection.root_row["source_publication_payload"]
+
+        self.assertEqual(
+            set(publication_index),
+            {"schema_version", "analysis_contract_id", "ordered_refs"},
+        )
+        self.assertNotEqual(
+            connection.root_row["source_publication_digest"],
+            canonical_digest(publication_index),
+        )
+        authority = PostgresConversationStore(
+            connection
+        ).resolve_result_candidate_authority(
+            result_ref=decision["source_ref"],
+            topic_id=request["topic_id"],
+        )
+
+        self.assertEqual(
+            authority["result_ref_record"]["payload"]["candidate_signature"],
+            decision["candidate_signature"],
+        )
+        sql = "\n".join(statement for statement, _ in connection.statements)
+        self.assertIn("waje_runtime.query_execution_authority", sql)
+        self.assertIn("waje_runtime.rows_metadata_authority", sql)
+        self.assertIn("waje_runtime.snapshot_authority", sql)
+        self.assertIn("waje_runtime.query_completeness_reports", sql)
+        self.assertIn("waje_runtime.capability_binding_authority", sql)
+
+    def test_postgres_candidate_authority_rejects_same_run_record_outside_compact_index(self):
+        from bi_agent.conversation.postgres_store import PostgresConversationStore
+
+        runtime, current, request = _physical_reuse_result_fixture(
+            current_run_id="run-pg-compact-publication-extra-record"
+        )
+        decision = current.reuse_decisions[0]
+        connection = _NormalizedPgCandidateConnection(runtime, decision)
+        connection.same_run_extra_inventory = {
+            "record_group": "repair_attempts",
+            "record_ref": "repair:unindexed-same-run",
+            "owner_run_ids": [decision["source_run_id"]],
+            "payload": {
+                "attempt_ref": "repair:unindexed-same-run",
+                "failed_signature": "unindexed-signature",
+                "action": "recompile_contract",
+                "reason": "query_contract_validation_failed",
+            },
+        }
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "result_candidate_source_publication_mismatch:normalized_unexpected",
+        ):
+            PostgresConversationStore(
+                connection
+            ).resolve_result_candidate_authority(
+                result_ref=decision["source_ref"],
+                topic_id=request["topic_id"],
+            )
+
+    def test_postgres_candidate_authority_rejects_full_publication_digest_drift(self):
+        from bi_agent.conversation.postgres_store import PostgresConversationStore
+
+        runtime, current, request = _physical_reuse_result_fixture(
+            current_run_id="run-pg-publication-digest-drift"
+        )
+        decision = current.reuse_decisions[0]
+        connection = _NormalizedPgCandidateConnection(runtime, decision)
+        connection.root_row["source_publication_digest"] = "0" * 64
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "result_candidate_source_publication_mismatch:digest",
+        ):
+            PostgresConversationStore(
+                connection
+            ).resolve_result_candidate_authority(
+                result_ref=decision["source_ref"],
+                topic_id=request["topic_id"],
+            )
+
+    def test_store_revalidates_current_and_source_query_semantics_for_physical_reuse(self):
+        runtime, _, store, topic_id, signed = _runtime_fixture()
+        source_run_id = "run-cache-equivalence-query-source"
+        source = runtime.execute(_source_request(source_run_id, topic_id))
+        candidate = _candidate(runtime, source, signed)
+        _publish_source(runtime, store, topic_id, source, candidate)
+        current_run_id = "run-cache-equivalence-query-current"
+        current = runtime.execute(
+            AnalysisRuntimeRequest.create(
+                run_id=current_run_id,
+                topic_id=topic_id,
+                proposal=_proposal(("previous_day",)),
+                accepted_graph=("compare_periods",),
+                as_of="2026-06-03T12:00:00+01:00",
+                permission_scope="analyst",
+                reuse_candidates=(candidate,),
+            )
+        )
+        self.assertEqual(current.reuse_decisions[0]["decision"], "rerun")
+        request = {
+            "run_id": current_run_id,
+            "thread_id": "thread-reuse",
+            "topic_id": topic_id,
+            "permission_context": {"role": "analyst"},
+            "context_manifest": {
+                "snapshot_version": "2026H1",
+                "contract_versions": {"runtime": "contracts-v1"},
+            },
+        }
+        bundle = runtime.build_persistence_bundle(
+            current,
+            answer_package={"status": "complete", "sections": []},
+            request=request,
+            artifact_path=(
+                "artifacts/phase7/cache-equivalence-query/answer_package.json"
+            ),
+        )
+        bundle = _bundle_with_resigned_query_provider_stats(
+            bundle,
+            cache_hit=True,
+            cache_source="validated_authoritative_query_chain",
+            source_result_ref=candidate["result_ref"],
+            candidate_signature=candidate["candidate_signature"],
+        )
+        forged = _resigned_physical_decision(
+            bundle["trusted_provenance_records"][0]["reuse_decisions"][0],
+            decision="reuse",
+            reason="validated_authoritative_query_chain",
+            candidate_signature=candidate["candidate_signature"],
+        )
+        bundle = _bundle_with_physical_decision(bundle, forged)
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_reuse_decision_cache_equivalence_mismatch:query_contract",
+        ):
+            store.save_analysis_runtime_records(
+                run_id=current_run_id,
+                **bundle,
+            )
+
+    def test_store_compares_mappingproxy_query_contract_semantics(self):
+        runtime, _, request, bundle = _physical_reuse_bundle_fixture(
+            current_run_id="run-cache-equivalence-mappingproxy",
+            answer_package={"status": "complete", "sections": []},
+        )
+        current_contract = bundle["query_contracts"][0]
+        proxied_contract = replace(
+            current_contract,
+            query_parameters=MappingProxyType(
+                dict(current_contract.query_parameters)
+            ),
+        )
+        self.assertEqual(
+            query_contract_signature(proxied_contract),
+            current_contract.contract_signature,
+        )
+
+        self.assertEqual(
+            runtime.store.save_analysis_runtime_records(
+                run_id=request["run_id"],
+                **{
+                    **bundle,
+                    "query_contracts": (proxied_contract,),
+                },
+            ),
+            "published",
+        )
+
+    def test_store_revalidates_current_completeness_and_snapshot_axes_for_physical_reuse(self):
+        cases = (
+            (
+                "completeness",
+                lambda bundle: _bundle_with_current_completeness_state(
+                    bundle,
+                    completeness_status="incomplete",
+                    analysis_readiness="partial",
+                ),
+                "completeness",
+            ),
+            (
+                "release",
+                lambda bundle: _bundle_with_current_snapshot_axis(
+                    bundle,
+                    release_ref="dataset-release:sha256:" + "f" * 64,
+                ),
+                "snapshot_release",
+            ),
+            (
+                "schema",
+                lambda bundle: _bundle_with_current_snapshot_axis(
+                    bundle,
+                    schema_fingerprint="schema:sha256:" + "e" * 64,
+                ),
+                "snapshot_release",
+            ),
+            (
+                "row-count",
+                lambda bundle: _bundle_with_current_snapshot_axis(
+                    bundle,
+                    row_count=bundle["snapshot_records"][0].snapshot.row_count + 1,
+                ),
+                "snapshot_release",
+            ),
+            (
+                "rows-content-hash",
+                lambda bundle: _bundle_with_current_snapshot_axis(
+                    bundle,
+                    rows_content_hash="f" * 64,
+                ),
+                "snapshot_release",
+            ),
+            (
+                "physical-table",
+                lambda bundle: _bundle_with_current_snapshot_axis(
+                    bundle,
+                    physical_table="analytics.snapshot_drift",
+                ),
+                "snapshot_release",
+            ),
+            (
+                "permission-scopes",
+                lambda bundle: _bundle_with_current_snapshot_axis(
+                    bundle,
+                    permission_scopes=("analyst", "viewer"),
+                ),
+                "snapshot_release",
+            ),
+            (
+                "date-range",
+                lambda bundle: _bundle_with_current_snapshot_axis(
+                    bundle,
+                    date_range=("2026-05-01", "2026-06-02"),
+                ),
+                "snapshot_release",
+            ),
+        )
+        for case, mutate, component in cases:
+            with self.subTest(case=case):
+                runtime, _, request, bundle = _physical_reuse_bundle_fixture(
+                    current_run_id=f"run-cache-equivalence-{case}",
+                    answer_package={"status": "complete", "sections": []},
+                )
+                invalid = mutate(bundle)
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    (
+                        "runtime_persistence_reuse_decision_"
+                        f"cache_equivalence_mismatch:{component}"
+                    ),
+                ):
+                    runtime.store.save_analysis_runtime_records(
+                        run_id=request["run_id"],
+                        **invalid,
+                    )
+
+    def test_in_memory_run_request_is_frozen_from_nested_caller_mutation(self):
+        store = InMemoryConversationStore()
+        request = {
+            "material": {
+                "nested": [
+                    {"value": "original"},
+                ]
+            }
+        }
+        store.upsert_run(
+            "run-request-freeze",
+            thread_id="thread-request-freeze",
+            topic_id="topic-request-freeze",
+            status="running_workflow",
+            request=request,
+        )
+
+        request["material"]["nested"][0]["value"] = "mutated"
+
+        self.assertEqual(
+            store.runs["run-request-freeze"]["request"]["material"][
+                "nested"
+            ][0]["value"],
+            "original",
+        )
+
+    def test_store_rejects_resigned_candidate_not_backed_by_source_publication(self):
+        runtime, current, request = _physical_reuse_result_fixture(
+            current_run_id="run-store-source-publication-gate",
+        )
+        bundle = runtime.build_persistence_bundle(
+            current,
+            answer_package=_physical_claim_package(current),
+            request=request,
+            artifact_path=(
+                "artifacts/phase7/source-publication-gate/answer_package.json"
+            ),
+        )
+        source_decision = bundle["trusted_provenance_records"][0][
+            "reuse_decisions"
+        ][0]
+        topic_records = runtime.store.result_refs[request["topic_id"]]
+        source_record_index = next(
+            index
+            for index, record in enumerate(topic_records)
+            if record.result_ref == source_decision["source_ref"]
+        )
+        source_record = topic_records[source_record_index]
+        forged_candidate = _resign(
+            source_record.payload,
+            source_release_refs=["dataset-release:sha256:" + "f" * 64],
+        )
+        topic_records[source_record_index] = replace(
+            source_record,
+            payload=forged_candidate,
+        )
+
+        forged_bundle = _bundle_with_resigned_query_provider_stats(
+            bundle,
+            candidate_signature=forged_candidate["candidate_signature"],
+        )
+        forged_decision = _resigned_physical_decision(
+            forged_bundle["trusted_provenance_records"][0]["reuse_decisions"][0],
+            candidate_signature=forged_candidate["candidate_signature"],
+        )
+        forged_bundle = _bundle_with_physical_decision(
+            forged_bundle,
+            forged_decision,
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "result_candidate_source_publication_mismatch",
+        ):
+            runtime.store.save_analysis_runtime_records(
+                run_id=request["run_id"],
+                **forged_bundle,
+            )
+
+    def test_source_publication_candidate_requires_ready_succeeded_chain(self):
+        cases = (
+            (
+                "query_execution",
+                lambda payload: payload["query_execution_records"][0].update(
+                    {"execution_status": "failed"}
+                ),
+            ),
+            (
+                "completeness",
+                lambda payload: payload["completeness_records"][0][
+                    "report_payload"
+                ].update({"analysis_readiness": "partial"}),
+            ),
+            (
+                "binding",
+                lambda payload: payload["capability_binding_records"][0].update(
+                    {"status": "blocked"}
+                ),
+            ),
+        )
+        for component, mutate in cases:
+            with self.subTest(component=component):
+                runtime, current, request = _physical_reuse_result_fixture(
+                    current_run_id=f"run-source-readiness-{component}",
+                )
+                decision = current.reuse_decisions[0]
+                source_run_id = decision["source_run_id"]
+                publication = runtime.store.analysis_runtime_records[source_run_id]
+                payload = canonical_value(publication["payload"])
+                mutate(payload)
+                runtime.store.analysis_runtime_records[source_run_id] = {
+                    "digest": canonical_digest(payload),
+                    "payload": payload,
+                }
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    f"result_candidate_source_publication_mismatch:{component}",
+                ):
+                    runtime.store.resolve_result_candidate_authority(
+                        result_ref=decision["source_ref"],
+                        topic_id=request["topic_id"],
+                    )
+
+    def test_source_publication_rejects_query_contract_window_signature_drift(self):
+        runtime, current, request = _physical_reuse_result_fixture(
+            current_run_id="run-source-query-window-drift",
+        )
+        decision = current.reuse_decisions[0]
+        source_run_id = decision["source_run_id"]
+        publication = runtime.store.analysis_runtime_records[source_run_id]
+        payload = canonical_value(publication["payload"])
+        query_contract = payload["query_contracts"][0]
+        query_contract["resolved_windows"][0]["start_inclusive"] = (
+            "2026-05-30"
+        )
+        payload["query_execution_records"][0]["contract"] = canonical_value(
+            query_contract
+        )
+        payload["query_execution_records"][0]["query_contract"] = canonical_value(
+            query_contract
+        )
+        runtime.store.analysis_runtime_records[source_run_id] = {
+            "digest": canonical_digest(payload),
+            "payload": payload,
+        }
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "result_candidate_source_publication_mismatch:query_contract",
+        ):
+            runtime.store.resolve_result_candidate_authority(
+                result_ref=decision["source_ref"],
+                topic_id=request["topic_id"],
+            )
+
+    def test_source_publication_ignores_non_candidate_blocked_siblings(self):
+        runtime, current, request = _physical_reuse_result_fixture(
+            current_run_id="run-source-blocked-sibling",
+        )
+        decision = current.reuse_decisions[0]
+        source_run_id = decision["source_run_id"]
+        publication = runtime.store.analysis_runtime_records[source_run_id]
+        payload = canonical_value(publication["payload"])
+        completeness_sibling = {
+            **payload["completeness_records"][0],
+            "record_ref": "completeness-record:blocked-sibling",
+            "report_digest": "e" * 64,
+            "report_payload": {
+                "completeness_status": "incomplete",
+                "analysis_readiness": "partial",
+            },
+        }
+        binding_sibling = {
+            **payload["capability_binding_records"][0],
+            "record_ref": "capability-binding:blocked-sibling",
+            "binding_digest": "d" * 64,
+            "status": "blocked",
+        }
+        payload["completeness_records"].insert(0, completeness_sibling)
+        payload["capability_binding_records"].insert(0, binding_sibling)
+        runtime.store.analysis_runtime_records[source_run_id] = {
+            "digest": canonical_digest(payload),
+            "payload": payload,
+        }
+
+        authority = runtime.store.resolve_result_candidate_authority(
+            result_ref=decision["source_ref"],
+            topic_id=request["topic_id"],
+        )
+
+        self.assertEqual(
+            authority["result_ref_record"]["payload"]["candidate_signature"],
+            decision["candidate_signature"],
+        )
+
+    def test_postgres_candidate_authority_rejects_contract_row_drift(self):
+        from bi_agent.conversation.postgres_store import PostgresConversationStore
+
+        runtime, current, request, bundle = _physical_reuse_bundle_fixture(
+            current_run_id="run-pg-source-contract-row-gate",
+            answer_package={"status": "complete", "sections": []},
+        )
+        decision = current.reuse_decisions[0]
+        connection = _NormalizedPgCandidateConnection(runtime, decision)
+        connection.root_row["analysis_contract"] = {
+            **connection.root_row["analysis_contract"],
+            "permission_scope": "viewer",
+        }
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "result_candidate_source_publication_mismatch:digest",
+        ):
+            PostgresConversationStore(connection).save_analysis_runtime_records(
+                run_id=request["run_id"],
+                **bundle,
+            )
 
     def test_store_rejects_resigned_query_cache_flags_for_physical_provenance(self):
         runtime, current, request = _physical_reuse_result_fixture(
@@ -1084,7 +2418,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
         )
         for scenario, answer_package, publication_mode in scenarios:
             with self.subTest(scenario=scenario):
-                current, request, bundle = _physical_reuse_bundle_fixture(
+                runtime, current, request, bundle = _physical_reuse_bundle_fixture(
                     current_run_id=f"run-{scenario}-authority",
                     answer_package=answer_package,
                     publication_mode=publication_mode,
@@ -1092,13 +2426,16 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 expected_decision = dict(current.reuse_decisions[0])
 
                 self.assertEqual(
-                    InMemoryConversationStore().save_analysis_runtime_records(
+                    runtime.store.save_analysis_runtime_records(
                         run_id=request["run_id"],
                         **bundle,
                     ),
                     "published",
                 )
-                connection = FakeConnection()
+                connection = _NormalizedPgCandidateConnection(
+                    runtime,
+                    expected_decision,
+                )
                 self.assertEqual(
                     PostgresConversationStore(
                         connection
@@ -1126,6 +2463,9 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                         "contract_signature"
                     ],
                     delivery_verifier={"status": "passed", "errors": []},
+                    result_candidate_resolver=(
+                        runtime.store.resolve_result_candidate_authority
+                    ),
                 )
                 self.assertEqual(
                     projection["reuse_decisions"],
@@ -1151,7 +2491,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
             [dict(current.reuse_decisions[0])],
         )
         self.assertEqual(
-            InMemoryConversationStore().save_analysis_runtime_records(
+            runtime.store.save_analysis_runtime_records(
                 run_id=request["run_id"],
                 **bundle,
             ),
@@ -1165,7 +2505,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
         )
         from tests.phase7.test_conversation_persistence import FakeConnection
 
-        current, request, bundle = _physical_reuse_bundle_fixture(
+        _, current, request, bundle = _physical_reuse_bundle_fixture(
             current_run_id="run-zero-claim-provenance-shape",
             answer_package={"status": "complete", "sections": []},
         )
@@ -1214,6 +2554,53 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
         self.assertEqual(provider.calls, 1)
         self.assertEqual(current.reuse_decisions, ())
         self.assertEqual(current.query_results[0].provider_stats.get("cache_hit"), None)
+
+    def test_fresh_query_provenance_ignores_conversation_rerun_marker(self):
+        runtime, _, store, topic_id, _ = _runtime_fixture()
+        run_id = "run-fresh-conversation-rerun"
+        current = runtime.execute(_source_request(run_id, topic_id))
+        request = {
+            "run_id": run_id,
+            "thread_id": "thread-reuse",
+            "topic_id": topic_id,
+            "permission_context": {"role": "analyst"},
+            "context_manifest": {"manifest_id": "context-current"},
+            "reuse_decisions": [
+                {
+                    "source_ref": "",
+                    "result_ref": "",
+                    "decision": "rerun",
+                    "reason": "no_prior_result_ref",
+                    "can_support_claim": False,
+                    "requires_rerun": True,
+                }
+            ],
+        }
+
+        bundle = runtime.build_persistence_bundle(
+            current,
+            answer_package=_physical_claim_package(current),
+            request=request,
+            artifact_path="artifacts/phase7/fresh-query/answer_package.json",
+        )
+
+        expected = [{"source_ref": "context-current", "decision": "fresh"}]
+        self.assertEqual(
+            bundle["trusted_provenance_records"][0]["reuse_decisions"],
+            expected,
+        )
+        self.assertEqual(bundle["verified_claims"][0]["reuse_decisions"], expected)
+        store.upsert_run(
+            run_id,
+            thread_id="thread-reuse",
+            topic_id=topic_id,
+            status="running_workflow",
+            request=request,
+        )
+        self.assertEqual(
+            store.save_analysis_runtime_records(run_id=run_id, **bundle),
+            "published",
+        )
 
     def test_authority_candidate_drift_reruns_instead_of_trusting_payload(self):
         cases = (
@@ -1315,7 +2702,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                     ),
                 )
                 self.assertEqual(
-                    InMemoryConversationStore().save_analysis_runtime_records(
+                    store.save_analysis_runtime_records(
                         run_id=current_run_id,
                         **rerun_bundle,
                     ),
@@ -1362,7 +2749,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
         self.assertEqual(provider.calls, 2)
         self.assertEqual(current.reuse_decisions[0]["decision"], "rerun")
         self.assertIn(
-            "reuse_candidate_binding_owner_mismatch",
+            "result_candidate_source_publication_mismatch:binding",
             current.reuse_decisions[0]["reason"],
         )
 
@@ -1404,7 +2791,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
         self.assertEqual(provider.calls, 2)
         self.assertEqual(current.reuse_decisions[0]["decision"], "rerun")
         self.assertIn(
-            "result_candidate_analysis_contract_missing",
+            "result_candidate_source_publication_mismatch:digest",
             current.reuse_decisions[0]["reason"],
         )
 

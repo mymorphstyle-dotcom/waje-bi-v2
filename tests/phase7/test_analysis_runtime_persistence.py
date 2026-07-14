@@ -939,6 +939,215 @@ def _use_high_value_claim_ceiling(bundle, *, claim_intents=("candidate_driver",)
 
 
 class AnalysisRuntimePersistenceTest(unittest.TestCase):
+    def test_queryless_reviewed_target_identity_ignores_claim_and_capability_axes(self):
+        from bi_agent.runtime.analysis_contracts import AnalysisContract
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+        from bi_agent.runtime.runtime_persistence import (
+            _validate_analysis_target_metric_refs,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        target_ref = registry.metric_sources("paid_amount")[
+            "paid_order_success"
+        ]["contract_ref"]
+        axes = (
+            (("comparative_change",), ()),
+            ((), ("compare_periods",)),
+            (("comparative_change",), ("compare_periods",)),
+        )
+
+        for claim_intents, capability_requirements in axes:
+            with self.subTest(
+                claim_intents=claim_intents,
+                capability_requirements=capability_requirements,
+            ):
+                analysis = AnalysisContract(
+                    analysis_contract_id="analysis:queryless-target:1",
+                    contract_version="1",
+                    question_families=("custom_baseline_comparison",),
+                    target_metric_refs=(target_ref,),
+                    claim_intents=claim_intents,
+                    scope={"type": "full_sample"},
+                    business_timezone="Africa/Lagos",
+                    as_of="2026-06-03T12:00:00+01:00",
+                    resolved_windows=(),
+                    metric_bindings=(),
+                    dimension_bindings=(),
+                    dataset_requirements=(),
+                    capability_requirements=capability_requirements,
+                    permission_scope="analyst",
+                )
+
+                _validate_analysis_target_metric_refs(analysis)
+
+    def test_queryless_target_identity_rejects_unknown_and_ambiguous_contract_refs(self):
+        from bi_agent.runtime.analysis_contracts import AnalysisContract
+        from bi_agent.runtime.runtime_persistence import (
+            _validate_analysis_target_metric_refs,
+        )
+
+        refs = (
+            "metric-contract:unreviewed",
+            "contracts/backlog/missing-contracts.yaml#component_contracts",
+        )
+        for target_ref in refs:
+            with self.subTest(target_ref=target_ref):
+                analysis = AnalysisContract(
+                    analysis_contract_id="analysis:queryless-target-invalid:1",
+                    contract_version="1",
+                    question_families=("custom_baseline_comparison",),
+                    target_metric_refs=(target_ref,),
+                    claim_intents=("comparative_change",),
+                    scope={"type": "full_sample"},
+                    business_timezone="Africa/Lagos",
+                    as_of="2026-06-03T12:00:00+01:00",
+                    resolved_windows=(),
+                    metric_bindings=(),
+                    dimension_bindings=(),
+                    dataset_requirements=(),
+                    capability_requirements=("compare_periods",),
+                    permission_scope="analyst",
+                )
+
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_analysis_target_metric_mismatch",
+                ):
+                    _validate_analysis_target_metric_refs(analysis)
+
+    def test_queryless_target_owner_validation_cannot_be_bypassed_by_metric_order(self):
+        from bi_agent.runtime.analysis_contracts import (
+            AnalysisContract,
+            analysis_contract_from_dict,
+        )
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+        from bi_agent.runtime.runtime_persistence import (
+            _validate_analysis_target_metric_refs,
+        )
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        shared_ref = registry.metric_sources("paid_users")[
+            "paid_order_success"
+        ]["contract_ref"]
+        paid_users_ref = registry.metric_sources("paid_users")[
+            "market_dashboard"
+        ]["contract_ref"]
+        paid_amount_ref = registry.metric_sources("paid_amount")[
+            "paid_order_success"
+        ]["contract_ref"]
+
+        def queryless_analysis(*, target_refs, scope, contract_gaps=()):
+            base = AnalysisContract(
+                analysis_contract_id="analysis:queryless-owner:1",
+                contract_version="1",
+                question_families=("custom_baseline_comparison",),
+                target_metric_refs=tuple(target_refs),
+                claim_intents=("comparative_change",),
+                scope=scope,
+                business_timezone="Africa/Lagos",
+                as_of="2026-06-03T12:00:00+01:00",
+                resolved_windows=(),
+                metric_bindings=(),
+                dimension_bindings=(),
+                dataset_requirements=(),
+                capability_requirements=(),
+                permission_scope="analyst",
+            )
+            return analysis_contract_from_dict(
+                {
+                    **base.to_dict(),
+                    "contract_gaps": list(contract_gaps),
+                }
+            )
+
+        requested_scope = {
+            "type": "full_sample",
+            "requested_metric_ids": ("paid_users",),
+        }
+        paid_users_gap = _item_source_ambiguity_gap(
+            "metric",
+            "paid_users",
+            source_ids=("paid_order_success", "market_dashboard"),
+            affected_claim_types=("comparative_change",),
+        )
+        cases = (
+            (
+                "requested_shared_owner",
+                queryless_analysis(
+                    target_refs=(shared_ref,),
+                    scope=requested_scope,
+                ),
+            ),
+            (
+                "requested_unknown_owner",
+                queryless_analysis(
+                    target_refs=("metric-contract:unreviewed",),
+                    scope=requested_scope,
+                ),
+            ),
+            (
+                "requested_cross_metric_owner",
+                queryless_analysis(
+                    target_refs=(paid_amount_ref,),
+                    scope=requested_scope,
+                ),
+            ),
+            (
+                "gap_shared_owner",
+                queryless_analysis(
+                    target_refs=(shared_ref, paid_users_ref),
+                    scope={"type": "full_sample"},
+                    contract_gaps=(paid_users_gap,),
+                ),
+            ),
+        )
+
+        for case, analysis in cases:
+            with self.subTest(case=case):
+                with self.assertRaisesRegex(
+                    EvidenceIntegrityError,
+                    "runtime_persistence_analysis_target_metric_mismatch",
+                ):
+                    _validate_analysis_target_metric_refs(analysis)
+
+    def test_queryless_publication_rejects_shared_owner_with_requested_metric_order(self):
+        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        shared_ref = registry.metric_sources("paid_users")[
+            "paid_order_success"
+        ]["contract_ref"]
+        bundle = _queryless_source_ambiguity_bundle()
+        analysis = {
+            **bundle["analysis_contract"],
+            "target_metric_refs": [shared_ref],
+            "claim_intents": [],
+            "scope": {
+                "type": "full_sample",
+                "requested_metric_ids": ["paid_users"],
+            },
+            "capability_requirements": [],
+            "contract_gaps": [],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_analysis_target_metric_mismatch",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9",
+                **bundle,
+            )
+
     def test_waiting_partial_publication_requires_typed_authority_envelope(self):
         from bi_agent.runtime.analysis_runtime import AnalysisRuntime
 

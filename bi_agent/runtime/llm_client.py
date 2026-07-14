@@ -84,6 +84,7 @@ class OpenAICompatibleLLMClient:
             api_key=api_key,
             base_url=base_url or None,
             timeout=timeout_seconds,
+            max_retries=0,
         )
 
     @classmethod
@@ -483,6 +484,7 @@ def _request_openai_json_once(
         api_key=config["api_key"],
         base_url=config.get("base_url") or None,
         timeout=config["timeout_seconds"],
+        max_retries=0,
     )
     response = client.chat.completions.create(
         model=config["model"],

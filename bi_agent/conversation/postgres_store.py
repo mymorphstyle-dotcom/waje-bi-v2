@@ -21,6 +21,10 @@ from bi_agent.conversation.models import (
     TopicState,
     validate_result_reuse_candidate,
 )
+from bi_agent.conversation.run_status import (
+    validate_run_status_transition,
+    validate_run_status_value,
+)
 from bi_agent.runtime.analysis_assets import asset_dedup_key, merge_analysis_assets
 from bi_agent.runtime.dataset_catalog import (
     DatasetReleaseAuthorityRecord,
@@ -32,6 +36,8 @@ from bi_agent.runtime.dataset_catalog import (
     validate_dataset_snapshot_release_payloads,
 )
 from bi_agent.runtime.runtime_publication_index import (
+    RUNTIME_PUBLICATION_RECORD_GROUPS,
+    runtime_publication_record_ref,
     runtime_publication_index as _runtime_publication_index,
 )
 
@@ -40,6 +46,348 @@ ROOT = Path(__file__).resolve().parents[2]
 CONVERSATION_SCHEMA_SQL = (ROOT / "tools" / "runtime" / "conversation-runtime.sql").read_text(
     encoding="utf-8"
 )
+
+
+_RESULT_CANDIDATE_PUBLICATION_INVENTORY_SQL = """
+    /* result_candidate_publication_inventory */
+    WITH requested AS (
+      SELECT %(run_id)s::text AS run_id,
+             %(ordered_refs)s::jsonb AS ordered_refs
+    )
+    SELECT 'query_contracts' AS record_group,
+           record.query_contract_id AS record_ref,
+           jsonb_build_array(record.run_id) AS owner_run_ids,
+           record.payload
+    FROM requested
+    JOIN waje_runtime.query_contracts record
+      ON record.run_id = requested.run_id
+      OR record.query_contract_id IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'query_contracts'
+        )
+      )
+    UNION ALL
+    SELECT 'query_execution_records', record.record_ref,
+           jsonb_build_array(
+             record.run_id, query_run.run_id, query_contract.run_id
+           ), record.payload
+    FROM requested
+    JOIN waje_runtime.query_execution_authority record
+      ON record.run_id = requested.run_id
+      OR record.record_ref IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'query_execution_records'
+        )
+      )
+    LEFT JOIN waje_runtime.query_runs query_run
+      ON query_run.result_ref = record.result_ref
+    LEFT JOIN waje_runtime.query_contracts query_contract
+      ON query_contract.query_contract_id = record.query_contract_ref
+    UNION ALL
+    SELECT 'rows_records', record.record_ref,
+           COALESCE((
+             SELECT jsonb_agg(DISTINCT execution.run_id ORDER BY execution.run_id)
+             FROM waje_runtime.query_execution_authority execution
+             WHERE execution.rows_ref = record.rows_ref
+               AND (
+                 execution.run_id = requested.run_id
+                 OR execution.record_ref IN (
+                   SELECT jsonb_array_elements_text(
+                     requested.ordered_refs -> 'query_execution_records'
+                   )
+                 )
+               )
+           ), '[]'::jsonb),
+           record.payload
+    FROM requested
+    JOIN waje_runtime.rows_metadata_authority record
+      ON record.record_ref IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'rows_records'
+        )
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM waje_runtime.query_execution_authority execution
+        WHERE execution.run_id = requested.run_id
+          AND execution.rows_ref = record.rows_ref
+      )
+    UNION ALL
+    SELECT 'snapshot_records', record.record_ref,
+           COALESCE((
+             SELECT jsonb_agg(DISTINCT linked.run_id ORDER BY linked.run_id)
+             FROM (
+               SELECT execution.run_id
+               FROM waje_runtime.query_execution_authority execution
+               WHERE (
+                   execution.run_id = requested.run_id
+                   OR execution.record_ref IN (
+                     SELECT jsonb_array_elements_text(
+                       requested.ordered_refs -> 'query_execution_records'
+                     )
+                   )
+                 )
+                 AND COALESCE(
+                   execution.payload #> '{record,source_snapshot_record_refs}',
+                   '[]'::jsonb
+                 ) ? record.record_ref
+               UNION
+               SELECT contract.run_id
+               FROM waje_runtime.query_contracts contract
+               WHERE (
+                   contract.run_id = requested.run_id
+                   OR contract.query_contract_id IN (
+                     SELECT jsonb_array_elements_text(
+                       requested.ordered_refs -> 'query_contracts'
+                     )
+                   )
+                 )
+                 AND COALESCE(
+                   contract.payload -> 'dataset_snapshot_refs',
+                   '[]'::jsonb
+                 ) ? record.snapshot_ref
+             ) linked
+           ), '[]'::jsonb),
+           record.payload
+    FROM requested
+    JOIN waje_runtime.snapshot_authority record
+      ON record.record_ref IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'snapshot_records'
+        )
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM waje_runtime.query_execution_authority execution
+        WHERE execution.run_id = requested.run_id
+          AND COALESCE(
+            execution.payload #> '{record,source_snapshot_record_refs}',
+            '[]'::jsonb
+          ) ? record.record_ref
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM waje_runtime.query_contracts contract
+        WHERE contract.run_id = requested.run_id
+          AND COALESCE(
+            contract.payload -> 'dataset_snapshot_refs',
+            '[]'::jsonb
+          ) ? record.snapshot_ref
+      )
+    UNION ALL
+    SELECT 'completeness_records', record.record_ref,
+           jsonb_build_array(
+             record.run_id, query_run.run_id, query_contract.run_id
+           ), record.payload
+    FROM requested
+    JOIN waje_runtime.query_completeness_reports record
+      ON record.run_id = requested.run_id
+      OR record.record_ref IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'completeness_records'
+        )
+      )
+    LEFT JOIN waje_runtime.query_runs query_run
+      ON query_run.result_ref = record.result_ref
+    LEFT JOIN waje_runtime.query_contracts query_contract
+      ON query_contract.query_contract_id = record.query_contract_ref
+    UNION ALL
+    SELECT 'capability_binding_records', record.record_ref,
+           jsonb_build_array(record.run_id, analysis_contract.run_id),
+           record.payload
+    FROM requested
+    JOIN waje_runtime.capability_binding_authority record
+      ON record.run_id = requested.run_id
+      OR record.record_ref IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'capability_binding_records'
+        )
+      )
+    LEFT JOIN waje_runtime.analysis_contracts analysis_contract
+      ON analysis_contract.analysis_contract_id = record.analysis_contract_id
+    UNION ALL
+    SELECT 'evidence_manifests', record.evidence_ref,
+           jsonb_build_array(record.run_id, binding.run_id), record.payload
+    FROM requested
+    JOIN waje_runtime.evidence_manifests record
+      ON record.run_id = requested.run_id
+      OR record.evidence_ref IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'evidence_manifests'
+        )
+      )
+    LEFT JOIN waje_runtime.capability_binding_authority binding
+      ON binding.record_ref = record.binding_record_ref
+    UNION ALL
+    SELECT 'context_manifests', record.manifest_id,
+           jsonb_build_array(record.run_id), record.payload
+    FROM requested
+    JOIN waje_runtime.context_manifests record
+      ON record.run_id = requested.run_id
+      OR record.manifest_id IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'context_manifests'
+        )
+      )
+    UNION ALL
+    SELECT 'trusted_provenance_records', record.record_ref,
+           jsonb_build_array(record.run_id), record.payload
+    FROM requested
+    JOIN waje_runtime.claim_provenance_records record
+      ON record.run_id = requested.run_id
+      OR record.record_ref IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'trusted_provenance_records'
+        )
+      )
+    UNION ALL
+    SELECT 'verified_claims', record.claim_ref,
+           jsonb_build_array(
+             record.run_id, context.run_id, provenance.run_id
+           ), record.payload
+    FROM requested
+    JOIN waje_runtime.verified_claims record
+      ON record.run_id = requested.run_id
+      OR record.claim_ref IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'verified_claims'
+        )
+      )
+    LEFT JOIN waje_runtime.context_manifests context
+      ON context.manifest_id = record.context_manifest_ref
+    LEFT JOIN waje_runtime.claim_provenance_records provenance
+      ON provenance.record_ref = record.provenance_record_ref
+    UNION ALL
+    SELECT 'claim_links',
+           record.claim_ref || chr(31) || record.evidence_ref,
+           jsonb_build_array(claim.run_id, evidence.run_id, context.run_id),
+           record.payload
+    FROM requested
+    JOIN waje_runtime.claim_evidence_links record
+      ON record.claim_ref || chr(31) || record.evidence_ref IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'claim_links'
+        )
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM waje_runtime.verified_claims current_claim
+        WHERE current_claim.claim_ref = record.claim_ref
+          AND current_claim.run_id = requested.run_id
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM waje_runtime.evidence_manifests current_evidence
+        WHERE current_evidence.evidence_ref = record.evidence_ref
+          AND current_evidence.run_id = requested.run_id
+      )
+    LEFT JOIN waje_runtime.verified_claims claim
+      ON claim.claim_ref = record.claim_ref
+    LEFT JOIN waje_runtime.evidence_manifests evidence
+      ON evidence.evidence_ref = record.evidence_ref
+    LEFT JOIN waje_runtime.context_manifests context
+      ON context.manifest_id = record.context_manifest_ref
+    UNION ALL
+    SELECT 'repair_attempts', record.attempt_ref,
+           jsonb_build_array(record.run_id), record.payload
+    FROM requested
+    JOIN waje_runtime.query_repair_attempts record
+      ON record.run_id = requested.run_id
+      OR record.attempt_ref IN (
+        SELECT jsonb_array_elements_text(
+          requested.ordered_refs -> 'repair_attempts'
+        )
+      )
+    ORDER BY record_group, record_ref
+"""
+
+
+def _result_candidate_publication_bundle(
+    *,
+    run_id: str,
+    analysis_contract: Mapping[str, Any],
+    ordered_refs: Mapping[str, Sequence[str]],
+    inventory_rows: Sequence[Any],
+) -> dict[str, Any]:
+    from bi_agent.runtime.evidence_authority import (
+        EvidenceIntegrityError,
+        canonical_value,
+    )
+
+    wrapped_kinds = {
+        "query_execution_records": "query_execution",
+        "rows_records": "rows",
+        "snapshot_records": "snapshot",
+        "completeness_records": "completeness",
+        "capability_binding_records": "capability_binding",
+    }
+    records_by_group: dict[str, dict[str, Mapping[str, Any]]] = {
+        group: {} for group in RUNTIME_PUBLICATION_RECORD_GROUPS
+    }
+    for row in inventory_rows:
+        group = str(_field(row, "record_group", 0) or "")
+        record_ref = str(_field(row, "record_ref", 1) or "")
+        owner_run_ids = _json_value(_field(row, "owner_run_ids", 2))
+        raw_payload = _json_value(_field(row, "payload", 3))
+        if group not in records_by_group or not record_ref:
+            raise EvidenceIntegrityError(
+                "result_candidate_source_publication_mismatch:normalized_shape"
+            )
+        if (
+            not isinstance(owner_run_ids, list)
+            or not owner_run_ids
+            or any(str(owner or "") != run_id for owner in owner_run_ids)
+        ):
+            raise EvidenceIntegrityError(
+                "result_candidate_source_publication_mismatch:normalized_owner"
+            )
+        if group in wrapped_kinds:
+            if (
+                not isinstance(raw_payload, Mapping)
+                or set(raw_payload) != {"kind", "record"}
+                or raw_payload.get("kind") != wrapped_kinds[group]
+                or not isinstance(raw_payload.get("record"), Mapping)
+            ):
+                raise EvidenceIntegrityError(
+                    "result_candidate_source_publication_mismatch:normalized_shape"
+                )
+            payload = raw_payload["record"]
+        else:
+            if not isinstance(raw_payload, Mapping):
+                raise EvidenceIntegrityError(
+                    "result_candidate_source_publication_mismatch:normalized_shape"
+                )
+            payload = raw_payload
+        try:
+            actual_ref = runtime_publication_record_ref(group, payload)
+        except (EvidenceIntegrityError, KeyError, TypeError, ValueError) as exc:
+            raise EvidenceIntegrityError(
+                "result_candidate_source_publication_mismatch:normalized_shape"
+            ) from exc
+        if actual_ref != record_ref or record_ref in records_by_group[group]:
+            raise EvidenceIntegrityError(
+                "result_candidate_source_publication_mismatch:normalized_ambiguous"
+            )
+        records_by_group[group][record_ref] = canonical_value(payload)
+
+    bundle: dict[str, Any] = {
+        "analysis_contract": canonical_value(analysis_contract),
+    }
+    for group in RUNTIME_PUBLICATION_RECORD_GROUPS:
+        expected = tuple(ordered_refs[group])
+        records = records_by_group[group]
+        missing = set(expected) - set(records)
+        unexpected = set(records) - set(expected)
+        if missing:
+            raise EvidenceIntegrityError(
+                "result_candidate_source_publication_mismatch:normalized_missing"
+            )
+        if unexpected:
+            raise EvidenceIntegrityError(
+                "result_candidate_source_publication_mismatch:normalized_unexpected"
+            )
+        bundle[group] = [records[ref] for ref in expected]
+    return canonical_value(bundle)
 
 
 class PostgresConversationStore:
@@ -291,30 +639,118 @@ class PostgresConversationStore:
         status: str,
         request: Optional[dict[str, Any]] = None,
     ) -> None:
-        self._execute(
-            """
-            INSERT INTO waje_runtime.analysis_runs(run_id, thread_id, turn_id, topic_id, status, request)
-            VALUES (
-              %(run_id)s, %(thread_id)s, %(turn_id)s, %(topic_id)s,
-              %(status)s, %(request)s::jsonb
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        validate_run_status_value(status)
+        params = {
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "turn_id": turn_id or None,
+            "topic_id": topic_id or None,
+            "status": status,
+            "request": _json(request or {}),
+        }
+        try:
+            inserted = self._execute(
+                """
+                /* analysis_run_status_insert */
+                INSERT INTO waje_runtime.analysis_runs(
+                  run_id, thread_id, turn_id, topic_id, status, request
+                )
+                VALUES (
+                  %(run_id)s, %(thread_id)s, %(turn_id)s, %(topic_id)s,
+                  %(status)s, %(request)s::jsonb
+                )
+                ON CONFLICT (run_id) DO NOTHING
+                RETURNING status
+                """,
+                params,
+                commit=False,
+            ).fetchone()
+            if inserted is not None:
+                self._audit(
+                    "run_status_changed",
+                    thread_id=thread_id,
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    ref=run_id,
+                    commit=False,
+                )
+                self.connection.commit()
+                return
+
+            current = self._fetchone(
+                """
+                /* analysis_run_status_transition_lock */
+                SELECT status, thread_id, turn_id, topic_id, request
+                FROM waje_runtime.analysis_runs
+                WHERE run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                {"run_id": run_id},
             )
-            ON CONFLICT (run_id) DO UPDATE
-            SET status = EXCLUDED.status,
-                request = EXCLUDED.request,
-                turn_id = EXCLUDED.turn_id,
-                topic_id = EXCLUDED.topic_id,
-                updated_at = now()
-            """,
-            {
-                "run_id": run_id,
-                "thread_id": thread_id,
-                "turn_id": turn_id or None,
-                "topic_id": topic_id or None,
-                "status": status,
-                "request": _json(request or {}),
-            },
-        )
-        self._audit("run_status_changed", thread_id=thread_id, topic_id=topic_id, run_id=run_id, ref=run_id)
+            if current is None:
+                raise EvidenceIntegrityError(
+                    "analysis_run_status_transition_conflict"
+                )
+            current_request = _json_value(_field(current, "request", 4))
+            action = validate_run_status_transition(
+                current_status=str(_field(current, "status", 0) or ""),
+                next_status=status,
+                current_thread_id=str(
+                    _field(current, "thread_id", 1) or ""
+                ),
+                current_turn_id=str(_field(current, "turn_id", 2) or ""),
+                current_topic_id=str(
+                    _field(current, "topic_id", 3) or ""
+                ),
+                next_thread_id=thread_id,
+                next_turn_id=turn_id,
+                next_topic_id=topic_id,
+                current_request=current_request,
+                next_request=request or {},
+            )
+            if action == "replay":
+                self.connection.commit()
+                return
+
+            updated = self._execute(
+                """
+                /* analysis_run_status_transition_cas */
+                UPDATE waje_runtime.analysis_runs
+                SET status = %(status)s,
+                    request = %(request)s::jsonb,
+                    turn_id = %(turn_id)s,
+                    topic_id = %(topic_id)s,
+                    updated_at = now()
+                WHERE run_id = %(run_id)s
+                  AND status = %(current_status)s
+                RETURNING status
+                """,
+                {
+                    **params,
+                    "current_status": str(
+                        _field(current, "status", 0) or ""
+                    ),
+                },
+                commit=False,
+            ).fetchone()
+            if updated is None:
+                raise EvidenceIntegrityError(
+                    "analysis_run_status_transition_conflict"
+                )
+            self._audit(
+                "run_status_changed",
+                thread_id=thread_id,
+                topic_id=topic_id,
+                run_id=run_id,
+                ref=run_id,
+                commit=False,
+            )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
 
     def get_run_request(self, run_id: str) -> dict[str, Any]:
         row = self._fetchone(
@@ -328,6 +764,40 @@ class PostgresConversationStore:
         request["thread_id"] = str(_field(row, "thread_id", 1) or "") if row else ""
         request["topic_id"] = str(_field(row, "topic_id", 2) or "") if row else ""
         return request
+
+    def get_run_state(self, run_id: str) -> dict[str, Any] | None:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        row = self._fetchone(
+            """
+            /* analysis_run_state */
+            SELECT run_id, thread_id, turn_id, topic_id, status, request
+            FROM waje_runtime.analysis_runs
+            WHERE run_id = %(run_id)s
+            """,
+            {"run_id": run_id},
+        )
+        if row is None:
+            return None
+        request = _json_value(_field(row, "request", 5))
+        if not isinstance(request, Mapping):
+            raise EvidenceIntegrityError("analysis_run_state_request_invalid")
+        resolved_run_id = str(_field(row, "run_id", 0) or "")
+        if resolved_run_id != run_id:
+            raise EvidenceIntegrityError("analysis_run_state_owner_mismatch")
+        return canonical_value(
+            {
+                "run_id": resolved_run_id,
+                "thread_id": str(_field(row, "thread_id", 1) or ""),
+                "turn_id": str(_field(row, "turn_id", 2) or ""),
+                "topic_id": str(_field(row, "topic_id", 3) or ""),
+                "status": str(_field(row, "status", 4) or ""),
+                "request": request,
+            }
+        )
 
     def record_clarification_outcome(
         self,
@@ -917,6 +1387,7 @@ class PostgresConversationStore:
             verified_claims=verified_claims,
             claim_links=claim_links,
             repair_attempts=repair_attempts,
+            result_candidate_resolver=self.resolve_result_candidate_authority,
         )
         analysis = bundle["analysis_contract"]
         bundle_digest = canonical_digest(bundle)
@@ -2055,7 +2526,15 @@ class PostgresConversationStore:
         topic_id: str,
     ) -> dict[str, Any]:
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_value
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_digest,
+            canonical_value,
+        )
+        from bi_agent.runtime.runtime_persistence import (
+            result_candidate_publication_authority_projection,
+            validate_result_candidate_publication_index,
+        )
 
         row = self._fetchone(
             """
@@ -2073,7 +2552,9 @@ class PostgresConversationStore:
                    r.status AS run_status,
                    r.request AS source_run_request,
                    ac.payload AS analysis_contract,
-                   ac.contract_signature AS stored_analysis_contract_signature
+                   ac.contract_signature AS stored_analysis_contract_signature,
+                   p.payload AS source_publication_payload,
+                   p.bundle_digest AS source_publication_digest
             FROM waje_runtime.result_refs rr
             JOIN waje_runtime.analysis_runs r
               ON r.run_id = rr.payload->>'source_run_id'
@@ -2081,6 +2562,8 @@ class PostgresConversationStore:
             JOIN waje_runtime.analysis_contracts ac
               ON ac.run_id = r.run_id
              AND ac.analysis_contract_id = rr.payload->>'analysis_contract_ref'
+            JOIN waje_runtime.analysis_runtime_publications p
+              ON p.run_id = r.run_id
             WHERE rr.result_ref = %(result_ref)s
               AND rr.topic_id = %(topic_id)s
             """,
@@ -2095,12 +2578,95 @@ class PostgresConversationStore:
         stored_signature = str(
             _field(row, "stored_analysis_contract_signature", 13) or ""
         )
+        publication_payload = _json_value(
+            _field(row, "source_publication_payload", 14)
+        ) or {}
+        publication_digest = str(
+            _field(row, "source_publication_digest", 15) or ""
+        )
+        if not isinstance(publication_payload, Mapping) or len(
+            publication_digest
+        ) != 64:
+            raise EvidenceIntegrityError(
+                "result_candidate_source_publication_mismatch:digest"
+            )
+        validated_publication_index = validate_result_candidate_publication_index(
+            payload,
+            publication_payload,
+        )
+        source_run_id = str(_field(row, "source_run_id", 7) or "")
+        ordered_refs = validated_publication_index["ordered_refs"]
+        publication_bundle = _result_candidate_publication_bundle(
+            run_id=source_run_id,
+            analysis_contract=contract,
+            ordered_refs=ordered_refs,
+            inventory_rows=self._fetchall(
+                _RESULT_CANDIDATE_PUBLICATION_INVENTORY_SQL,
+                {
+                    "run_id": source_run_id,
+                    "ordered_refs": _json(ordered_refs),
+                },
+            ),
+        )
+        if canonical_digest(publication_bundle) != publication_digest:
+            raise EvidenceIntegrityError(
+                "result_candidate_source_publication_mismatch:digest"
+            )
+        source_request = _json_value(_field(row, "source_run_request", 11)) or {}
+        run_thread_id = str(_field(row, "run_thread_id", 8) or "")
+        run_topic_id = str(_field(row, "run_topic_id", 9) or "")
+        try:
+            completed_authority = self.resolve_completed_material_authority(
+                source_run_id=source_run_id,
+                thread_id=run_thread_id,
+                topic_id=run_topic_id,
+            )
+        except EvidenceIntegrityError as exc:
+            raise EvidenceIntegrityError(
+                "result_candidate_completed_authority_invalid"
+            ) from exc
+        completed_contract = {
+            **dict(completed_authority.get("analysis_contract") or {}),
+            "contract_signature": str(
+                completed_authority.get("analysis_contract_signature") or ""
+            ),
+        }
+        context_manifest = (
+            source_request.get("context_manifest")
+            if isinstance(source_request, Mapping)
+            else None
+        )
+        contract_versions = (
+            context_manifest.get("contract_versions")
+            if isinstance(context_manifest, Mapping)
+            else None
+        )
         if (
-            payload["source_run_id"] != str(_field(row, "source_run_id", 7) or "")
+            payload["source_run_id"] != source_run_id
             or payload["analysis_contract_signature"] != stored_signature
             or analysis_contract_signature(contract) != stored_signature
+            or canonical_value(contract) != canonical_value(completed_contract)
+            or str(_field(row, "result_ref", 1) or "") != payload["result_ref"]
+            or str(_field(row, "snapshot_id", 2) or "")
+            != payload["runtime_snapshot_id"]
+            or str(_field(row, "contract_version", 3) or "")
+            != payload["runtime_contract_version"]
+            or str(_field(row, "permission_scope", 4) or "")
+            != payload["permission_scope"]
+            or str(_field(row, "semantic_scope", 5) or "")
+            != payload["semantic_scope_signature"]
+            or not isinstance(context_manifest, Mapping)
+            or str(context_manifest.get("snapshot_version") or "")
+            != payload["runtime_snapshot_id"]
+            or not isinstance(contract_versions, Mapping)
+            or str(contract_versions.get("runtime") or "")
+            != payload["runtime_contract_version"]
         ):
             raise EvidenceIntegrityError("result_candidate_analysis_contract_mismatch")
+        cache_authority = result_candidate_publication_authority_projection(
+            payload,
+            publication_bundle,
+        )
         record = ResultRefRecord(
             topic_id=str(_field(row, "topic_id", 0) or ""),
             result_ref=str(_field(row, "result_ref", 1) or ""),
@@ -2114,15 +2680,13 @@ class PostgresConversationStore:
             {
                 "result_ref_record": record.to_dict(),
                 "source_run_id": payload["source_run_id"],
-                "run_thread_id": str(_field(row, "run_thread_id", 8) or ""),
-                "run_topic_id": str(_field(row, "run_topic_id", 9) or ""),
+                "run_thread_id": run_thread_id,
+                "run_topic_id": run_topic_id,
                 "run_status": str(_field(row, "run_status", 10) or ""),
-                "source_run_request": _json_value(
-                    _field(row, "source_run_request", 11)
-                )
-                or {},
+                "source_run_request": source_request,
                 "analysis_contract": contract,
                 "stored_analysis_contract_signature": stored_signature,
+                "cache_authority": cache_authority,
             }
         )
 

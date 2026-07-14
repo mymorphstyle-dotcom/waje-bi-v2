@@ -253,6 +253,17 @@ def _exception_reason(exc: BaseException) -> str:
 
 def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRunResult:
     request = dict(request or {})
+    request.setdefault("run_mode", "production")
+    if not isinstance(request["run_mode"], str) or request["run_mode"] not in {
+        "production",
+        "live",
+        "fixture",
+    }:
+        return WorkflowRunResult(
+            status="failed",
+            run_id=str(request.get("run_id") or "phase4-draft"),
+            failure_reason="analysis_runtime_run_mode_invalid",
+        )
     context_manifest = request.get("context_manifest") or {}
     manifest_assumption = next(
         (
@@ -2131,9 +2142,23 @@ def _decide_question_boundary(state: WorkflowState) -> WorkflowState:
         },
         "phase4_policy": "ask only when ambiguity can change conclusion, baseline, time semantics, permission, claim strength, or cost",
     }
-    output = _invoke_llm(state, "boundary_decision", boundary_payload)
+    output = _invoke_llm(
+        state,
+        "boundary_decision",
+        boundary_payload,
+        output_validator=_validate_boundary_decision_provider_output,
+    )
     state["boundary_decision"] = _normalize_boundary_decision_output(output)
     return state
+
+
+def _validate_boundary_decision_provider_output(
+    output: Mapping[str, Any],
+) -> None:
+    try:
+        _normalize_boundary_decision_output(output)
+    except WorkflowFailure as exc:
+        raise LLMOutputError(_exception_reason(exc)) from exc
 
 
 def _normalize_boundary_decision_output(output: Mapping[str, Any]) -> dict[str, Any]:
@@ -2165,7 +2190,35 @@ def _normalize_boundary_decision_output(output: Mapping[str, Any]) -> dict[str, 
                 "boundary_decision_contract_invalid:questions",
                 failure_type="llm_contract",
             )
-        return {**dict(output), "clarification_questions": []}
+        recommended = output.get("recommended_assumption")
+        if status in {"clear", "cannot_answer"}:
+            if not isinstance(recommended, Mapping) or recommended:
+                raise WorkflowFailure(
+                    "boundary_decision_contract_invalid:recommended_assumption",
+                    failure_type="llm_contract",
+                )
+            normalized_recommended: dict[str, str] = {}
+        else:
+            option = recommended.get("option") if isinstance(recommended, Mapping) else None
+            if (
+                not isinstance(recommended, Mapping)
+                or set(recommended) != {"option"}
+                or not isinstance(option, str)
+                or not option
+                or option != option.strip()
+                or not re.search(r"[\u4e00-\u9fff]", option)
+                or _has_internal_visible_token(option)
+            ):
+                raise WorkflowFailure(
+                    "boundary_decision_contract_invalid:recommended_assumption",
+                    failure_type="llm_contract",
+                )
+            normalized_recommended = {"option": option}
+        return {
+            **dict(output),
+            "clarification_questions": [],
+            "recommended_assumption": normalized_recommended,
+        }
     if len(questions) != 1 or not isinstance(questions[0], Mapping):
         raise WorkflowFailure(
             "boundary_decision_contract_invalid:questions",
@@ -2649,7 +2702,7 @@ def _rebind_after_clarification(state: WorkflowState) -> WorkflowState:
 
 def _confirm_business_understanding(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "confirm_business_understanding")
-    state["confirmed_understanding"] = _invoke_llm(
+    output = _invoke_llm(
         state,
         "confirm_understanding",
         {
@@ -2657,8 +2710,116 @@ def _confirm_business_understanding(state: WorkflowState) -> WorkflowState:
             "boundary_decision": state["boundary_decision"],
             "clarification_outcome": state.get("clarification_outcome", {}),
         },
+        output_validator=lambda value: _validate_confirm_understanding_provider_output(
+            value,
+            state["intent"],
+        ),
+    )
+    state["confirmed_understanding"] = _normalize_confirm_understanding_output(
+        output,
+        state["intent"],
     )
     return state
+
+
+def _validate_confirm_understanding_provider_output(
+    output: Mapping[str, Any],
+    intent: Mapping[str, Any],
+) -> None:
+    try:
+        _normalize_confirm_understanding_output(output, intent)
+    except WorkflowFailure as exc:
+        raise LLMOutputError(_exception_reason(exc)) from exc
+
+
+def _normalize_confirm_understanding_output(
+    output: Mapping[str, Any],
+    intent: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(output, Mapping):
+        raise WorkflowFailure(
+            "confirm_understanding_contract_invalid:output",
+            failure_type="llm_contract",
+        )
+    confirmed_intent = output.get("confirmed_intent")
+    if not isinstance(confirmed_intent, Mapping):
+        raise WorkflowFailure(
+            "confirm_understanding_contract_invalid:confirmed_intent",
+            failure_type="llm_contract",
+        )
+    business_summary = confirmed_intent.get("business_summary")
+    machine_intent = confirmed_intent.get("machine_intent")
+    if (
+        not isinstance(business_summary, str)
+        or not business_summary
+        or business_summary != business_summary.strip()
+        or _has_internal_visible_token(business_summary)
+        or not isinstance(machine_intent, Mapping)
+    ):
+        raise WorkflowFailure(
+            "confirm_understanding_contract_invalid:confirmed_intent",
+            failure_type="llm_contract",
+        )
+    material_fields = (
+        "question_family",
+        "target_metric",
+        "pattern_family",
+        "scope",
+        "time_window",
+        "target_claim",
+        "baseline",
+        "target",
+        "pattern_params",
+    )
+    for field in material_fields:
+        if field not in intent:
+            continue
+        if field not in machine_intent or canonical_value(
+            machine_intent[field]
+        ) != canonical_value(intent[field]):
+            raise WorkflowFailure(
+                f"confirm_understanding_contract_invalid:machine_intent:{field}",
+                failure_type="llm_contract",
+            )
+    accepted_assumptions = output.get("accepted_assumptions")
+    if (
+        not isinstance(accepted_assumptions, list)
+        or any(
+            not isinstance(item, str)
+            or not item
+            or item != item.strip()
+            or not re.search(r"[\u4e00-\u9fff]", item)
+            or _has_internal_visible_token(item)
+            for item in accepted_assumptions
+        )
+    ):
+        raise WorkflowFailure(
+            "confirm_understanding_contract_invalid:accepted_assumptions",
+            failure_type="llm_contract",
+        )
+    for field in ("status_message", "display_summary"):
+        if field == "display_summary" and field not in output:
+            continue
+        value = output.get(field)
+        if (
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or _has_internal_visible_token(value)
+        ):
+            raise WorkflowFailure(
+                f"confirm_understanding_contract_invalid:{field}",
+                failure_type="llm_contract",
+            )
+    return {
+        **dict(output),
+        "confirmed_intent": {
+            **dict(confirmed_intent),
+            "business_summary": business_summary,
+            "machine_intent": dict(machine_intent),
+        },
+        "accepted_assumptions": list(accepted_assumptions),
+    }
 
 
 def _design_analysis_route(state: WorkflowState) -> WorkflowState:
@@ -4046,6 +4207,7 @@ def _canonical_baselines(values: Sequence[Any]) -> tuple[str, ...]:
 def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "repair_analysis_route")
     state["repair_attempts"] = state.get("repair_attempts", 0) + 1
+    current_route = dict(state["analysis_route"])
     output = _invoke_llm(
         state,
         "route_repair",
@@ -4058,27 +4220,71 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
             ),
             "repair_attempt": state["repair_attempts"],
         },
+        output_validator=lambda value: _validate_route_repair_provider_output(
+            value,
+            current_route,
+        ),
     )
+    if _route_repair_has_material_conflict(output, current_route):
+        raise WorkflowFailure(
+            "analysis_route_repair_material_conflict:analysis_requirements",
+            failure_type="contract",
+        )
+    repaired_route = {**current_route, **output}
     requested = _requested_node_ids(
         output.get("requested_nodes"),
         excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
     )
     if not requested:
-        requested = tuple(state["analysis_route"].get("requested_nodes") or ())
+        requested = tuple(current_route.get("requested_nodes") or ())
+    registry = RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
     requested, output = reconcile_analysis_route(
         requested,
-        output,
+        repaired_route,
         state["intent"],
-        RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
+        registry,
         trusted_prior_route=_trusted_obligation_rejection_route(state),
     )
     _consume_obligation_route_conflict(state, output)
+    accepted_choice = dict(
+        state.get("request", {}).get("accepted_degradation_choice") or {}
+    )
+    requested, output = _apply_query_gap_action_to_route(
+        requested,
+        output,
+        accepted_choice,
+        registry,
+    )
     output = _align_route_output_to_requested(output, requested)
     _infer_question_families_from_requested_nodes(state["intent"], requested)
     state["analysis_route"] = {**state["analysis_route"], **output, "requested_nodes": requested}
     _record_obligation_rejection_authority(state, state["analysis_route"])
     state["intent"]["requested_nodes"] = requested
     return state
+
+
+def _validate_route_repair_provider_output(
+    output: Mapping[str, Any],
+    current_route: Mapping[str, Any],
+) -> None:
+    if _route_repair_has_material_conflict(output, current_route):
+        raise LLMOutputError(
+            "analysis_route_repair_material_conflict:analysis_requirements"
+        )
+
+
+def _route_repair_has_material_conflict(
+    output: Mapping[str, Any],
+    current_route: Mapping[str, Any],
+) -> bool:
+    return (
+        "analysis_requirements" in output
+        and "analysis_requirements" in current_route
+        and canonical_value(output["analysis_requirements"])
+        != canonical_value(current_route["analysis_requirements"])
+    )
 
 
 def _inspect_schema(state: WorkflowState) -> WorkflowState:
@@ -7295,7 +7501,7 @@ def _legacy_quality_with_final_answer_audit(
 def _persist_artifact(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "persist_artifact")
     request = state.get("request", {})
-    run_mode = str(request.get("run_mode") or "legacy_fixture")
+    run_mode = str(request.get("run_mode") or "production")
     analysis_runtime = request.get("analysis_runtime")
     if run_mode in {"live", "production"} and analysis_runtime is None:
         raise WorkflowFailure(
@@ -7762,6 +7968,13 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         "accepted_assumptions": list(accepted_assumptions),
     }
     context_request = {**request, "run_id": state["run_id"]}
+    runtime_reuse_decisions = tuple(
+        item
+        for item in request.get("reuse_decisions") or ()
+        if isinstance(item, Mapping)
+        and "schema_version" in item
+    )
+    context_request["reuse_decisions"] = list(runtime_reuse_decisions)
     build_context = AnswerPackageBuildContext.create(
         request=context_request,
         artifact_path=artifact_path,
@@ -7804,7 +8017,7 @@ def _build_answer_package_from_state(state: WorkflowState) -> dict[str, Any]:
         context_manifest_ref="",
         context_manifest=dict(build_context.context_owner),
         trusted_claim_provenance_record=dict(build_context.trusted_provenance),
-        reuse_decisions=request.get("reuse_decisions", ()),
+        reuse_decisions=runtime_reuse_decisions,
         quality_gate=state.get("quality_gate", {}),
         follow_up_questions=state.get("follow_up_questions", ()),
         compiler_runtime_plan=compiler_runtime_plan,

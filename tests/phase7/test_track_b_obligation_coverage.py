@@ -1072,6 +1072,7 @@ def test_failed_business_intent_returns_one_llm_audit_and_failed_checkpoint():
     result = workflow.run_pattern_workflow(
         {
             "run_id": "run-failed-intent-audits",
+            "run_mode": "fixture",
             "question": "昨天玩法活跃和付费变化能对上吗？",
             "llm_client": ContractFailingClient(),
         }

@@ -9,8 +9,11 @@ from bi_agent.conversation.postgres_store import CONVERSATION_SCHEMA_SQL, Postgr
 from bi_agent.conversation.runtime import evaluate_reuse_candidate
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.dataset_catalog import build_dataset_release_authority_record
-from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_digest
+from bi_agent.runtime.evidence_authority import (
+    EvidenceIntegrityError,
+    canonical_digest,
+    canonical_value,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -111,38 +114,120 @@ class ConversationPersistenceTest(unittest.TestCase):
             _add_result_candidate(collision, payload)
 
     def test_result_candidate_authority_resolves_source_run_and_contract(self):
-        payload = _result_candidate_payload("result:resolve")
-        contract = {
-            "analysis_contract_id": payload["analysis_contract_ref"],
-            "metric": "paid_amount",
-        }
-        contract["contract_signature"] = analysis_contract_signature(contract)
-        payload["analysis_contract_signature"] = contract["contract_signature"]
-        payload["semantic_scope_signature"] = (
-            "analysis-contract:sha256:" + contract["contract_signature"]
+        from tests.phase7.test_analysis_runtime_persistence import (
+            _authority_bundle,
         )
-        payload.pop("candidate_signature")
+
+        bundle = _authority_bundle(
+            run_id="run-candidate",
+            thread_id="thread-candidate",
+            topic_id="topic-candidate",
+            analysis_contract_ref="analysis:run-candidate:1",
+        )
+        contract = bundle["analysis_contract"]
+        query = bundle["query_execution_records"][0]
+        rows = next(
+            item
+            for item in bundle["rows_records"]
+            if item.rows_ref == query.rows_ref
+        )
+        snapshots = {
+            item.snapshot_ref: item for item in bundle["snapshot_records"]
+        }
+        completeness = next(
+            item
+            for item in bundle["completeness_records"]
+            if item.report_ref == query.completeness_report_ref
+        )
+        binding = next(
+            item
+            for item in bundle["capability_binding_records"]
+            if query.result_ref
+            in (*item.result_refs, *item.validation_result_refs)
+        )
+        payload = {
+            "schema_version": "result-reuse-candidate.v1",
+            "source_run_id": "run-candidate",
+            "result_ref": query.result_ref,
+            "query_contract_ref": query.query_contract_ref,
+            "query_contract_signature": query.contract_signature,
+            "query_execution_record_ref": query.record_ref,
+            "query_execution_record_digest": query.record_digest,
+            "analysis_contract_ref": contract["analysis_contract_id"],
+            "analysis_contract_signature": contract["contract_signature"],
+            "runtime_snapshot_id": "2026H1",
+            "runtime_contract_version": "contracts-v1",
+            "source_snapshot_refs": list(query.source_snapshot_refs),
+            "source_snapshot_record_refs": list(
+                query.source_snapshot_record_refs
+            ),
+            "source_snapshot_record_digests": list(
+                query.source_snapshot_record_digests
+            ),
+            "source_release_refs": [
+                snapshots[ref].snapshot.release_ref
+                for ref in query.source_snapshot_refs
+            ],
+            "source_release_authority_refs": [
+                snapshots[ref].snapshot.authority_record_ref
+                for ref in query.source_snapshot_refs
+            ],
+            "source_schema_fingerprints": [
+                snapshots[ref].snapshot.schema_fingerprint
+                for ref in query.source_snapshot_refs
+            ],
+            "permission_scope": query.contract.permission_scope,
+            "semantic_scope_signature": (
+                "analysis-contract:sha256:"
+                + contract["contract_signature"]
+            ),
+            "rows_ref": rows.rows_ref,
+            "rows_record_ref": rows.record_ref,
+            "rows_record_digest": rows.record_digest,
+            "rows_content_hash": rows.rows_content_hash,
+            "completeness_report_ref": completeness.report_ref,
+            "completeness_record_refs": [completeness.record_ref],
+            "completeness_record_digests": [completeness.report_digest],
+            "binding_record_refs": [binding.record_ref],
+            "binding_record_digests": [binding.binding_digest],
+        }
         payload["candidate_signature"] = canonical_digest(payload)
         store = InMemoryConversationStore()
+        source_request = {
+            "context_manifest": {
+                "snapshot_version": "2026H1",
+                "contract_versions": {"runtime": "contracts-v1"},
+            }
+        }
         store.upsert_run(
             payload["source_run_id"],
             thread_id="thread-candidate",
             topic_id="topic-candidate",
-            status="completed",
-            request={
-                "context_manifest": {
-                    "snapshot_version": "2026H1",
-                    "contract_versions": {"runtime": "contracts-v1"},
-                }
-            },
+            status="running_workflow",
+            request=source_request,
         )
-        store.analysis_runtime_authority["analysis_contract"][
-            contract["analysis_contract_id"]
-        ] = contract
-        store.analysis_runtime_records[payload["source_run_id"]] = {
-            "digest": "test-owned-publication",
-            "payload": {"analysis_contract": contract},
-        }
+        store.save_analysis_runtime_records(
+            run_id=payload["source_run_id"],
+            **bundle,
+        )
+        from tests.phase7.test_agent_core_bridge import (
+            _completed_material_authority_for_records,
+        )
+
+        store.finalize_completed_material_authority(
+            run_id=payload["source_run_id"],
+            thread_id="thread-candidate",
+            topic_id="topic-candidate",
+            request=source_request,
+            material_authority=_completed_material_authority_for_records(
+                {
+                    "run_id": payload["source_run_id"],
+                    "thread_id": "thread-candidate",
+                    "topic_id": "topic-candidate",
+                },
+                bundle,
+            ),
+        )
         _add_result_candidate(store, payload)
 
         authority = store.resolve_result_candidate_authority(
@@ -152,7 +237,7 @@ class ConversationPersistenceTest(unittest.TestCase):
 
         self.assertEqual(authority["source_run_id"], payload["source_run_id"])
         self.assertEqual(authority["run_topic_id"], "topic-candidate")
-        self.assertEqual(authority["analysis_contract"], contract)
+        self.assertEqual(authority["analysis_contract"], canonical_value(contract))
         self.assertEqual(
             authority["stored_analysis_contract_signature"],
             payload["analysis_contract_signature"],
@@ -165,7 +250,7 @@ class ConversationPersistenceTest(unittest.TestCase):
             "run-owner",
             thread_id="thread-owner",
             topic_id="topic-owner",
-            status="needs_question",
+            status="waiting_for_clarification",
             request=spoofed,
         )
         self.assertEqual(memory.get_run_request("run-owner")["thread_id"], "thread-owner")
@@ -898,6 +983,7 @@ class FakeConnection:
         fail_execute_at=None,
         fail_commit=False,
         result_ref_collision=False,
+        result_candidate_authority_rows=None,
     ):
         self.statements = []
         self.commits = 0
@@ -906,6 +992,7 @@ class FakeConnection:
         self.fail_execute_at = fail_execute_at
         self.fail_commit = fail_commit
         self.result_ref_collision = result_ref_collision
+        self.result_candidate_authority_rows = result_candidate_authority_rows
         self.runtime_publications = {}
         self.pending_runtime_publications = {}
 
@@ -920,6 +1007,11 @@ class FakeConnection:
                 if self.result_ref_collision
                 else [{"result_ref": (params or {})["result_ref"]}]
             )
+        if (
+            "result_candidate_authority" in statement
+            and self.result_candidate_authority_rows is not None
+        ):
+            rows = self.result_candidate_authority_rows
         if "runtime_publication_preflight" in statement and rows is None:
             run_id = (params or {})["run_id"]
             rows = [{

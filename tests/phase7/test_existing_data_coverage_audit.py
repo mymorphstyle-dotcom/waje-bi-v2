@@ -316,7 +316,14 @@ def _authoritative_market_reuse_review_fixture():
         )
     )
     candidate = _candidate(runtime, source, signed)
-    _publish_source(runtime, store, topic.topic_id, source, candidate)
+    _publish_source(
+        runtime,
+        store,
+        topic.topic_id,
+        source,
+        candidate,
+        accepted_graph=("market_health_compare",),
+    )
     current = runtime.execute(
         request(
             "run-market-reuse-review-current",
@@ -548,6 +555,9 @@ def _postgres_runtime_evaluation_backend(fixture, run_id):
     }
 
     class Store:
+        def resolve_result_candidate_authority(self, **kwargs):
+            return fixture.store.resolve_result_candidate_authority(**kwargs)
+
         def _fetchall(self, statement, params):
             if "live_eval_runtime_evaluation_authority_root" in statement:
                 assert "analysis_runtime_publications" in statement
@@ -1967,7 +1977,10 @@ def test_required_reuse_review_rejects_nonready_source_candidate_chain():
     )
 
     assert review["passed"] is False
-    assert "reuse_source_chain_not_claim_ready" in review["errors"]
+    assert review["errors"] == [
+        "reuse_source_candidate_authority_invalid",
+        "reuse_source_result_authority_invalid",
+    ]
 
 
 def test_all_suite_claim_ceilings_use_runtime_maximum_strength_taxonomy():

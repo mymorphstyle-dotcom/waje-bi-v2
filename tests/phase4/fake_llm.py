@@ -15,6 +15,8 @@ class FakeLLMClient:
             output = (
                 _default_query_gap_clarification(messages)
                 if task == "query_gap_clarification" and task not in self.overrides
+                else _default_confirm_understanding(messages)
+                if task == "confirm_understanding"
                 else _default_final_business_summary(messages)
                 if task == "final_business_summary" and task not in self.overrides
                 else dict(DEFAULT_OUTPUTS.get(task, {}))
@@ -68,6 +70,38 @@ def _default_query_gap_clarification(messages):
         "recommended_assumption": {"option": recommended},
         "recommendation_reason": "该处理方式符合当前业务证据边界。",
         "decision_summary": "该选择会影响业务结论。",
+    }
+
+
+def _default_confirm_understanding(messages):
+    payload = _input_payload(messages)
+    intent = payload.get("intent")
+    if not isinstance(intent, dict):
+        intent = {}
+    material_fields = (
+        "question_family",
+        "target_metric",
+        "pattern_family",
+        "scope",
+        "time_window",
+        "target_claim",
+        "baseline",
+        "target",
+        "pattern_params",
+    )
+    machine_intent = {
+        field: intent[field]
+        for field in material_fields
+        if field in intent
+    }
+    return {
+        "confirmed_intent": {
+            "business_summary": "已确认本次分析的业务问题、时间口径和证据边界。",
+            "machine_intent": machine_intent,
+        },
+        "accepted_assumptions": [],
+        "status_message": "已确认本次业务理解。",
+        "display_summary": "已确认分析边界，继续设计分析路线。",
     }
 
 
@@ -146,7 +180,10 @@ DEFAULT_OUTPUTS = {
         "status_message": "需要用户确认业务边界。",
     },
     "confirm_understanding": {
-        "confirmed_intent": {"question_family": "pattern_explanation"},
+        "confirmed_intent": {
+            "business_summary": "已确认本次分析的业务问题、时间口径和证据边界。",
+            "machine_intent": {"question_family": "pattern_explanation"},
+        },
         "accepted_assumptions": [],
         "status_message": "已确认本次业务理解。",
     },

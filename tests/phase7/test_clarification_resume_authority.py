@@ -8,7 +8,10 @@ import pytest
 
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.store import InMemoryConversationStore
-from bi_agent.conversation.agent_core import ConversationAgentCore
+from bi_agent.conversation.agent_core import (
+    ConversationAgentCore,
+    _build_clarification_source_envelope,
+)
 from bi_agent.conversation.runtime import ConversationRuntime
 from bi_agent.conversation.clarification_authority import build_clarification_outcome
 from bi_agent.conversation.models import ClarificationOption, ClarificationState
@@ -221,24 +224,32 @@ def test_query_gap_resume_context_roundtrips_source_run_topic_and_material():
     }
     source_run_id = "run-query-gap-roundtrip"
     source_contract = _source_contract_with_unsupported_claim(source_run_id)
+    clarification = {
+        "questions": [{
+            "question": "choose",
+            "options": ["continue source topic"],
+        }],
+    }
     store.upsert_run(
         source_run_id,
         thread_id="thread-query-gap-roundtrip",
         topic_id=topic.topic_id,
         status="waiting_for_clarification",
         request={
-            "thread_id": "thread-query-gap-roundtrip",
-            "topic_id": topic.topic_id,
-            "question": "source business question",
-            "original_intent": original_intent,
-            "material_slots": material_slots,
-            "analysis_contract": source_contract,
-            "clarification": {
-                "questions": [{
-                    "question": "choose",
-                    "options": ["continue source topic"],
-                }],
-            },
+            "clarification_source_envelope": (
+                _build_clarification_source_envelope(
+                    source_run_id=source_run_id,
+                    source_thread_id="thread-query-gap-roundtrip",
+                    source_topic_id=topic.topic_id,
+                    source_owner_id="analyst",
+                    question="source business question",
+                    analysis_context={},
+                    analysis_contract=source_contract,
+                    original_intent=original_intent,
+                    material_slots=material_slots,
+                    clarification=clarification,
+                )
+            ),
         },
     )
     store.set_pending_clarification(
@@ -5530,41 +5541,50 @@ def test_agent_core_resume_closes_every_nonready_obligation_from_authority():
         "diagnostic_tags": [],
         "scope": "full_sample",
     }
+    material_authority = _signed_material_authority(
+        original_intent,
+        material_slots,
+        source_run_id="run-segment-source",
+        thread_id="thread-segment-closure",
+        topic_id=topic.topic_id,
+        runtime_material=_runtime_material_for_contract(
+            contract,
+            proposal={
+                "requested_context_sources": ["gameplay"],
+            },
+            accepted_graph=contract["capability_requirements"],
+        ),
+    )
+    clarification = {
+        "questions": [{
+            "question": "缺口怎么处理？",
+            "options": ["保留边界继续", "等待来源"],
+        }],
+        "recommended_assumption": {"option": "保留边界继续"},
+        "choice_actions": [choice_action],
+    }
     store.upsert_run(
         "run-segment-source",
         thread_id="thread-segment-closure",
         topic_id=topic.topic_id,
         status="waiting_for_clarification",
         request={
-            "question": "昨天渠道贡献如何？",
-            "accepted_graph": list(contract["capability_requirements"]),
-            "analysis_contract": contract,
-            "original_intent": original_intent,
-            "material_slots": material_slots,
-                "material_authority": _signed_material_authority(
-                original_intent,
-                material_slots,
+            "material_authority": material_authority,
+            "clarification_source_envelope": (
+                _build_clarification_source_envelope(
                     source_run_id="run-segment-source",
-                    thread_id="thread-segment-closure",
-                    topic_id=topic.topic_id,
-                    runtime_material=_runtime_material_for_contract(
-                        contract,
-                        proposal={
-                            "requested_context_sources": ["gameplay"],
-                        },
-                        accepted_graph=contract[
-                            "capability_requirements"
-                        ],
-                    ),
-                ),
-            "clarification": {
-                "questions": [{
-                    "question": "缺口怎么处理？",
-                    "options": ["保留边界继续", "等待来源"],
-                }],
-                "recommended_assumption": {"option": "保留边界继续"},
-                "choice_actions": [choice_action],
-            },
+                    source_thread_id="thread-segment-closure",
+                    source_topic_id=topic.topic_id,
+                    source_owner_id="user",
+                    question="昨天渠道贡献如何？",
+                    analysis_context={},
+                    accepted_graph=contract["capability_requirements"],
+                    analysis_contract=contract,
+                    original_intent=original_intent,
+                    material_slots=material_slots,
+                    clarification=clarification,
+                )
+            ),
         },
     )
     store.analysis_runtime_authority["analysis_contract"][
@@ -5660,26 +5680,36 @@ def test_agent_core_returns_typed_failure_when_resume_authority_rejects():
         "thread-resume-reject", title="付费分析", summary="昨天付费"
     )
     store.set_current_topic("thread-resume-reject", topic.topic_id)
+    clarification = {
+        "questions": [{
+            "question": "怎么继续？",
+            "options": ["保留边界继续"],
+        }],
+        "recommended_assumption": {"option": "保留边界继续"},
+        "choice_actions": [{
+            "choice_id": "boundary",
+            "action_kind": "continue_with_boundary_only",
+            "business_label": "保留边界继续",
+            "affected_capabilities": ["answer_verify"],
+        }],
+    }
     store.upsert_run(
         "run-resume-reject-source",
         thread_id="thread-resume-reject",
         topic_id=topic.topic_id,
         status="waiting_for_clarification",
         request={
-            "question": "昨天付费如何？",
-            "clarification": {
-                "questions": [{
-                    "question": "怎么继续？",
-                    "options": ["保留边界继续"],
-                }],
-                "recommended_assumption": {"option": "保留边界继续"},
-                "choice_actions": [{
-                    "choice_id": "boundary",
-                    "action_kind": "continue_with_boundary_only",
-                    "business_label": "保留边界继续",
-                    "affected_capabilities": ["answer_verify"],
-                }],
-            },
+            "clarification_source_envelope": (
+                _build_clarification_source_envelope(
+                    source_run_id="run-resume-reject-source",
+                    source_thread_id="thread-resume-reject",
+                    source_topic_id=topic.topic_id,
+                    source_owner_id="user",
+                    question="昨天付费如何？",
+                    analysis_context={},
+                    clarification=clarification,
+                )
+            ),
         },
     )
     store.set_pending_clarification(

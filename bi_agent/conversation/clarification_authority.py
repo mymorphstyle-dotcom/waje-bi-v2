@@ -2073,13 +2073,8 @@ def _contract_target_metric_ids(
         elif runtime_registry is None:
             matches = ()
         else:
-            matches = tuple(
-                metric_id
-                for metric_id in runtime_registry.metric_ids
-                if any(
-                    str(source.get("contract_ref") or "") == contract_ref
-                    for source in runtime_registry.metric_sources(metric_id).values()
-                )
+            matches = runtime_registry.metric_ids_for_contract_ref(
+                contract_ref
             )
         if len(matches) != 1:
             raise EvidenceIntegrityError(
