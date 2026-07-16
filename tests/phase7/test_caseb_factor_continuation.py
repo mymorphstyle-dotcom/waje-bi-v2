@@ -55,7 +55,7 @@ from tests.phase7.test_core_driver_capability_binding import (
 def _state(*capabilities: str) -> dict:
     return {
         "request": {
-            "run_mode": "fixture",
+            "run_mode": "production",
             "role": "analyst",
             "runtime_rows_by_intent": {
                 "daily_metric_baselines": (
@@ -374,82 +374,6 @@ def test_persistence_repair_records_include_auxiliary_terminal_closure():
         "attempt_ref": "repair:analysis:1:2",
         **terminal,
     }
-
-
-def test_compare_periods_uses_canonical_claim_type_when_business_target_is_narrative():
-    state = _state("compare_periods")
-    captured = []
-
-    def execute(request):
-        captured.append(request)
-        return {
-            "evidence_ref": "compare-periods:evidence",
-            "capability_id": request.capability_id,
-            "typed_payload": {},
-            "result_refs": (),
-        }
-
-    with patch(
-        "bi_agent.runtime.langgraph_workflow.execute_capability",
-        side_effect=execute,
-    ):
-        _execute_capabilities(state)
-
-    assert len(captured) == 1
-    assert captured[0].target_claim == "解释目标日付费金额上涨的原因"
-    assert captured[0].claim_type == "comparative_change"
-
-
-def test_data_quality_uses_required_fields_from_accepted_capability_plan():
-    state = _state("data_quality_profile")
-    required_fields = (
-        "window_id",
-        "window_role",
-        "observation_key",
-        "source_row_count",
-    )
-    state["request"]["capability_execution_plans"] = (
-        CapabilityExecutionPlan(
-            capability_id="data_quality_profile",
-            capability_contract_ref="runtime#data_quality_profile",
-            required_input_slots=(
-                CapabilityInputSlot(
-                    slot_id="data_quality_probe",
-                    query_contract_refs=("query:data-quality",),
-                    required=True,
-                    accepted_completeness=("complete",),
-                    required_fields=required_fields,
-                    required_window_ids=("target_day",),
-                ),
-            ),
-            optional_input_slots=(),
-            merge_strategy="single",
-            minimum_readiness={"required_slots": "all"},
-            degradation_policy={"missing_required_input": "report_contract_gap"},
-            supported_evidence_types=("insufficient",),
-            maximum_claim_strength="trust_boundary",
-            supported_claim_types=("contract_coverage_and_trust_boundary",),
-        ),
-    )
-    captured = []
-
-    def execute(request):
-        captured.append(request)
-        return {
-            "evidence_ref": "data-quality:evidence",
-            "capability_id": request.capability_id,
-            "typed_payload": {},
-            "result_refs": (),
-        }
-
-    with patch(
-        "bi_agent.runtime.langgraph_workflow.execute_capability",
-        side_effect=execute,
-    ):
-        _execute_capabilities(state)
-
-    assert len(captured) == 1
-    assert captured[0].params["required_fields"] == required_fields
 
 
 def test_data_quality_evidence_type_matches_runtime_capability_contract():
@@ -1657,9 +1581,6 @@ def test_answer_repair_charges_the_failure_specific_budget():
             return_value=repaired_output,
         ),
         patch(
-            "bi_agent.runtime.langgraph_workflow._ensure_business_narrative_answer"
-        ),
-        patch(
             "bi_agent.runtime.langgraph_workflow._answer_synthesis_context",
             return_value={},
         ),
@@ -1675,9 +1596,6 @@ def test_answer_repair_charges_the_failure_specific_budget():
         patch(
             "bi_agent.runtime.langgraph_workflow._invoke_llm",
             return_value=repaired_output,
-        ),
-        patch(
-            "bi_agent.runtime.langgraph_workflow._ensure_business_narrative_answer"
         ),
         patch(
             "bi_agent.runtime.langgraph_workflow._answer_synthesis_context",

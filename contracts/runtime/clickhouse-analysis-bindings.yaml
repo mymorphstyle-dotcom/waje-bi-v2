@@ -8,7 +8,6 @@ claim_strength_taxonomy:
   claim_strength_ranks:
     insufficient: 0
     context_only: 0
-    dry_run_context: 0
     observed: 1
     medium: 2
     high: 3

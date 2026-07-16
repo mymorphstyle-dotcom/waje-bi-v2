@@ -239,10 +239,13 @@ const globalStore = globalThis as typeof globalThis & {
 export function conversationStoreMode() {
   const databaseUrl = process.env.WAJE_RUNTIME_DATABASE_URL || process.env.DATABASE_URL;
   if (databaseUrl) return "postgres";
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("WAJE_RUNTIME_DATABASE_URL or DATABASE_URL is required");
+  if (
+    process.env.NODE_ENV === "test"
+    && process.env.WAJE_GATEWAY_UNIT_TEST_STORE === "memory"
+  ) {
+    return "memory";
   }
-  return "memory";
+  throw new Error("WAJE_RUNTIME_DATABASE_URL or DATABASE_URL is required");
 }
 
 export async function listThreads(): Promise<ThreadRecord[]> {

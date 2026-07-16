@@ -40,7 +40,23 @@ from bi_agent.runtime.claim_provenance import (
     validated_context_manifest_record,
 )
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
+from tests.phase4.analysis_asset_vectors import verified_dimension_scan_asset
+
+
+class _EmptyRuntimeEvidenceResolver:
+    def __getattr__(self, name):
+        if name.startswith("resolve_"):
+            return lambda *args, **kwargs: None
+        raise AttributeError(name)
+
+
+class _UnitRuntimeStore:
+    analysis_runtime_records = {}
+    runs = {}
+    audit_events = ()
+
+    def runtime_evidence_resolver(self):
+        return _EmptyRuntimeEvidenceResolver()
 
 
 def _workflow_clarification_material(
@@ -5135,94 +5151,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
             "artifacts/phase-7/boundary-failure/answer_package.json",
         )
 
-    def test_live_conversation_case_schema_supports_clarification_resume(self):
-        from tools.phase7.run_live_conversation_system_test import load_cases
-
-        cases = load_cases("evals/phase7/conversation_scenarios.yaml")
-        case = next(item for item in cases if item["id"] == "q2_q1_wajespecial_long_followup")
-        self.assertGreaterEqual(len(case["turns"]), 4)
-        self.assertIs(case["turns"][3]["expect"]["allow_clarification"], True)
-        self.assertIn("clarification_response", case["turns"][3])
-        self.assertFalse(any("case_id" in item for item in cases))
-
-    def test_live_conversation_cases_include_long_thread_stress_set(self):
-        from tools.phase7.run_live_conversation_system_test import load_cases
-
-        cases = load_cases("evals/phase7/conversation_scenarios.yaml")
-        matches = [item for item in cases if item["id"] == "q2_q1_long_thread_stress"]
-        self.assertTrue(matches)
-        case = matches[0]
-        required = {
-            capability
-            for turn in case["turns"]
-            for capability in turn.get("expect", {}).get("required_capabilities", ())
-        }
-
-        self.assertEqual(case["group"], "long_thread_stress")
-        self.assertGreaterEqual(len(case["turns"]), 8)
-        self.assertTrue(any("clarification_response" in turn for turn in case["turns"]))
-        self.assertTrue(
-            {
-                "driver_decomposition",
-                "segment_contribution",
-                "joint_attribution",
-                "outlier_scan",
-                "outlier_contribution",
-                "answer_verify",
-            }.issubset(required)
-        )
-
-    def test_live_conversation_harness_runs_clarification_and_resumes_same_topic(self):
-        from tempfile import TemporaryDirectory
-
-        from tools.phase7.run_live_conversation_system_test import load_cases, run_case
-
-        case = next(
-            item
-            for item in load_cases("evals/phase7/conversation_scenarios.yaml")
-            if item["id"] == "q2_q1_wajespecial_long_followup"
-        )
-
-        with TemporaryDirectory() as tmpdir:
-            result = run_case(
-                ConversationAgentCore.from_environment(),
-                case,
-                Path(tmpdir),
-            )
-
-        self.assertEqual(result["status"], "failed")
-        self.assertIn("run_id", result)
-        self.assertIn("topic_id", result)
-        self.assertIn("answer_package", result)
-        self.assertIn("context_manifest", result)
-        self.assertIn("accepted_graph", result)
-        self.assertIn("llm_calls", result)
-        self.assertEqual(
-            result["answer_package"]["status"],
-            "failed",
-        )
-        self.assertIn("quality_review", result)
-        clarification_turn = result["turns"][3]
-        self.assertEqual(clarification_turn["status"], "waiting_for_clarification")
-        self.assertEqual(clarification_turn["resumed_status"], "failed")
-        self.assertEqual(clarification_turn["topic_id"], clarification_turn["resumed_topic_id"])
-        self.assertEqual(result["turns"][0]["topic_id"], result["turns"][1]["topic_id"])
-        self.assertEqual(result["turns"][1]["topic_id"], result["turns"][2]["topic_id"])
-        for turn in result["turns"]:
-            with self.subTest(turn=turn["index"]):
-                review = turn["expectation_review"]
-                self.assertEqual(
-                    review["status"],
-                    "not_evaluated_due_to_run_failure",
-                )
-                self.assertIs(review["evaluated"], False)
-                self.assertIsNone(review["passed"])
-                self.assertEqual(
-                    review["primary_failure"]["reason"],
-                    turn.get("resumed_failure_reason") or turn["failure_reason"],
-                )
-        self.assertIsNone(clarification_turn["resumed_accepted_graph"])
-
     def test_agent_core_passes_clarification_answer_as_workflow_choice(self):
         captured: dict[str, object] = {}
 
@@ -5422,8 +5350,11 @@ class AgentCoreBridgeTest(unittest.TestCase):
         with patch(
             "bi_agent.conversation.agent_core.PostgresConversationStore.from_env",
             return_value=InMemoryConversationStore(),
+        ), patch(
+            "bi_agent.conversation.agent_core._conversation_llm_from_env",
+            return_value=object(),
         ):
-            core = ConversationAgentCore.from_environment(real_clickhouse=True)
+            core = ConversationAgentCore.from_environment()
 
         self.assertIsInstance(core.analysis_runtime, AnalysisRuntime)
         self.assertIs(core.evidence_resolver, core.analysis_runtime.evidence_resolver)
@@ -5454,7 +5385,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 "bi_agent.conversation.agent_core.PostgresConversationStore.from_env",
                 return_value=InMemoryConversationStore(),
             ), self.assertRaisesRegex(LLMConfigurationError, expected_reason):
-                ConversationAgentCore.from_environment(real_llm=True)
+                ConversationAgentCore.from_environment()
 
     def test_agent_core_real_llm_environment_types_provider_initialization_failure(self):
         from bi_agent.runtime.llm_client import (
@@ -5473,22 +5404,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
             LLMConfigurationError,
             "llm_client_initialization_failed",
         ) as caught:
-            ConversationAgentCore.from_environment(real_llm=True)
+            ConversationAgentCore.from_environment()
 
         self.assertIsInstance(caught.exception.__cause__, RuntimeError)
-
-    def test_agent_core_dry_run_environment_does_not_initialize_llm_provider(self):
-        from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
-
-        with patch.object(
-            OpenAICompatibleLLMClient,
-            "from_env",
-            side_effect=RuntimeError("provider-must-not-be-initialized"),
-        ) as provider_factory:
-            core = ConversationAgentCore.from_environment(real_llm=False)
-
-        provider_factory.assert_not_called()
-        self.assertIsNone(core.conversation_llm_client)
 
     def test_real_clickhouse_core_refreshes_trusted_release_snapshots_per_plan(self):
         from tests.phase7.test_conversation_persistence import (
@@ -5500,8 +5418,11 @@ class AgentCoreBridgeTest(unittest.TestCase):
         with patch(
             "bi_agent.conversation.agent_core.PostgresConversationStore.from_env",
             return_value=store,
+        ), patch(
+            "bi_agent.conversation.agent_core._conversation_llm_from_env",
+            return_value=object(),
         ):
-            core = ConversationAgentCore.from_environment(real_clickhouse=True)
+            core = ConversationAgentCore.from_environment()
 
         self.assertIs(core.analysis_runtime.release_resolver, store)
         self.assertIs(core.analysis_runtime.executor.release_resolver, store)
@@ -5642,62 +5563,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(second.turn_intent.intent, "follow_up")
         self.assertEqual(second.topic_relation, "inherit_current")
         self.assertEqual(first.topic_id, second.topic_id)
-
-    def test_live_conversation_cases_include_revenue_diagnostic_question_set(self):
-        from tools.phase7.run_live_conversation_system_test import load_cases
-
-        expected_questions = [
-            "昨天付费金额为什么上涨/下跌？主要是首充人数、付费频次、单笔付费金额，还是支付成功率等因素变化导致的",
-            "最近付费金额是否存在固定规律，比如周末更高、月初更高、晚上更高？这个规律主要由哪个渠道、地区、用户类型或玩法带动？",
-            "昨天的活动、投放预算、素材更换、版本更新、支付通道、节日或外部事件，是否影响了付费金额？",
-            "当前收入健康吗？是靠正常用户增长带动，还是靠少数大额用户、短期活动或异常渠道拉动？收入结构里最大的风险点是什么？",
-            "昨天收入变化最大的是哪个一级渠道、地区、设备、包、支付方式或玩法？对收入影响最大的 3 个因子分别是什么？",
-            "昨天有没有异常波动？如果有，是哪个渠道、支付通道、地区、设备、玩法或大额用户造成的？",
-            "相比前一天、近 7 日均值、上周同日，昨天付费金额为什么变化？哪些指标偏离了正常水平？",
-            "这个结论的数据证据够不够？是否存在数据延迟、渠道归因异常、支付状态缺失、重复订单或异常用户影响判断？",
-        ]
-        cases = load_cases("evals/phase7/conversation_scenarios.yaml")
-        case = next(
-            item
-            for item in cases
-            if item["id"] == "paid_amount_revenue_diagnostics_8_question_set"
-        )
-
-        self.assertEqual(case["group"], "production_revenue_diagnostics")
-        self.assertEqual(
-            case["analysis_context"],
-            {
-                "as_of": "2026-06-03T12:00:00+01:00",
-                "target_date": "2026-06-02",
-                "previous_day": "2026-06-01",
-                "rolling_7_day_start": "2026-05-26",
-                "rolling_7_day_end": "2026-06-01",
-                "same_weekday_last_week": "2026-05-26",
-                "pattern_history_start": "2026-01-01",
-                "anomaly_history_start": "2026-05-03",
-            },
-        )
-        self.assertEqual(
-            case["required_datasets"],
-            [
-                "paid_order_success",
-                "payment_attempt",
-                "market_dashboard",
-                "gameplay",
-                "external_event",
-            ],
-        )
-        self.assertEqual([turn["user"] for turn in case["turns"]], expected_questions)
-        self.assertEqual(case["turns"][0]["expect"]["topic_relation"], "create")
-        self.assertTrue(
-            all(turn["expect"]["topic_relation"] == "inherit" for turn in case["turns"][1:])
-        )
-        self.assertTrue(
-            all(turn["scenario"].get("required_capabilities") for turn in case["turns"])
-        )
-        self.assertTrue(
-            all("major_nodes" not in turn["expect"] for turn in case["turns"])
-        )
 
     def test_live_harness_rejects_claim_refs_without_traceable_source(self):
         from tools.phase7.run_live_conversation_system_test import _expectation_review
@@ -5958,68 +5823,12 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     ]
                 }
             },
-            real_clickhouse=True,
         )
 
         self.assertFalse(review["real_clickhouse_verified"])
         self.assertIn("missing_clickhouse_result_refs", review["issues"])
 
-    def test_live_harness_passes_fixed_analysis_context_on_clarification_resume(self):
-        from tempfile import TemporaryDirectory
-
-        from tools.phase7.run_live_conversation_system_test import run_case
-
-        calls = []
-        manifest = {
-            "manifest_id": "context-fixed",
-            "can_support_claims": True,
-            "items": [],
-        }
-
-        class Core:
-            evidence_resolver = None
-
-            def run_message(self, **kwargs):
-                calls.append(kwargs)
-                if len(calls) == 1:
-                    return {
-                        "status": "waiting_for_clarification",
-                        "run_id": "run-fixed-1",
-                        "topic_id": "topic-fixed",
-                        "intent": "new_topic",
-                        "topic_relation": "new_topic",
-                        "context_manifest": manifest,
-                    }
-                return {
-                    "status": "completed",
-                    "run_id": "run-fixed-2",
-                    "topic_id": "topic-fixed",
-                    "intent": "follow_up",
-                    "topic_relation": "inherit_current",
-                    "answer_package": {"sections": []},
-                    "context_manifest": manifest,
-                    "accepted_graph": [],
-                    "llm_calls": [],
-                }
-
-        fixed = {"as_of": "2026-06-03T12:00:00+01:00"}
-        case = {
-            "id": "fixed-context-resume",
-            "analysis_context": fixed,
-            "turns": [{
-                "user": "昨天付费金额为什么变化？",
-                "clarification_response": "按推荐继续。",
-                "expect": {"allow_clarification": True},
-            }],
-        }
-        with TemporaryDirectory() as tmpdir:
-            run_case(Core(), case, Path(tmpdir))
-
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0]["analysis_context"], fixed)
-        self.assertEqual(calls[1]["analysis_context"], fixed)
-
-    def test_live_harness_accepts_recommended_clarification_without_fixture_text(self):
+    def test_live_harness_pauses_for_human_clarification(self):
         from tempfile import TemporaryDirectory
 
         from tools.phase7.run_live_conversation_system_test import run_case
@@ -6032,45 +5841,31 @@ class AgentCoreBridgeTest(unittest.TestCase):
         }
 
         class Core:
+            store = _UnitRuntimeStore()
             evidence_resolver = None
 
             def run_message(self, **kwargs):
                 calls.append(kwargs)
-                if len(calls) == 1:
-                    return {
-                        "status": "waiting_for_clarification",
-                        "run_id": "run-auto-1",
-                        "topic_id": "topic-auto",
-                        "intent": "new_topic",
-                        "topic_relation": "new_topic",
-                        "context_manifest": manifest,
-                        "clarification": {
-                            "recommended_choice_id": "choice-supported",
-                            "recommended_assumption": {
-                                "option": "使用受支持口径继续"
-                            },
-                            "choice_actions": [{
-                                "choice_id": "choice-supported",
-                                "business_label": "使用受支持口径继续",
-                                "action_kind": "choose_supported_contract",
-                            }],
-                        },
-                    }
                 return {
-                    "status": "completed",
-                    "run_id": "run-auto-2",
+                    "status": "waiting_for_clarification",
+                    "run_id": "run-auto-1",
                     "topic_id": "topic-auto",
-                    "intent": "clarification_answer",
-                    "topic_relation": "inherit_current",
-                    "answer_package": {"final_answer": "已按受支持口径完成。", "sections": []},
+                    "intent": "new_topic",
+                    "topic_relation": "new_topic",
                     "context_manifest": manifest,
-                    "accepted_graph": [],
-                    "llm_calls": [],
+                    "clarification": {
+                        "recommended_assumption": {
+                            "option": "使用受支持口径继续"
+                        },
+                        "questions": [{
+                            "question": "是否使用推荐口径？",
+                            "options": ["使用受支持口径继续（推荐）"],
+                        }],
+                    },
                 }
 
         case = {
             "id": "auto-clarification",
-            "analysis_context": {"as_of": "2026-06-03T12:00:00+01:00"},
             "turns": [{
                 "user": "昨天付费金额为什么变化？",
                 "expect": {"allow_clarification": True},
@@ -6078,61 +5873,10 @@ class AgentCoreBridgeTest(unittest.TestCase):
         }
         with TemporaryDirectory() as tmpdir:
             output = run_case(Core(), case, Path(tmpdir))
-
-        turn = output["turns"][0]
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[1]["user_message"], "使用受支持口径继续")
-        self.assertEqual(turn["clarification_response"], "使用受支持口径继续")
-        self.assertEqual(turn["resumed_status"], "completed")
-        self.assertEqual(turn["topic_id"], turn["resumed_topic_id"])
-
-    def test_live_harness_prefers_progressing_contract_action_over_wait(self):
-        from tools.phase7.run_live_conversation_system_test import (
-            _automatic_clarification_response,
-        )
-
-        response = _automatic_clarification_response({
-            "clarification": {
-                "recommended_choice_id": "wait",
-                "choice_actions": [
-                    {
-                        "choice_id": "omit",
-                        "action_kind": "omit_unavailable_context",
-                        "business_label": "继续主指标分析并保留缺口",
-                    },
-                    {
-                        "choice_id": "wait",
-                        "action_kind": "wait_for_source",
-                        "business_label": "等待数据源",
-                    },
-                ],
-            }
-        })
-
-        self.assertEqual(response, "继续主指标分析并保留缺口")
-
-    def test_live_harness_uses_exact_recommended_option_without_typed_actions(self):
-        from tools.phase7.run_live_conversation_system_test import (
-            _automatic_clarification_response,
-        )
-
-        response = _automatic_clarification_response({
-            "clarification": {
-                "recommended_assumption": {
-                    "option": "按已设定的基线继续分析"
-                },
-                "questions": [{
-                    "question": "请选择基线",
-                    "options": [
-                        "按已设定的基线继续分析",
-                        "改用其他基线",
-                        "tell the agent to do differently",
-                    ],
-                }],
-            }
-        })
-
-        self.assertEqual(response, "按已设定的基线继续分析")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(output["status"], "waiting_for_clarification")
+        self.assertEqual(output["final_turn_status"], "waiting_for_clarification")
+        self.assertIsNone(output["real_clickhouse_verified"])
 
     def test_live_harness_rejects_partial_authoritative_query_result(self):
         from tools.phase7.run_live_conversation_system_test import (
@@ -6172,7 +5916,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     "sources": [],
                 },
             ),
-            real_clickhouse=True,
             evidence_resolver=PartialResolver(),
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
@@ -6255,7 +5998,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         review = _real_clickhouse_review(
             self._persisted_runtime_result(package, context_manifest={}),
-            real_clickhouse=True,
             evidence_resolver=ContractPartialResolver(),
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
@@ -6310,7 +6052,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         review = _real_clickhouse_review(
             self._persisted_runtime_result(package, context_manifest={}),
-            real_clickhouse=True,
             evidence_resolver=ShiftedResolver(),
             required_datasets=("paid_order_success",),
             analysis_context={
@@ -6360,7 +6101,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         review = _real_clickhouse_review(
             self._persisted_runtime_result(package, context_manifest=manifest),
-            real_clickhouse=True,
             evidence_resolver=ClaimResolver(),
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
@@ -6395,7 +6135,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         review = _real_clickhouse_review(
             self._persisted_runtime_result(package, context_manifest=manifest),
-            real_clickhouse=True,
             evidence_resolver=context["evidence_resolver"],
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
@@ -6425,7 +6164,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         review = _real_clickhouse_review(
             self._persisted_runtime_result(package, context_manifest=manifest),
-            real_clickhouse=True,
             evidence_resolver=context["evidence_resolver"],
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
@@ -6466,7 +6204,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         review = _real_clickhouse_review(
             self._persisted_runtime_result(package, context_manifest=manifest),
-            real_clickhouse=True,
             evidence_resolver=FailingClaimResolver(),
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
@@ -6493,7 +6230,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         review = _real_clickhouse_review(
             self._persisted_runtime_result(package, context_manifest={}),
-            real_clickhouse=True,
             evidence_resolver=context["evidence_resolver"],
             required_datasets=("paid_order_success",),
             analysis_context={"target_date": "2026-06-02"},
@@ -6525,7 +6261,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     },
                 }
             }],
-            True,
             ("paid_order_success",),
         )
 
@@ -6568,7 +6303,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         review = _real_clickhouse_review(
             self._persisted_runtime_result(package, context_manifest={}),
-            real_clickhouse=True,
             evidence_resolver=LegacyResolver(),
             runtime_authority_resolver=(
                 self._run_matched_runtime_authority_resolver(package)
@@ -6606,7 +6340,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     },
                 }
             },
-            real_clickhouse=True,
         )
 
         self.assertFalse(review["real_clickhouse_verified"])
@@ -6656,7 +6389,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     },
                 }
             },
-            real_clickhouse=True,
         )
 
         self.assertFalse(review["real_clickhouse_verified"])
@@ -6686,7 +6418,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     core,
                     case,
                     Path(tmpdir),
-                    real_clickhouse=True,
                 )
 
     def test_live_harness_preserves_failure_llm_audits_without_artifact(self):
@@ -6787,40 +6518,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
             result["answer_package"]["final_answer"],
             "客户端安全答案",
         )
-
-    def test_live_harness_writes_partial_case_artifact_after_each_turn(self):
-        from tempfile import TemporaryDirectory
-
-        from tools.phase7.run_live_conversation_system_test import run_case
-
-        calls = {"count": 0}
-
-        def workflow(request):
-            calls["count"] += 1
-            if calls["count"] == 2:
-                raise RuntimeError("second_turn_stopped")
-            return fake_workflow(request)
-
-        store = InMemoryConversationStore()
-        core = ConversationAgentCore(store, workflow_runner=workflow)
-        case = {
-            "id": "partial_turn_artifact",
-            "turns": [
-                {"user": "Q2 比 Q1 付费金额为什么变了？", "expect": {}},
-                {"user": "继续看渠道。", "expect": {}},
-            ],
-        }
-
-        with TemporaryDirectory() as tmpdir:
-            artifact_path = Path(tmpdir) / "partial_turn_artifact.json"
-            with self.assertRaisesRegex(RuntimeError, "second_turn_stopped"):
-                run_case(core, case, Path(tmpdir))
-            data = json.loads(artifact_path.read_text(encoding="utf-8"))
-
-        self.assertEqual(data["status"], "running")
-        self.assertEqual(len(data["turns"]), 1)
-        self.assertEqual(data["turns"][0]["status"], "completed")
-
     def test_live_harness_loads_local_env_without_overriding_shell(self):
         import os
         from tempfile import TemporaryDirectory
@@ -7326,9 +7023,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         output = _case_output(
             case={"id": "resumed-quality-sidecar"},
             thread_id="thread-resumed-quality",
-            run_mode="dry_run",
             strict_quality=False,
-            real_clickhouse=False,
             turns=[turn],
         )
 
@@ -7997,8 +7692,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     "turns": [{"user": "检查证据边界。", "expect": {}}],
                 },
                 Path(tmpdir),
-                real_clickhouse=True,
-                run_mode="real_clickhouse",
             )
 
         self.assertIs(
@@ -8048,6 +7741,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
             )
 
             class Core:
+                store = _UnitRuntimeStore()
                 evidence_resolver = None
 
                 def run_message(self, **kwargs):
@@ -8085,115 +7779,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
             review["final_answer_audit_warnings"],
             ["public_warning"],
         )
-
-    def test_live_harness_rejects_resumed_quality_artifact_from_sibling_suite(self):
-        from tempfile import TemporaryDirectory
-
-        from tools.phase7 import run_live_conversation_system_test as system_test
-
-        public_gate = {
-            "direct_answer": True,
-            "business_insight_present": True,
-            "followups_one_intent": False,
-            "has_verified_claims": False,
-            "verified_claim_preserved": False,
-            "repairable_warnings": ["public_resume_warning"],
-            "display_status": "public_resume_complete",
-        }
-        sibling_gate = {
-            **public_gate,
-            "repairable_warnings": ["sibling_resume_warning"],
-            "display_status": "sibling_resume_untrusted",
-        }
-
-        with TemporaryDirectory() as tmpdir:
-            temp_root = Path(tmpdir)
-            repository_root = temp_root / "repository"
-            sibling_path = (
-                repository_root
-                / "artifacts"
-                / "other-suite"
-                / "run-sibling-resumed"
-                / "answer_package.json"
-            )
-            sibling_path.parent.mkdir(parents=True)
-            sibling_path.write_text(
-                json.dumps(
-                    {
-                        "run_id": "run-sibling-resumed",
-                        "quality_gate": sibling_gate,
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            class Core:
-                evidence_resolver = None
-
-                def __init__(self):
-                    self.calls = 0
-
-                def run_message(self, **kwargs):
-                    self.calls += 1
-                    Path(kwargs["artifact_root"]).mkdir(parents=True, exist_ok=True)
-                    if self.calls == 1:
-                        return {
-                            "status": "waiting_for_clarification",
-                            "run_id": "run-sibling-waiting",
-                            "topic_id": "topic-sibling-resume",
-                            "intent": "analysis",
-                            "topic_relation": "new_topic",
-                            "answer_package": None,
-                            "context_manifest": {
-                                "manifest_id": "context-sibling-waiting",
-                                "can_support_claims": False,
-                                "items": [],
-                            },
-                            "accepted_graph": [],
-                            "artifact_path": "",
-                            "llm_calls": [],
-                            "clarification": {},
-                        }
-                    return {
-                        "status": "completed",
-                        "run_id": "run-sibling-resumed",
-                        "topic_id": "topic-sibling-resume",
-                        "intent": "analysis",
-                        "topic_relation": "inherit_current",
-                        "answer_package": {"quality_gate": public_gate},
-                        "context_manifest": {
-                            "manifest_id": "context-sibling-resumed",
-                            "can_support_claims": False,
-                            "items": [],
-                        },
-                        "accepted_graph": [],
-                        "artifact_path": str(sibling_path),
-                        "llm_calls": [],
-                    }
-
-            with patch.object(system_test, "ROOT", repository_root):
-                output = system_test.run_case(
-                    Core(),
-                    {
-                        "id": "sibling-resumed-quality",
-                        "turns": [
-                            {
-                                "user": "检查证据边界。",
-                                "expect": {},
-                                "clarification_response": "按推荐继续。",
-                            }
-                        ],
-                    },
-                    temp_root / "eval-artifacts",
-                )
-
-        review = output["turns"][0]["resumed_quality_review"]
-        self.assertEqual(review["display_status"], "public_resume_complete")
-        self.assertEqual(
-            review["final_answer_audit_warnings"],
-            ["public_resume_warning"],
-        )
-
     def test_live_harness_uses_fresh_thread_for_each_case_run(self):
         from tools.phase7.run_live_conversation_system_test import _case_thread_id
 
@@ -8204,22 +7789,34 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertTrue(second.startswith("live-q2_q1_wajespecial_long_followup-"))
         self.assertNotEqual(first, second)
 
-    def test_live_harness_separates_real_and_dry_run_artifacts(self):
-        from tools.phase7.run_live_conversation_system_test import (
-            _default_artifact_dir,
-            _run_mode,
-        )
+    def test_live_harness_uses_real_dependency_artifact_directory(self):
+        from tools.phase7.run_live_conversation_system_test import _default_artifact_dir
 
         self.assertEqual(
-            _default_artifact_dir(real_llm=False, real_clickhouse=False),
-            Path("artifacts/phase7/live-conversation-dry-run"),
-        )
-        self.assertEqual(
-            _default_artifact_dir(real_llm=True, real_clickhouse=True),
+            _default_artifact_dir(),
             Path("artifacts/phase7/live-conversation-real"),
         )
-        self.assertEqual(_run_mode(real_llm=False, real_clickhouse=False), "dry_run")
-        self.assertEqual(_run_mode(real_llm=True, real_clickhouse=True), "real_llm_real_clickhouse")
+
+    def test_live_harness_main_always_initializes_real_dependencies(self):
+        from tools.phase7 import run_live_conversation_system_test as system_test
+
+        with patch.object(system_test, "load_env_file"), patch.object(
+            system_test,
+            "resolve_cli_cases",
+            return_value=[],
+        ), patch.object(
+            system_test.ConversationAgentCore,
+            "from_environment",
+            return_value=object(),
+        ) as core_factory, patch("sys.stdout", new=StringIO()):
+            system_test.main([
+                "--cases",
+                "unused.yaml",
+                "--case",
+                "single-case",
+            ])
+
+        core_factory.assert_called_once_with()
 
 
 def _claim_scoped_package_projection_scenario(*, run_id):

@@ -82,8 +82,6 @@ class CapabilityRequest:
     rows_loader: Any = None
     runtime_registry: Any = None
     release_resolver: Any = None
-    fixture_input_mode: str = ""
-    run_mode: str = "production"
 
 
 @dataclass(frozen=True)

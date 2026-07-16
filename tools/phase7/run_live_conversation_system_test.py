@@ -75,25 +75,32 @@ from bi_agent.runtime.query_completeness import CURRENT_DATA_ASSERTIONS
 def load_cases(path: str) -> list[dict[str, Any]]:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        return []
-    defaults = raw.get("analysis_context_defaults") or {}
-    if not isinstance(defaults, Mapping):
-        raise ValueError("eval_analysis_context_defaults_invalid")
-    permission_scope_default = str(
-        raw.get("permission_scope_default") or "analyst"
-    )
-    _permission_role_for_scope(permission_scope_default)
-    cases = raw.get("conversation_cases", [])
-    loaded = [deepcopy(case) for case in cases if isinstance(case, dict) and case.get("id")]
-    for case in loaded:
-        if defaults and not case.get("analysis_context"):
-            case["analysis_context"] = dict(defaults)
-        for turn in case.get("turns") or ():
-            scenario = turn.get("scenario") if isinstance(turn, Mapping) else None
-            if not isinstance(scenario, dict):
-                continue
-            scenario.setdefault("permission_scope", permission_scope_default)
-            _permission_role_for_scope(str(scenario["permission_scope"]))
+        raise ValueError("business_expectation_document_invalid")
+    cases = raw.get("cases")
+    if not isinstance(cases, list):
+        raise ValueError("business_expectation_cases_invalid")
+
+    loaded: list[dict[str, Any]] = []
+    seen_case_ids: set[str] = set()
+    expected_keys = {"case_id", "user_message", "review_focus"}
+    for raw_case in cases:
+        if not isinstance(raw_case, Mapping) or set(raw_case) != expected_keys:
+            raise ValueError("business_expectation_case_shape_invalid")
+        case_id = str(raw_case.get("case_id") or "").strip()
+        user_message = str(raw_case.get("user_message") or "").strip()
+        review_focus = str(raw_case.get("review_focus") or "").strip()
+        if not case_id or not user_message or not review_focus:
+            raise ValueError("business_expectation_case_value_invalid")
+        if case_id in seen_case_ids:
+            raise ValueError("business_expectation_case_id_duplicate")
+        seen_case_ids.add(case_id)
+        loaded.append({
+            "id": case_id,
+            "turns": [{
+                "user": user_message,
+                "review_focus": review_focus,
+            }],
+        })
     return loaded
 
 
@@ -114,37 +121,39 @@ def select_cases(cases: list[dict[str, Any]], case_id: str | None) -> list[dict[
     return [case for case in cases if case["id"] == case_id]
 
 
-def load_suite_cases(suite: str) -> list[dict[str, Any]]:
-    if suite == "fixed-eight":
-        return select_cases(
-            load_cases("evals/phase7/conversation_scenarios.yaml"),
-            "paid_amount_revenue_diagnostics_8_question_set",
-        )
-    if suite == "platform-current-data":
-        return load_cases("evals/phase7/existing_data_coverage_scenarios.yaml")
-    raise ValueError(f"unknown_eval_suite:{suite}")
-
-
 def resolve_cli_cases(
-    suite: str | None,
     cases_path: str | None,
     case_id: str | None,
 ) -> list[dict[str, Any]]:
-    if suite and cases_path:
-        raise ValueError("eval_cli_source_conflict")
-    if cases_path:
-        cases = load_cases(cases_path)
-        selected = select_cases(cases, case_id)
-        if case_id and not selected:
-            raise ValueError("eval_case_unknown")
-    else:
-        cases = load_suite_cases(suite or "fixed-eight")
-        selected = select_cases(cases, case_id)
-        if case_id and not selected:
-            raise ValueError("eval_case_not_in_suite")
+    if not cases_path:
+        raise ValueError("eval_case_source_required")
+    if not case_id:
+        raise ValueError("eval_case_id_required")
+    cases = load_cases(cases_path)
+    selected = select_cases(cases, case_id)
     if not selected:
-        raise ValueError("eval_case_selection_empty")
+        raise ValueError("eval_case_unknown")
+    for case in selected:
+        _validate_executable_case(case)
     return selected
+
+
+def _validate_executable_case(case: Mapping[str, Any]) -> None:
+    if case.get("analysis_context"):
+        raise ValueError("eval_fixed_analysis_context_forbidden")
+    if case.get("required_datasets"):
+        raise ValueError("eval_prebound_dataset_expectation_forbidden")
+    turns = tuple(
+        turn for turn in case.get("turns") or () if isinstance(turn, Mapping)
+    )
+    if len(turns) != 1:
+        raise ValueError("eval_single_turn_required")
+    turn = turns[0]
+    if turn.get("clarification_response"):
+        raise ValueError("eval_harness_clarification_response_forbidden")
+    scenario = turn.get("scenario")
+    if isinstance(scenario, Mapping) and scenario.get("expected_dataset_states"):
+        raise ValueError("eval_prebound_authority_expectation_forbidden")
 
 
 def load_env_file(path: str = ".env") -> list[str]:
@@ -259,18 +268,23 @@ def _turn_failure_evaluation(
 def _evaluated_turns(
     turns: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    return [turn for turn in turns if _turn_failure_evaluation(turn) is None]
+    return [
+        turn
+        for turn in turns
+        if _turn_failure_evaluation(turn) is None
+        and str(_effective_result(turn).get("status") or "")
+        != "waiting_for_clarification"
+    ]
 
 
 def _failed_run_clickhouse_review(
     evaluation: Mapping[str, Any],
     *,
-    real_clickhouse: bool,
     required_datasets: tuple[str, ...] | list[str],
 ) -> dict[str, Any]:
     return {
         **dict(evaluation),
-        "required": bool(real_clickhouse),
+        "required": True,
         "real_clickhouse_verified": None,
         "clickhouse_result_refs": [],
         "observed_datasets": [],
@@ -285,67 +299,6 @@ def _failed_run_clickhouse_review(
 def _effective_quality_review(turn_record: Mapping[str, Any]) -> dict[str, Any]:
     review = _effective_result(dict(turn_record)).get("quality_review")
     return review if isinstance(review, dict) else {}
-
-
-def _automatic_clarification_response(result: Mapping[str, Any]) -> str:
-    clarification = result.get("clarification") or {}
-    actions = tuple(
-        item
-        for item in clarification.get("choice_actions") or ()
-        if isinstance(item, Mapping)
-    )
-    progress_order = (
-        "choose_supported_claim_intent",
-        "choose_supported_window",
-        "use_permitted_aggregate",
-        "use_supported_grain",
-        "remove_dimension_path",
-        "omit_unavailable_context",
-    )
-    for action_kind in progress_order:
-        label = next(
-            (
-                str(item.get("business_label") or "").strip()
-                for item in actions
-                if item.get("action_kind") == action_kind
-                and str(item.get("business_label") or "").strip()
-            ),
-            "",
-        )
-        if label:
-            return label
-    raw_recommended = clarification.get("recommended_assumption") or {}
-    recommended = str(
-        (
-            raw_recommended.get("option")
-            or raw_recommended.get("assumption")
-            or ""
-        )
-        if isinstance(raw_recommended, Mapping)
-        else raw_recommended
-    ).strip()
-    question_options = tuple(
-        str(option).strip()
-        for question in clarification.get("questions") or ()
-        if isinstance(question, Mapping)
-        for option in question.get("options") or ()
-        if str(option).strip()
-    )
-    if recommended and (
-        not question_options or recommended in question_options
-    ):
-        return recommended
-    first_progressing_option = next(
-        (
-            option
-            for option in question_options
-            if option != "tell the agent to do differently"
-        ),
-        "",
-    )
-    if first_progressing_option:
-        return first_progressing_option
-    return "按推荐继续"
 
 
 def _review_expectations(turn: dict[str, Any], turn_record: dict[str, Any]) -> dict[str, Any]:
@@ -3390,26 +3343,12 @@ def _strict_quality_failed(turn_record: dict[str, Any]) -> bool:
 def _real_clickhouse_review(
     result: dict[str, Any],
     *,
-    real_clickhouse: bool,
     evidence_resolver: Any = None,
     required_datasets: tuple[str, ...] | list[str] = (),
     analysis_context: Mapping[str, Any] | None = None,
     runtime_authority_resolver: Any = None,
     runtime_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if not real_clickhouse:
-        return {
-            "required": False,
-            "real_clickhouse_verified": True,
-            "clickhouse_result_refs": [],
-            "observed_datasets": [],
-            "runtime_correctness": {
-                "all_required_queries_complete": True,
-                "all_capabilities_bound": True,
-                "all_claims_traceable": True,
-            },
-            "issues": [],
-        }
     package = (
         dict(runtime_authority)
         if isinstance(runtime_authority, Mapping)
@@ -5237,7 +5176,7 @@ def _clickhouse_result_refs(answer_package: dict[str, Any]) -> list[str]:
 
 
 def _looks_like_clickhouse_result_ref(ref: str) -> bool:
-    return bool(ref) and ref != "fixture-hash" and not ref.startswith("phase4-draft")
+    return bool(ref) and not ref.startswith("phase4-draft")
 
 
 def _clickhouse_runtime_validator_passed(answer_package: dict[str, Any]) -> bool:
@@ -5339,31 +5278,29 @@ def _traceable_refs(answer_package: dict[str, Any], context_manifest: dict[str, 
     return refs
 
 
-def _missing_inputs_from_error(exc: Exception, *, real_llm: bool = False, real_clickhouse: bool = False) -> list[str]:
+def _missing_inputs_from_error(exc: Exception) -> list[str]:
     text = str(exc)
     missing: list[str] = []
     if "WAJE_RUNTIME_DATABASE_URL or DATABASE_URL" in text:
         missing.extend(["WAJE_RUNTIME_DATABASE_URL", "DATABASE_URL"])
-    if real_llm:
-        if not os.environ.get("WAJE_LLM_MODEL"):
-            missing.append("WAJE_LLM_MODEL")
-        if not (
-            os.environ.get("WAJE_LLM_API_KEY")
-            or os.environ.get("OPENAI_API_KEY")
-            or os.environ.get("DEEPSEEK_API_KEY")
-        ):
-            missing.extend(["WAJE_LLM_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"])
-    if real_clickhouse:
-        for key in (
-            "WAJE_CLICKHOUSE_HOST",
-            "WAJE_CLICKHOUSE_PORT",
-            "WAJE_CLICKHOUSE_USER",
-            "WAJE_CLICKHOUSE_PASSWORD",
-            "WAJE_CLICKHOUSE_DATABASE",
-            "WAJE_CLICKHOUSE_SECURE",
-        ):
-            if not os.environ.get(key):
-                missing.append(key)
+    if not os.environ.get("WAJE_LLM_MODEL"):
+        missing.append("WAJE_LLM_MODEL")
+    if not (
+        os.environ.get("WAJE_LLM_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("DEEPSEEK_API_KEY")
+    ):
+        missing.extend(["WAJE_LLM_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"])
+    for key in (
+        "WAJE_CLICKHOUSE_HOST",
+        "WAJE_CLICKHOUSE_PORT",
+        "WAJE_CLICKHOUSE_USER",
+        "WAJE_CLICKHOUSE_PASSWORD",
+        "WAJE_CLICKHOUSE_DATABASE",
+        "WAJE_CLICKHOUSE_SECURE",
+    ):
+        if not os.environ.get(key):
+            missing.append(key)
     return list(dict.fromkeys(missing))
 
 
@@ -5371,30 +5308,18 @@ def _case_thread_id(case: dict[str, Any]) -> str:
     return f"live-{case['id']}-{uuid4().hex[:8]}"
 
 
-def _run_mode(*, real_llm: bool, real_clickhouse: bool) -> str:
-    if real_llm and real_clickhouse:
-        return "real_llm_real_clickhouse"
-    if real_llm:
-        return "real_llm"
-    if real_clickhouse:
-        return "real_clickhouse"
-    return "dry_run"
-
-
-def _default_artifact_dir(*, real_llm: bool, real_clickhouse: bool) -> Path:
-    suffix = "real" if real_llm or real_clickhouse else "dry-run"
-    return Path(f"artifacts/phase7/live-conversation-{suffix}")
+def _default_artifact_dir() -> Path:
+    return Path("artifacts/phase7/live-conversation-real")
 
 
 def _aggregate_real_clickhouse_review(
     turns: list[dict[str, Any]],
-    real_clickhouse: bool,
     required_datasets: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
     evaluated_turns = _evaluated_turns(turns)
     if not evaluated_turns:
         return {
-            "required": bool(real_clickhouse),
+            "required": True,
             "real_clickhouse_verified": None,
             "clickhouse_result_refs": [],
             "observed_datasets": [],
@@ -5427,19 +5352,15 @@ def _aggregate_real_clickhouse_review(
         for key in runtime_correctness:
             if turn_correctness.get(key) is not True:
                 runtime_correctness[key] = False
-    if not real_clickhouse:
-        verified = True
-        issues = []
-    else:
-        for dataset in required_datasets:
-            if dataset not in datasets:
-                issues.append(f"missing_required_dataset:{dataset}")
-                verified = False
-                runtime_correctness["all_required_queries_complete"] = False
-        if not all(runtime_correctness.values()) or issues:
+    for dataset in required_datasets:
+        if dataset not in datasets:
+            issues.append(f"missing_required_dataset:{dataset}")
             verified = False
+            runtime_correctness["all_required_queries_complete"] = False
+    if not all(runtime_correctness.values()) or issues:
+        verified = False
     return {
-        "required": bool(real_clickhouse),
+        "required": True,
         "real_clickhouse_verified": verified,
         "clickhouse_result_refs": sorted(set(refs)),
         "observed_datasets": sorted(datasets),
@@ -5471,9 +5392,7 @@ def _case_output(
     *,
     case: dict[str, Any],
     thread_id: str,
-    run_mode: str,
     strict_quality: bool,
-    real_clickhouse: bool,
     turns: list[dict[str, Any]],
     status: str | None = None,
 ) -> dict[str, Any]:
@@ -5512,7 +5431,6 @@ def _case_output(
     )
     real_clickhouse_review = _aggregate_real_clickhouse_review(
         turns,
-        real_clickhouse,
         case.get("required_datasets") or (),
     )
     real_clickhouse_failed = (
@@ -5533,7 +5451,7 @@ def _case_output(
         "analysis_context": dict(case.get("analysis_context") or {}),
         "required_datasets": list(case.get("required_datasets") or ()),
         "thread_id": thread_id,
-        "run_mode": run_mode,
+        "dependency_profile": "real_llm_real_clickhouse_postgres",
         "status": status
         or (
             "failed"
@@ -5829,12 +5747,11 @@ def run_case(
     artifact_dir: Path,
     *,
     strict_quality: bool = False,
-    real_clickhouse: bool = False,
-    run_mode: str = "dry_run",
 ) -> dict[str, Any]:
+    _validate_executable_case(case)
     thread_id = _case_thread_id(case)
     core_artifact_root = (ROOT / "artifacts" / "phase-7").resolve()
-    analysis_context = dict(case.get("analysis_context") or {})
+    analysis_context: dict[str, Any] = {}
     coverage_authority = None
     coverage_authority_cache: dict[tuple[str, str], Mapping[str, Any]] = {}
     requires_coverage_authority = any(
@@ -5887,52 +5804,25 @@ def run_case(
             "scenario": dict(turn.get("scenario") or {}),
             "prior_topic_id": prior_topic_id,
         }
-        current = result
-        clarification_resumes: list[dict[str, Any]] = []
-        configured_response = str(turn.get("clarification_response") or "").strip()
-        for clarification_index in range(1, 9):
-            if current["status"] != "waiting_for_clarification":
-                break
-            response = configured_response if clarification_index == 1 else ""
-            response = response or _automatic_clarification_response(current)
-            resumed = core.run_message(
-                thread_id=thread_id,
-                user_message=response,
-                role=product_role,
-                runtime_permission_scope=permission_scope,
-                artifact_root=str(core_artifact_root),
-                analysis_context=analysis_context or None,
-            )
-            clarification_resumes.append({
-                "index": clarification_index,
-                "response": response,
-                "status": resumed["status"],
-                "run_id": resumed["run_id"],
-                "topic_id": resumed.get("topic_id"),
-                "failure_reason": resumed.get("failure_reason"),
-                "clarification": resumed.get("clarification"),
-            })
-            turn_record["clarification_response"] = response
-            turn_record["resumed_status"] = resumed["status"]
-            turn_record["resumed_run_id"] = resumed["run_id"]
-            turn_record["resumed_topic_id"] = resumed.get("topic_id")
-            turn_record["resumed_intent"] = resumed.get("intent")
-            turn_record["resumed_topic_relation"] = resumed.get("topic_relation")
-            turn_record["resumed_failure_reason"] = resumed.get("failure_reason")
-            turn_record["resumed_answer_package"] = resumed.get("answer_package")
-            turn_record["resumed_context_manifest"] = resumed.get("context_manifest")
-            turn_record["resumed_accepted_graph"] = resumed.get("accepted_graph")
-            turn_record["resumed_llm_calls"] = resumed.get("llm_calls", [])
-            turn_record["resumed_quality_review"] = _runtime_quality_review(
-                resumed,
-                artifact_root=core_artifact_root,
-            )
-            turn_record["resumed_clarification"] = resumed.get("clarification")
-            turn_record["resumed_artifact_path"] = resumed.get("artifact_path")
-            current = resumed
-        if clarification_resumes:
-            turn_record["clarification_resumes"] = clarification_resumes
         effective = _effective_result(turn_record)
+        if result["status"] == "waiting_for_clarification":
+            turn_record["evaluation"] = {
+                "status": "waiting_for_human",
+                "reason": "human_clarification_required",
+            }
+            turns.append(turn_record)
+            _write_case_artifact(
+                artifact_dir,
+                case["id"],
+                _case_output(
+                    case=case,
+                    thread_id=thread_id,
+                    strict_quality=strict_quality,
+                    turns=turns,
+                    status="waiting_for_clarification",
+                ),
+            )
+            break
         failure_evaluation = _run_failure_evaluation(turn_record)
         if failure_evaluation is not None:
             turn_record["evaluation"] = failure_evaluation
@@ -5946,15 +5836,11 @@ def run_case(
             }
             turn_record["real_clickhouse_review"] = _failed_run_clickhouse_review(
                 failure_evaluation,
-                real_clickhouse=real_clickhouse,
                 required_datasets=required_datasets,
             )
             turn_record["strict_quality_failed"] = None
         else:
-            if (
-                real_clickhouse
-                and requires_coverage_authority
-            ):
+            if requires_coverage_authority:
                 raw_as_of = analysis_context.get("as_of")
                 if not isinstance(raw_as_of, str):
                     raise RuntimeError("eval_coverage_authority_as_of_required")
@@ -5980,7 +5866,7 @@ def run_case(
                 runtime_evidence_resolver = _runtime_evidence_resolver_for_store(
                     getattr(core, "store", None),
                     fallback=getattr(core, "evidence_resolver", None),
-                    required=real_clickhouse,
+                    required=True,
                 )
                 runtime_resolvers_initialized = True
             turn_record["expectation_review"] = _review_expectations(
@@ -6001,7 +5887,6 @@ def run_case(
             )
             turn_record["real_clickhouse_review"] = _real_clickhouse_review(
                 effective,
-                real_clickhouse=real_clickhouse,
                 evidence_resolver=runtime_evidence_resolver,
                 required_datasets=required_datasets,
                 analysis_context=analysis_context,
@@ -6045,20 +5930,22 @@ def run_case(
             _case_output(
                 case=case,
                 thread_id=thread_id,
-                run_mode=run_mode,
                 strict_quality=strict_quality,
-                real_clickhouse=real_clickhouse,
                 turns=turns,
                 status="running",
             ),
         )
+    final_status = (
+        "waiting_for_clarification"
+        if turns and turns[-1].get("status") == "waiting_for_clarification"
+        else None
+    )
     output = _case_output(
         case=case,
         thread_id=thread_id,
-        run_mode=run_mode,
         strict_quality=strict_quality,
-        real_clickhouse=real_clickhouse,
         turns=turns,
+        status=final_status,
     )
     _write_case_artifact(artifact_dir, case["id"], output)
     return output
@@ -6066,27 +5953,16 @@ def run_case(
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--suite",
-        choices=("fixed-eight", "platform-current-data"),
-        default=None,
-    )
-    parser.add_argument("--cases")
-    parser.add_argument("--case")
+    parser.add_argument("--cases", required=True)
+    parser.add_argument("--case", required=True)
     parser.add_argument("--artifact-dir")
-    parser.add_argument("--real-llm", action="store_true")
-    parser.add_argument("--real-clickhouse", action="store_true")
     parser.add_argument("--strict-quality", action="store_true")
     args = parser.parse_args(argv)
 
     load_env_file()
-    run_mode = _run_mode(real_llm=args.real_llm, real_clickhouse=args.real_clickhouse)
-    artifact_dir = Path(args.artifact_dir) if args.artifact_dir else _default_artifact_dir(
-        real_llm=args.real_llm,
-        real_clickhouse=args.real_clickhouse,
-    )
+    artifact_dir = Path(args.artifact_dir) if args.artifact_dir else _default_artifact_dir()
     try:
-        selected = resolve_cli_cases(args.suite, args.cases, args.case)
+        selected = resolve_cli_cases(args.cases, args.case)
     except (OSError, ValueError) as exc:
         error_code = str(exc).split(":", 1)[0]
         print(
@@ -6103,18 +5979,13 @@ def main(argv: list[str] | None = None) -> None:
         )
         raise SystemExit(2) from None
     try:
-        core = ConversationAgentCore.from_environment(
-            real_llm=args.real_llm,
-            real_clickhouse=args.real_clickhouse,
-        )
+        core = ConversationAgentCore.from_environment()
         results = [
             run_case(
                 core,
                 case,
                 artifact_dir,
                 strict_quality=args.strict_quality,
-                real_clickhouse=args.real_clickhouse,
-                run_mode=run_mode,
             )
             for case in selected
         ]
@@ -6124,7 +5995,7 @@ def main(argv: list[str] | None = None) -> None:
         case_id = args.case or "environment_blocked"
         blocked = {
             "case_id": case_id,
-            "run_mode": run_mode,
+            "dependency_profile": "real_llm_real_clickhouse_postgres",
             "status": "blocked",
             "final_turn_status": "blocked",
             "run_id": None,
@@ -6137,11 +6008,7 @@ def main(argv: list[str] | None = None) -> None:
             "strict_quality": args.strict_quality,
             "strict_quality_failed": None,
             "turns": [],
-            "missing_inputs": _missing_inputs_from_error(
-                exc,
-                real_llm=args.real_llm,
-                real_clickhouse=args.real_clickhouse,
-            ),
+            "missing_inputs": _missing_inputs_from_error(exc),
             "owner": "local runtime/deployment owner",
             "error": str(exc),
         }
@@ -6156,7 +6023,10 @@ def main(argv: list[str] | None = None) -> None:
             ensure_ascii=False,
         )
     )
-    if any(result.get("status") != "passed" for result in results):
+    if any(
+        result.get("status") not in {"passed", "waiting_for_clarification"}
+        for result in results
+    ):
         raise SystemExit(1)
 
 

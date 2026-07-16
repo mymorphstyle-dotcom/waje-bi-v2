@@ -1,0 +1,84 @@
+version: "1"
+artifact: real_gateway_business_question_expectations
+execution_contract:
+  entrypoint: gateway
+  required_dependencies: [postgres, clickhouse, deepseek]
+  data_authority: active_release
+  prebound_sql: forbidden
+  injected_rows: forbidden
+  prebound_capabilities: forbidden
+  acceptance_source: persisted_answer_package
+
+cases:
+  - case_id: pattern_month_start_vs_mid_end
+    user_message: "全量样本看，2024-01到2026-06每个月月初1-10号付费金额是否高于月中和月末？"
+    review_focus: "先验证模式是否真实成立，再解释稳定性和例外月份。"
+  - case_id: pattern_month_boundary_vs_mid
+    user_message: "全量样本看，2024-01到2026-06每个月月边界窗口（1-8号或26号以后）相比月中是否更高？"
+    review_focus: "由系统解释窗口并验证，不接受评测文件预先提供分桶 SQL。"
+  - case_id: pattern_weekday_contrast
+    user_message: "全量样本看，周四/周五的付费金额是否稳定高于周一/周日？"
+    review_focus: "验证跨周稳定性、例外周和可发布的模式强度。"
+  - case_id: pattern_rolling_28_day
+    user_message: "全量样本看，28日滚动付费金额是否呈持续增长模式？"
+    review_focus: "区分趋势、短期波动和窗口选择影响。"
+  - case_id: change_q2_vs_q1_daily_average
+    user_message: "2026年Q2相比Q1，日均付费金额有没有明显抬升？"
+    review_focus: "先验证方向和量级，再解释变化。"
+  - case_id: pattern_month_end_vs_mid
+    user_message: "全量样本看，2024-01到2026-06每个月月末21号以后付费金额是否高于月中？"
+    review_focus: "验证月末模式及其跨月一致性。"
+  - case_id: pattern_channel_monthly
+    user_message: "全量样本看，WajeSpecial渠道的月度日均付费金额是否稳定高于其他渠道合计？"
+    review_focus: "确认比较口径和聚合对象后再判断稳定性。"
+  - case_id: pattern_weekend_vs_workday
+    user_message: "全量样本看，周末付费金额是否稳定高于工作日？"
+    review_focus: "验证周末效应，报告节假日和活动窗口边界。"
+  - case_id: pattern_december_vs_november
+    user_message: "全量样本看，12月相比11月的日均付费金额是否更高？"
+    review_focus: "验证逐年方向，不能用总体累计值替代逐年比较。"
+  - case_id: pattern_q2_vs_q1_by_year
+    user_message: "全量样本看，每年Q2相比Q1的日均付费金额是否都有抬升？"
+    review_focus: "严格区分每年都成立与多数年份倾向。"
+  - case_id: change_q2_vs_q1
+    user_message: "2026年Q2相比Q1，付费金额有没有明显变化？"
+    review_focus: "验证实际方向、量级和基线可比性。"
+  - case_id: drivers_q2_vs_q1
+    user_message: "2026年Q2相比Q1付费金额提升，主要是付费用户数增加还是单付费用户金额提升带来的？"
+    review_focus: "把提升视为待验证前提；方向成立后再发布贡献结论。"
+  - case_id: clarification_channel_metric
+    user_message: "WajeSpecial 最近几个月是不是比其他渠道好？"
+    review_focus: "总金额与日均口径会改变结论时，给出带推荐项的业务澄清。"
+  - case_id: clarification_channel_baseline
+    user_message: "WajeSpecial 比其他渠道是不是稳定更高？"
+    review_focus: "其他渠道合计与逐渠道比较会改变结论时，给出带推荐项的业务澄清。"
+  - case_id: clarification_strict_stability
+    user_message: "Q2 是不是一直比 Q1 好？"
+    review_focus: "逐期严格成立与多数期倾向会改变结论时，给出带推荐项的业务澄清。"
+  - case_id: clarification_event_window
+    user_message: "活动后付费有没有变好？"
+    review_focus: "缺少活动窗口时只澄清会改变结论的时间定义。"
+  - case_id: dimension_channel_contribution
+    user_message: "2026年Q2相比Q1付费金额变化里，不同渠道分别贡献了多少？"
+    review_focus: "按可用渠道合同发布拉动和拖累，辅助维度失败不得拖垮主结论。"
+  - case_id: business_object_campaign
+    user_message: "6月活动后付费金额有没有改善？"
+    review_focus: "窗口对比与活动影响分层表达，缺少因果证据时只发布候选解释。"
+  - case_id: dimension_joint_candidate
+    user_message: "渠道和月内阶段组合是否解释了2026年Q2相比Q1的主要变化？"
+    review_focus: "单维度不足时才升维，组合结论必须保留贡献证据。"
+  - case_id: revenue_health_h1
+    user_message: "2026年上半年付费金额健康度如何，主要风险在哪里？"
+    review_focus: "综合方向、稳定性、异常和结构风险，不预绑定分析节点。"
+  - case_id: anomaly_q2_growth
+    user_message: "2026年Q2的增长是不是被少数异常日期撑起来的？"
+    review_focus: "先验证增长，再做异常日敏感性分析。"
+  - case_id: change_half_month
+    user_message: "2026年6月下半月相比上半月付费金额有没有改善，主要由什么带来？"
+    review_focus: "验证半月窗口的完整性、真实方向和因素贡献。"
+  - case_id: data_quality_channel_comparison
+    user_message: "当前付费数据能不能支撑渠道对比结论？"
+    review_focus: "只依据当前 active release、查询完整性和渠道合同判断可发布强度。"
+  - case_id: composite_change_and_reason
+    user_message: "2026年Q2为什么增长，主要渠道和付费用户数/单付费用户金额分别怎么贡献？"
+    review_focus: "先验证增长前提，再并行处理核心公式因素和渠道辅助分解。"

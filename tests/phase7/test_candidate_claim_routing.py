@@ -326,87 +326,6 @@ def _authoritative_driver_rows(baseline_id: str) -> tuple[dict, ...]:
     return (target, *baseline)
 
 
-@pytest.mark.parametrize("baseline_id", CANONICAL_BASELINE_IDS)
-def test_required_only_route_projects_any_primary_baseline_into_driver(
-    baseline_id: str,
-):
-    from bi_agent.runtime import langgraph_workflow as workflow
-
-    intent = _intent()
-    intent.update(
-        {
-            "pattern_family": "custom_baseline",
-            "required_claim_intents": list(intent["claim_intents"]),
-            "candidate_claim_intents": [],
-            "baseline_candidates": [baseline_id],
-            "baseline_binding": {
-                "confirmed": True,
-                "source": "user_choice",
-                "candidates": [baseline_id],
-            },
-        }
-    )
-    intent = workflow._bind_one_day_comparison_pattern(intent)
-    route = _route()
-    route["analysis_requirements"]["baselines"] = [baseline_id]
-    route["analysis_requirements"]["claim_intents"] = list(
-        intent["required_claim_intents"]
-    )
-    _, reconciled = workflow.reconcile_analysis_route(
-        tuple(route["requested_nodes"]),
-        route,
-        intent,
-        RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        ),
-    )
-    state = {
-        "request": {
-            "run_mode": "fixture",
-            "runtime_rows_by_intent": {
-                "component_driver_scan": _authoritative_driver_rows(
-                    baseline_id
-                ),
-            },
-        },
-        "intent": intent,
-        "analysis_route": reconciled,
-    }
-
-    projected_rows, params = workflow._comparison_rows_and_params(
-        state,
-        "driver_decomposition",
-        params=workflow._driver_params(state),
-        dimension_keys=(),
-        period_key="period",
-    )
-    target_window_id = workflow._comparison_group_window_id(
-        projected_rows,
-        group_key=params["group_key"],
-        group_value=params["target_group"],
-    )
-    baseline_window_id = workflow._comparison_group_window_id(
-        projected_rows,
-        group_key=params["group_key"],
-        group_value=params["baseline_group"],
-    )
-    evidence = driver_decomposition(
-        projected_rows,
-        target_window_id=target_window_id,
-        baseline_window_id=baseline_window_id,
-        **params,
-    )
-
-    assert {row["group"] for row in projected_rows} == {
-        "target",
-        "baseline",
-    }
-    assert baseline_window_id == baseline_id
-    assert evidence.typed_payload["target_window_id"] == "target_day"
-    assert evidence.typed_payload["baseline_window_id"] == baseline_id
-    assert evidence.typed_payload["decompositions"]
-
-
 def test_runtime_request_keeps_auxiliary_baseline_and_claim_provenance_separate():
     from bi_agent.runtime import langgraph_workflow as workflow
 
@@ -429,7 +348,7 @@ def test_runtime_request_keeps_auxiliary_baseline_and_claim_provenance_separate(
                 "analysis_context": {
                     "as_of": "2026-07-15T10:00:00+08:00",
                 },
-                "run_mode": "fixture",
+                "run_mode": "production",
             },
             "intent": _intent(),
             "analysis_route": reconciled,
@@ -585,7 +504,7 @@ def test_intent_claim_roles_keep_model_expansion_auxiliary_through_compilation()
                 "analysis_context": {
                     "as_of": "2026-07-15T10:00:00+08:00",
                 },
-                "run_mode": "fixture",
+                "run_mode": "production",
             },
             "intent": intent,
             "analysis_route": reconciled,

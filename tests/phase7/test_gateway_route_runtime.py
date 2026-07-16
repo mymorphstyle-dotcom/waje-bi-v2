@@ -440,13 +440,21 @@ def _compiled_gateway_run(
             compile_result.stdout + compile_result.stderr
         )
 
+        explicit_env = dict(env or {})
         process_env = {
             **os.environ,
             "NODE_PATH": str(ROOT / "node_modules"),
             "GATEWAY_OUT": str(out_dir),
             "WAJE_GATEWAY_TEST_TMP": tmp,
             "NODE_ENV": "test",
+            "WAJE_GATEWAY_UNIT_TEST_STORE": "memory",
         }
+        if not any(
+            key in explicit_env
+            for key in ("WAJE_RUNTIME_DATABASE_URL", "DATABASE_URL")
+        ):
+            process_env.pop("WAJE_RUNTIME_DATABASE_URL", None)
+            process_env.pop("DATABASE_URL", None)
         if fake_python is not None:
             bin_dir = Path(tmp) / "bin"
             bin_dir.mkdir()
@@ -466,7 +474,7 @@ def _compiled_gateway_run(
                 | stat.S_IXOTH
             )
             process_env["PATH"] = f"{bin_dir}:{process_env['PATH']}"
-        process_env.update(env or {})
+        process_env.update(explicit_env)
         result = subprocess.run(
             ["node", "-e", source],
             cwd=ROOT,

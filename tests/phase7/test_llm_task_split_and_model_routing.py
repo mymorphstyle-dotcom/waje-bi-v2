@@ -9,7 +9,7 @@ from bi_agent.runtime import llm_client as llm_client_module
 from bi_agent.runtime.llm_client import LLMOutputError, OpenAICompatibleLLMClient
 from bi_agent.runtime.llm_prompts import build_prompt
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-from tests.phase4.fake_llm import FakeLLMClient
+from tests.support.scripted_llm import ScriptedLLMClient
 
 
 RUNTIME_BINDINGS = "contracts/runtime/clickhouse-analysis-bindings.yaml"
@@ -415,9 +415,9 @@ class _TierAwareWorkflowClient:
     supports_model_tier = True
     supports_thinking_mode = True
 
-    def __init__(self):
+    def __init__(self, responses):
         self.calls: list[dict] = []
-        self.delegate = FakeLLMClient()
+        self.delegate = ScriptedLLMClient(responses)
 
     def invoke_json(self, **kwargs):
         self.calls.append(dict(kwargs))
@@ -430,9 +430,6 @@ class _TierAwareWorkflowClient:
 
 
 def test_workflow_uses_narrow_explicit_model_profiles_by_node_responsibility():
-    client = _TierAwareWorkflowClient()
-    state = {"llm_client": client, "llm_calls": []}
-
     expected_profiles = {
         "business_intent": ("default", "enabled"),
         "semantic_audit": ("default", "enabled"),
@@ -450,6 +447,91 @@ def test_workflow_uses_narrow_explicit_model_profiles_by_node_responsibility():
         "final_business_summary": ("default", "disabled"),
         "final_route_narrative": ("default", "disabled"),
     }
+    client = _TierAwareWorkflowClient(
+        {
+            "business_intent": {
+                "question_family": "paid_amount_change_explanation",
+                "target_metric": "paid_amount",
+                "pattern_family": "period_comparison",
+                "pattern_params": {},
+                "scope": "full_sample",
+                "time_window": "2026-06-01",
+                "target_claim": "comparative_change",
+                "baseline_candidates": ["previous_day"],
+                "analysis_requirements": {},
+                "status_message": "已识别业务意图。",
+                "display_summary": "准备核对目标日相对前一天的变化。",
+            },
+            "semantic_audit": {"audit_status": "passed", "issues": []},
+            "analysis_route_plan": {
+                "requested_nodes": ["compare_periods"],
+                "analysis_requirements": _route_requirements(),
+            },
+            "route_repair": {
+                "requested_nodes": ["compare_periods"],
+                "repair_summary": "保留可执行的周期对比。",
+                "decision_summary": "当前路线可以执行。",
+                "display_summary": "分析路线已确认。",
+            },
+            "next_action": {
+                "next_action": "synthesize_answer",
+                "decision_summary": "证据已足够形成回答。",
+                "display_summary": "准备形成业务回答。",
+            },
+            "promotion_direction": {
+                "requested_nodes": [],
+                "decision_summary": "当前无需扩展分析路线。",
+                "display_summary": "保留当前分析范围。",
+            },
+            "evidence_interpretation": {
+                "interpretation": "目标日与基线的变化已经得到数据支持。",
+                "decision_summary": "可以发布方向性结论。",
+                "evidence_boundary": "当前证据只支持已查询窗口。",
+            },
+            "answer_synthesis": {
+                "answer_text": "目标日相对前一天的变化已经得到验证。",
+                "display_summary": "已形成业务回答草稿。",
+            },
+            "boundary_decision": {
+                "boundary_status": "clear",
+                "recommended_assumption": {},
+                "clarification_questions": [],
+                "decision_summary": "当前问题边界明确。",
+                "display_summary": "可以继续分析。",
+            },
+            "data_coverage_interpretation": {
+                "coverage_status": "sufficient",
+                "business_impact": "当前数据覆盖目标窗口与对比窗口。",
+                "decision_summary": "数据足以支持周期对比。",
+                "display_summary": "数据覆盖满足本轮分析。",
+            },
+            "causal_audit": {
+                "causal_assessment": "not_supported",
+                "publishable_wording": "当前只发布可验证的会计分解。",
+                "supporting_reasons": ["缺少独立机制证据。"],
+                "evidence_limit": "不发布深层因果机制。",
+                "display_summary": "结论保留因果边界。",
+            },
+            "answer_repair": {
+                "answer_text": "已按证据边界修正业务回答。",
+                "display_summary": "业务回答已经修正。",
+            },
+            "final_answer_audit": {"material_findings": []},
+            "final_business_summary": {
+                "summary_text": "目标日相对前一天的变化已经得到验证。",
+                "statement_bindings": [],
+                "display_summary": "已形成最终业务回答。",
+            },
+            "final_route_narrative": {
+                "route_summary": "先验证变化，再检查影响因素。",
+                "sections": [],
+                "decision_summary": "该路线覆盖当前业务问题。",
+                "display_summary": "分析路线已经确认。",
+            },
+        }
+    )
+    state = {"llm_client": client, "llm_calls": []}
+
     for task in expected_profiles:
         workflow._invoke_llm(state, task, {})
 

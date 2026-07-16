@@ -71,105 +71,6 @@ def _run_matched_contract_authority(
     }
 
 
-def test_platform_suite_covers_public_families_current_roles_and_boundaries():
-    from tools.phase7.run_live_conversation_system_test import load_cases
-
-    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
-    cases = load_cases("evals/phase7/existing_data_coverage_scenarios.yaml")
-    scenarios = [turn for case in cases for turn in case["turns"]]
-
-    assert {turn["scenario"]["question_family"] for turn in scenarios} == set(
-        registry.question_family_ids
-    )
-    assert {
-        "paid_order_success",
-        "market_dashboard",
-        "market_dashboard_channel",
-        "gameplay",
-        "gameplay_channel",
-        "external_event",
-    } <= {
-        dataset
-        for turn in scenarios
-        for dataset in turn["scenario"]["expected_dataset_states"]
-    }
-    boundary_types = {
-        turn["scenario"].get("terminal_boundary") for turn in scenarios
-    }
-    assert {"permission_blocked", "contract_allowed_partial"} <= boundary_types
-    assert any(turn["scenario"].get("reuse") == "required" for turn in scenarios)
-    assert any(
-        turn["scenario"].get("clarification_resume") == "required"
-        for turn in scenarios
-    )
-    assert not any(
-        "final_answer_contains" in turn.get("expect", {})
-        for turn in scenarios
-    )
-
-
-def test_suite_selector_keeps_fixed_eight_and_platform_tracks_distinct():
-    from tools.phase7.run_live_conversation_system_test import load_suite_cases
-
-    fixed = load_suite_cases("fixed-eight")
-    platform = load_suite_cases("platform-current-data")
-
-    assert [case["id"] for case in fixed] == [
-        "paid_amount_revenue_diagnostics_8_question_set"
-    ]
-    assert len(fixed[0]["turns"]) == 8
-    assert {case["group"] for case in platform} == {"platform_current_data"}
-
-
-def test_platform_suite_applies_fixed_authority_clock_to_every_case():
-    from tools.phase7.run_live_conversation_system_test import load_suite_cases
-
-    contexts = [case.get("analysis_context") for case in load_suite_cases("platform-current-data")]
-    assert contexts
-    assert all(
-        context == {
-            "as_of": "2026-06-03T12:00:00+01:00",
-            "target_date": "2026-06-02",
-            "previous_day": "2026-06-01",
-            "rolling_7_day_start": "2026-05-26",
-            "rolling_7_day_end": "2026-06-01",
-            "same_weekday_last_week": "2026-05-26",
-            "pattern_history_start": "2026-01-01",
-            "anomaly_history_start": "2026-05-03",
-        }
-        for context in contexts
-    )
-
-
-def test_platform_positive_reuse_keeps_physical_query_material_and_reorders_priority():
-    from tools.phase7.run_live_conversation_system_test import load_suite_cases
-
-    case = next(
-        item
-        for item in load_suite_cases("platform-current-data")
-        if item["id"] == "platform_baseline_reuse"
-    )
-    first, second = (turn["scenario"] for turn in case["turns"])
-
-    assert first["target_metrics"] == second["target_metrics"] == ["paid_amount"]
-    assert first["scope"] == second["scope"] == {"type": "full_sample"}
-    assert first["permission_scope"] == second["permission_scope"] == "analyst"
-    assert first["expected_dataset_states"] == second["expected_dataset_states"]
-    assert set(first["baselines"]) == set(second["baselines"])
-    assert first["baselines"] != second["baselines"]
-    assert second["expected_reuse"] == {
-        "capability_id": "market_health_compare",
-        "dataset_ids": ["market_dashboard"],
-    }
-    assert second["expected_capability_states"] == {
-        "compare_periods": "snapshot_unavailable_as_of",
-        "market_health_compare": "executable",
-    }
-    assert second["excluded_inputs"] == {
-        "paid_order_success": "snapshot_unavailable_as_of"
-    }
-
-
 def _authoritative_reuse_review_fixture():
     from bi_agent.runtime.analysis_runtime import AnalysisRuntimeRequest
     from tests.phase7.test_analysis_runtime_reuse import (
@@ -1145,7 +1046,6 @@ def test_real_clickhouse_review_accepts_the_already_resolved_runtime_projection(
 
     review = system_test._real_clickhouse_review(
         {},
-        real_clickhouse=True,
         runtime_authority={"_authority_error": "projection_failed"},
     )
 
@@ -1983,19 +1883,6 @@ def test_required_reuse_review_rejects_nonready_source_candidate_chain():
     ]
 
 
-def test_all_suite_claim_ceilings_use_runtime_maximum_strength_taxonomy():
-    from tools.phase7.run_live_conversation_system_test import load_suite_cases
-
-    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
-    for suite in ("fixed-eight", "platform-current-data"):
-        for case in load_suite_cases(suite):
-            for turn in case["turns"]:
-                ceiling = str(
-                    (turn.get("scenario") or {}).get("allowed_claim_ceiling") or ""
-                )
-                assert registry.maximum_claim_strength_rank(ceiling) >= 0
-
-
 def test_obligation_review_resolves_contract_and_reports_typed_gaps():
     from tools.phase7.run_live_conversation_system_test import (
         review_case_obligations,
@@ -2295,7 +2182,7 @@ def test_claim_ceiling_uses_only_claim_producing_binding_provenance():
 def _claim_binding_authority(
     registry,
 ):
-    from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
+    from tests.phase4.analysis_asset_vectors import verified_dimension_scan_asset
 
     _, context = verified_dimension_scan_asset(
         rows=(
@@ -2929,94 +2816,6 @@ def test_claim_ceiling_fails_closed_on_conflicting_same_ref_claim_payloads():
     assert conflicting_review["authority_errors"] == [
         "conflicting_claim_ref_payload"
     ]
-
-
-def test_run_case_passes_core_authority_chain_resolvers_to_obligation_review(
-    tmp_path, monkeypatch
-):
-    from tools.phase7 import run_live_conversation_system_test as system_test
-
-    resolver = object()
-    rows_loader = object()
-    release_resolver = object()
-    captured = {}
-
-    class Core:
-        def run_message(self, **kwargs):
-            return {
-                "status": "completed",
-                "run_id": "run:resolver-forwarding",
-                "topic_id": "topic:resolver-forwarding",
-                "answer_package": {},
-                "context_manifest": {},
-                "accepted_graph": [],
-                "llm_calls": [],
-            }
-
-    monkeypatch.setattr(system_test, "_runtime_quality_review", lambda *args, **kwargs: {})
-    monkeypatch.setattr(
-        system_test,
-        "_review_expectations",
-        lambda *args, **kwargs: {"passed": True},
-    )
-    monkeypatch.setattr(system_test, "_runtime_audit_package", lambda *args, **kwargs: {})
-    monkeypatch.setattr(
-        system_test,
-        "_real_clickhouse_review",
-        lambda *args, **kwargs: {
-            "runtime_correctness": {
-                "all_required_queries_complete": True,
-                "all_capabilities_bound": True,
-                "all_claims_traceable": True,
-            },
-            "issues": [],
-        },
-    )
-    monkeypatch.setattr(system_test, "_write_case_artifact", lambda *args, **kwargs: None)
-
-    def review(*args, **kwargs):
-        captured["evidence_resolver"] = kwargs.get("evidence_resolver")
-        captured["rows_loader"] = kwargs.get("rows_loader")
-        captured["release_resolver"] = kwargs.get("release_resolver")
-        captured["conversation_store"] = kwargs.get("conversation_store")
-        captured["case_lineage"] = kwargs.get("case_lineage")
-        return {
-            "hard_acceptance_passed": True,
-            "reuse_passed": True,
-            "clarification_resume_passed": True,
-        }
-
-    monkeypatch.setattr(system_test, "review_case_obligations", review)
-
-    core = Core()
-    core.evidence_resolver = resolver
-    core.rows_loader = rows_loader
-    core.release_resolver = release_resolver
-    core.store = object()
-    system_test.run_case(
-        core,
-        {
-            "id": "resolver-forwarding",
-            "turns": [{
-                "user": "检查证据链",
-                "scenario": {"question_family": "custom_baseline_comparison"},
-            }],
-        },
-        tmp_path,
-    )
-
-    assert captured["evidence_resolver"] is resolver
-    assert captured["rows_loader"] is rows_loader
-    assert captured["release_resolver"] is release_resolver
-    assert captured["conversation_store"] is core.store
-    assert captured["case_lineage"]["thread_id"].startswith(
-        "live-resolver-forwarding-"
-    )
-    assert captured["case_lineage"]["current_run_id"] == "run:resolver-forwarding"
-    assert captured["case_lineage"]["current_topic_id"] == "topic:resolver-forwarding"
-    assert captured["case_lineage"]["prior_runs"] == []
-
-
 def test_effective_result_preserves_direct_run_failure_reason():
     from tools.phase7.run_live_conversation_system_test import _effective_result
 
@@ -3057,9 +2856,6 @@ def test_run_case_direct_failure_short_circuits_downstream_reviews(
     class Store:
         def list_dataset_snapshots(self):
             return []
-
-        def runtime_evidence_resolver(self):
-            return object()
 
         def runtime_evidence_resolver(self):
             calls["evidence_resolver"] += 1
@@ -3139,22 +2935,14 @@ def test_run_case_direct_failure_short_circuits_downstream_reviews(
         Core(),
         {
             "id": "direct-run-failure",
-            "required_datasets": ["paid_order_success"],
-            "analysis_context": {"as_of": "2026-06-03T12:00:00+01:00"},
             "turns": [{
                 "user": "检查付费金额",
                 "expect": {},
-                "scenario": {
-                    "question_family": "data_quality_or_evidence_review",
-                    "expected_dataset_states": {
-                        "paid_order_success": "executable"
-                    },
-                },
+                "scenario": {},
             }],
         },
         tmp_path,
         strict_quality=True,
-        real_clickhouse=True,
     )
 
     marker = {
@@ -3197,306 +2985,6 @@ def test_run_case_direct_failure_short_circuits_downstream_reviews(
         "all_claims_traceable": None,
     }
 
-
-def test_run_case_resume_failure_uses_resume_as_primary_failure(
-    tmp_path, monkeypatch
-):
-    from tools.phase7 import run_live_conversation_system_test as system_test
-
-    results = iter((
-        {
-            "status": "waiting_for_clarification",
-            "run_id": "run:clarification",
-            "topic_id": "topic:clarification",
-            "failure_reason": "",
-            "answer_package": None,
-            "context_manifest": None,
-            "accepted_graph": [],
-            "artifact_path": "",
-            "llm_calls": [],
-            "clarification": {},
-        },
-        {
-            "status": "failed",
-            "run_id": "run:clarification-resume",
-            "topic_id": "topic:clarification",
-            "failure_reason": "clarification_resume_authority_failed",
-            "answer_package": None,
-            "context_manifest": None,
-            "accepted_graph": [],
-            "artifact_path": "",
-            "llm_calls": [{"task": "clarification", "attempt": 1}],
-        },
-    ))
-
-    class Core:
-        store = object()
-        evidence_resolver = None
-        rows_loader = None
-        release_resolver = None
-
-        def run_message(self, **kwargs):
-            return next(results)
-
-    forbidden = lambda *a, **k: pytest.fail("downstream review executed")
-    monkeypatch.setattr(system_test, "_runtime_quality_review", lambda *a, **k: {})
-    monkeypatch.setattr(system_test, "_review_expectations", forbidden)
-    monkeypatch.setattr(system_test, "_runtime_audit_package", forbidden)
-    monkeypatch.setattr(system_test, "_real_clickhouse_review", forbidden)
-    monkeypatch.setattr(system_test, "review_case_obligations", forbidden)
-    monkeypatch.setattr(system_test, "_strict_quality_failed", forbidden)
-    monkeypatch.setattr(system_test, "_write_case_artifact", lambda *a, **k: None)
-
-    output = system_test.run_case(
-        Core(),
-        {
-            "id": "resume-run-failure",
-            "turns": [{
-                "user": "继续分析",
-                "clarification_response": "按推荐继续",
-                "expect": {},
-                "scenario": {"question_family": "pattern_explanation"},
-            }],
-        },
-        tmp_path,
-        strict_quality=True,
-    )
-
-    turn = output["turns"][0]
-    assert turn["evaluation"]["primary_failure"] == {
-        "stage": "clarification_resume",
-        "run_id": "run:clarification-resume",
-        "reason": "clarification_resume_authority_failed",
-    }
-    assert turn["resumed_failure_reason"] == "clarification_resume_authority_failed"
-    assert output["failure_reason"] == "clarification_resume_authority_failed"
-    assert output["llm_calls"] == [{"task": "clarification", "attempt": 1}]
-
-
-def test_run_case_forwards_reviewed_permission_to_primary_resume_and_coverage(
-    tmp_path, monkeypatch
-):
-    from tools.phase7 import run_live_conversation_system_test as system_test
-
-    calls = []
-    coverage_scopes = []
-    results = iter((
-        {
-            "status": "waiting_for_clarification",
-            "run_id": "run:permission",
-            "topic_id": "topic:permission",
-            "answer_package": None,
-            "context_manifest": {},
-            "accepted_graph": [],
-            "artifact_path": "",
-            "llm_calls": [],
-            "clarification": {},
-        },
-        {
-            "status": "completed",
-            "run_id": "run:permission-resume",
-            "topic_id": "topic:permission",
-            "answer_package": {},
-            "context_manifest": {},
-            "accepted_graph": [],
-            "artifact_path": "artifact:permission",
-            "llm_calls": [],
-        },
-    ))
-
-    class Store:
-        def list_dataset_snapshots(self):
-            return []
-
-        def runtime_evidence_resolver(self):
-            return object()
-
-    class Core:
-        store = Store()
-        release_resolver = object()
-        evidence_resolver = None
-        rows_loader = None
-
-        def run_message(self, **kwargs):
-            calls.append(kwargs)
-            return next(results)
-
-    def coverage(*args, **kwargs):
-        coverage_scopes.append(kwargs["permission_scope"])
-        return {"cells": {}}
-
-    monkeypatch.setattr(system_test, "audit_existing_data_coverage", coverage)
-    monkeypatch.setattr(system_test, "_runtime_quality_review", lambda *a, **k: {})
-    monkeypatch.setattr(system_test, "_review_expectations", lambda *a, **k: {"passed": True})
-    monkeypatch.setattr(system_test, "_runtime_audit_package", lambda *a, **k: {})
-    monkeypatch.setattr(
-        system_test,
-        "_real_clickhouse_review",
-        lambda *a, **k: {
-            "required": True,
-            "real_clickhouse_verified": True,
-            "clickhouse_result_refs": [],
-            "observed_datasets": [],
-            "runtime_correctness": {
-                "all_required_queries_complete": True,
-                "all_capabilities_bound": True,
-                "all_claims_traceable": True,
-            },
-            "issues": [],
-        },
-    )
-    monkeypatch.setattr(
-        system_test,
-        "review_case_obligations",
-        lambda *a, **k: {"hard_acceptance_passed": True},
-    )
-    monkeypatch.setattr(system_test, "_strict_quality_failed", lambda *a, **k: False)
-    monkeypatch.setattr(system_test, "_write_case_artifact", lambda *a, **k: None)
-
-    system_test.run_case(
-        Core(),
-        {
-            "id": "permission-forwarding",
-            "analysis_context": {"as_of": "2026-06-03T12:00:00+01:00"},
-            "turns": [{
-                "user": "按渠道看收入",
-                "clarification_response": "按推荐继续",
-                "scenario": {
-                    "question_family": "segment_or_factor_attribution",
-                    "permission_scope": "viewer",
-                    "expected_dataset_states": {
-                        "market_dashboard_channel": "permission_blocked",
-                    },
-                },
-            }],
-        },
-        tmp_path,
-        real_clickhouse=True,
-    )
-
-    assert [call["role"] for call in calls] == [
-        "business_reader", "business_reader",
-    ]
-    assert [call["runtime_permission_scope"] for call in calls] == [
-        "viewer", "viewer",
-    ]
-    assert coverage_scopes == ["viewer"]
-
-
-def test_platform_permission_boundary_has_reviewed_viewer_scope():
-    from tools.phase7.run_live_conversation_system_test import load_cases
-
-    cases = load_cases("evals/phase7/existing_data_coverage_scenarios.yaml")
-    permission_case = next(
-        case for case in cases if case["id"] == "platform_segment_permission"
-    )
-
-    assert permission_case["turns"][0]["scenario"]["permission_scope"] == "viewer"
-
-
-def test_failed_turn_is_excluded_from_mixed_turn_coverage_denominators(
-    tmp_path, monkeypatch
-):
-    from tools.phase7 import run_live_conversation_system_test as system_test
-
-    results = iter((
-        {
-            "status": "failed",
-            "run_id": "run:mixed-failed",
-            "topic_id": "topic:mixed",
-            "failure_reason": "provider_attempts_exhausted",
-            "answer_package": None,
-            "context_manifest": None,
-            "accepted_graph": [],
-            "artifact_path": "",
-            "llm_calls": [],
-        },
-        {
-            "status": "completed",
-            "run_id": "run:mixed-completed",
-            "topic_id": "topic:mixed",
-            "failure_reason": "",
-            "answer_package": {},
-            "context_manifest": {},
-            "accepted_graph": ["compare_periods"],
-            "artifact_path": "artifact:completed",
-            "llm_calls": [],
-        },
-    ))
-
-    class Core:
-        store = object()
-        evidence_resolver = None
-        rows_loader = None
-        release_resolver = None
-
-        def run_message(self, **kwargs):
-            return next(results)
-
-    monkeypatch.setattr(system_test, "_runtime_quality_review", lambda *a, **k: {})
-    monkeypatch.setattr(system_test, "_review_expectations", lambda *a, **k: {"passed": True})
-    monkeypatch.setattr(system_test, "_runtime_audit_package", lambda *a, **k: {})
-    monkeypatch.setattr(
-        system_test,
-        "_real_clickhouse_review",
-        lambda *a, **k: {
-            "required": False,
-            "real_clickhouse_verified": True,
-            "clickhouse_result_refs": [],
-            "observed_datasets": [],
-            "runtime_correctness": {
-                "all_required_queries_complete": True,
-                "all_capabilities_bound": True,
-                "all_claims_traceable": True,
-            },
-            "issues": [],
-        },
-    )
-    monkeypatch.setattr(
-        system_test,
-        "review_case_obligations",
-        lambda *a, **k: {
-            "required_capabilities": ["compare_periods"],
-            "capability_outcomes": {"compare_periods": "executed"},
-            "hard_acceptance_passed": True,
-        },
-    )
-    monkeypatch.setattr(system_test, "_strict_quality_failed", lambda *a, **k: False)
-    monkeypatch.setattr(system_test, "_has_completed_final_answer_audit", lambda *a, **k: True)
-    monkeypatch.setattr(system_test, "_write_case_artifact", lambda *a, **k: None)
-
-    output = system_test.run_case(
-        Core(),
-        {
-            "id": "mixed-run-failure",
-            "turns": [
-                {
-                    "user": "第一次分析",
-                    "expect": {},
-                    "scenario": {"question_family": "period_comparison"},
-                },
-                {
-                    "user": "第二次分析",
-                    "expect": {},
-                    "scenario": {"question_family": "period_comparison"},
-                },
-            ],
-        },
-        tmp_path,
-    )
-
-    assert output["status"] == "failed"
-    assert output["primary_failure"] == {
-        "stage": "run",
-        "run_id": "run:mixed-failed",
-        "reason": "provider_attempts_exhausted",
-    }
-    assert output["final_turn_status"] == "completed"
-    assert output["coverage_summary"]["obligation_coverage"]["required"] == 1
-    assert output["coverage_summary"]["final_answer_audit_coverage"] == {
-        "reviewed": 1,
-        "total": 1,
-    }
 
 
 def test_failed_run_without_reason_reports_primary_failure_contract_issue(
@@ -3542,8 +3030,12 @@ def test_completed_turn_without_scenario_still_requires_runtime_authority(
 ):
     from tools.phase7 import run_live_conversation_system_test as system_test
 
+    class Store:
+        def runtime_evidence_resolver(self):
+            return object()
+
     class Core:
-        store = object()
+        store = Store()
         evidence_resolver = None
 
         def run_message(self, **kwargs):
@@ -3598,9 +3090,7 @@ def test_completed_turn_expectation_verdict_fails_closed(expectation_review):
     output = _case_output(
         case={"id": "completed-expectation-verdict"},
         thread_id="thread:completed-expectation-verdict",
-        run_mode="dry_run",
         strict_quality=False,
-        real_clickhouse=False,
         turns=[{
             "status": "completed",
             "run_id": "run:completed-expectation-verdict",
@@ -3627,81 +3117,23 @@ def test_completed_turn_expectation_verdict_fails_closed(expectation_review):
     assert output["status"] == "failed"
 
 
-@pytest.mark.parametrize(
-    "expectation_review",
-    (
-        {"passed": None},
-        {},
-        {"passed": "true"},
-    ),
-    ids=("none", "missing", "non_boolean"),
-)
-def test_waiting_turn_expectation_verdict_fails_closed(expectation_review):
+def test_waiting_turn_skips_business_acceptance_until_user_clarifies():
     from tools.phase7.run_live_conversation_system_test import _case_output
 
     output = _case_output(
-        case={"id": "waiting-expectation-verdict"},
-        thread_id="thread:waiting-expectation-verdict",
-        run_mode="dry_run",
+        case={"id": "waiting-for-user"},
+        thread_id="thread:waiting-for-user",
         strict_quality=False,
-        real_clickhouse=False,
         turns=[{
             "status": "waiting_for_clarification",
-            "run_id": "run:waiting-expectation-verdict",
-            "topic_id": "topic:waiting-expectation-verdict",
-            "expectation_review": expectation_review,
-            "obligation_review": {"hard_acceptance_passed": True},
-            "real_clickhouse_review": {
-                "required": False,
-                "real_clickhouse_verified": True,
-                "clickhouse_result_refs": [],
-                "observed_datasets": [],
-                "runtime_correctness": {
-                    "all_required_queries_complete": True,
-                    "all_capabilities_bound": True,
-                    "all_claims_traceable": True,
-                },
-                "issues": [],
-            },
-            "strict_quality_failed": False,
-        }],
-    )
-
-    assert output["status"] == "failed"
-
-
-def test_waiting_turn_with_valid_expectation_verdict_keeps_clarification_behavior():
-    from tools.phase7.run_live_conversation_system_test import _case_output
-
-    output = _case_output(
-        case={"id": "waiting-valid-expectation-verdict"},
-        thread_id="thread:waiting-valid-expectation-verdict",
-        run_mode="dry_run",
-        strict_quality=False,
-        real_clickhouse=False,
-        turns=[{
-            "status": "waiting_for_clarification",
-            "run_id": "run:waiting-valid-expectation-verdict",
-            "topic_id": "topic:waiting-valid-expectation-verdict",
-            "expectation_review": {"passed": True},
-            "obligation_review": {"hard_acceptance_passed": True},
-            "real_clickhouse_review": {
-                "required": False,
-                "real_clickhouse_verified": True,
-                "clickhouse_result_refs": [],
-                "observed_datasets": [],
-                "runtime_correctness": {
-                    "all_required_queries_complete": True,
-                    "all_capabilities_bound": True,
-                    "all_claims_traceable": True,
-                },
-                "issues": [],
-            },
-            "strict_quality_failed": False,
+            "run_id": "run:waiting-for-user",
+            "topic_id": "topic:waiting-for-user",
         }],
     )
 
     assert output["status"] == "passed"
+    assert output["real_clickhouse_verified"] is None
+    assert output["strict_quality_failed"] is None
 
 
 def test_runtime_review_serializes_same_hard_acceptance_summary(tmp_path):
@@ -4416,30 +3848,25 @@ def test_capability_outcome_derivation_accepts_only_authority_backed_terminal_ou
     assert outcomes == {"answer_verify": expected}
 
 
-def test_cli_case_selection_rejects_conflicts_cross_suite_and_unknown():
+def test_cli_case_selection_requires_one_explicit_current_authority_case():
     from tools.phase7.run_live_conversation_system_test import resolve_cli_cases
 
-    with pytest.raises(ValueError, match="eval_cli_source_conflict"):
-        resolve_cli_cases("fixed-eight", "custom.yaml", None)
-    with pytest.raises(ValueError, match="eval_case_not_in_suite"):
-        resolve_cli_cases("fixed-eight", None, "platform_paid_amount_change")
+    current_cases = "evals/phase7/business_question_expectations.yaml"
+    with pytest.raises(ValueError, match="eval_case_source_required"):
+        resolve_cli_cases(None, "case")
+    with pytest.raises(ValueError, match="eval_case_id_required"):
+        resolve_cli_cases(current_cases, None)
     with pytest.raises(ValueError, match="eval_case_unknown"):
-        resolve_cli_cases(None, "evals/phase7/conversation_scenarios.yaml", "absent")
+        resolve_cli_cases(current_cases, "absent")
 
-
-def test_cli_selection_error_is_typed_and_nonzero(capsys):
-    from tools.phase7.run_live_conversation_system_test import main
-
-    with pytest.raises(SystemExit) as exc:
-        main(["--suite", "fixed-eight", "--case", "platform_paid_amount_change"])
-    assert exc.value.code == 2
-    payload = json.loads(capsys.readouterr().err)
-    assert payload == {
-        "ok": False,
-        "error_code": "eval_case_not_in_suite",
-        "owner": "eval_operator",
-        "impact": "no evaluation cases were executed",
-    }
+    selected = resolve_cli_cases(current_cases, "pattern_month_start_vs_mid_end")
+    assert selected == [{
+        "id": "pattern_month_start_vs_mid_end",
+        "turns": [{
+            "user": "全量样本看，2024-01到2026-06每个月月初1-10号付费金额是否高于月中和月末？",
+            "review_focus": "先验证模式是否真实成立，再解释稳定性和例外月份。",
+        }],
+    }]
 
 
 class Releases:

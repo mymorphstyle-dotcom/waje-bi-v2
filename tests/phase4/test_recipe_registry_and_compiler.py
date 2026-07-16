@@ -10,7 +10,7 @@ from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
 )
-from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
+from tests.phase4.analysis_asset_vectors import verified_dimension_scan_asset
 
 
 def _contract_gap_ids(row_shape):
@@ -46,9 +46,15 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
         )
 
         self.assertTrue(
-            {"segment_contribution", "joint_attribution", "answer_verify"}.issubset(
-                set(compiled.mutations.accepted_graph)
-            )
+            {
+                "data_quality_profile",
+                "answer_verify",
+                "candidate_dimension_screen",
+                "market_channel_context",
+                "gameplay_activity_context",
+                "segment_breakdown",
+                "segment_shift_compare",
+            }.issubset(set(compiled.mutations.accepted_graph))
         )
         self.assertTrue(
             any(
@@ -367,7 +373,7 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
             )
         )
 
-    def test_non_pattern_recipe_compiles_as_degraded_dry_run_skeleton(self):
+    def test_non_pattern_recipe_without_explicit_route_stays_degraded(self):
         registry = load_recipe_registry()
         compiled = compile_graph(
             question_family="paid_amount_change_explanation",
@@ -382,7 +388,7 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
         self.assertTrue(
             any(
                 item.action == "degraded"
-                and item.reason == "non_pattern_dry_run_skeleton"
+                and item.reason == "non_pattern_recipe_requires_explicit_route"
                 for item in compiled.mutations.records
             )
         )

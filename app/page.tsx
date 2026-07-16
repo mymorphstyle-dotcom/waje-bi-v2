@@ -1,739 +1,572 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import {
-  Check,
-  ChevronDown,
-  FileSpreadsheet,
-  Plus,
-  Send,
-  X,
-} from "lucide-react";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { Plus, Send } from "lucide-react";
 
 const DEFAULT_QUESTION =
-  "全量样本看帮我分析一下，为什么从 2024 年 1 月开始到 2026 年 5 月结束，每个月月初的付费金额都比月中月末高一些";
+  "昨天付费金额为什么变化？主要是首充人数、付费频次、单笔付费金额，还是支付成功率等因素导致的？";
 
-const attachment = {
-  id: "paid-order-template",
-  filename: "付费订单明细模板.xlsx",
-  size: 184_320,
-};
+type JsonRecord = Record<string, unknown>;
 
-const chartColors = {
-  start: "#74A9D8",
-  rest: "#6F747D",
-  contribution: "#75AD8E",
-  grid: "#262A30",
-};
-
-const axisTick = { fill: "var(--muted)", fontSize: 11 };
-const categoryTick = { fill: "var(--muted)", fontSize: 12 };
-const tooltipProps = {
-  contentStyle: {
-    background: "#202125",
-    border: "1px solid #37383d",
-    borderRadius: 10,
-    color: "#eeeeef",
-    fontSize: 12,
-    lineHeight: 1.45,
-    padding: "8px 10px",
-  },
-  itemStyle: { color: "#eeeeef", fontSize: 12 },
-  labelStyle: { color: "#eeeeef", fontSize: 12, marginBottom: 4 },
-};
-
-type TodoStatus = "pending" | "in_progress" | "completed";
-type ToolStatus = "pending" | "running" | "completed";
-type ToolGroupState = "running" | "completed";
-type RunClockState = "idle" | "queued" | "running" | "completed";
-
-type Todo = { id: string; label: string; status: TodoStatus };
-type NestedTool = { id: string; label: string; status: ToolStatus };
-type RunClock = {
-  state: RunClockState;
-  elapsedMs: number;
-};
-type ToolGroupRun = {
+type ChatMessage = {
   id: string;
-  state: ToolGroupState;
-  title: string;
-  completedTitle: string;
-  summary: string;
-  elapsedMs: number;
-  nestedTools: NestedTool[];
-};
-type QuestionRun = {
-  id: string;
-  title: string;
-  body: string;
-  options: string[];
-  selected?: string;
-};
-type WorkbenchState = {
-  todos: Todo[];
-  activeQuestion?: QuestionRun;
-};
-type Message =
-  | { id: string; kind: "assistant"; text: string }
-  | { id: string; kind: "tool_group"; group: ToolGroupRun }
-  | { id: string; kind: "answer" };
-type UserMessage = {
+  role: "user" | "assistant";
   text: string;
-  attachment?: typeof attachment;
 };
-type ToolGroupTemplate = {
-  id: string;
-  todoId: string;
-  title: string;
-  completedTitle: string;
+
+type RunState = {
+  runId: string;
+  runStatus: string;
+  agentStatus: string;
+  eventsUrl: string;
+};
+
+type ProcessUpdate = {
+  key: string;
+  label: string;
   summary: string;
-  tools: string[];
+  status: string;
 };
 
-const emptyWorkbench: WorkbenchState = {
-  todos: [],
+type ClarificationOption = {
+  id: string;
+  selectedOptionId?: string;
+  label: string;
+  description: string;
+  recommended: boolean;
 };
 
-const idleRunClock: RunClock = {
-  state: "idle",
-  elapsedMs: 0,
+type ClarificationState = {
+  runId: string;
+  question: string;
+  options: ClarificationOption[];
+  allowFreeform: boolean;
+  recommendationReason: string;
 };
 
-const todoSeed: Todo[] = [
-  { id: "intent", label: "识别分析意图", status: "pending" },
-  { id: "pattern", label: "证明月内模式是否存在", status: "pending" },
-  { id: "formula", label: "拆解付费金额公式", status: "pending" },
-  { id: "candidate", label: "扫描候选业务解释", status: "pending" },
-  { id: "joint", label: "组合归因与升维", status: "pending" },
-  { id: "verify", label: "校验答案边界", status: "pending" },
-];
-
-const toolGroups: Record<string, ToolGroupTemplate> = {
-  pattern: {
-    id: "pattern",
-    todoId: "pattern",
-    title: "正在计算月内周期模式",
-    completedTitle: "月内周期模式计算完成",
-    summary: "25/29 个月成立，剔除异常月份后仍成立",
-    tools: [
-      "bucket_payment_by_month_position",
-      "compare_month_position_lift",
-      "remove_calendar_outliers",
-    ],
-  },
-  formula: {
-    id: "formula",
-    todoId: "formula",
-    title: "正在拆解付费金额公式",
-    completedTitle: "付费金额公式拆解完成",
-    summary: "成功订单数解释最大，支付成功率和单笔金额是放大项",
-    tools: ["compile_formula_tree", "run_contribution_decompose"],
-  },
-  candidate: {
-    id: "candidate",
-    todoId: "candidate",
-    title: "正在并行扫描候选解释",
-    completedTitle: "候选解释扫描完成",
-    summary: "发薪窗口、新老用户结构、渠道结构进入高相关候选",
-    tools: [
-      "payday_window_fit",
-      "user_type_mix_scan",
-      "channel_mix_scan",
-      "holiday_activity_gap_check",
-      "outlier_month_review",
-    ],
-  },
-  joint: {
-    id: "joint",
-    todoId: "joint",
-    title: "正在计算组合归因",
-    completedTitle: "组合归因计算完成",
-    summary: "pay_window × user_type × channel 的解释力高于任意单因子",
-    tools: ["rank_single_factor_fit", "rank_joint_factor_fit", "residual_check"],
-  },
-  verify: {
-    id: "verify",
-    todoId: "verify",
-    title: "正在校验答案边界",
-    completedTitle: "答案边界校验完成",
-    summary: "+18.9%、25/29、54% 已校验，活动因素降级表达",
-    tools: ["claim_number_check", "evidence_strength_check", "wording_boundary_check"],
-  },
+type GatewayEvent = {
+  event?: unknown;
+  runId?: unknown;
+  payload?: unknown;
+  process?: unknown;
 };
 
-const patternData = [
-  { month: "24-01", start: 112, rest: 96 },
-  { month: "24-04", start: 119, rest: 101 },
-  { month: "24-07", start: 116, rest: 99 },
-  { month: "24-10", start: 124, rest: 105 },
-  { month: "25-01", start: 128, rest: 107 },
-  { month: "25-04", start: 121, rest: 103 },
-  { month: "25-07", start: 126, rest: 108 },
-  { month: "25-10", start: 132, rest: 111 },
-  { month: "26-01", start: 135, rest: 112 },
-  { month: "26-05", start: 129, rest: 110 },
-];
-
-const contributionData = [
-  { name: "成功订单数", value: 54 },
-  { name: "支付成功率", value: 19 },
-  { name: "单笔金额", value: 14 },
-  { name: "渠道结构", value: 9 },
-  { name: "未解释残差", value: 4 },
-];
-
-function wait(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+function isRecord(value: unknown): value is JsonRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function formatFileSize(bytes: number) {
-  return `${(bytes / 1024).toFixed(1)} KB`;
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
-function formatDuration(ms: number) {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+function statusLabel(status: string) {
+  const labels: Record<string, string> = {
+    idle: "等待提问",
+    queued: "已提交",
+    started: "Agent Core 已启动",
+    dispatch_in_progress: "等待现有执行完成",
+    replayed: "已复用同一请求",
+    running: "正在运行",
+    running_workflow: "正在分析",
+    waiting_for_clarification: "等待业务确认",
+    completed: "分析完成",
+    completed_without_workflow: "已完成，无需启动分析",
+    failed: "运行失败",
+  };
+  return labels[status] ?? status ?? "未知";
 }
 
-function SpiralLoader() {
-  return <span className="spiral-loader" aria-hidden="true" />;
+function firstRecord(value: unknown, keys: string[]) {
+  let current: unknown = value;
+  for (const key of keys) {
+    if (!isRecord(current)) return null;
+    current = current[key];
+  }
+  return isRecord(current) ? current : null;
 }
 
-function RunClockBadge({ clock }: { clock: RunClock }) {
-  const label =
-    clock.state === "queued"
-      ? "已提交"
-      : clock.state === "running"
-        ? `已处理 ${formatDuration(clock.elapsedMs)}`
-        : clock.state === "completed"
-          ? `已处理 ${formatDuration(clock.elapsedMs)}`
-          : "verifier ready";
-
-  return <span className={`run-clock ${clock.state}`}>{label} ›</span>;
+function answerPackageFrom(value: unknown) {
+  if (!isRecord(value)) return null;
+  if (isRecord(value.answerPackagePreview)) return value.answerPackagePreview;
+  const direct = firstRecord(value, ["agentCore", "result", "answer_package"]);
+  if (direct) return direct;
+  const result = firstRecord(value, ["result", "answer_package"]);
+  return result;
 }
 
-function AttachmentButton({ onClick }: { onClick?: () => void }) {
-  return (
-    <button className="attachment-button" type="button" aria-label="Attach" onClick={onClick}>
-      <Plus size={16} />
-    </button>
+function answerTextFromPackage(answerPackage: unknown) {
+  if (!isRecord(answerPackage) || !Array.isArray(answerPackage.sections)) return "";
+  const summarySection = answerPackage.sections.find(
+    (section) => isRecord(section) && section.section_id === "summary",
   );
+  if (!isRecord(summarySection) || !isRecord(summarySection.payload)) return "";
+  const payload = summarySection.payload;
+  const narrative =
+    stringValue(payload.final_business_summary) || stringValue(payload.answer_text);
+  if (narrative) return narrative;
+  if (isRecord(payload.final_explanation)) {
+    const explanation = stringValue(payload.final_explanation.explanation);
+    const repairPath = stringValue(payload.final_explanation.repair_path);
+    if (explanation && repairPath) return `${explanation}\n\n下一步：${repairPath}`;
+    if (explanation) return explanation;
+  }
+  if (Array.isArray(payload.claims)) {
+    return payload.claims
+      .flatMap((claim) => (isRecord(claim) ? [stringValue(claim.text)] : []))
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  return "";
 }
 
-function FileAttachment({ removable = false, onRemove }: { removable?: boolean; onRemove?: () => void }) {
+function clarificationFrom(value: unknown, runId: string): ClarificationState | null {
+  if (!isRecord(value)) return null;
+  const candidates = [
+    value,
+    value.clarification,
+    firstRecord(value, ["agentCore", "result"])?.clarification,
+    firstRecord(value, ["result"])?.clarification,
+    firstRecord(value, ["answer_package"])?.clarification,
+  ];
+  const raw = candidates.find(
+    (candidate) => isRecord(candidate) && Array.isArray(candidate.questions),
+  );
+  if (!isRecord(raw) || !Array.isArray(raw.questions)) return null;
+  const question = raw.questions.find(isRecord);
+  if (!question) return null;
+  const recommendedAssumption = isRecord(raw.recommended_assumption)
+    ? stringValue(raw.recommended_assumption.option)
+      || stringValue(raw.recommended_assumption.assumption)
+    : stringValue(raw.recommended_assumption);
+  const options = Array.isArray(question.options)
+    ? question.options.flatMap((option, index) => {
+        if (typeof option === "string") {
+          return [{
+            id: `option-${index + 1}-${option}`,
+            label: option,
+            description: "",
+            recommended:
+              option.includes("（推荐）")
+              || option === recommendedAssumption,
+          }];
+        }
+        if (!isRecord(option)) return [];
+        const label = stringValue(option.label) || stringValue(option.description);
+        if (!label) return [];
+        const selectedOptionId = stringValue(option.id);
+        return [{
+          id: selectedOptionId || `option-${index + 1}-${label}`,
+          ...(selectedOptionId ? { selectedOptionId } : {}),
+          label,
+          description: stringValue(option.description),
+          recommended:
+            option.recommended === true
+            || label.includes("（推荐）")
+            || label === recommendedAssumption,
+        }];
+      })
+    : [];
+  return {
+    runId,
+    question: stringValue(question.question) || "请确认本轮分析口径。",
+    options,
+    allowFreeform: raw.allow_freeform === true,
+    recommendationReason: stringValue(raw.recommendation_reason),
+  };
+}
+
+function processUpdateFrom(event: GatewayEvent): ProcessUpdate | null {
+  if (!isRecord(event.process)) return null;
+  const label = stringValue(event.process.label);
+  const summary = stringValue(event.process.summary);
+  if (!label && !summary) return null;
+  return {
+    key: JSON.stringify([event.event, event.process.stage, label, summary, event.process.status]),
+    label: label || stringValue(event.event),
+    summary,
+    status: stringValue(event.process.status),
+  };
+}
+
+async function responseJson(response: Response) {
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const code = isRecord(payload) ? stringValue(payload.error) : "";
+    throw new Error(code || `gateway_http_${response.status}`);
+  }
+  if (!isRecord(payload)) throw new Error("gateway_response_invalid");
+  return payload;
+}
+
+function ClarificationCard({
+  clarification,
+  disabled,
+  onSubmit,
+}: {
+  clarification: ClarificationState;
+  disabled: boolean;
+  onSubmit: (answer: string, selectedOptionId?: string) => void;
+}) {
+  const [freeform, setFreeform] = useState("");
+
   return (
-    <div className="file-attachment">
-      <span className="file-icon">
-        <FileSpreadsheet size={15} />
-      </span>
-      <span className="file-copy">
-        <strong>{attachment.filename}</strong>
-        <small>{formatFileSize(attachment.size)}</small>
-      </span>
-      {removable ? (
-        <button type="button" aria-label="Remove attachment" onClick={onRemove}>
-          <X size={12} />
-        </button>
+    <section className="gateway-clarification" aria-live="polite">
+      <span>需要确认后继续</span>
+      <h2>{clarification.question}</h2>
+      {clarification.recommendationReason ? (
+        <p>{clarification.recommendationReason}</p>
       ) : null}
-    </div>
-  );
-}
-
-function UserMessageBubble({ message }: { message: UserMessage }) {
-  return (
-    <div className="user-message">
-      {message.attachment ? <FileAttachment /> : null}
-      <div className="user-bubble">{message.text}</div>
-    </div>
-  );
-}
-
-function AssistantText({ children }: { children: string }) {
-  return <p className="assistant-text">{children}</p>;
-}
-
-function TodoToolBlock({ todos, blocked }: { todos: Todo[]; blocked: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  const activeIndex = todos.findIndex((todo) => todo.status === "in_progress");
-  const activeTodo = activeIndex >= 0 ? todos[activeIndex] : undefined;
-  const completedCount = todos.filter((todo) => todo.status === "completed").length;
-  const hasTodos = todos.length > 0;
-  const nextSummary = !hasTodos
-    ? ""
-    : blocked
-      ? "需要确认 · 表达边界"
-      : activeTodo
-        ? `执行中 · ${activeTodo.label}`
-      : completedCount === todos.length
-        ? "执行完成"
-        : "";
-  const summaryText = expanded ? "执行清单" : nextSummary;
-  const [ticker, setTicker] = useState({ current: summaryText, previous: "" });
-  const isRunningSummary = Boolean(activeTodo && !blocked && !expanded);
-
-  useEffect(() => {
-    if (!summaryText) return;
-
-    setTicker((current) => (current.current === summaryText ? current : { current: summaryText, previous: current.current }));
-    const timeout = window.setTimeout(() => {
-      setTicker((current) => (current.current === summaryText ? { ...current, previous: "" } : current));
-    }, 240);
-
-    return () => window.clearTimeout(timeout);
-  }, [summaryText]);
-
-  if (!todos.length) return null;
-
-  return (
-    <section className={`todo-tool ${expanded ? "expanded" : "collapsed"}`}>
-      <button className="todo-summary" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
-        <span className="todo-current">
-          {!expanded && activeTodo && !blocked ? <SpiralLoader /> : null}
-          <span className={`todo-current-viewport ${ticker.previous ? "rolling" : ""}`}>
-            {ticker.previous ? (
-              <span className="todo-current-line previous">
-                <span className="todo-current-copy">{ticker.previous}</span>
-              </span>
+      <div className="gateway-options">
+        {clarification.options.map((option) => (
+          <button
+            key={option.id}
+            className={option.recommended ? "recommended" : ""}
+            disabled={disabled}
+            onClick={() => onSubmit(option.label, option.selectedOptionId)}
+            type="button"
+          >
+            <strong>{option.label}</strong>
+            {option.description && option.description !== option.label ? (
+              <small>{option.description}</small>
             ) : null}
-            <span className="todo-current-line current">
-              <span className={isRunningSummary ? "todo-current-copy text-shimmer" : "todo-current-copy"}>{ticker.current}</span>
-            </span>
-          </span>
-        </span>
-        <small className="todo-count">{completedCount}/{todos.length}</small>
-        <ChevronDown className={expanded ? "expanded" : ""} size={14} />
-      </button>
-      {expanded
-        ? todos.map((todo) => (
-            <div className={`todo-row ${todo.status}`} key={todo.id}>
-              <span>{todo.status === "in_progress" ? <SpiralLoader /> : null}</span>
-              <p>{todo.label}</p>
-            </div>
-          ))
-        : null}
-    </section>
-  );
-}
-
-function ToolGroupBlock({ group }: { group: ToolGroupRun }) {
-  return (
-    <details className={`tool-group ${group.state}`} {...(group.state === "running" ? { open: true } : {})}>
-      <summary>
-        <span>{group.state === "running" ? <SpiralLoader /> : <Check size={12} />}</span>
-        <div>
-          <strong>{group.state === "running" ? group.title : group.completedTitle}</strong>
-          <small>{group.summary} · {(group.elapsedMs / 1000).toFixed(1)}s</small>
-        </div>
-        <ChevronDown className="chevron" size={14} />
-      </summary>
-      <div className="nested-tools">
-        {group.nestedTools.map((tool) => (
-          <div className={`nested-tool ${tool.status}`} key={tool.id}>
-            <span>
-              {tool.status === "running" ? <SpiralLoader /> : null}
-              {tool.status === "completed" ? <Check size={11} /> : null}
-            </span>
-            <code>{tool.label}</code>
-          </div>
+          </button>
         ))}
       </div>
-    </details>
-  );
-}
-
-function QuestionWorkbench({ question, onAnswer }: { question: QuestionRun; onAnswer: (value: string) => void }) {
-  return (
-    <section className={`workbench-question ${question.selected ? "answered" : "blocking"}`} role="alert">
-      <div className="question-header">
-        <strong>{question.selected ? "已确认表达边界" : question.title}</strong>
-        {!question.selected ? <span>需要确认后继续</span> : null}
-      </div>
-      <div>
-        <p>{question.body}</p>
-      </div>
-      <div className="question-actions">
-        {question.selected ? (
-          <span>{question.selected}</span>
-        ) : (
-          question.options.map((option) => (
-            <button key={option} onClick={() => onAnswer(option)} type="button">
-              {option}
-            </button>
-          ))
-        )}
-      </div>
+      {clarification.allowFreeform ? (
+        <form
+          className="gateway-freeform"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (freeform.trim()) onSubmit(freeform.trim());
+          }}
+        >
+          <input
+            aria-label="补充你的选择"
+            disabled={disabled}
+            onChange={(event) => setFreeform(event.target.value)}
+            placeholder="告诉系统采用其他方式"
+            value={freeform}
+          />
+          <button disabled={disabled || !freeform.trim()} type="submit">提交</button>
+        </form>
+      ) : null}
     </section>
-  );
-}
-
-function RunWorkbench({ workbench, onAnswer }: { workbench: WorkbenchState; onAnswer: (value: string) => void }) {
-  const hasContent =
-    workbench.todos.length > 0 ||
-    Boolean(workbench.activeQuestion);
-
-  if (!hasContent) return null;
-
-  return (
-    <div className={`run-workbench ${workbench.activeQuestion ? "question-blocked" : ""}`}>
-      {workbench.activeQuestion ? <QuestionWorkbench question={workbench.activeQuestion} onAnswer={onAnswer} /> : null}
-      <TodoToolBlock todos={workbench.todos} blocked={Boolean(workbench.activeQuestion)} />
-    </div>
-  );
-}
-
-function Answer() {
-  return (
-    <article className="business-answer">
-      <p>
-        这个模式是成立的：从 2024 年 1 月到 2026 年 5 月，月初付费金额在大多数月份都稳定高于月中和月末。更像主因的是订单数被月内周期放大，单笔金额只解释了小部分差异。
-      </p>
-      <p>
-        拆开公式后，成功订单数贡献最大，大约解释 54% 的差异；支付成功率和单笔金额也有帮助，但更像放大项。发薪窗口、新老用户结构和渠道结构组合后解释力最高，活动和节假日更适合解释少数异常月份。
-      </p>
-
-      <div className="answer-stats">
-        <span><strong>+18.9%</strong><small>月初金额抬升</small></span>
-        <span><strong>25/29</strong><small>方向一致月份</small></span>
-        <span><strong>54%</strong><small>订单数贡献</small></span>
-        <span><strong>中高</strong><small>证据强度</small></span>
-      </div>
-
-      <div className="answer-charts">
-        <section>
-          <h3>月初 vs 月中/月末</h3>
-          <div className="chart-box">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={patternData}>
-                <defs>
-                  <linearGradient id="startFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={chartColors.start} stopOpacity={0.2} />
-                    <stop offset="100%" stopColor={chartColors.start} stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke={chartColors.grid} vertical={false} />
-                <XAxis dataKey="month" tickLine={false} axisLine={false} minTickGap={18} interval="preserveStartEnd" tick={axisTick} />
-                <YAxis tickLine={false} axisLine={false} width={34} tick={axisTick} />
-                <Tooltip {...tooltipProps} />
-                <Area type="monotone" dataKey="start" name="月初" stroke={chartColors.start} fill="url(#startFill)" strokeWidth={2} />
-                <Area type="monotone" dataKey="rest" name="月中/月末" stroke={chartColors.rest} fill="transparent" strokeWidth={2} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </section>
-        <section>
-          <h3>公式拆解贡献</h3>
-          <div className="chart-box">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={contributionData} layout="vertical">
-                <CartesianGrid stroke={chartColors.grid} horizontal={false} />
-                <XAxis type="number" hide domain={[0, 60]} />
-                <YAxis dataKey="name" type="category" tickLine={false} axisLine={false} width={92} tickMargin={8} tick={categoryTick} />
-                <Tooltip {...tooltipProps} />
-                <Bar dataKey="value" name="贡献占比" barSize={12} radius={[0, 4, 4, 0]} fill={chartColors.contribution} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </section>
-      </div>
-    </article>
-  );
-}
-
-function Composer({
-  value,
-  hasAttachment,
-  running,
-  blocked,
-  onChange,
-  onAttach,
-  onRemoveAttachment,
-  onSend,
-}: {
-  value: string;
-  hasAttachment: boolean;
-  running: boolean;
-  blocked: boolean;
-  onChange: (value: string) => void;
-  onAttach: () => void;
-  onRemoveAttachment: () => void;
-  onSend: () => void;
-}) {
-  return (
-    <div className={`composer ${blocked ? "blocked" : ""}`}>
-      {hasAttachment ? <FileAttachment removable onRemove={onRemoveAttachment} /> : null}
-      <textarea value={value} onChange={(event) => onChange(event.target.value)} disabled={running || blocked} />
-      <div className="composer-actions">
-        <div>
-          <AttachmentButton onClick={onAttach} />
-          <button className="mode-pill" type="button">分析 <ChevronDown size={13} /></button>
-          <span>{blocked ? "先回答上方问题" : "WAJE LangGraph"}</span>
-        </div>
-        <button className="send-button" type="button" onClick={onSend} disabled={running || blocked || !value.trim()} aria-label="Send">
-          <Send size={14} />
-        </button>
-      </div>
-    </div>
   );
 }
 
 export default function Home() {
+  const [threadId, setThreadId] = useState("");
   const [draft, setDraft] = useState(DEFAULT_QUESTION);
-  const [hasDraftAttachment, setHasDraftAttachment] = useState(true);
-  const [userMessage, setUserMessage] = useState<UserMessage | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [workbench, setWorkbench] = useState<WorkbenchState>(emptyWorkbench);
-  const [runClock, setRunClock] = useState<RunClock>(idleRunClock);
-  const [running, setRunning] = useState(false);
-  const cancelled = useRef(false);
-  const runClockRef = useRef<RunClock>(idleRunClock);
-  const runStartedAtRef = useRef<number | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [run, setRun] = useState<RunState>({
+    runId: "",
+    runStatus: "idle",
+    agentStatus: "idle",
+    eventsUrl: "",
+  });
+  const [updates, setUpdates] = useState<ProcessUpdate[]>([]);
+  const [clarification, setClarification] = useState<ClarificationState | null>(null);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const eventSourceRef = useRef<EventSource | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => () => eventSourceRef.current?.close(), []);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, userMessage]);
-
-  useEffect(() => {
-    if (runClock.state !== "running") return;
-
-    const interval = window.setInterval(() => {
-      setServerClock((current) => ({
-        ...current,
-        elapsedMs: runStartedAtRef.current ? Date.now() - runStartedAtRef.current : current.elapsedMs,
-      }));
-    }, 1000);
-
-    return () => window.clearInterval(interval);
-  }, [runClock.state]);
-
-  function setServerClock(next: RunClock | ((current: RunClock) => RunClock)) {
-    const resolved = typeof next === "function" ? next(runClockRef.current) : next;
-    runClockRef.current = resolved;
-    setRunClock(resolved);
-  }
-
-  async function serverWait(ms: number) {
-    let remaining = ms;
-
-    while (remaining > 0) {
-      const slice = Math.min(remaining, 1000);
-      await wait(slice);
-      if (cancelled.current) return false;
-      remaining -= slice;
-    }
-
-    return true;
-  }
+  }, [messages, updates, clarification, error]);
 
   function appendAssistant(text: string) {
-    setMessages((current) => [...current, { id: crypto.randomUUID(), kind: "assistant", text }]);
-  }
-
-  function setTodoStatus(id: string, status: TodoStatus) {
-    setWorkbench((current) => ({
+    if (!text) return;
+    setMessages((current) => [
       ...current,
-      todos: current.todos.map((todo) => (todo.id === id ? { ...todo, status } : todo)),
-    }));
+      { id: crypto.randomUUID(), role: "assistant", text },
+    ]);
   }
 
-  function updateActiveGroup(group: ToolGroupRun) {
-    setMessages((current) => {
-      const next = { id: group.id, kind: "tool_group" as const, group };
-      return current.some((message) => message.kind === "tool_group" && message.id === group.id)
-        ? current.map((message) => (message.kind === "tool_group" && message.id === group.id ? next : message))
-        : [...current, next];
-    });
+  function acceptAnswerPackage(answerPackage: JsonRecord | null) {
+    if (!answerPackage) return false;
+    const answer = answerTextFromPackage(answerPackage);
+    if (answer) appendAssistant(answer);
+    return Boolean(answer);
   }
 
-  function completeActiveGroup(group: ToolGroupRun) {
-    const completed = { ...group, state: "completed" as const };
-    updateActiveGroup(completed);
-  }
-
-  async function runToolGroup(template: ToolGroupTemplate) {
-    setTodoStatus(template.todoId, "in_progress");
-
-    const baseTools = template.tools.map((label) => ({ id: label, label, status: "pending" as const }));
-    const baseGroup = {
-      id: template.id,
-      state: "running" as const,
-      title: template.title,
-      completedTitle: template.completedTitle,
-      summary: template.summary,
-      elapsedMs: 0,
-      nestedTools: baseTools,
+  function watchRun(eventsUrl: string, runId: string) {
+    eventSourceRef.current?.close();
+    const source = new EventSource(eventsUrl);
+    eventSourceRef.current = source;
+    source.onmessage = (message) => {
+      let event: GatewayEvent;
+      try {
+        event = JSON.parse(message.data) as GatewayEvent;
+      } catch {
+        setError("gateway_event_invalid");
+        source.close();
+        return;
+      }
+      const update = processUpdateFrom(event);
+      if (update) {
+        setUpdates((current) => current.some((item) => item.key === update.key)
+          ? current
+          : [...current, update]);
+      }
+      const payload = isRecord(event.payload) ? event.payload : null;
+      if (event.event === "run_status" && payload) {
+        const status = stringValue(payload.status);
+        if (status) setRun((current) => ({ ...current, runStatus: status }));
+        if (status === "failed" || status === "completed_without_workflow") {
+          source.close();
+          setSubmitting(false);
+        }
+      }
+      if (event.event === "clarification_requested" && payload) {
+        const next = clarificationFrom(payload, runId);
+        if (next) {
+          setClarification(next);
+          setSubmitting(false);
+          source.close();
+        }
+      }
+      if (event.event === "answer_package_ready" && payload) {
+        const answerPackage = isRecord(payload.answer_package)
+          ? payload.answer_package
+          : null;
+        acceptAnswerPackage(answerPackage);
+        setRun((current) => ({
+          ...current,
+          runStatus: current.runStatus === "failed" ? "failed" : "completed",
+        }));
+        setSubmitting(false);
+        source.close();
+      }
     };
+    source.onerror = () => {
+      // The Gateway endpoint publishes a finite persisted snapshot. EventSource
+      // reconnects until a terminal run, clarification, or Answer Package appears.
+    };
+  }
 
-    updateActiveGroup(baseGroup);
-
-    for (let index = 0; index < baseTools.length; index += 1) {
-      if (cancelled.current) return;
-      updateActiveGroup({
-        ...baseGroup,
-        elapsedMs: (index + 1) * 700,
-        nestedTools: baseTools.map((tool, toolIndex) => ({
-          ...tool,
-          status: toolIndex < index ? "completed" : toolIndex === index ? "running" : "pending",
-        })),
-      });
-      if (!(await serverWait(650))) return;
+  async function ensureThread() {
+    if (threadId) return threadId;
+    const response = await fetch("/api/threads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const payload = await responseJson(response);
+    if (!isRecord(payload.thread) || !stringValue(payload.thread.id)) {
+      throw new Error("gateway_thread_invalid");
     }
-
-    const completedGroup = {
-      ...baseGroup,
-      elapsedMs: Math.max(1200, baseTools.length * 700),
-      nestedTools: baseTools.map((tool) => ({ ...tool, status: "completed" as const })),
-    };
-    completeActiveGroup(completedGroup);
-    setTodoStatus(template.todoId, "completed");
-    await serverWait(450);
+    const createdThreadId = stringValue(payload.thread.id);
+    setThreadId(createdThreadId);
+    return createdThreadId;
   }
 
-  async function playFlow(question: string, includeAttachment: boolean) {
-    cancelled.current = false;
-    setRunning(true);
-    setUserMessage({ text: question, attachment: includeAttachment ? attachment : undefined });
-    setMessages([]);
-    setWorkbench(emptyWorkbench);
-    runStartedAtRef.current = null;
-    setServerClock({ state: "queued", elapsedMs: 0 });
+  function applyGatewayResponse(payload: JsonRecord, fallbackRunId = "") {
+    const runRecord = isRecord(payload.run) ? payload.run : null;
+    const agentCore = isRecord(payload.agentCore) ? payload.agentCore : null;
+    const agentResult = agentCore && isRecord(agentCore.result) ? agentCore.result : null;
+    const runId =
+      stringValue(runRecord?.id) ||
+      stringValue(payload.resumedRunId) ||
+      stringValue(agentResult?.run_id) ||
+      fallbackRunId;
+    const runStatus =
+      stringValue(runRecord?.status) ||
+      stringValue(agentResult?.status) ||
+      stringValue(payload.status) ||
+      "queued";
+    const agentStatus = stringValue(agentCore?.status) || "queued";
+    const eventsUrl = stringValue(payload.eventsUrl);
+    setRun({ runId, runStatus, agentStatus, eventsUrl });
 
-    await wait(500);
-    if (cancelled.current) return;
-    runStartedAtRef.current = Date.now();
-    setServerClock({ state: "running", elapsedMs: 0 });
-    appendAssistant("我会按月内周期模式处理。先确认模式是否稳定存在，再做公式拆解、候选解释、组合归因，最后校验哪些结论能写强。");
-
-    if (!(await serverWait(600))) return;
-    setWorkbench({
-      todos: todoSeed.map((todo) => (todo.id === "intent" ? { ...todo, status: "in_progress" } : todo)),
-    });
-
-    if (!(await serverWait(1000))) return;
-    setTodoStatus("intent", "completed");
-    appendAssistant("用户已经给出 2024-01 到 2026-05 的完整区间，并明确比较月初和月中/月末，因此不需要打断用户确认。");
-
-    await runToolGroup(toolGroups.pattern);
-    if (cancelled.current) return;
-    appendAssistant("月初高点在 25/29 个月成立，剔除春节、长假和活动峰值月份后，方向仍然稳定。");
-
-    await runToolGroup(toolGroups.formula);
-    if (cancelled.current) return;
-    appendAssistant("拆开公式后，成功订单数贡献最大；支付成功率和单笔金额有帮助，但更像放大项。");
-
-    await runToolGroup(toolGroups.candidate);
-    if (cancelled.current) return;
-    appendAssistant("发薪窗口、新老用户结构和渠道结构进入高相关候选；活动事件表存在缺口，只能按候选解释处理。");
-
-    setTodoStatus("joint", "in_progress");
-    if (!(await serverWait(900))) return;
-    appendAssistant("单因子能解释方向，组合因子更能解释月份间强弱差异，因此进入 pay_window × user_type × channel。");
-
-    await runToolGroup(toolGroups.joint);
-    if (cancelled.current) return;
-    appendAssistant("pay_window × user_type × channel 的解释力高于任意单因子，残差主要集中在活动和异常月份。");
-
-    setWorkbench((current) => ({
-      ...current,
-      activeQuestion: {
-        id: "event-gap",
-        title: "需要确认表达边界",
-        body: "活动事件表不完整，是否允许把活动因素写成候选解释？",
-        options: ["允许候选表达", "只写已证明因素"],
-      },
-    }));
-    setRunning(false);
+    const nextClarification = clarificationFrom(payload, runId);
+    if (nextClarification) setClarification(nextClarification);
+    const hasAnswer = acceptAnswerPackage(answerPackageFrom(payload));
+    if (agentStatus === "failed") {
+      setError(stringValue(agentCore?.error) || stringValue(agentResult?.failure_reason) || "agent_core_run_failed");
+    }
+    const terminal = ["completed", "completed_without_workflow", "failed"].includes(runStatus);
+    if (terminal || nextClarification || hasAnswer) setSubmitting(false);
+    if (eventsUrl && !nextClarification && !hasAnswer && runStatus !== "failed") {
+      watchRun(eventsUrl, runId);
+    }
   }
 
-  async function continueAfterQuestion(value: string) {
-    setRunning(true);
-    setServerClock((current) => ({ ...current, state: "running" }));
-    setWorkbench((current) => ({
-      ...current,
-      activeQuestion: current.activeQuestion ? { ...current.activeQuestion, selected: value } : undefined,
-    }));
-    appendAssistant(value === "允许候选表达" ? "我会把活动因素保留为候选解释，并在答案里降低表达强度。" : "我会只写已证明因素，活动相关路径不进入主结论。");
-
-    if (!(await serverWait(700))) return;
-    setWorkbench((current) => ({ ...current, activeQuestion: undefined }));
-    await runToolGroup(toolGroups.verify);
-    if (cancelled.current) return;
-    setMessages((current) => [...current, { id: "answer", kind: "answer" }]);
-    setServerClock((current) => ({
-      ...current,
-      state: "completed",
-      elapsedMs: runStartedAtRef.current ? Date.now() - runStartedAtRef.current : current.elapsedMs,
-    }));
-    setRunning(false);
-  }
-
-  function send() {
-    if (running || workbench.activeQuestion) return;
+  async function sendQuestion(event: FormEvent) {
+    event.preventDefault();
     const question = draft.trim();
-    if (!question) return;
+    if (!question || submitting || clarification) return;
+    setSubmitting(true);
+    setError("");
+    setUpdates([]);
+    eventSourceRef.current?.close();
+    try {
+      const activeThreadId = await ensureThread();
+      setMessages((current) => [
+        ...current,
+        { id: crypto.randomUUID(), role: "user", text: question },
+      ]);
+      setDraft("");
+      const response = await fetch(
+        `/api/threads/${encodeURIComponent(activeThreadId)}/messages`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": crypto.randomUUID(),
+          },
+          body: JSON.stringify({ message: question }),
+        },
+      );
+      applyGatewayResponse(await responseJson(response));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "gateway_request_failed");
+      setSubmitting(false);
+    }
+  }
 
-    const includeAttachment = hasDraftAttachment;
-    setDraft("");
-    setHasDraftAttachment(false);
-    void playFlow(question, includeAttachment);
+  async function submitClarification(answer: string, selectedOptionId?: string) {
+    if (!clarification || submitting) return;
+    setSubmitting(true);
+    setError("");
+    eventSourceRef.current?.close();
+    setMessages((current) => [
+      ...current,
+      { id: crypto.randomUUID(), role: "user", text: answer },
+    ]);
+    const sourceRunId = clarification.runId;
+    setClarification(null);
+    try {
+      const response = await fetch(
+        `/api/runs/${encodeURIComponent(sourceRunId)}/clarifications`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": crypto.randomUUID(),
+          },
+          body: JSON.stringify({ answer, selectedOptionId: selectedOptionId ?? null }),
+        },
+      );
+      applyGatewayResponse(await responseJson(response), sourceRunId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "gateway_request_failed");
+      setSubmitting(false);
+    }
+  }
+
+  function newAnalysis() {
+    eventSourceRef.current?.close();
+    setThreadId("");
+    setMessages([]);
+    setUpdates([]);
+    setClarification(null);
+    setError("");
+    setRun({ runId: "", runStatus: "idle", agentStatus: "idle", eventsUrl: "" });
+    setDraft(DEFAULT_QUESTION);
+    setSubmitting(false);
   }
 
   return (
     <main className="app-shell">
       <aside className="thread-sidebar">
         <div className="brand">WAJE BI v2</div>
-        <button className="new-thread" type="button">New analysis</button>
+        <button className="new-thread" onClick={newAnalysis} type="button">
+          <Plus size={14} /> 新分析
+        </button>
         <nav>
-          <a className="active">月初付费金额归因</a>
-          <a>发薪窗口回溯</a>
-          <a>支付成功率异常</a>
+          {threadId ? <a className="active">{threadId}</a> : <a>会话将在首次提问时创建</a>}
         </nav>
       </aside>
 
       <section className="chat-shell">
         <header className="chat-header">
           <div>
-            <strong>月内周期模式分析</strong>
-            <span>LangGraph mock · SQL-first evidence flow</span>
+            <strong>真实数据分析</strong>
+            <span>Gateway → ConversationAgentCore → Answer Package</span>
+          </div>
+          <div className="gateway-run-status" aria-live="polite">
+            <span>Run：{statusLabel(run.runStatus)}</span>
+            <span>Agent：{statusLabel(run.agentStatus)}</span>
           </div>
         </header>
 
         <div className="message-list" ref={listRef}>
-          {userMessage ? <UserMessageBubble message={userMessage} /> : null}
-          {userMessage && runClock.state !== "idle" ? <RunClockBadge clock={runClock} /> : null}
-          {messages.map((message) => {
-            if (message.kind === "assistant") return <AssistantText key={message.id}>{message.text}</AssistantText>;
-            if (message.kind === "tool_group") return <ToolGroupBlock group={message.group} key={message.id} />;
-            return <Answer key={message.id} />;
-          })}
+          {messages.length === 0 ? (
+            <div className="gateway-empty">
+              输入真实业务问题后，页面会创建会话并交给 Gateway 执行。
+            </div>
+          ) : null}
+          {messages.map((message) => (
+            message.role === "user" ? (
+              <div className="user-message" key={message.id}>
+                <div className="user-bubble">{message.text}</div>
+              </div>
+            ) : (
+              <article className="business-answer" key={message.id}>
+                {message.text.split(/\n{2,}/).map((paragraph, index) => (
+                  <p key={`${message.id}-${index}`}>{paragraph}</p>
+                ))}
+              </article>
+            )
+          ))}
+
+          {run.runId ? (
+            <section className="gateway-runtime-card">
+              <div>
+                <strong>{statusLabel(run.runStatus)}</strong>
+                <span>{run.runId}</span>
+              </div>
+              {updates.length ? (
+                <ol className="gateway-process-list">
+                  {updates.map((update) => (
+                    <li key={update.key}>
+                      <strong>{update.label}</strong>
+                      <p>{update.summary}</p>
+                      {update.status ? <small>{statusLabel(update.status)}</small> : null}
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p>等待 Gateway 返回持久化运行状态。</p>
+              )}
+            </section>
+          ) : null}
+
+          {clarification ? (
+            <ClarificationCard
+              clarification={clarification}
+              disabled={submitting}
+              onSubmit={submitClarification}
+            />
+          ) : null}
+          {error ? <div className="gateway-error" role="alert">{error}</div> : null}
         </div>
 
-        <div className="bottom-panel">
-          <RunWorkbench workbench={workbench} onAnswer={continueAfterQuestion} />
-          <Composer
+        <form className="composer gateway-composer" onSubmit={sendQuestion}>
+          <textarea
+            aria-label="业务问题"
+            disabled={submitting || Boolean(clarification)}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={clarification ? "请先回答上方澄清问题" : "输入业务问题"}
             value={draft}
-            hasAttachment={hasDraftAttachment}
-            running={running}
-            blocked={Boolean(workbench.activeQuestion)}
-            onChange={setDraft}
-            onAttach={() => setHasDraftAttachment(true)}
-            onRemoveAttachment={() => setHasDraftAttachment(false)}
-            onSend={send}
           />
-        </div>
+          <div className="composer-actions">
+            <div>
+              <span>{threadId || "新会话"}</span>
+            </div>
+            <button
+              aria-label="发送"
+              className="send-button"
+              disabled={submitting || Boolean(clarification) || !draft.trim()}
+              type="submit"
+            >
+              <Send size={14} />
+            </button>
+          </div>
+        </form>
       </section>
     </main>
   );

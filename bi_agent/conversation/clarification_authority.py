@@ -2046,13 +2046,11 @@ def _run_mode_class(value: Any) -> str:
     mode = str(value or "production")
     if mode in {"production", "live"}:
         return "authoritative"
-    if mode == "fixture":
-        return "fixture"
     raise EvidenceIntegrityError("execution_material_run_mode_class_invalid")
 
 
 def _canonical_run_mode_class(value: Any) -> str:
-    if value not in {"authoritative", "fixture"}:
+    if value != "authoritative":
         raise EvidenceIntegrityError(
             "execution_material_run_mode_class_invalid"
         )

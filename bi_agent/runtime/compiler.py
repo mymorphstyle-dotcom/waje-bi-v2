@@ -379,7 +379,7 @@ def compile_graph(
             MutationRecord(
                 action="degraded",
                 capability=node,
-                reason="non_pattern_dry_run_skeleton",
+                reason="non_pattern_recipe_requires_explicit_route",
             )
             for node in accepted
         ),

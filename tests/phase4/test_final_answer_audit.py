@@ -7,7 +7,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _local_final_answer_hard_blockers,
     normalize_final_answer_audit,
 )
-from tests.phase4.fake_llm import FakeLLMResult
+from tests.support.scripted_llm import ScriptedLLMClient
 
 
 class FinalAnswerAuditTest(unittest.TestCase):
@@ -172,16 +172,20 @@ class FinalAnswerAuditTest(unittest.TestCase):
                 )
 
 
-class _CapturingAuditLLM:
+class _CapturingAuditLLM(ScriptedLLMClient):
     def __init__(self):
+        super().__init__(
+            {"final_answer_audit": {"material_findings": []}}
+        )
         self.payload = None
 
     def invoke_json(self, *, task, prompt_version, messages, required_keys):
         self.payload = _input_payload(messages)
-        output = {"material_findings": []}
-        return FakeLLMResult(
-            output,
-            _audit_metadata(task, prompt_version, messages, output),
+        return super().invoke_json(
+            task=task,
+            prompt_version=prompt_version,
+            messages=messages,
+            required_keys=required_keys,
         )
 
 
@@ -191,26 +195,6 @@ def _input_payload(messages):
     start = content.index("<input_json>") + len("<input_json>")
     end = content.index("</input_json>")
     return json.loads(content[start:end].strip())
-
-
-def _audit_metadata(task, prompt_version, messages, output):
-    return {
-        "task": task,
-        "provider": "fake",
-        "model": "fake-model",
-        "prompt_version": prompt_version,
-        "response_id": "fake-final-answer-audit",
-        "messages": [dict(message) for message in messages],
-        "required_keys": ["material_findings"],
-        "raw_response_content": "{}",
-        "started_at": "2026-01-01T00:00:00+00:00",
-        "finished_at": "2026-01-01T00:00:00+00:00",
-        "duration_ms": 0.0,
-        "input_hash": "input-final-answer-audit",
-        "output_hash": "output-final-answer-audit",
-        "usage": {},
-        "structured_output": output,
-    }
 
 
 def _audit_state(llm):

@@ -229,17 +229,6 @@
   animation: spin 0.9s linear infinite;
 }
 
-.deprecatedNotice {
-  max-width: 1100px;
-  margin: 0 0 14px;
-  border: 1px solid #3a2f20;
-  border-radius: 8px;
-  background: #1c1813;
-  padding: 9px 11px;
-  color: #e0b886;
-  font-size: 12px;
-}
-
 .runOverview {
   display: grid;
   gap: 14px;

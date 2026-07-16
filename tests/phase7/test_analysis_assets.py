@@ -23,10 +23,8 @@ from bi_agent.runtime.analysis_assets import (
 )
 from bi_agent.runtime.langgraph_workflow import (
     WorkflowRunResult,
-    run_pattern_workflow as _run_pattern_workflow,
 )
-from tests.phase4.fake_llm import FakeLLMClient
-from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
+from tests.phase4.analysis_asset_vectors import verified_dimension_scan_asset
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
 
@@ -67,19 +65,6 @@ def build_dimension_scan_reuse_contract(*args, evidence_resolver=None, **kwargs)
         **_authority_kwargs(evidence_resolver),
         **kwargs,
     )
-
-
-def run_pattern_workflow(request=None):
-    fixture_request = dict(request or {})
-    fixture_request.setdefault("run_mode", "fixture")
-    with patch.dict(
-        "os.environ",
-        {
-            "WAJE_ALLOW_LEGACY_FIXTURES": "1",
-            "WAJE_RUNTIME_ENV": "test",
-        },
-    ):
-        return _run_pattern_workflow(fixture_request)
 
 
 def verified_reuse_fixture(
@@ -1346,121 +1331,6 @@ class AnalysisAssetsTest(unittest.TestCase):
         self.assertEqual(assets[0]["status"], "claim_supported")
         self.assertEqual(assets[0]["verifier_status"], "passed")
         self.assertTrue(assets[0]["can_support_business_truth"])
-
-    def test_follow_up_legacy_asset_stays_context_only_without_exact_signature(self):
-        class Provider:
-            def configured(self):
-                return True
-
-            def binding_reason(self):
-                return ""
-
-            def plan(self, request, intent, accepted_graph):
-                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowPlan
-
-                return RevenueRowPlan(
-                    sql_text=(
-                        "SELECT period, group, channel, sum(amount) AS amount "
-                        "FROM t GROUP BY period, group, channel"
-                    ),
-                    query_id=f"{request['run_id']}:dimension_scan",
-                    required_fields=("period", "group", "amount"),
-                    dimension_keys=("channel",),
-                )
-
-            def fetch(self, plan):
-                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowsResult
-
-                return RevenueRowsResult(
-                    ok=True,
-                    rows=(
-                        {
-                            "period": "2026-07-07",
-                            "group": "baseline",
-                            "amount": 100,
-                            "paid_users": 10,
-                            "orders": 12,
-                            "first_paid_users": 3,
-                            "channel": "A",
-                        },
-                        {
-                            "period": "2026-07-08",
-                            "group": "target",
-                            "amount": 130,
-                            "paid_users": 11,
-                            "orders": 14,
-                            "first_paid_users": 4,
-                            "channel": "A",
-                        },
-                    ),
-                    query_hash="hash-channel-scan",
-                    query_id=plan.query_id,
-                    result_refs=("hash-channel-scan",),
-                )
-
-        def workflow(request):
-            return run_pattern_workflow(
-                {
-                    **request,
-                    "llm_client": FakeLLMClient(
-                        {
-                            "analysis_route_plan": {
-                                "requested_nodes": ["segment_contribution", "answer_verify"],
-                                "analysis_requirements": {
-                                    "target_metrics": ["paid_amount"],
-                                    "requested_dimensions": ["channel"],
-                                },
-                            }
-                        }
-                    ),
-                }
-            )
-
-        store = InMemoryConversationStore()
-        store.create_thread("thread-follow-up-assets", owner_id="analyst-1")
-        core = ConversationAgentCore(store, workflow_runner=workflow, row_provider=Provider())
-
-        first = core.run_message(
-            thread_id="thread-follow-up-assets",
-            run_id="run-initial-scan",
-            user_message="哪个渠道影响最大？",
-            role="analyst",
-        )
-        second = core.run_message(
-            thread_id="thread-follow-up-assets",
-            run_id="run-follow-up-scan",
-            user_message="继续看哪个渠道影响最大",
-            role="analyst",
-        )
-
-        self.assertEqual(first["status"], "failed")
-        self.assertEqual(second["status"], "failed")
-        assets = store.list_analysis_assets("thread-follow-up-assets", first["topic_id"])
-        self.assertEqual(first["answer_package"]["status"], "failed")
-        self.assertFalse(any(asset["asset_type"] == "dimension_scan" for asset in assets))
-        prior_assets = store.runs["run-follow-up-scan"]["request"]["prior_analysis_assets"]
-        self.assertFalse(any(asset["asset_type"] == "dimension_scan" for asset in prior_assets))
-        self.assertEqual(second["answer_package"]["status"], "failed")
-        compiled = compile_graph(
-            question_family="segment_or_factor_attribution",
-            target_metric="paid_amount",
-            requested_nodes=("segment_contribution", "answer_verify"),
-            question_text="继续看哪个渠道影响最大",
-            bound_context={
-                "scope": "full_sample",
-                "time_window": "2024-01..2026-05",
-                "windows": {"time_window": "2024-01..2026-05"},
-                "baselines": (),
-                "permission_scope": "analyst",
-                "snapshot_version": "2026H1",
-                "contract_versions": {"runtime": "contracts-v1"},
-                "schema_fingerprint": "contracts-v1:2026H1",
-            },
-            prior_analysis_assets=tuple(prior_assets),
-        )
-        self.assertNotIn("dimension_scan_reuse", compiled.runtime_plan["query_intents"])
-        self.assertIn("dimension_scan", compiled.runtime_plan["query_intents"])
-
 
 if __name__ == "__main__":
     unittest.main()

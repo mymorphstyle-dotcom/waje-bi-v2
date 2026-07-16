@@ -16,7 +16,7 @@ from bi_agent.runtime.evidence_authority import (
     canonical_digest,
     canonical_value,
 )
-from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
+from tests.phase4.analysis_asset_vectors import verified_dimension_scan_asset
 from tests.phase7.test_conversation_persistence import FakeConnection, FakeCursor
 
 

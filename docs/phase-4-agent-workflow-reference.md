@@ -148,8 +148,8 @@ Admin artifact must include:
 
 ## Development Replay
 
-- `/phase4-replay` is an independent development replay surface and does not modify the original demo route.
-- `/api/replays` must read real Phase 4 artifacts and build replay events from `checkpoint_events` order.
+- `/agent-run-workbench` reads persisted runtime and Answer Package records from PostgreSQL.
+- `/api/replays` is a development-only parser for historical artifacts and cannot establish current business acceptance.
 - LLM events must display visible LLM business output from structured responses; hidden reasoning is not exposed.
 - Visible LLM narrative fields must use Simplified Chinese business language for Chinese-based users; machine ids and enum values stay unchanged.
 - Tool groups must be inserted at the corresponding local LangGraph nodes, such as route acceptance, data validation, capability execution, hard verification, and artifact persistence.

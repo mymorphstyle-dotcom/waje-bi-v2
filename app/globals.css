@@ -28,7 +28,6 @@ body {
   background: var(--page-bg);
   color: var(--text);
   font-family:
-    var(--font-geist-sans),
     system-ui,
     -apple-system,
     BlinkMacSystemFont,
@@ -792,6 +791,196 @@ button {
   color: #777980;
   cursor: default;
   opacity: 1;
+}
+
+.new-thread {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gateway-run-status {
+  display: flex !important;
+  grid-auto-flow: column;
+  gap: 12px !important;
+  text-align: right;
+}
+
+.gateway-run-status span {
+  color: #b9bbc2;
+  font-variant-numeric: tabular-nums;
+}
+
+.gateway-empty {
+  max-width: 640px;
+  margin: 22vh auto 0;
+  color: var(--subtle);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.gateway-runtime-card,
+.gateway-clarification,
+.gateway-error {
+  max-width: 760px;
+  margin: 14px 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #191a1d;
+  padding: 14px;
+}
+
+.gateway-runtime-card > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.gateway-runtime-card strong,
+.gateway-clarification h2 {
+  color: #eeeeef;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.gateway-runtime-card span,
+.gateway-runtime-card > p,
+.gateway-clarification > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.gateway-runtime-card span {
+  overflow-wrap: anywhere;
+}
+
+.gateway-process-list {
+  display: grid;
+  gap: 0;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gateway-process-list li {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.35fr) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  border-top: 1px solid var(--border-soft);
+  padding: 9px 0;
+}
+
+.gateway-process-list strong,
+.gateway-process-list p,
+.gateway-process-list small {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.gateway-process-list strong {
+  color: #dedee3;
+}
+
+.gateway-process-list p,
+.gateway-process-list small {
+  color: var(--muted);
+}
+
+.gateway-clarification {
+  border-color: #5b4731;
+}
+
+.gateway-clarification > span {
+  color: #e0b886;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.gateway-clarification h2 {
+  margin: 6px 0 8px;
+  line-height: 1.55;
+}
+
+.gateway-options {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.gateway-options button {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #202125;
+  padding: 10px 12px;
+  color: #d8d8dd;
+  text-align: left;
+}
+
+.gateway-options button.recommended {
+  border-color: #345942;
+  background: #1f3327;
+}
+
+.gateway-options button strong {
+  font-size: 12px;
+}
+
+.gateway-options button small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.gateway-freeform {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.gateway-freeform input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #202125;
+  padding: 8px 10px;
+  color: var(--text);
+  outline: 0;
+}
+
+.gateway-freeform button {
+  border: 0;
+  border-radius: 9px;
+  background: #d7d7dc;
+  padding: 0 12px;
+  color: #111214;
+}
+
+.gateway-freeform button:disabled {
+  background: #3a3b40;
+  color: #777980;
+}
+
+.gateway-error {
+  border-color: #6a3434;
+  background: #2a1d1d;
+  color: #e5a8a8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.gateway-composer {
+  grid-row: 3;
 }
 
 .spiral-loader {

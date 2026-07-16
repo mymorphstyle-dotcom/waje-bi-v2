@@ -13,6 +13,30 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class GatewayTypeScriptContractTest(unittest.TestCase):
+    def test_gateway_store_fails_closed_without_postgres_or_unit_test_injection(self):
+        result = _run_typescript(
+            textwrap.dedent(
+                """
+                const { conversationStoreMode } = await import(
+                  "./app/api/_conversationStore.ts"
+                );
+                let error = "";
+                try {
+                  conversationStoreMode();
+                } catch (caught) {
+                  error = caught instanceof Error ? caught.message : String(caught);
+                }
+                console.log(JSON.stringify({ error }));
+                """
+            ),
+            unit_test_store=False,
+        )
+
+        self.assertEqual(
+            result["error"],
+            "WAJE_RUNTIME_DATABASE_URL or DATABASE_URL is required",
+        )
+
     def test_gateway_spawn_failure_terminalizes_queued_run_idempotently(self):
         result = _run_typescript(
             textwrap.dedent(
@@ -837,16 +861,32 @@ def _run_agent_core_inline(
         return _run_typescript(source, env=env)
 
 
-def _run_typescript(source: str, *, env=None):
-    completed = _run_typescript_process(source, env=env)
+def _run_typescript(source: str, *, env=None, unit_test_store=True):
+    completed = _run_typescript_process(
+        source,
+        env=env,
+        unit_test_store=unit_test_store,
+    )
     completed.check_returncode()
     return json.loads(completed.stdout)
 
 
-def _run_typescript_process(source: str, *, env=None):
+def _run_typescript_process(source: str, *, env=None, unit_test_store=True):
     node = shutil.which("node")
     if not node:
         raise RuntimeError("node executable is required for Gateway TypeScript contract tests")
+    process_env = {
+        **os.environ,
+        **(env or {}),
+    }
+    if unit_test_store:
+        process_env["NODE_ENV"] = "test"
+        process_env["WAJE_GATEWAY_UNIT_TEST_STORE"] = "memory"
+    else:
+        process_env.pop("WAJE_RUNTIME_DATABASE_URL", None)
+        process_env.pop("DATABASE_URL", None)
+        process_env.pop("WAJE_GATEWAY_UNIT_TEST_STORE", None)
+        process_env["NODE_ENV"] = "development"
     return subprocess.run(
         [
             node,
@@ -857,7 +897,7 @@ def _run_typescript_process(source: str, *, env=None):
             source,
         ],
         cwd=ROOT,
-        env=env,
+        env=process_env,
         capture_output=True,
         text=True,
     )

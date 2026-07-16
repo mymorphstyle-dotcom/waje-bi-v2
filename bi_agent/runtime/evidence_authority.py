@@ -6,7 +6,6 @@ from decimal import Decimal
 import hashlib
 import json
 import math
-import os
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
@@ -365,14 +364,6 @@ class _InMemoryRuntimeEvidenceWriter:
             plan,
             binding_payload,
         )
-
-
-def legacy_fixture_enabled(run_mode: str) -> bool:
-    return bool(
-        run_mode == "fixture"
-        and os.environ.get("WAJE_ALLOW_LEGACY_FIXTURES") == "1"
-        and os.environ.get("WAJE_RUNTIME_ENV") in {"test", "development"}
-    )
 
 
 def canonical_digest(value: Any) -> str:

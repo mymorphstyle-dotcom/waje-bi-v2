@@ -2,18 +2,16 @@ import { NextResponse } from "next/server";
 
 import type { TraceRun } from "../../agent-run-workbench/contracts";
 import { listPersistedAnswerPackageRuns, listPersistedRuntimeRuns, type PersistedRuntimeRun } from "../_conversationStore";
-import { GET as getReplays, traceRunFromAnswerPackage } from "../replays/route";
+import { traceRunFromAnswerPackage } from "../replays/route";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET() {
-  const [response, persistedAnswerPackageRuns, persistedRuntimeRuns] = await Promise.all([
-    getReplays(),
+  const [persistedAnswerPackageRuns, persistedRuntimeRuns] = await Promise.all([
     listPersistedAnswerPackageRuns(),
     listPersistedRuntimeRuns(),
   ]);
-  const data = await response.json();
   const persistedRuns = persistedAnswerPackageRuns.map((row) =>
     traceRunFromAnswerPackage(withRunNodes(row.answerPackage, row.runNodes), {
       id: `persisted:${row.runId}`,
@@ -25,7 +23,7 @@ export async function GET() {
   );
   const runtimeRuns = persistedRuntimeRuns.map(traceRunFromRuntimeRun);
   return NextResponse.json({
-    runs: [...runtimeRuns, ...persistedRuns, ...(data.replays ?? [])].sort(
+    runs: [...runtimeRuns, ...persistedRuns].sort(
       (left, right) => (right.generatedAt ?? 0) - (left.generatedAt ?? 0),
     ),
   });

@@ -14,7 +14,7 @@ const WorkflowCanvasModal = dynamic(() => import("./WorkflowCanvasModal").then((
   ssr: false,
 });
 
-export function AgentRunWorkbench({ deprecated = false }: { deprecated?: boolean }) {
+export function AgentRunWorkbench() {
   const [runs, setRuns] = useState<TraceRun[]>([]);
   const [activeId, setActiveId] = useState("");
   const [visibleCount, setVisibleCount] = useState(0);
@@ -144,9 +144,6 @@ export function AgentRunWorkbench({ deprecated = false }: { deprecated?: boolean
         </header>
 
         <div className={styles.messageList} ref={messageListRef}>
-          {deprecated ? (
-            <div className={styles.deprecatedNotice}>这个入口保留兼容；新的审计工作台是 /agent-run-workbench。</div>
-          ) : null}
           {loading ? <p className={styles.empty}>正在加载真实 run...</p> : null}
           {error ? <p className={styles.error}>{error}</p> : null}
           {active ? (

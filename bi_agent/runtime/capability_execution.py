@@ -26,7 +26,6 @@ from bi_agent.runtime.evidence_authority import (
     canonical_value,
     canonical_digest,
     canonical_result_rows_hash_matches,
-    legacy_fixture_enabled,
     runtime_evidence_record_integrity_errors,
 )
 from bi_agent.runtime.query_completeness import (
@@ -157,7 +156,6 @@ def bind_capability_inputs(
     evidence_writer: RuntimeEvidenceWriter | None = None,
     runtime_registry: RuntimeContractRegistry | None = None,
     release_resolver: DatasetReleaseResolver | None = None,
-    run_mode: str = "production",
 ) -> BoundCapabilityInput:
     if evidence_authority is not None:
         evidence_resolver = evidence_resolver or evidence_authority
@@ -167,12 +165,11 @@ def bind_capability_inputs(
         evidence_resolver is None
         or rows_loader is None
         or evidence_writer is None
-    ) and not legacy_fixture_enabled(run_mode):
+    ):
         return _blocked_bound(plan, "runtime_evidence_authority_missing")
-    if not legacy_fixture_enabled(run_mode):
-        registry_error = runtime_registry_integrity_error(runtime_registry)
-        if registry_error:
-            return _blocked_bound(plan, registry_error)
+    registry_error = runtime_registry_integrity_error(runtime_registry)
+    if registry_error:
+        return _blocked_bound(plan, registry_error)
     completeness_records: Mapping[str, Any] = {}
     authority_records: Mapping[str, Mapping[str, Any]] = {}
     if evidence_resolver is not None and rows_loader is not None and evidence_writer is not None:
@@ -1048,8 +1045,6 @@ def _create_bound_capability_input(
 def validate_bound_capability_input(
     bound: Any,
     resolver: RuntimeEvidenceResolver | None = None,
-    *,
-    allow_fixture: bool = False,
 ) -> str:
     if type(bound) is not BoundCapabilityInput:
         return "bound_capability_input_type_invalid"
@@ -1074,7 +1069,7 @@ def validate_bound_capability_input(
     )
     if current != binding:
         return "binding_manifest_payload_mismatch"
-    if not bound.binding_manifest_ref and not allow_fixture:
+    if not bound.binding_manifest_ref:
         if bound.status == "blocked" and bound.reasons:
             return str(bound.reasons[0])
         return "capability_binding_record_missing"
@@ -1241,12 +1236,6 @@ def _blocked_bound(
             "input_completeness_statuses": (),
         },
     )
-
-
-def bound_capability_manifest(bound: Any) -> dict[str, Any]:
-    if validate_bound_capability_input(bound, allow_fixture=True):
-        return {}
-    return _canonical_value(bound.binding_manifest)
 
 
 _BOUND_VALUE_FIELDS = (

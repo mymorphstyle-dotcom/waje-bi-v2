@@ -3,7 +3,7 @@ import unittest
 from bi_agent.runtime.analysis_assets import build_dimension_scan_reuse_contract
 from bi_agent.runtime.revenue_runtime_plan import build_revenue_runtime_plan
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
+from tests.phase4.analysis_asset_vectors import verified_dimension_scan_asset
 
 
 class RevenueRuntimePlanTest(unittest.TestCase):

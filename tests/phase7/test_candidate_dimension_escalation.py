@@ -700,7 +700,7 @@ def test_route_added_dimension_role_projection_matches_final_graph_order():
             "run_id": "run-dimension-role-projection",
             "request": {
                 "role": "analyst",
-                "run_mode": "fixture",
+                "run_mode": "production",
                 "analysis_context": {
                     "as_of": "2026-07-16T00:00:00+00:00"
                 },
@@ -717,151 +717,6 @@ def test_route_added_dimension_role_projection_matches_final_graph_order():
         for capability_id in requested
         if roles[capability_id]["analysis_role"] == "auxiliary"
     ]
-
-
-def test_dimension_screen_runtime_inputs_preserve_sparse_segments_and_use_core_total():
-    from bi_agent.runtime import langgraph_workflow as workflow
-
-    state = {
-        "intent": {
-            "pattern_params": {
-                "group_key": "group",
-                "target_group": "target",
-                "baseline_group": "baseline",
-            }
-        },
-        "analysis_route": {
-            "analysis_requirements": {
-                "requested_dimensions": ["channel", "region"]
-            },
-            "claim_intent_resolution": {
-                "primary_baselines": ["previous_day"],
-                "auto_routed_claim_intents": {
-                    "segment_contribution_or_mix_shift": {
-                        "capability_id": "candidate_dimension_screen",
-                        "auxiliary_baselines": [],
-                    }
-                },
-            },
-        },
-        "request": {
-            "run_mode": "fixture",
-            "runtime_rows_by_intent": {
-                "dimension_contribution_scan": [
-                    {
-                        "window_id": "previous_day",
-                        "window_role": "baseline",
-                        "observation_key": "2026-05-31",
-                        "channel": "A",
-                        "paid_amount": 100,
-                        "paid_orders": 20,
-                        "paid_users": 10,
-                    },
-                    {
-                        "window_id": "target_day",
-                        "window_role": "target",
-                        "observation_key": "2026-06-01",
-                        "channel": "A",
-                        "paid_amount": 130,
-                        "paid_orders": 25,
-                        "paid_users": 10,
-                    },
-                    {
-                        "window_id": "target_day",
-                        "window_role": "target",
-                        "observation_key": "2026-06-01",
-                        "channel": "B",
-                        "paid_amount": 20,
-                        "paid_orders": 12,
-                        "paid_users": 10,
-                    },
-                    {
-                        "window_id": "previous_day",
-                        "window_role": "baseline",
-                        "observation_key": "2026-05-31",
-                        "region": "Lagos",
-                        "paid_amount": 100,
-                        "paid_orders": 20,
-                        "paid_users": 10,
-                    },
-                    {
-                        "window_id": "target_day",
-                        "window_role": "target",
-                        "observation_key": "2026-06-01",
-                        "region": "Lagos",
-                        "paid_amount": 150,
-                        "paid_orders": 37,
-                        "paid_users": 10,
-                    },
-                ],
-                "component_driver_scan": [
-                    {
-                        "window_id": "previous_day",
-                        "window_role": "baseline",
-                        "observation_key": "2026-05-31",
-                        "paid_amount": 100,
-                        "paid_orders": 20,
-                        "paid_users": 10,
-                    },
-                    {
-                        "window_id": "target_day",
-                        "window_role": "target",
-                        "observation_key": "2026-06-01",
-                        "paid_amount": 150,
-                        "paid_orders": 37,
-                        "paid_users": 15,
-                    },
-                ],
-            },
-            "result_refs_by_intent": {
-                "dimension_contribution_scan": ["result:dimension"]
-            },
-            "runtime_registry": RuntimeContractRegistry.from_path(RUNTIME_BINDINGS),
-        },
-    }
-
-    driver_evidence = driver_decomposition(
-        (
-            {
-                "period": "comparison",
-                "group": "baseline",
-                "amount": 100,
-                "orders": 20,
-                "paid_users": 10,
-            },
-            {
-                "period": "comparison",
-                "group": "target",
-                "amount": 150,
-                "orders": 37,
-                "paid_users": 15,
-            },
-        )
-    )
-    params = workflow._candidate_dimension_screen_params(
-        state,
-        prior_evidence=(driver_evidence,),
-    )
-    evidence = candidate_dimension_screen(**params)
-    profiles = {
-        item["dimension"]: item
-        for item in evidence.typed_payload["dimension_profiles"]
-    }
-
-    assert params["overall_by_group"] == {"baseline": 100.0, "target": 150.0}
-    assert params["complete_dimensions"] == ("channel", "region")
-    assert params["global_primary_factor"] == driver_evidence.typed_payload[
-        "primary_core_driver"
-    ]
-    assert params["dimension_metadata"]["region"]["hierarchy_id"] == "geo"
-    assert profiles["channel"]["reconciliation_status"] == "passed"
-    entrant = next(
-        item
-        for item in profiles["channel"]["top_lifts"]
-        if item["value"] == "B"
-    )
-    assert entrant["movement_type"] == "entrant"
-    assert profiles["region"]["reconciliation_status"] == "passed"
 
 
 def test_dimension_claim_selector_survives_authority_normalization():
@@ -889,7 +744,7 @@ def test_dimension_claim_selector_survives_authority_normalization():
                 "scope": "full_sample",
                 "time_window": "2026-06-01",
             },
-            "request": {"run_mode": "fixture"},
+            "request": {"run_mode": "production"},
             "evidence": [
                 {
                     "evidence_ref": "candidate_dimension_screen:inline",

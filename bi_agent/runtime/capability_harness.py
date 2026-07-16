@@ -15,12 +15,9 @@ from bi_agent.runtime.capability_execution import (
     validate_bound_capability_input,
 )
 from bi_agent.runtime.authoritative_query_chain import validate_authoritative_query_chain
-from bi_agent.runtime.evidence_authority import legacy_fixture_enabled
 from bi_agent.runtime.window_metric_evidence import (
-    WindowMetricAggregate,
     WindowMetricComparison,
     WindowMetricEvidenceError,
-    WindowMetricObservation,
     aggregate_window_metric_comparison,
 )
 
@@ -38,7 +35,7 @@ WINDOW_METRIC_COMPARE_CAPABILITIES = frozenset(
 
 
 def execute_capability(request: CapabilityRequest) -> CapabilityEvidenceEnvelope:
-    if _bound_input(request) is None and not _legacy_fixture_allowed(request):
+    if _bound_input(request) is None:
         return _blocked_envelope(request, "missing_bound_capability_input")
     input_limitation = _bound_input_limitation(request)
     if input_limitation:
@@ -47,11 +44,7 @@ def execute_capability(request: CapabilityRequest) -> CapabilityEvidenceEnvelope
     if budget_limitation:
         return _blocked_envelope(request, budget_limitation)
     if request.capability_id == "compare_periods":
-        return (
-            _execute_window_metric_compare(request)
-            if _bound_input(request) is not None
-            else _execute_pattern_compare(request)
-        )
+        return _execute_window_metric_compare(request)
     if request.capability_id in PATTERN_COMPARE_CAPABILITIES:
         return _execute_pattern_compare(request)
     if request.capability_id in WINDOW_METRIC_COMPARE_CAPABILITIES:
@@ -67,10 +60,10 @@ def _execute_pattern_compare(
     request: CapabilityRequest,
 ) -> CapabilityEvidenceEnvelope:
     params: dict[str, Any] = dict(request.params)
-    rows = _capability_rows(request, params.pop("rows", ()))
-    legacy_refs = params.pop("result_refs", ())
-    result_refs = _result_refs(request, legacy_refs)
-    sql_hashes = _sql_hashes(request, legacy_refs)
+    params.pop("rows", None)
+    params.pop("result_refs", None)
+    rows = _capability_rows(request)
+    result_refs = _result_refs(request)
     pattern_family = params.pop("pattern_family", "intra_period")
     result = scan_pattern(
         rows,
@@ -109,7 +102,7 @@ def _execute_pattern_compare(
         },
         typed_payload=payload,
         result_refs=result_refs,
-        sql_hashes=sql_hashes,
+        sql_hashes=(),
         evidence_type=evidence_type,
         strength=strength,
         wording_limit=wording_limit,
@@ -129,10 +122,10 @@ def _execute_data_quality_profile(
     request: CapabilityRequest,
 ) -> CapabilityEvidenceEnvelope:
     params: dict[str, Any] = dict(request.params)
-    rows = _capability_rows(request, params.pop("rows", ()))
-    legacy_refs = params.pop("result_refs", ())
-    result_refs = _result_refs(request, legacy_refs)
-    sql_hashes = _sql_hashes(request, legacy_refs)
+    params.pop("rows", None)
+    params.pop("result_refs", None)
+    rows = _capability_rows(request)
+    result_refs = _result_refs(request)
     result = data_quality_check(
         rows,
         required_fields=tuple(params.pop("required_fields", ())),
@@ -162,7 +155,7 @@ def _execute_data_quality_profile(
         numeric_facts={"row_count": row_count},
         typed_payload=payload,
         result_refs=result_refs,
-        sql_hashes=sql_hashes,
+        sql_hashes=(),
         evidence_type=evidence_type,
         strength=strength,
         wording_limit=wording_limit,
@@ -180,23 +173,8 @@ def _execute_window_metric_compare(
     request: CapabilityRequest,
 ) -> CapabilityEvidenceEnvelope:
     limitations: tuple[str, ...] = ()
-    comparison: WindowMetricComparison | None = None
-    if _legacy_fixture_allowed(request):
-        comparison = _legacy_window_metric_comparison(request)
-        if comparison is None:
-            limitations = ("window_pair_cardinality_invalid",)
-    else:
-        comparison = _authoritative_window_metric_comparison(request)
-    payload = comparison.to_payload() if comparison is not None else {
-        "metric": request.metric,
-        "target_window_id": "",
-        "baseline_window_id": "",
-        "target_value": None,
-        "baseline_value": None,
-        "absolute_change": None,
-        "relative_change": None,
-        "comparisons": (),
-    }
+    comparison = _authoritative_window_metric_comparison(request)
+    payload = comparison.to_payload()
     evidence_type, strength, wording_limit, limitations = _evidence_boundary(
         request,
         evidence_type="statistical_association" if not limitations else "insufficient",
@@ -204,7 +182,7 @@ def _execute_window_metric_compare(
         wording_limit="quantified" if not limitations else "insufficient",
         limitations=limitations,
     )
-    result_refs = _result_refs(request, ())
+    result_refs = _result_refs(request)
     numeric_facts = {
         key: payload[key]
         for key in (
@@ -229,7 +207,7 @@ def _execute_window_metric_compare(
         numeric_facts=numeric_facts,
         typed_payload=payload,
         result_refs=result_refs,
-        sql_hashes=_sql_hashes(request, ()),
+        sql_hashes=(),
         evidence_type=evidence_type,
         strength=strength,
         wording_limit=wording_limit,
@@ -280,51 +258,11 @@ def _authoritative_window_metric_comparison(
     )
 
 
-def _legacy_window_metric_comparison(
-    request: CapabilityRequest,
-) -> WindowMetricComparison | None:
-    rows = tuple(dict(row) for row in _capability_rows(request, ()))
-    targets = tuple(row for row in rows if row.get("window_role") == "target")
-    baselines = tuple(row for row in rows if row.get("window_role") == "baseline")
-    if len(targets) != 1 or len(baselines) != 1:
-        return None
-    # Legacy fixture mode is explicitly non-authoritative; retain its narrow two-row path.
-    target_value = _legacy_decimal(targets[0].get(request.metric))
-    baseline_value = _legacy_decimal(baselines[0].get(request.metric))
-    if target_value is None or baseline_value is None:
-        return None
-    aggregates = tuple(
-        WindowMetricAggregate(
-            window_id=str(row.get("window_id") or ""),
-            role=str(row.get("window_role") or ""),
-            aggregation="daily_total",
-            required_complete_days=1,
-            value=value,
-            observations=(
-                WindowMetricObservation(
-                    str(row.get("observation_key") or ""), value
-                ),
-            ),
-        )
-        for row, value in zip((*targets, *baselines), (target_value, baseline_value))
-    )
-    return WindowMetricComparison(request.metric, aggregates[0], aggregates[1], ())
-
-
-def _legacy_decimal(value: Any) -> Decimal | None:
-    try:
-        parsed = Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
-    return parsed if parsed.is_finite() else None
-
-
 def _execute_context_capability(
     request: CapabilityRequest,
 ) -> CapabilityEvidenceEnvelope:
-    rows = tuple(dict(row) for row in _capability_rows(request, ()))
-    result_refs = _result_refs(request, ())
-    sql_hashes = _sql_hashes(request, ())
+    rows = tuple(dict(row) for row in _capability_rows(request))
+    result_refs = _result_refs(request)
     if request.capability_id == "event_evidence":
         context_rows = tuple(
             row
@@ -399,7 +337,7 @@ def _execute_context_capability(
         numeric_facts=numeric_facts,
         typed_payload=payload,
         result_refs=result_refs,
-        sql_hashes=sql_hashes,
+        sql_hashes=(),
         evidence_type=evidence_type,
         strength=strength,
         wording_limit=wording_limit,
@@ -412,6 +350,8 @@ def _execute_context_capability(
         admin_audit_ref=f"capability:{request.run_id}:{request.capability_id}",
         **_bound_provenance(request),
     )
+
+
 def _budget_limitation(request: CapabilityRequest) -> str:
     params = request.params
     if params.get("timeout_exceeded"):
@@ -419,33 +359,39 @@ def _budget_limitation(request: CapabilityRequest) -> str:
     if should_ask_before_more_exploration(request.budget_state):
         return "capability_budget_exhausted"
     bound = _bound_input(request)
-    rows = (
-        tuple(
-            row
-            for slot_rows in bound.rows_by_slot.values()
-            for row in slot_rows
-        )
-        if bound is not None
-        else params.get("rows", ())
+    rows = tuple(
+        row
+        for slot_rows in bound.rows_by_slot.values()
+        for row in slot_rows
     )
     row_budget = _positive_int(params.get("row_budget", 5000), 5000)
-    if isinstance(rows, (list, tuple)) and len(rows) > row_budget:
+    if len(rows) > row_budget:
         return "row_budget_exceeded"
-    result_refs = (
-        (*bound.result_refs, *bound.validation_result_refs)
-        if bound is not None
-        else tuple(params.get("result_refs", ()))
-    )
+    result_refs = (*bound.result_refs, *bound.validation_result_refs)
     result_ref_budget = _positive_int(params.get("result_ref_budget", 100), 100)
     if len(result_refs) > result_ref_budget:
         return "result_ref_budget_exceeded"
     return ""
 
 
+def _validated_bound_rows(request: CapabilityRequest) -> tuple[Mapping[str, Any], ...]:
+    bound = _bound_input(request)
+    if bound is None or validate_bound_capability_input(
+        bound,
+        request.evidence_resolver,
+    ):
+        return ()
+    return tuple(
+        row
+        for slot_rows in bound.rows_by_slot.values()
+        for row in slot_rows
+    )
+
+
 def _blocked_envelope(request: CapabilityRequest, limitation: str) -> CapabilityEvidenceEnvelope:
-    result_refs = _result_refs(request, request.params.get("result_refs", ()))
-    rows = request.params.get("rows", ())
-    row_count = len(rows) if isinstance(rows, (list, tuple)) else None
+    result_refs = _result_refs(request)
+    rows = _validated_bound_rows(request)
+    row_count = len(rows) if rows else None
     return CapabilityEvidenceEnvelope(
         evidence_ref=f"{request.capability_id}:{request.run_id}:blocked",
         capability_id=request.capability_id,
@@ -467,7 +413,7 @@ def _blocked_envelope(request: CapabilityRequest, limitation: str) -> Capability
             "hard_limit": request.budget_state.hard_limit,
         },
         result_refs=result_refs,
-        sql_hashes=_sql_hashes(request, request.params.get("result_refs", ())),
+        sql_hashes=(),
         evidence_type="insufficient",
         strength="low",
         wording_limit="blocked",
@@ -491,7 +437,6 @@ def _bound_input_limitation(request: CapabilityRequest) -> str:
     validation_reason = validate_bound_capability_input(
         bound,
         request.evidence_resolver,
-        allow_fixture=_legacy_fixture_allowed(request),
     )
     if validation_reason:
         return validation_reason
@@ -506,11 +451,10 @@ def _bound_input_limitation(request: CapabilityRequest) -> str:
 
 def _capability_rows(
     request: CapabilityRequest,
-    unbound_rows: Any,
-) -> tuple[Mapping[str, Any], ...] | Any:
+) -> tuple[Mapping[str, Any], ...]:
     bound = _bound_input(request)
     if bound is None:
-        return unbound_rows
+        return ()
     requested_slot = str(request.params.get("input_slot_id") or "")
     if requested_slot:
         return bound.rows_by_slot.get(requested_slot, ())
@@ -526,20 +470,10 @@ def _capability_rows(
     return ()
 
 
-def _result_refs(request: CapabilityRequest, legacy_refs: Any) -> tuple[str, ...]:
+def _result_refs(request: CapabilityRequest) -> tuple[str, ...]:
     bound = _bound_input(request)
     if bound is not None:
         return _dedupe((*bound.result_refs, *bound.validation_result_refs))
-    if _legacy_fixture_allowed(request):
-        return tuple(str(ref) for ref in legacy_refs if ref)
-    return ()
-
-
-def _sql_hashes(request: CapabilityRequest, legacy_refs: Any) -> tuple[str, ...]:
-    if (
-        _bound_input(request) is None and _legacy_fixture_allowed(request)
-    ):
-        return tuple(str(ref) for ref in legacy_refs if ref)
     return ()
 
 
@@ -548,7 +482,6 @@ def _bound_provenance(request: CapabilityRequest) -> dict[str, Any]:
     if bound is None or validate_bound_capability_input(
         bound,
         request.evidence_resolver,
-        allow_fixture=_legacy_fixture_allowed(request),
     ):
         return {
             "analysis_contract_ref": "",
@@ -567,7 +500,7 @@ def _bound_provenance(request: CapabilityRequest) -> dict[str, Any]:
             "maximum_claim_strength": "",
             "maximum_claim_strength_rank": -1,
             "claim_strength_taxonomy_version": "",
-            "input_status": "fixture" if _legacy_fixture_allowed(request) else "blocked",
+            "input_status": "blocked",
             "input_completeness_statuses": (),
             "binding_manifest_ref": "",
             "binding_manifest_digest": "",
@@ -645,14 +578,12 @@ def _evidence_boundary(
 ) -> tuple[str, str, str, tuple[str, ...]]:
     bound = _bound_input(request)
     if bound is None or not bound.binding_manifest_ref:
-        if _legacy_fixture_allowed(request):
-            return (
-                evidence_type,
-                strength,
-                wording_limit,
-                _dedupe((*limitations, "legacy_fixture_non_authoritative")),
-            )
-        return evidence_type, strength, wording_limit, limitations
+        return (
+            "insufficient",
+            "low",
+            "blocked",
+            _dedupe((*limitations, "capability_binding_record_missing")),
+        )
     if evidence_type not in bound.supported_evidence_types:
         return (
             "insufficient",
@@ -672,13 +603,6 @@ def _evidence_boundary(
 
 def _dedupe(values: Any) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(value) for value in values if value))
-
-
-def _legacy_fixture_allowed(request: CapabilityRequest) -> bool:
-    return bool(
-        request.fixture_input_mode == "legacy_unbound_fixture"
-        and legacy_fixture_enabled(request.run_mode)
-    )
 
 
 def _positive_int(value: Any, default: int) -> int:

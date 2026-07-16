@@ -51,7 +51,7 @@ from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
 from bi_agent.runtime.query_audit import query_audit_refs
 from bi_agent.runtime.query_completeness import validate_query_result
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-from tests.phase4.analysis_asset_fixtures import verified_dimension_scan_asset
+from tests.phase4.analysis_asset_vectors import verified_dimension_scan_asset
 
 
 class AuthoritativeQueryChainTest(unittest.TestCase):

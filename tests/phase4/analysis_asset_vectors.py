@@ -43,7 +43,7 @@ def verified_dimension_scan_asset(
     resolved_windows,
     query_ref="query:channel-scan",
     snapshot_ref="snapshot:paid:1",
-    analysis_contract_ref="analysis:asset-fixture:1",
+    analysis_contract_ref="analysis:asset-test-vector:1",
     contract_versions=None,
     schema_fingerprint="schema-v1",
     completeness_status="complete",
@@ -192,16 +192,16 @@ def verified_dimension_scan_asset(
         dataset_id="paid_order_success",
         physical_table="analytics.paid_success",
         watermark=max(window.source_watermark_requirement for window in windows),
-        schema_fingerprint=schema_fingerprint or "fixture-schema-v1",
+        schema_fingerprint=schema_fingerprint or "test-vector-schema-v1",
         schema_fields=("business_date_lagos", "paid_amount_ngn", "channel"),
         contract_ref="source:paid@1",
         permission_scopes=("analyst",),
         loaded_at="2026-07-09T00:00:00+00:00",
         status="active",
-        logical_snapshot_id="paid-order-success-fixture",
-        load_revision="paid-order-success-load:sha256:fixture",
+        logical_snapshot_id="paid-order-success-test-vector",
+        load_revision="paid-order-success-load:sha256:test-vector",
         rows_content_hash="a" * 64,
-        snapshot_id="paid-order-success-fixture",
+        snapshot_id="paid-order-success-test-vector",
     )
     release_ref = dataset_snapshot_release_ref(
         snapshot.logical_snapshot_id,
@@ -224,8 +224,8 @@ def verified_dimension_scan_asset(
             return release_record
 
     release_resolver = ReleaseResolver()
-    attempt_ref = "attempt:asset-fixture"
-    query_hash = "hash:asset-fixture"
+    attempt_ref = "attempt:asset-test-vector"
+    query_hash = "hash:asset-test-vector"
     refs = query_audit_refs(
         query_hash,
         contract.contract_signature,
@@ -239,7 +239,7 @@ def verified_dimension_scan_asset(
     )
     result = QueryResultEnvelope(
         query_contract_ref=query_ref,
-        query_id="clickhouse:asset-fixture",
+        query_id="clickhouse:asset-test-vector",
         query_hash=query_hash,
         result_ref=refs.result_ref,
         execution_status="succeeded",
@@ -276,8 +276,8 @@ def verified_dimension_scan_asset(
         }
         for key, value in sorted(total_rows_by_key.items())
     )
-    total_attempt_ref = "attempt:asset-fixture:total"
-    total_query_hash = "hash:asset-fixture:total"
+    total_attempt_ref = "attempt:asset-test-vector:total"
+    total_query_hash = "hash:asset-test-vector:total"
     total_refs = query_audit_refs(
         total_query_hash,
         total_contract.contract_signature,
@@ -291,7 +291,7 @@ def verified_dimension_scan_asset(
     )
     total_result = QueryResultEnvelope(
         query_contract_ref=total_query_ref,
-        query_id="clickhouse:asset-fixture:total",
+        query_id="clickhouse:asset-test-vector:total",
         query_hash=total_query_hash,
         result_ref=total_refs.result_ref,
         execution_status="succeeded",

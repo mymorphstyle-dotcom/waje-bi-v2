@@ -409,7 +409,7 @@ class GatewayClarificationsTest(unittest.TestCase):
                     accepted_graph=(),
                     as_of="2026-06-03T12:00:00+01:00",
                     permission_scope=decision["runtimePermissionScope"],
-                    run_mode="fixture",
+                    run_mode="production",
                 )
                 self.assertEqual(request.permission_scope, expected_runtime_role)
 
@@ -425,7 +425,7 @@ class GatewayClarificationsTest(unittest.TestCase):
                         accepted_graph=(),
                         as_of="2026-06-03T12:00:00+01:00",
                         permission_scope=display_role,
-                        run_mode="fixture",
+                        run_mode="production",
                     )
 
     def test_clarification_route_uses_same_effective_role_for_core_and_output_filtering(self):

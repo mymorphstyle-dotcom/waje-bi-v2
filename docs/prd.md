@@ -100,10 +100,11 @@ WAJE BI v2 是 clean-slate SQL-first BI Agent，用于回答 `付费金额` 影�
 
 本地 demo 只作为 UX pattern 参考：
 
-- [app/page.tsx](/Users/luka/work/waje-bi-v2/app/page.tsx:1)
-- [app/api/langgraph/route.ts](/Users/luka/work/waje-bi-v2/app/api/langgraph/route.ts:1)
+- [app/page.tsx](../app/page.tsx)
+- [Gateway 消息入口](../app/api/threads/%5BthreadId%5D/messages/route.ts)
+- [Gateway 运行事件](../app/api/runs/%5BrunId%5D/events/route.ts)
 
-demo 只证明 agent shell、todo、tool group、question workbench、answer cards 的体验方向。demo 细节不定义生产协议、架构、graph contract、data contract 或实现承诺。
+demo 只证明会话创建、业务问题输入、澄清交互、运行进度和 Answer Package 展示的体验方向。demo 细节不定义生产协议、架构、graph contract、data contract 或实现承诺。
 
 ## 6. Question Tool
 

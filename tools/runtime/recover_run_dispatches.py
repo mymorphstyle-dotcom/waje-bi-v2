@@ -68,10 +68,7 @@ def run_agent_core_dispatch(dispatch: Mapping[str, Any]) -> Mapping[str, Any]:
             if artifact_id != scope_ref:
                 raise ValueError("run_dispatch_recovery_scope_mismatch")
 
-    core = ConversationAgentCore.from_environment(
-        real_llm=True,
-        real_clickhouse=True,
-    )
+    core = ConversationAgentCore.from_environment()
     try:
         result = core.run_message(
             thread_id=thread_id,

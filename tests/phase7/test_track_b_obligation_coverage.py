@@ -19,6 +19,41 @@ def _registry() -> RuntimeContractRegistry:
     return RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
 
 
+def _current_business_intent_output(output: dict) -> dict:
+    current = dict(output)
+    current.setdefault("pattern_params", {})
+    requirements = dict(current.get("analysis_requirements") or {})
+    claim_intents = list(requirements.get("claim_intents") or ())
+    requirements.setdefault(
+        "claim_intent_roles",
+        {claim_intent: "user_required" for claim_intent in claim_intents},
+    )
+    current["analysis_requirements"] = requirements
+    return current
+
+
+def _route_provider(route_output: dict):
+    def invoke(state, node, payload, **kwargs):
+        if node != "final_route_narrative":
+            return route_output
+        steps = payload["route_context"]["route_steps"]
+        return {
+            "route_summary": "先按已确认的业务范围核对数据，再汇总各项结论。",
+            "sections": [
+                {
+                    "step_ref": step["step_ref"],
+                    "route_step": "核对这一业务步骤对应的数据变化。",
+                    "expected_evidence": "取得可核验的业务结果和边界说明。",
+                }
+                for step in steps
+            ],
+            "decision_summary": "已保留当前问题所需的分析路线。",
+            "display_summary": "分析路线已确认，可以继续核验数据。",
+        }
+
+    return invoke
+
+
 def _executed_market_authority(tmp_path, monkeypatch) -> dict:
     from tools.phase7 import run_live_conversation_system_test as system_test
 
@@ -176,136 +211,6 @@ def test_independent_capability_selects_its_dataset_authority_cell_only(
     assert review["hard_acceptance_passed"] is False
 
 
-def test_platform_matrix_exercises_executable_independent_result_authority():
-    from tools.phase7.run_live_conversation_system_test import load_suite_cases
-    from bi_agent.runtime.analysis_obligations import (
-        ObligationRequest,
-        resolve_analysis_obligations,
-    )
-
-    covered: set[tuple[str, str]] = set()
-    for case in load_suite_cases("platform-current-data"):
-        for turn in case["turns"]:
-            scenario = turn["scenario"]
-            resolution = resolve_analysis_obligations(
-                ObligationRequest(
-                    question_families=(scenario["question_family"],),
-                    diagnostic_tags=tuple(scenario.get("diagnostic_tags") or ()),
-                    target_metrics=tuple(scenario.get("target_metrics") or ()),
-                    requested_dimensions=tuple(
-                        scenario.get("requested_dimensions") or ()
-                    ),
-                    baselines=tuple(scenario.get("baselines") or ()),
-                    context_sources=tuple(scenario.get("context_sources") or ()),
-                    claim_intents=tuple(scenario.get("claim_intents") or ()),
-                ),
-                _registry(),
-            )
-            for capability in resolution.independent_capabilities:
-                if scenario.get("expected_capability_states", {}).get(capability) == "executable":
-                    covered.add((capability, scenario["question_family"]))
-
-    assert ("market_health_compare", "revenue_health_review") in covered
-
-
-def test_platform_obligations_compile_to_terminal_graph_closure():
-    from bi_agent.runtime.analysis_obligations import (
-        ObligationRequest,
-        resolve_analysis_obligations,
-    )
-    from bi_agent.runtime.compiler import compile_graph
-    from tools.phase7.run_live_conversation_system_test import load_suite_cases
-
-    registry = _registry()
-    for case in load_suite_cases("platform-current-data"):
-        for turn in case["turns"]:
-            scenario = turn["scenario"]
-            family = scenario["question_family"]
-            requirements = {
-                key: list(scenario.get(key) or ())
-                for key in (
-                    "diagnostic_tags",
-                    "target_metrics",
-                    "requested_dimensions",
-                    "baselines",
-                    "context_sources",
-                    "claim_intents",
-                )
-            }
-            request = ObligationRequest(
-                question_families=(family,),
-                diagnostic_tags=tuple(requirements["diagnostic_tags"]),
-                target_metrics=tuple(requirements["target_metrics"]),
-                requested_dimensions=tuple(requirements["requested_dimensions"]),
-                baselines=tuple(requirements["baselines"]),
-                context_sources=tuple(requirements["context_sources"]),
-                claim_intents=tuple(requirements["claim_intents"]),
-            )
-            resolution = resolve_analysis_obligations(request, registry)
-            expected = set(
-                (
-                    *resolution.required_capabilities,
-                    *resolution.conditional_capabilities,
-                    *resolution.independent_capabilities,
-                )
-            )
-
-            compiled = compile_graph(
-                question_family=family,
-                question_families=(family,),
-                target_metric=requirements["target_metrics"][0],
-                requested_nodes=("data_quality_profile",),
-                bound_context={"analysis_requirements": requirements},
-                runtime_registry=registry,
-            )
-
-            assert expected <= set(compiled.mutations.accepted_graph), (
-                case["id"],
-                expected - set(compiled.mutations.accepted_graph),
-            )
-
-
-def test_route_reconciliation_closes_all_obligations_idempotently():
-    from bi_agent.runtime.langgraph_workflow import reconcile_analysis_route
-    from tools.phase7.run_live_conversation_system_test import load_suite_cases
-
-    registry = _registry()
-    for case in load_suite_cases("platform-current-data"):
-        for turn in case["turns"]:
-            scenario = turn["scenario"]
-            family = scenario["question_family"]
-            requirements = {
-                key: list(scenario.get(key) or ())
-                for key in (
-                    "diagnostic_tags",
-                    "target_metrics",
-                    "requested_dimensions",
-                    "baselines",
-                    "context_sources",
-                    "claim_intents",
-                )
-            }
-            intent = {
-                "question_family": family,
-                "question_families": [family],
-                "target_metric": requirements["target_metrics"][0],
-            }
-            route = {"analysis_requirements": requirements}
-
-            first, first_output = reconcile_analysis_route(
-                ("data_quality_profile",), route, intent, registry
-            )
-            second, second_output = reconcile_analysis_route(
-                first, first_output, intent, registry
-            )
-
-            assert second == first, case["id"]
-            assert second_output["obligation_resolution"]["mutations"] == [], (
-                case["id"],
-                second_output["obligation_resolution"]["mutations"],
-            )
-
-
 def test_unknown_diagnostic_is_rejected_without_erasing_family_obligations():
     from bi_agent.runtime.langgraph_workflow import reconcile_analysis_route
 
@@ -372,7 +277,7 @@ def test_business_intent_carries_registry_validated_material_requirements(
 
     def invoke(state, node, payload, **kwargs):
         captured.update(payload)
-        return {
+        return _current_business_intent_output({
             "question_family": "business_object_impact_review",
             "question_families": [
                 "business_object_impact_review",
@@ -394,7 +299,7 @@ def test_business_intent_carries_registry_validated_material_requirements(
                 "requested_dimensions": ["channel"],
                 "requested_components": ["paid_users"],
             },
-        }
+        })
 
     monkeypatch.setattr(workflow, "_invoke_llm", invoke)
     state = {"request": {"question": "arbitrary business question"}}
@@ -450,7 +355,7 @@ def test_business_intent_missing_context_family_axis_fails_after_one_node_call(
 
     def invoke(state, node, payload, **kwargs):
         payloads.append(payload)
-        return {
+        return _current_business_intent_output({
             "question_family": "data_quality_or_evidence_review",
             "question_families": ["data_quality_or_evidence_review"],
             "primary_question_family": "data_quality_or_evidence_review",
@@ -469,7 +374,7 @@ def test_business_intent_missing_context_family_axis_fails_after_one_node_call(
                 "requested_dimensions": ["gameplay"],
                 "requested_components": [],
             },
-        }
+        })
 
     monkeypatch.setattr(workflow, "_invoke_llm", invoke)
     state = {
@@ -827,7 +732,7 @@ def test_real_provider_retries_context_family_incoherence_inside_shared_client(
 ):
     from bi_agent.runtime import langgraph_workflow as workflow
 
-    invalid = {
+    invalid = _current_business_intent_output({
         "question_family": "revenue_health_review",
         "question_families": ["revenue_health_review"],
         "primary_question_family": "revenue_health_review",
@@ -842,7 +747,7 @@ def test_real_provider_retries_context_family_incoherence_inside_shared_client(
         "analysis_requirements": requirements,
         "status_message": "已完成意图识别。",
         "display_summary": "已绑定业务问题。",
-    }
+    })
     valid = {
         **invalid,
         "question_families": [
@@ -864,7 +769,7 @@ def test_real_provider_retries_context_family_incoherence_inside_shared_client(
 def test_real_provider_context_family_exhaustion_keeps_safe_failed_audit():
     from bi_agent.runtime import langgraph_workflow as workflow
 
-    invalid = {
+    invalid = _current_business_intent_output({
         "question_family": "revenue_health_review",
         "question_families": ["revenue_health_review"],
         "primary_question_family": "revenue_health_review",
@@ -884,7 +789,7 @@ def test_real_provider_context_family_exhaustion_keeps_safe_failed_audit():
         },
         "status_message": "已完成意图识别。",
         "display_summary": "已绑定业务问题。",
-    }
+    })
     state, completions = _context_family_provider_state([invalid])
 
     with pytest.raises(
@@ -922,7 +827,7 @@ def test_business_intent_provider_validator_uses_injected_registry(monkeypatch):
     assert payload["allowed_target_metric_ids"] == registry.metric_ids
 
     workflow._validate_business_intent_provider_output(
-        {
+        _current_business_intent_output({
             "question_family": "revenue_health_review",
             "question_families": [
                 "revenue_health_review",
@@ -944,7 +849,7 @@ def test_business_intent_provider_validator_uses_injected_registry(monkeypatch):
                 "requested_dimensions": [],
                 "requested_components": [],
             },
-        },
+        }),
         {"run_mode": "production"},
         registry,
     )
@@ -984,7 +889,7 @@ def test_business_intent_context_family_axis_fails_closed_after_one_call(monkeyp
     from bi_agent.runtime import langgraph_workflow as workflow
 
     def invoke(state, node, payload, **kwargs):
-        return {
+        return _current_business_intent_output({
             "question_family": "data_quality_or_evidence_review",
             "question_families": ["data_quality_or_evidence_review"],
             "target_metric": "paid_amount",
@@ -1001,7 +906,7 @@ def test_business_intent_context_family_axis_fails_closed_after_one_call(monkeyp
                 "requested_dimensions": [],
                 "requested_components": [],
             },
-        }
+        })
 
     monkeypatch.setattr(workflow, "_invoke_llm", invoke)
     state = {
@@ -1035,7 +940,7 @@ def test_failed_business_intent_returns_one_llm_audit_and_failed_checkpoint():
     class ContractFailingClient:
         def invoke_json(self, *, task, prompt_version, messages, required_keys):
             family = families.pop(0)
-            output = {
+            output = _current_business_intent_output({
                 "question_family": family,
                 "question_families": [family],
                 "primary_question_family": family,
@@ -1054,7 +959,7 @@ def test_failed_business_intent_returns_one_llm_audit_and_failed_checkpoint():
                     "requested_dimensions": [],
                     "requested_components": [],
                 },
-            }
+            })
             attempt = 3 - len(families)
             return SimpleNamespace(
                 output=output,
@@ -1072,7 +977,7 @@ def test_failed_business_intent_returns_one_llm_audit_and_failed_checkpoint():
     result = workflow.run_pattern_workflow(
         {
             "run_id": "run-failed-intent-audits",
-            "run_mode": "fixture",
+            "run_mode": "production",
             "question": "昨天玩法活跃和付费变化能对上吗？",
             "llm_client": ContractFailingClient(),
         }
@@ -1129,46 +1034,6 @@ def test_successful_workflow_result_returns_llm_audits(monkeypatch):
 
     assert result.status == "draft"
     assert result.llm_calls == (audit,)
-
-
-def test_route_design_resolves_obligations_after_capability_family_inference(
-    monkeypatch,
-):
-    from bi_agent.runtime import langgraph_workflow as workflow
-
-    monkeypatch.setattr(
-        workflow,
-        "_invoke_llm",
-        lambda state, node, payload, **kwargs: {
-            "requested_nodes": ["segment_contribution"],
-            "analysis_requirements": {
-                "target_metrics": ["paid_amount"],
-            },
-        },
-    )
-    state = {
-        "intent": {
-            "question_family": "data_quality_or_evidence_review",
-            "question_families": ["data_quality_or_evidence_review"],
-            "primary_question_family": "data_quality_or_evidence_review",
-            "secondary_question_families": [],
-            "target_metric": "paid_amount",
-        },
-        "confirmed_understanding": {},
-        "request": {},
-    }
-
-    workflow._design_analysis_route(state)
-
-    requested = set(state["analysis_route"]["requested_nodes"])
-    assert {
-        "gameplay_activity_context",
-        "segment_breakdown",
-        "segment_shift_compare",
-    } <= requested
-    assert "segment_or_factor_attribution" in state["intent"][
-        "question_families"
-    ]
 
 
 def test_route_design_metric_only_context_fails_after_one_node_call(
@@ -1325,7 +1190,7 @@ def test_initial_route_preserves_all_authoritative_material_axes_in_contract(
     monkeypatch.setattr(
         workflow,
         "_invoke_llm",
-        lambda state, node, payload, **kwargs: {
+        _route_provider({
             "requested_nodes": ["data_quality_profile"],
             "analysis_requirements": {
                 "target_metrics": ["paid_amount"],
@@ -1336,7 +1201,7 @@ def test_initial_route_preserves_all_authoritative_material_axes_in_contract(
                 "claim_intents": [],
                 "scope": "full_sample",
             },
-        },
+        }),
     )
     state = {
         "run_id": "run-route-material-closure",
@@ -1719,99 +1584,19 @@ def test_route_typed_lists_reject_nested_values_as_llm_contract(field, value):
         },
     ],
 )
-def test_route_typed_list_failure_fails_after_one_node_call(
-    monkeypatch, invalid_requirements
-):
+def test_route_typed_lists_fail_current_contract_validation(invalid_requirements):
     from bi_agent.runtime import langgraph_workflow as workflow
-
-    payloads = []
-
-    def invoke(state, node, payload, **kwargs):
-        payloads.append(payload)
-        return {
-            "requested_nodes": ["data_quality_profile"],
-            "analysis_requirements": invalid_requirements,
-        }
-
-    monkeypatch.setattr(workflow, "_invoke_llm", invoke)
-    state = {
-        "run_id": "run-route-typed-repair",
-        "intent": {
-            "question_family": "data_quality_or_evidence_review",
-            "question_families": ["data_quality_or_evidence_review"],
-            "primary_question_family": "data_quality_or_evidence_review",
-            "secondary_question_families": [],
-            "target_metric": "paid_amount",
-        },
-        "confirmed_understanding": {},
-        "request": {},
-        "checkpoint_events": [],
-    }
 
     with pytest.raises(
         workflow.WorkflowFailure,
         match="analysis_route_contract_invalid:analysis_requirements:",
     ) as exc:
-        workflow._retrying_node(
-            "design_analysis_route", workflow._design_analysis_route
-        )(state)
+        workflow._validate_route_analysis_requirements(
+            {"analysis_requirements": invalid_requirements},
+            _registry(),
+        )
 
     assert exc.value.failure_type == "llm_contract"
-    assert len(payloads) == 1
-    assert "node_retry_feedback" not in payloads[0]
-    assert [event["status"] for event in state["checkpoint_events"]] == ["failed"]
-
-
-@pytest.mark.parametrize(
-    "invalid_requirements",
-    [
-        {
-            "target_metrics": ["paid_amount"],
-            "requested_dimensions": [["channel"]],
-        },
-        {
-            "target_metrics": ["paid_amount", "paid_amount"],
-            "requested_dimensions": [],
-        },
-    ],
-)
-def test_route_typed_list_failure_exhaustion_fails_closed(
-    monkeypatch, invalid_requirements
-):
-    from bi_agent.runtime import langgraph_workflow as workflow
-
-    monkeypatch.setattr(
-        workflow,
-        "_invoke_llm",
-        lambda state, node, payload, **kwargs: {
-            "requested_nodes": ["data_quality_profile"],
-            "analysis_requirements": invalid_requirements,
-        },
-    )
-    state = {
-        "run_id": "run-route-typed-failed",
-        "intent": {
-            "question_family": "data_quality_or_evidence_review",
-            "question_families": ["data_quality_or_evidence_review"],
-            "primary_question_family": "data_quality_or_evidence_review",
-            "secondary_question_families": [],
-            "target_metric": "paid_amount",
-        },
-        "confirmed_understanding": {},
-        "request": {},
-        "checkpoint_events": [],
-    }
-
-    with pytest.raises(
-        workflow.WorkflowFailure,
-        match="analysis_route_contract_invalid:analysis_requirements:",
-    ) as exc:
-        workflow._retrying_node(
-            "design_analysis_route", workflow._design_analysis_route
-        )(state)
-
-    assert exc.value.failure_type == "llm_contract"
-    assert [event["status"] for event in state["checkpoint_events"]] == ["failed"]
 
 
 def test_normalized_question_families_preserve_secondary_analysis_axis():

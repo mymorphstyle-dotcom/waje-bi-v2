@@ -1,9 +1,6 @@
-from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-
-import yaml
 
 from bi_agent.conversation import models as conversation_models
 from bi_agent.conversation.agent_core import _build_clarification_source_envelope
@@ -27,11 +24,6 @@ from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CASE_FILE = ROOT / "evals" / "phase7" / "conversation_scenarios.yaml"
-
-
-def _cases():
-    return yaml.safe_load(CASE_FILE.read_text(encoding="utf-8"))["cases"]
 
 
 def _persist_clarification_source_envelope(
@@ -507,77 +499,6 @@ class ConversationRuntimeTest(unittest.TestCase):
                 self.assertTrue(
                     any("\u4e00" <= char <= "\u9fff" for char in options[-1].description)
                 )
-
-    def test_manifest_has_required_natural_language_coverage(self):
-        data = yaml.safe_load(CASE_FILE.read_text(encoding="utf-8"))
-        cases = data["cases"]
-        counts = Counter(case["group"] for case in cases)
-
-        self.assertGreaterEqual(len(cases), data["minimum_cases"])
-        self.assertGreaterEqual(counts["continuous_follow_up"], 20)
-        self.assertGreaterEqual(counts["mixed_question"], 10)
-        self.assertGreaterEqual(counts["offtopic_capability_unsupported"], 10)
-        self.assertGreaterEqual(counts["permission_snapshot_memory"], 10)
-        self.assertGreaterEqual(counts["correction_challenge_clarification"], 10)
-        for case in cases:
-            with self.subTest(case=case["case_id"]):
-                self.assertTrue(case["user_message"])
-                self.assertIn("expected_intent", case)
-                self.assertIn("expected_topic_relation", case)
-                self.assertIn("expected_context_use", case)
-                self.assertIn("expected_forbidden_context", case)
-                self.assertIn("expected_reuse", case)
-                self.assertIn("expected_langgraph", case)
-                self.assertTrue(case["expected_answer_boundary"])
-
-    def test_runtime_classifies_all_conversation_scenarios(self):
-        for case in _cases():
-            with self.subTest(case=case["case_id"]):
-                runtime = _seed_runtime()
-                if case["case_id"] in {"ccc_003", "ccc_004"}:
-                    clarification = runtime.handle_message(
-                        "thread-phase7",
-                        "这个月是不是变好了？",
-                    )
-                    _persist_clarification_source_envelope(
-                        runtime,
-                        clarification,
-                        question="这个月是不是变好了？",
-                    )
-                result = runtime.handle_message(
-                    "thread-phase7",
-                    case["user_message"],
-                    role="business_reader" if case["case_id"] == "psm_004" else "analyst",
-                    active_run_status="running" if case["case_id"] == "ccc_009" else "idle",
-                    current_snapshot="2026H2" if case["case_id"] in {"psm_005", "psm_010"} else "2026H1",
-                )
-
-                self.assertEqual(result.turn_intent.intent, case["expected_intent"])
-                self.assertEqual(result.topic_relation, case["expected_topic_relation"])
-                self.assertTrue(result.context_manifest.items)
-                self.assertTrue(result.audit_events)
-                expected_reuse = (
-                    "candidate"
-                    if case["expected_reuse"] == "reuse"
-                    else case["expected_reuse"]
-                )
-                self.assertIn(
-                    expected_reuse,
-                    [decision.decision for decision in result.reuse_decisions],
-                )
-                if case["expected_intent"] in {
-                    "off_topic",
-                    "capability_question",
-                    "unsupported_request",
-                    "memory_update",
-                }:
-                    self.assertIsNone(result.run_request)
-                elif case["expected_langgraph"].get("ask_question"):
-                    self.assertTrue(result.needs_clarification)
-                    self.assertIsNone(result.run_request)
-                    self.assertIsNotNone(result.clarification)
-                else:
-                    self.assertIsNotNone(result.run_request)
 
     def test_context_manifest_and_reuse_are_claim_safe(self):
         runtime = _seed_runtime()

@@ -334,7 +334,6 @@ def run_pattern_workflow(request: Optional[dict[str, Any]] = None) -> WorkflowRu
     if not isinstance(request["run_mode"], str) or request["run_mode"] not in {
         "production",
         "live",
-        "fixture",
     }:
         return WorkflowRunResult(
             status="failed",
@@ -497,7 +496,6 @@ def build_pattern_graph():
         ("audit_causal_implications", _audit_causal_implications),
         ("synthesize_answer", _synthesize_answer),
         ("semantic_audit", _semantic_audit),
-        ("sanitize_answer", _sanitize_answer),
         ("hard_verify_answer", _hard_verify_answer),
         ("repair_answer", _repair_answer),
         ("generate_degraded_explanation", _generate_degraded_explanation),
@@ -623,11 +621,8 @@ def build_pattern_graph():
         {
             "verify": "hard_verify_answer",
             "repair": "repair_answer",
-            "sanitize": "sanitize_answer",
-            "degrade": "generate_degraded_explanation",
         },
     )
-    graph.add_edge("sanitize_answer", "hard_verify_answer")
     graph.add_conditional_edges(
         "hard_verify_answer",
         _route_after_hard_verify,
@@ -675,7 +670,6 @@ def _retrying_node(node_name, func):
 
 def _understand_business_intent(state: WorkflowState) -> WorkflowState:
     request = state["request"]
-    production_like = _production_like_request(request)
     if request.get("force_langgraph_failure"):
         raise RuntimeError("forced_langgraph_failure")
     _maybe_force_node_failure(state, "understand_business_intent")
@@ -711,37 +705,31 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         request,
         output,
         pattern_family,
-        allow_question_inference=not production_like,
-        require_output_mapping=production_like,
+        allow_question_inference=False,
+        require_output_mapping=True,
     )
-    if production_like:
-        if pattern_family == "weekly" and not _weekly_pattern_has_weekday_target(
-            pattern_params
-        ):
-            raise WorkflowFailure(
-                "business_intent_contract_invalid:pattern_params",
-                failure_type="llm_contract",
-            )
-        if pattern_family == "intra_period" and not _intra_period_has_target(
-            pattern_params
-        ):
-            raise WorkflowFailure(
-                "business_intent_contract_invalid:pattern_params",
-                failure_type="llm_contract",
-            )
-    else:
-        pattern_family, pattern_params = _repair_pattern_family_and_params(
-            pattern_family,
-            pattern_params,
+    if pattern_family == "weekly" and not _weekly_pattern_has_weekday_target(
+        pattern_params
+    ):
+        raise WorkflowFailure(
+            "business_intent_contract_invalid:pattern_params",
+            failure_type="llm_contract",
+        )
+    if pattern_family == "intra_period" and not _intra_period_has_target(
+        pattern_params
+    ):
+        raise WorkflowFailure(
+            "business_intent_contract_invalid:pattern_params",
+            failure_type="llm_contract",
         )
     material_requirements = _validated_business_intent_requirements(
         output.get("analysis_requirements"),
         registry,
-        require_claim_roles=production_like,
+        require_claim_roles=True,
     )
     baseline_candidates = _validated_business_intent_baseline_candidates(
         output.get("baseline_candidates"),
-        production_like=production_like,
+        production_like=True,
     )
     sub_intents = _validated_business_intent_sequence(
         output.get("sub_intents"),
@@ -783,7 +771,7 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         intent.pop("_validated_obligation_rejection_history", ())
     )
     _validate_context_family_axis(intent, registry)
-    _validate_required_claim_role_compatibility(intent)
+    _validate_required_claim_role_compatibility(intent, registry=registry)
     state["intent"] = intent
     return state
 
@@ -1088,10 +1076,6 @@ def _write_back_resolved_target_date(
     }
 
 
-def _production_like_request(request: Mapping[str, Any]) -> bool:
-    return str(request.get("run_mode") or "") in {"live", "production"}
-
-
 def _validated_business_intent_sequence(
     raw: Any,
     *,
@@ -1158,59 +1142,39 @@ def _material_business_intent_values(
     output: Mapping[str, Any],
     registry: RuntimeContractRegistry,
 ) -> dict[str, Any]:
-    defaults = {
-        "question_family": "pattern_explanation",
-        "target_metric": "paid_amount",
-        "pattern_family": "intra_period",
-        "scope": "full_sample",
-        "time_window": "2024-01..2026-05",
-        "target_claim": "pattern_explanation",
+    axes = (
+        "question_family",
+        "target_metric",
+        "pattern_family",
+        "scope",
+        "time_window",
+        "target_claim",
+    )
+    values = {
+        axis: request[axis] if axis in request else output.get(axis)
+        for axis in axes
     }
-    production_like = _production_like_request(request)
-    if production_like:
-        values = {
-            axis: request[axis] if axis in request else output.get(axis)
-            for axis in defaults
+    for axis, value in values.items():
+        scalar_axis = axis in {
+            "question_family",
+            "target_metric",
+            "pattern_family",
+            "target_claim",
         }
-    else:
-        values = {
-            "question_family": output.get("question_family"),
-            "target_metric": request.get("target_metric")
-            or output.get("target_metric"),
-            "pattern_family": request.get("pattern_family")
-            or output.get("pattern_family"),
-            "scope": request.get("scope") or output.get("scope"),
-            "time_window": request.get("time_window")
-            or output.get("time_window"),
-            "target_claim": output.get("target_claim"),
-        }
-    if production_like:
-        for axis, value in values.items():
-            scalar_axis = axis in {
-                "question_family",
-                "target_metric",
-                "pattern_family",
-                "target_claim",
-            }
-            if (
-                scalar_axis
-                and (not isinstance(value, str) or not value.strip())
-            ) or (
-                not scalar_axis
-                and _empty_business_context_value(value)
-            ):
-                raise WorkflowFailure(
-                    f"business_intent_contract_invalid:{axis}",
-                    failure_type="llm_contract",
-                )
-    else:
-        values = {
-            axis: value if not _empty_business_context_value(value) else defaults[axis]
-            for axis, value in values.items()
-        }
+        if (
+            scalar_axis
+            and (not isinstance(value, str) or not value.strip())
+        ) or (
+            not scalar_axis
+            and _empty_business_context_value(value)
+        ):
+            raise WorkflowFailure(
+                f"business_intent_contract_invalid:{axis}",
+                failure_type="llm_contract",
+            )
 
     normalized_metric = _normalize_target_metric(values["target_metric"])
-    if production_like and normalized_metric not in set(registry.metric_ids):
+    if normalized_metric not in set(registry.metric_ids):
         raise WorkflowFailure(
             "business_intent_contract_invalid:target_metric",
             failure_type="llm_contract",
@@ -1218,17 +1182,15 @@ def _material_business_intent_values(
     pattern_family = _normalize_pattern_family(
         values["pattern_family"],
         request,
-        strict=production_like,
+        strict=True,
     )
-    scope = _normalize_scope(values["scope"], strict=production_like)
-    if production_like and scope not in set(registry.public_scope_types):
+    scope = _normalize_scope(values["scope"], strict=True)
+    if scope not in set(registry.public_scope_types):
         raise WorkflowFailure(
             "business_intent_contract_invalid:scope",
             failure_type="llm_contract",
         )
-    time_window = values["time_window"]
-    if production_like:
-        time_window = _validated_material_time_window(time_window)
+    time_window = _validated_material_time_window(values["time_window"])
     return {
         **values,
         "question_family": str(values["question_family"]).strip(),
@@ -2069,6 +2031,8 @@ def _validate_context_family_axis(
 
 def _validate_required_claim_role_compatibility(
     intent: Mapping[str, Any],
+    *,
+    registry: RuntimeContractRegistry | None = None,
 ) -> None:
     """Keep provider-authored required claims inside the selected business family."""
 
@@ -2080,7 +2044,7 @@ def _validate_required_claim_role_compatibility(
     if not required_claims:
         return
     selected_families = set(_intent_question_family_set(intent))
-    cards = _route_capability_cards()
+    cards = _route_capability_cards(registry=registry)
     for claim_intent in required_claims:
         supporting_cards = tuple(
             card
@@ -2608,7 +2572,7 @@ def _validate_business_intent_provider_output(
         requirements = _validated_business_intent_requirements(
             output.get("analysis_requirements"),
             registry,
-            require_claim_roles=_production_like_request(request),
+            require_claim_roles=True,
         )
         intent = _normalize_question_families(
             {
@@ -2627,7 +2591,7 @@ def _validate_business_intent_provider_output(
             registry=registry,
         )
         _validate_context_family_axis(intent, registry)
-        _validate_required_claim_role_compatibility(intent)
+        _validate_required_claim_role_compatibility(intent, registry=registry)
     except WorkflowFailure as exc:
         raise LLMOutputError(_exception_reason(exc)) from exc
 
@@ -3873,7 +3837,6 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
     budget = state.get("budget_state") or default_budget("ordinary")
     state["budget_state"] = budget
     resume = state.get("request", {}).get("clarification_resume_context") or {}
-    production_like = _production_like_request(state.get("request") or {})
     prior_route = resume.get("analysis_route") or {}
     prior_graph = tuple(resume.get("accepted_graph") or ())
     if isinstance(prior_route, Mapping) and prior_route and prior_graph:
@@ -3885,8 +3848,6 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             excluded=ROUTE_BLOCKED_CAPABILITY_IDS,
         )
         output = dict(prior_route)
-        if not production_like:
-            output = _align_route_output_to_requested(output, requested)
         output, material_conflicts = _merge_confirmed_material_requirements(
             output,
             state,
@@ -3937,7 +3898,7 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
             output,
             route_action,
             registry,
-            preserve_narrative=production_like,
+            preserve_narrative=True,
         )
         if accepted_choice:
             output["accepted_degradation_choice"] = accepted_choice
@@ -3946,23 +3907,21 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
                 **dict(state.get("clarification_outcome") or {}),
                 "accepted_degradation_choice": accepted_choice,
             }
-        if production_like:
-            output = _finalize_production_analysis_route_narrative(
-                state,
-                route=output,
-                requested=requested,
-                registry=registry,
-            )
-            if accepted_choice:
-                output["accepted_degradation_choice"] = accepted_choice
+        output = _finalize_production_analysis_route_narrative(
+            state,
+            route=output,
+            requested=requested,
+            registry=registry,
+        )
+        if accepted_choice:
+            output["accepted_degradation_choice"] = accepted_choice
         state["analysis_route"] = {**output, "requested_nodes": requested}
-        if production_like:
-            _validate_final_analysis_route_mapping(
-                state["analysis_route"],
-                requested=requested,
-                known_capability_ids=frozenset(registry.capability_ids),
-                allow_empty=not requested,
-            )
+        _validate_final_analysis_route_mapping(
+            state["analysis_route"],
+            requested=requested,
+            known_capability_ids=frozenset(registry.capability_ids),
+            allow_empty=not requested,
+        )
         _record_obligation_rejection_authority(
             state, state["analysis_route"]
         )
@@ -4011,28 +3970,23 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         "analysis_route_plan",
         route_payload,
         output_validator=(
-            (
-                lambda candidate: _validate_analysis_route_proposal(
-                    candidate,
-                    allowed_provider_capability_ids,
-                    registry,
-                )
+            lambda candidate: _validate_analysis_route_proposal(
+                candidate,
+                allowed_provider_capability_ids,
+                registry,
             )
-            if production_like
-            else None
         ),
     )
-    if production_like:
-        output = {
-            key: output.get(key)
-            for key in ("requested_nodes", "analysis_requirements")
-            if key in output
-        }
-        _validate_analysis_route_proposal(
-            output,
-            allowed_provider_capability_ids,
-            registry,
-        )
+    output = {
+        key: output.get(key)
+        for key in ("requested_nodes", "analysis_requirements")
+        if key in output
+    }
+    _validate_analysis_route_proposal(
+        output,
+        allowed_provider_capability_ids,
+        registry,
+    )
     output, material_conflicts = _merge_confirmed_material_requirements(
         output,
         state,
@@ -4057,8 +4011,6 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         )
     if not requested:
         requested = ("pattern_scan",)
-    if not production_like:
-        _infer_question_families_from_requested_nodes(state["intent"], requested)
     requested, output = reconcile_analysis_route(
         requested,
         output,
@@ -4067,22 +4019,18 @@ def _design_analysis_route(state: WorkflowState) -> WorkflowState:
         trusted_prior_route=_trusted_obligation_rejection_route(state),
     )
     _consume_obligation_route_conflict(state, output)
-    if production_like:
-        output = _finalize_production_analysis_route_narrative(
-            state,
-            route=output,
-            requested=requested,
-            registry=registry,
-        )
-    else:
-        output = _align_route_output_to_requested(output, requested)
+    output = _finalize_production_analysis_route_narrative(
+        state,
+        route=output,
+        requested=requested,
+        registry=registry,
+    )
     state["analysis_route"] = {**output, "requested_nodes": requested}
-    if production_like:
-        _validate_final_analysis_route_mapping(
-            state["analysis_route"],
-            requested=requested,
-            known_capability_ids=known_capability_ids,
-        )
+    _validate_final_analysis_route_mapping(
+        state["analysis_route"],
+        requested=requested,
+        known_capability_ids=known_capability_ids,
+    )
     _record_obligation_rejection_authority(state, state["analysis_route"])
     state["intent"]["requested_nodes"] = requested
     return state
@@ -6149,18 +6097,17 @@ def _accept_analysis_route(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "accept_analysis_route")
     intent = state["intent"]
     request = state.get("request", {})
-    if _production_like_request(request):
-        registry = RuntimeContractRegistry.from_path(
-            CANONICAL_RUNTIME_BINDINGS_PATH
-        )
-        accepted_route = state.get("analysis_route") or {}
-        requested = tuple(accepted_route.get("requested_nodes") or ())
-        _validate_final_analysis_route_mapping(
-            accepted_route,
-            requested=requested,
-            known_capability_ids=frozenset(registry.capability_ids),
-            allow_empty=not requested,
-        )
+    registry = RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
+    accepted_route = state.get("analysis_route") or {}
+    requested = tuple(accepted_route.get("requested_nodes") or ())
+    _validate_final_analysis_route_mapping(
+        accepted_route,
+        requested=requested,
+        known_capability_ids=frozenset(registry.capability_ids),
+        allow_empty=not requested,
+    )
     analysis_runtime = request.get("analysis_runtime")
     analysis_outcome = None
     if analysis_runtime is not None:
@@ -6826,29 +6773,25 @@ def _repair_analysis_route(state: WorkflowState) -> WorkflowState:
     accepted_choice = dict(
         state.get("request", {}).get("accepted_degradation_choice") or {}
     )
-    production_like = _production_like_request(state.get("request") or {})
     requested, output = _apply_query_gap_action_to_route(
         requested,
         output,
         accepted_choice,
         registry,
-        preserve_narrative=production_like,
+        preserve_narrative=True,
     )
-    if production_like:
-        output = _finalize_production_analysis_route_narrative(
-            state,
-            route=output,
-            requested=requested,
-            registry=registry,
-        )
-        _validate_final_analysis_route_mapping(
-            {**output, "requested_nodes": requested},
-            requested=requested,
-            known_capability_ids=frozenset(registry.capability_ids),
-            allow_empty=not requested,
-        )
-    else:
-        output = _align_route_output_to_requested(output, requested)
+    output = _finalize_production_analysis_route_narrative(
+        state,
+        route=output,
+        requested=requested,
+        registry=registry,
+    )
+    _validate_final_analysis_route_mapping(
+        {**output, "requested_nodes": requested},
+        requested=requested,
+        known_capability_ids=frozenset(registry.capability_ids),
+        allow_empty=not requested,
+    )
     _infer_question_families_from_requested_nodes(state["intent"], requested)
     state["analysis_route"] = {**state["analysis_route"], **output, "requested_nodes": requested}
     _record_obligation_rejection_authority(state, state["analysis_route"])
@@ -8081,8 +8024,6 @@ def _attach_formula_candidate_framework(
 
 def _execute_capabilities(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "execute_capabilities")
-    rows = _capability_rows(state)
-    query_ref = _capability_result_refs(state)
     evidence = []
     compiled = state["compiled_graph"]
     capabilities = tuple(compiled.mutations.accepted_graph)
@@ -8141,7 +8082,6 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
                     llm_business_reason="执行已接受的窗口指标对比能力。",
                     params=window_params,
                     **_capability_authority_inputs(state, capability_id),
-                    **_capability_compatibility_mode(state),
                 )
             )
         )
@@ -8181,7 +8121,6 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
                         ),
                     },
                     **_capability_authority_inputs(state, "data_quality_profile"),
-                    **_capability_compatibility_mode(state),
                 )
             )
         )
@@ -8194,10 +8133,6 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
     ):
         pattern_family = state["intent"]["pattern_family"]
         pattern_params = dict(state["intent"].get("pattern_params", {}))
-        if pattern_family == "intra_period" and not _production_like_request(
-            state["request"]
-        ):
-            pattern_params.setdefault("target_phase", "start")
         capability_rows, pattern_params = _comparison_rows_and_params(
             state,
             capability_id,
@@ -8241,7 +8176,6 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
                         **pattern_params,
                     },
                     **_capability_authority_inputs(state, capability_id),
-                    **_capability_compatibility_mode(state),
                 )
             )
         )
@@ -8263,10 +8197,6 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
     if "pattern_scan" in capabilities:
         pattern_family = state["intent"]["pattern_family"]
         pattern_params = dict(state["intent"].get("pattern_params", {}))
-        if pattern_family == "intra_period" and not _production_like_request(
-            state["request"]
-        ):
-            pattern_params.setdefault("target_phase", "start")
         capability_rows, pattern_params = _comparison_rows_and_params(
             state,
             "pattern_scan",
@@ -8462,7 +8392,6 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
                         "result_refs": _capability_result_refs_for(state, "event_evidence"),
                     },
                     **_capability_authority_inputs(state, "event_evidence"),
-                    **_capability_compatibility_mode(state),
                 )
             )
         )
@@ -8495,29 +8424,15 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
                         "result_refs": _capability_result_refs_for(state, "gameplay_activity_context"),
                     },
                     **_capability_authority_inputs(state, "gameplay_activity_context"),
-                    **_capability_compatibility_mode(state),
                 )
             )
         )
         budget = record_capability_call(budget)
     state["budget_state"] = budget
     if "segment_bridge" in capabilities:
-        run_mode = str(state.get("request", {}).get("run_mode") or "")
-        segment_rows = (
-            state["request"].get(
-                "segments",
-                ({"segment": "full_sample", "amount": 1.0, "n": 100},),
-            )
-            if run_mode == "fixture"
-            else _capability_rows_for(state, "segment_bridge")
-        )
         segment = segment_bridge(
-            segment_rows,
-            result_refs=(
-                query_ref
-                if run_mode == "fixture"
-                else _capability_result_refs_for(state, "segment_bridge")
-            ),
+            _capability_rows_for(state, "segment_bridge"),
+            result_refs=_capability_result_refs_for(state, "segment_bridge"),
         )
         evidence.append(segment)
     else:
@@ -8549,16 +8464,6 @@ def _execute_capabilities(state: WorkflowState) -> WorkflowState:
 
     state["evidence"] = [_evidence_dict(item, state) for item in evidence]
     return state
-
-
-def _capability_compatibility_mode(state: WorkflowState) -> dict[str, str]:
-    run_mode = str((state.get("request") or {}).get("run_mode") or "production")
-    return {
-        "run_mode": run_mode,
-        "fixture_input_mode": (
-            "legacy_unbound_fixture" if run_mode == "fixture" else ""
-        ),
-    }
 
 
 def _capability_authority_inputs(
@@ -8816,59 +8721,27 @@ def _reduce_evidence(state: WorkflowState) -> WorkflowState:
     return state
 
 
-def _capability_rows(state: WorkflowState) -> Sequence[Mapping[str, Any]]:
-    request = state.get("request", {})
-    if str(request.get("run_mode") or "production") == "fixture":
-        return request.get("rows") or state.get("rows", ()) or _default_pattern_rows()
-    return ()
-
-
-def _capability_result_refs(state: WorkflowState) -> tuple[str, ...]:
-    request = state.get("request", {})
-    if str(request.get("run_mode") or "production") == "fixture":
-        return tuple(request.get("result_refs") or (state.get("sql_hash", ""),))
-    return ()
-
-
 def _capability_rows_for(
     state: WorkflowState,
     capability_id: str,
 ) -> Sequence[Mapping[str, Any]]:
     bound, limitation = _production_bound_input(state, capability_id)
-    if bound is not None or limitation:
-        if limitation or bound is None:
-            return ()
-        return tuple(
-            row
-            for rows in bound.rows_by_slot.values()
-            for row in rows
-        )
-    rows_by_intent = state.get("request", {}).get("runtime_rows_by_intent") or {}
-    if isinstance(rows_by_intent, Mapping):
-        for intent in _compiler_capability_query_intents(state, capability_id):
-            if intent in rows_by_intent:
-                rows = rows_by_intent[intent]
-                if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
-                    return rows
-    return _capability_rows(state)
+    if limitation or bound is None:
+        return ()
+    return tuple(
+        row
+        for rows in bound.rows_by_slot.values()
+        for row in rows
+    )
 
 
 def _capability_result_refs_for(state: WorkflowState, capability_id: str) -> tuple[str, ...]:
     bound, limitation = _production_bound_input(state, capability_id)
-    if bound is not None or limitation:
-        if limitation or bound is None:
-            return ()
-        return tuple(
-            dict.fromkeys((*bound.result_refs, *bound.validation_result_refs))
-        )
-    refs_by_intent = state.get("request", {}).get("result_refs_by_intent") or {}
-    if isinstance(refs_by_intent, Mapping):
-        for intent in _compiler_capability_query_intents(state, capability_id):
-            if intent in refs_by_intent:
-                refs = refs_by_intent[intent]
-                if isinstance(refs, Sequence) and not isinstance(refs, (str, bytes)):
-                    return tuple(str(ref) for ref in refs if ref)
-    return _capability_result_refs(state)
+    if limitation or bound is None:
+        return ()
+    return tuple(
+        dict.fromkeys((*bound.result_refs, *bound.validation_result_refs))
+    )
 
 
 def _production_bound_input(
@@ -8876,12 +8749,6 @@ def _production_bound_input(
     capability_id: str,
 ) -> tuple[BoundCapabilityInput | None, str]:
     request = state.get("request", {})
-    run_mode = str(request.get("run_mode") or "")
-    if (
-        run_mode not in {"live", "production"}
-        and request.get("runtime_rows_source") != "analysis_runtime"
-    ):
-        return None, ""
     values = request.get("bound_capability_inputs") or {}
     bound = values.get(capability_id) if isinstance(values, Mapping) else None
     if not isinstance(bound, BoundCapabilityInput):
@@ -8890,7 +8757,6 @@ def _production_bound_input(
         limitation = validate_bound_capability_input(
             bound,
             request.get("evidence_resolver"),
-            allow_fixture=False,
         )
     except Exception:
         limitation = "bound_capability_input_invalid"
@@ -9998,8 +9864,11 @@ def _promotion_policy_gate(state: WorkflowState) -> WorkflowState:
 def _route_capability_cards(
     *,
     include_blocked: bool = False,
+    registry: RuntimeContractRegistry | None = None,
 ) -> list[dict[str, Any]]:
-    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    registry = registry or RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
     cards = []
     for card in llm_capability_cards():
         capability_id = str(card.get("capability_id") or "")
@@ -10531,9 +10400,12 @@ def _execute_joint_attribution(state: WorkflowState) -> WorkflowState:
     evidence.append(
         _evidence_dict(
             joint_attribution(
-                _capability_rows(state),
+                _capability_rows_for(state, "joint_attribution"),
                 segment_evidence=segment,
-                result_refs=_capability_result_refs(state),
+                result_refs=_capability_result_refs_for(
+                    state,
+                    "joint_attribution",
+                ),
                 **_joint_attribution_params(state),
             ),
             state,
@@ -11378,7 +11250,6 @@ def _synthesize_answer(state: WorkflowState) -> WorkflowState:
     answer_payload = {"businessContext": _business_answer_context(state)}
     output = _invoke_llm(state, "answer_synthesis", answer_payload)
     state["answer_text"] = _weaken_unsupported_causal_wording(output.get("answer_text", ""))
-    _ensure_business_narrative_answer(state)
     return state
 
 
@@ -11399,28 +11270,6 @@ def _semantic_audit(state: WorkflowState) -> WorkflowState:
             "semantic_audit",
             audit.get("issues", []) or audit.get("audit_status", ""),
         )
-    return state
-
-
-def _sanitize_answer(state: WorkflowState) -> WorkflowState:
-    _maybe_force_node_failure(state, "sanitize_answer")
-    previous = state.get("semantic_audit", {})
-    if str(state.get("request", {}).get("run_mode") or "") in {
-        "live",
-        "production",
-    }:
-        state["semantic_audit"] = {
-            **previous,
-            "audit_status": "ready_with_warnings",
-            "risk_flags": list(previous.get("issues") or ()),
-        }
-        return state
-    _sanitize_to_bounded_pattern_answer(state)
-    state["semantic_audit"] = {
-        **previous,
-        "audit_status": "sanitized",
-        "sanitized_by": "local_bounded_pattern_policy",
-    }
     return state
 
 
@@ -11469,7 +11318,6 @@ def _repair_answer(state: WorkflowState) -> WorkflowState:
     state["answer_text"] = _weaken_unsupported_causal_wording(
         output.get("answer_text", state.get("answer_text", ""))
     )
-    _ensure_business_narrative_answer(state)
     return state
 
 
@@ -11523,15 +11371,7 @@ def _ensure_degraded_audit(state: WorkflowState) -> None:
     if draft_claims:
         state["draft_claims"] = draft_claims
         return
-    if str(state.get("request", {}).get("run_mode") or "") in {
-        "live",
-        "production",
-    }:
-        state["draft_claims"] = []
-        return
-    evidence = _primary_business_evidence(state)
-    evidence_ref = str(evidence.get("evidence_ref") or evidence_items[0].get("evidence_ref"))
-    state["draft_claims"] = [_degraded_boundary_claim(state, evidence_ref)]
+    state["draft_claims"] = []
 
 
 def _degraded_boundary_evidence(state: WorkflowState) -> dict[str, Any]:
@@ -11553,23 +11393,6 @@ def _degraded_boundary_evidence(state: WorkflowState) -> dict[str, Any]:
             "repair_path": _terminal_repair_path(state, "degraded"),
         },
     }
-
-
-def _degraded_boundary_claim(state: WorkflowState, evidence_ref: str) -> dict[str, Any]:
-    reason = "、".join(_business_limitation_reasons(tuple(_degraded_limitations(state))))
-    if not reason:
-        reason = "当前证据强度不足"
-    return _with_claim_audit(
-        state,
-        {
-            "text": f"当前证据不足以支撑主业务结论；主要限制是{reason}。",
-            "evidence_refs": [evidence_ref],
-            "numbers": {},
-            "scope": state["intent"]["scope"],
-            "time_window": state["intent"]["time_window"],
-            "claim_strength": "insufficient",
-        },
-    )
 
 
 def _degraded_limitations(state: WorkflowState) -> list[str]:
@@ -12152,9 +11975,8 @@ def _answer_quality_gate(state: WorkflowState) -> WorkflowState:
 def _persist_artifact(state: WorkflowState) -> WorkflowState:
     _maybe_force_node_failure(state, "persist_artifact")
     request = state.get("request", {})
-    run_mode = str(request.get("run_mode") or "production")
     analysis_runtime = request.get("analysis_runtime")
-    if run_mode in {"live", "production"} and analysis_runtime is None:
+    if analysis_runtime is None:
         raise WorkflowFailure(
             "analysis_runtime_required_for_live_publication",
             failure_type="contract",
@@ -12330,10 +12152,6 @@ def _coverage_rows_for_local_check(state: WorkflowState) -> list[dict[str, Any]]
                 rows = rows_by_intent[intent]
                 if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
                     return list(rows)
-    if str(request.get("run_mode") or "production") == "fixture":
-        if "rows" in request:
-            return list(request.get("rows") or [])
-        return _default_pattern_rows()
     return []
 
 
@@ -12502,15 +12320,7 @@ def _route_after_semantic_audit(state: WorkflowState) -> str:
     if _semantic_audit_requires_revision(audit):
         if state.get("semantic_repair_attempts", 0) < 1:
             return "repair"
-        if str(state.get("request", {}).get("run_mode") or "") in {
-            "live",
-            "production",
-        }:
-            return "verify"
-        if _evidence_supports_bounded_answer(state):
-            _current_event(state)["route"] = "semantic_sanitized_to_bounded_answer"
-            return "sanitize"
-        return "degrade"
+        return "verify"
     return "verify"
 
 
@@ -14010,13 +13820,6 @@ def _pattern_has_negative_answer_evidence(state: WorkflowState) -> bool:
     return bool(limitations & {"weak_direction", "below_materiality_floor"})
 
 
-def _sanitize_to_bounded_pattern_answer(state: WorkflowState) -> None:
-    claims = _preserved_authority_claims(state)
-    claim = claims[0] if claims else _default_claim_from_evidence(state)
-    state["draft_claims"] = claims or [claim]
-    state["answer_text"] = _business_narrative_answer(state, claim)
-
-
 def _preserved_authority_claims(state: WorkflowState) -> list[dict[str, Any]]:
     """Keep canonical facts stable while semantic repair rewrites prose."""
 
@@ -14060,14 +13863,6 @@ def _preserved_authority_claims(state: WorkflowState) -> list[dict[str, Any]]:
             continue
         preserved.append(dict(raw_claim))
     return preserved
-
-
-def _single_period_pattern(state: WorkflowState) -> bool:
-    pattern = _pattern_evidence(state)
-    try:
-        return int(pattern.get("typed_payload", {}).get("comparable_periods", 0)) <= 1
-    except (TypeError, ValueError):
-        return False
 
 
 def _authority_claims_from_evidence(state: WorkflowState) -> list[dict[str, Any]]:
@@ -14330,18 +14125,6 @@ def _normalize_authority_claim_candidates(
         text = _weaken_unsupported_causal_wording(
             raw_text
         )
-        if (
-            not text
-            and authority_bound
-            and normalized_numbers
-            and str(state.get("request", {}).get("run_mode") or "")
-            not in {"live", "production"}
-        ):
-            text = _authority_bound_claim_text(
-                state,
-                authority,
-                normalized_numbers,
-            )
         if not text:
             continue
         dedupe_key = (text, tuple(refs))
@@ -14397,24 +14180,6 @@ def _normalize_authority_claim_candidates(
             )
         )
     return normalized
-
-
-def _authority_bound_claim_text(
-    state: WorkflowState,
-    authority: Mapping[str, Any],
-    numbers: Mapping[str, Any],
-) -> str:
-    """Render only bound fact labels; final business prose remains an LLM task."""
-
-    metric = str(state.get("intent", {}).get("target_metric") or authority.get("metric") or "metric")
-    scope = str(authority.get("scope") or state.get("intent", {}).get("scope") or "")
-    time_window = str(
-        authority.get("time_window")
-        or state.get("intent", {}).get("time_window")
-        or ""
-    )
-    facts = "、".join(f"{key}={value}" for key, value in sorted(numbers.items()))
-    return f"{time_window}，{scope}范围的{metric}权威事实为：{facts}。"
 
 
 def _canonical_authority_claim_strength(
@@ -14485,51 +14250,6 @@ def _normalize_claim_numbers(
         if key in available:
             normalized[key] = raw_value
     return normalized
-
-
-def _ensure_business_narrative_answer(state: WorkflowState) -> None:
-    if str(state.get("request", {}).get("run_mode") or "") in {
-        "live",
-        "production",
-    }:
-        return
-    claims = state.get("draft_claims") or []
-    if not claims:
-        return
-    answer_text = state.get("answer_text", "")
-    if _answer_needs_business_narrative(answer_text) or (
-        _single_period_pattern(state) and _answer_has_single_period_overclaim(answer_text)
-    ):
-        state["answer_text"] = _business_narrative_answer(state, claims[0])
-
-
-def _answer_needs_business_narrative(text: Any) -> bool:
-    value = str(text or "").strip()
-    if not value:
-        return True
-    required_marker_groups = (
-        ("理解",),
-        ("分析思路", "分析路径", "怎么分析", "证据路径"),
-        ("关键发现", "发现"),
-        ("结论",),
-        ("需要注意", "注意", "继续观察", "可观察"),
-    )
-    return any(not any(marker in value for marker in group) for group in required_marker_groups)
-
-
-def _answer_has_single_period_overclaim(text: Any) -> bool:
-    value = str(text or "").lower()
-    markers = (
-        "high-confidence",
-        "non-random",
-        "statistically significant",
-        "统计显著",
-        "显著规律",
-        "可靠规律",
-        "稳定规律",
-        "非随机",
-    )
-    return any(marker in value for marker in markers)
 
 
 def _answer_synthesis_context(state: WorkflowState) -> dict[str, Any]:
@@ -14614,18 +14334,6 @@ def _bounded_insight_guidance(state: WorkflowState) -> dict[str, Any]:
         ),
         "evidence_limits": limits,
     }
-
-
-def _business_narrative_answer(state: WorkflowState, claim: dict[str, Any]) -> str:
-    return "\n".join(
-        (
-            _question_understanding_sentence(state),
-            _analysis_path_sentence(state),
-            _key_findings_sentence(state),
-            _conclusion_sentence(state, claim),
-            _attention_sentence(state),
-        )
-    )
 
 
 def _final_summary_needs_display_repair(text: Any, state: WorkflowState) -> bool:
@@ -15107,11 +14815,7 @@ def _evidence_established(evidence: dict[str, Any]) -> bool:
 
 
 def _evidence_claim_input_ready(evidence: Mapping[str, Any]) -> bool:
-    """Use the authenticated binding decision, with compatibility for ready fixtures."""
-
-    if "claim_input_ready" in evidence:
-        return evidence.get("claim_input_ready") is True
-    return evidence.get("input_status") == "ready"
+    return evidence.get("claim_input_ready") is True
 
 
 def _sanitize_terminal_explanation(
@@ -15859,26 +15563,6 @@ def _format_percent(value: Any) -> str:
         return "unknown"
 
 
-def _default_pattern_rows() -> list[dict[str, Any]]:
-    rows = []
-    year = 2024
-    month = 1
-    while (year, month) <= (2026, 5):
-        month_key = f"{year}-{month:02d}"
-        rows.extend(
-            [
-                {"month": month_key, "phase": "start", "amount": 120},
-                {"month": month_key, "phase": "mid", "amount": 100},
-                {"month": month_key, "phase": "end", "amount": 100},
-            ]
-        )
-        month += 1
-        if month == 13:
-            year += 1
-            month = 1
-    return rows
-
-
 _LLM_NODE_NAMES = frozenset(
     {
         "understand_business_intent",
@@ -15924,7 +15608,6 @@ _BUSINESS_LABELS = {
     "audit_causal_implications": "审计因果和业务含义",
     "synthesize_answer": "生成业务答案草稿",
     "semantic_audit": "语义审计答案",
-    "sanitize_answer": "收敛为有边界答案",
     "hard_verify_answer": "答案硬验收",
     "repair_answer": "按校验反馈修答案",
     "final_business_summary": "整理最终业务总结",

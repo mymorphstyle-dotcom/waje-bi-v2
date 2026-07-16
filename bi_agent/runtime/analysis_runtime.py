@@ -123,7 +123,7 @@ class AnalysisRuntimeRequest:
             raise ValueError("analysis_runtime_as_of_invalid")
         if permission_scope not in {"viewer", "analyst", "admin"}:
             raise PermissionError("analysis_runtime_permission_scope_invalid")
-        if run_mode not in {"production", "live", "fixture"}:
+        if run_mode not in {"production", "live"}:
             raise ValueError("analysis_runtime_run_mode_invalid")
         return cls(
             run_id=run_id,
@@ -854,7 +854,6 @@ class AnalysisRuntime:
                 evidence_writer=self.evidence_writer,
                 runtime_registry=self.registry,
                 release_resolver=self.release_resolver,
-                run_mode=typed.run_mode,
             )
         auxiliary_terminal_records = (
             _auxiliary_terminal_records_for_unbound_results(

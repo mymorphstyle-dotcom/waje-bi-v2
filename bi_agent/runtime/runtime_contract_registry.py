@@ -56,7 +56,6 @@ _REQUIRED_CLAIM_STRENGTHS = frozenset(
     {
         "insufficient",
         "context_only",
-        "dry_run_context",
         "observed",
         "medium",
         "high",
@@ -496,7 +495,7 @@ def _validate_claim_strength_taxonomy(value: Any) -> None:
     claim_ranks = value["claim_strength_ranks"]
     if any(
         claim_ranks[strength] != 0
-        for strength in ("insufficient", "context_only", "dry_run_context")
+        for strength in ("insufficient", "context_only")
     ):
         raise ValueError("runtime_claim_strength_taxonomy_zero_layer_invalid")
     ordered = tuple(

@@ -1,20 +1,9 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "WAJE BI v2",
-  description: "SQL-first BI Agent investigation thread demo",
+  description: "SQL-first BI Agent investigation workspace",
 };
 
 export default function RootLayout({
@@ -23,7 +12,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" className={`${geistSans.variable} ${geistMono.variable}`}>
+    <html lang="zh-CN">
       <body>{children}</body>
     </html>
   );

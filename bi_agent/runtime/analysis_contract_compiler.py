@@ -201,11 +201,7 @@ def _bind_terminal_execution_material(
         permission_scope=permission_scope,
         accepted_graph=accepted_capabilities,
         accepted_choice=choice,
-        run_mode=(
-            "fixture"
-            if execution["run_mode_class"] == "fixture"
-            else "production"
-        ),
+        run_mode="production",
         runtime_contract_version=registry.contract_version,
         runtime_registry_digest=registry.source_payload_digest,
     )
