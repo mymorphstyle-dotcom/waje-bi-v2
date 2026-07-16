@@ -190,6 +190,19 @@ def count_metric():
     )
 
 
+def non_additive_user_metric():
+    return MetricBinding(
+        "paid_users",
+        "metric:paid_users@1",
+        "paid_order_success",
+        "uniqExact(user_id)",
+        "distinct_count",
+        ("user_id",),
+        ("window_id",),
+        reconciliation_strategy="unsupported_non_additive",
+    )
+
+
 def ratio_metric():
     return MetricBinding(
         "paid_frequency",
@@ -1282,6 +1295,240 @@ class QueryCompletenessTest(unittest.TestCase):
         self.assertEqual(assertion["details"]["tolerance"], 0.01)
         self.assertEqual(dimension_report.completeness_status, "complete")
 
+    def test_non_additive_context_metric_does_not_block_additive_dimension_reconciliation(self):
+        metrics = (
+            paid_metric(),
+            count_metric(),
+            non_additive_user_metric(),
+        )
+        total_contract = multi_metric_contract(
+            query_id="query:mixed-total:1",
+            metrics=metrics,
+        )
+        dimension_contract = bind_dimension_reference(
+            multi_metric_contract(
+                query_id="query:mixed-dimension:1",
+                metrics=metrics,
+                dimensions=(channel_dimension(),),
+            ),
+            total_contract,
+        )
+        total_rows = (
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "paid_amount": 100.0,
+                "paid_orders": 10,
+                "paid_users": 8,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "paid_amount": 80.0,
+                "paid_orders": 8,
+                "paid_users": 7,
+            },
+        )
+        dimension_rows = (
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "channel": "A",
+                "paid_amount": 60.0,
+                "paid_orders": 6,
+                "paid_users": 6,
+            },
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "channel": "B",
+                "paid_amount": 40.0,
+                "paid_orders": 4,
+                "paid_users": 5,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "channel": "A",
+                "paid_amount": 50.0,
+                "paid_orders": 5,
+                "paid_users": 5,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "channel": "B",
+                "paid_amount": 30.0,
+                "paid_orders": 3,
+                "paid_users": 4,
+            },
+        )
+        total_result = successful_result(total_contract, rows=total_rows)
+        dimension_result = successful_result(
+            dimension_contract,
+            rows=dimension_rows,
+        )
+        reports = (
+            validate_query_result(
+                total_contract,
+                total_result,
+                paid_snapshot(),
+            ),
+            validate_query_result(
+                dimension_contract,
+                dimension_result,
+                paid_snapshot(),
+            ),
+        )
+
+        reconciled = validate_query_set(
+            (total_contract, dimension_contract),
+            (total_result, dimension_result),
+            reports,
+        )
+
+        dimension_report = reconciled[1]
+        assertion = next(
+            item
+            for item in dimension_report.assertion_results
+            if item["assertion"] == "dimension_total_reconciliation"
+        )
+        self.assertEqual(dimension_report.completeness_status, "complete")
+        self.assertEqual(dimension_report.analysis_readiness, "ready")
+        self.assertTrue(assertion["passed"])
+        self.assertEqual(
+            assertion["details"]["non_additive_metrics"],
+            ("paid_users",),
+        )
+        self.assertFalse(
+            any(
+                reason.startswith("metric_reconciliation_unsupported:")
+                for reason in dimension_report.failure_reasons
+            )
+        )
+
+    def test_query_set_reports_are_independent_of_input_order(self):
+        total_contract = baseline_contract(query_id="query:ordered-total:1")
+        dimension_contract = bind_dimension_reference(
+            baseline_contract(
+                query_id="query:ordered-dimension:1",
+                dimensions=(channel_dimension(),),
+            ),
+            total_contract,
+        )
+        total_result = successful_result(
+            total_contract,
+            rows=complete_rows(target=100.0, baseline=80.0),
+        )
+        dimension_result = successful_result(
+            dimension_contract,
+            rows=(
+                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 60.0},
+                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "B", "paid_amount": 40.0},
+                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 50.0},
+                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "B", "paid_amount": 30.0},
+            ),
+        )
+        total_report = validate_query_result(
+            total_contract,
+            total_result,
+            paid_snapshot(),
+        )
+        dimension_report = validate_query_result(
+            dimension_contract,
+            dimension_result,
+            paid_snapshot(),
+        )
+
+        forward = validate_query_set(
+            (total_contract, dimension_contract),
+            (total_result, dimension_result),
+            (total_report, dimension_report),
+        )
+        reverse = validate_query_set(
+            (dimension_contract, total_contract),
+            (dimension_result, total_result),
+            (dimension_report, total_report),
+        )
+
+        forward_by_query = {
+            report.query_contract_ref: report.to_dict() for report in forward
+        }
+        reverse_by_query = {
+            report.query_contract_ref: report.to_dict() for report in reverse
+        }
+        self.assertEqual(forward_by_query, reverse_by_query)
+
+    def test_dimension_reconciliation_without_additive_anchor_remains_blocked(self):
+        metric = non_additive_user_metric()
+        total_contract = baseline_contract(
+            query_id="query:users-total:1",
+            metric=metric,
+        )
+        dimension_contract = bind_dimension_reference(
+            baseline_contract(
+                query_id="query:users-dimension:1",
+                dimensions=(channel_dimension(),),
+                metric=metric,
+            ),
+            total_contract,
+        )
+        total_rows = complete_rows(
+            metric_id="paid_users",
+            target=8,
+            baseline=7,
+        )
+        dimension_rows = (
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "channel": "A",
+                "paid_users": 6,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "channel": "A",
+                "paid_users": 5,
+            },
+        )
+        total_result = successful_result(total_contract, rows=total_rows)
+        dimension_result = successful_result(
+            dimension_contract,
+            rows=dimension_rows,
+        )
+        reports = validate_query_set(
+            (total_contract, dimension_contract),
+            (total_result, dimension_result),
+            (
+                validate_query_result(
+                    total_contract,
+                    total_result,
+                    paid_snapshot(),
+                ),
+                validate_query_result(
+                    dimension_contract,
+                    dimension_result,
+                    paid_snapshot(),
+                ),
+            ),
+        )
+
+        self.assertEqual(reports[1].completeness_status, "partial")
+        self.assertEqual(reports[1].analysis_readiness, "blocked")
+        self.assertIn(
+            "dimension_total_reconciliation_unavailable:paid_users",
+            reports[1].failure_reasons,
+        )
+
     def test_overall_channel_reconciliation_executes_match_mismatch_and_partial(self):
         overall = baseline_contract(query_id="query:overall:closure")
         channel = bind_dimension_reference(
@@ -2243,14 +2490,15 @@ class QueryCompletenessTest(unittest.TestCase):
                 self.assertEqual(decision.action, "degrade")
                 self.assertEqual(decision.failure_reasons, (reason,))
 
-    def test_window_coverage_repair_clarifies_with_exact_failure_context(self):
+    def test_window_coverage_repair_blocks_with_exact_failure_context(self):
         contract = baseline_contract()
         report = repair_report(contract, "missing_required_window:target_day")
 
         decision = plan_query_repair(contract, report, attempted_signatures=())
 
-        self.assertEqual(decision.action, "clarify")
-        self.assertTrue(decision.requires_clarification)
+        self.assertEqual(decision.action, "block")
+        self.assertFalse(decision.requires_llm)
+        self.assertFalse(decision.requires_clarification)
         self.assertEqual(decision.report_ref, report.report_ref)
         self.assertEqual(
             decision.failure_reasons,

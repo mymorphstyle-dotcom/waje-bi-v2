@@ -27,6 +27,7 @@ from bi_agent.runtime.capability_execution import (
     BoundCapabilityInput,
     bind_capability_inputs,
     capability_plan_has_executable_query_contracts,
+    degradation_action_is_non_blocking,
 )
 from bi_agent.runtime.claim_provenance import (
     build_context_manifest_record,
@@ -198,6 +199,54 @@ class AnswerPackageBuildContext:
         )
 
 
+def _has_omitted_auxiliary_gap_with_ready_sibling(
+    result: "AnalysisRuntimeResult",
+) -> bool:
+    ready_capabilities = {
+        str(capability_id)
+        for capability_id, binding in result.bound_capability_inputs.items()
+        if getattr(binding, "status", "") == "ready"
+    }
+    if not ready_capabilities:
+        return False
+    plans = {
+        str(plan.capability_id): plan for plan in result.capability_plans
+    }
+    for gap in result.typed_gaps:
+        if bool(gap.get("requires_clarification")):
+            continue
+        context = gap.get("diagnostic_context")
+        if not isinstance(context, Mapping):
+            continue
+        action = str(context.get("degradation_action") or "")
+        if (
+            context.get("analysis_role") != "auxiliary"
+            or not degradation_action_is_non_blocking(action)
+        ):
+            continue
+        affected = {
+            str(capability_id)
+            for capability_id in gap.get("affected_capabilities") or ()
+            if str(capability_id)
+        }
+        if not affected or not (ready_capabilities - affected):
+            continue
+        if any(
+            capability_id not in plans
+            or str(
+                plans[capability_id].degradation_policy.get(
+                    "missing_required_input"
+                )
+                or ""
+            )
+            != action
+            for capability_id in affected
+        ):
+            continue
+        return True
+    return False
+
+
 @dataclass(frozen=True)
 class AnalysisRuntimeResult:
     analysis_contract: AnalysisContract
@@ -210,9 +259,22 @@ class AnalysisRuntimeResult:
     typed_gaps: tuple[Mapping[str, Any], ...]
     persistence_records: Mapping[str, Any]
     reuse_decisions: tuple[Mapping[str, Any], ...] = ()
+    auxiliary_terminal_records: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def status(self) -> str:
+        terminal_window_unavailable = any(
+            item.action == "block"
+            and item.reason == "window_coverage_failure"
+            for item in self.repair_decisions
+        )
+        if terminal_window_unavailable:
+            if any(
+                item.status == "ready"
+                for item in self.bound_capability_inputs.values()
+            ):
+                return "degraded"
+            return "blocked"
         if any(item.action == "clarify" for item in self.repair_decisions):
             return "clarify"
         if any(bool(item.get("requires_clarification")) for item in self.typed_gaps):
@@ -220,6 +282,8 @@ class AnalysisRuntimeResult:
         if any(item.action == "recompile" for item in self.repair_decisions):
             return "recompile"
         if any(item.status == "ready" for item in self.bound_capability_inputs.values()):
+            if _has_omitted_auxiliary_gap_with_ready_sibling(self):
+                return "degraded"
             return "ready"
         if any(
             item.status == "degraded" for item in self.bound_capability_inputs.values()
@@ -250,8 +314,119 @@ class AnalysisRuntimeResult:
             "repair_decisions": [asdict(item) for item in self.repair_decisions],
             "typed_gaps": [dict(item) for item in self.typed_gaps],
             "reuse_decisions": [dict(item) for item in self.reuse_decisions],
+            "auxiliary_terminal_records": [
+                dict(item) for item in self.auxiliary_terminal_records
+            ],
+            "persistence_repair_records": list(
+                _persistence_repair_records(
+                    analysis_contract_ref=self.analysis_contract.analysis_contract_id,
+                    repair_decisions=self.repair_decisions,
+                    auxiliary_terminal_records=self.auxiliary_terminal_records,
+                )
+            ),
             "analysis_runtime_status": self.status,
         }
+
+
+def _auxiliary_terminal_records_for_unbound_results(
+    *,
+    capability_plans: Sequence[CapabilityExecutionPlan],
+    bound_capability_inputs: Mapping[str, BoundCapabilityInput],
+    query_results: Sequence[QueryResultEnvelope],
+    candidate_claim_intents: Sequence[str],
+) -> tuple[dict[str, Any], ...]:
+    candidate_claims = {str(item) for item in candidate_claim_intents if str(item)}
+    if not candidate_claims:
+        return ()
+    result_by_query_ref = {
+        str(result.query_contract_ref): str(result.result_ref)
+        for result in query_results
+    }
+    result_refs_bound_elsewhere = {
+        str(result_ref)
+        for binding in bound_capability_inputs.values()
+        if getattr(binding, "binding_manifest_ref", "")
+        for result_ref in (
+            *tuple(getattr(binding, "result_refs", ()) or ()),
+            *tuple(getattr(binding, "validation_result_refs", ()) or ()),
+        )
+    }
+    records = []
+    for plan in capability_plans:
+        affected_claim_types = tuple(
+            dict.fromkeys(
+                str(claim_type)
+                for claim_type in plan.supported_claim_types
+                if str(claim_type) in candidate_claims
+            )
+        )
+        if not affected_claim_types or set(plan.supported_claim_types) - candidate_claims:
+            continue
+        binding = bound_capability_inputs.get(plan.capability_id)
+        if binding is None:
+            continue
+        query_contract_refs = tuple(
+            dict.fromkeys(
+                str(query_ref)
+                for slot in (*plan.required_input_slots, *plan.optional_input_slots)
+                for query_ref in (
+                    *slot.query_contract_refs,
+                    *slot.validation_query_contract_refs,
+                )
+                if str(query_ref) in result_by_query_ref
+                and result_by_query_ref[str(query_ref)]
+                not in result_refs_bound_elsewhere
+            )
+        )
+        if not query_contract_refs:
+            continue
+        reasons = tuple(
+            str(reason)
+            for reason in tuple(getattr(binding, "reasons", ()) or ())
+            if str(reason)
+        )
+        records.append(
+            {
+                "failed_signature": str(plan.capability_contract_signature),
+                "action": "quarantine_auxiliary_results",
+                "reason": ";".join(reasons) or "capability_binding_blocked",
+                "capability_id": str(plan.capability_id),
+                "analysis_role": "auxiliary",
+                "affected_claim_types": affected_claim_types,
+                "query_contract_refs": query_contract_refs,
+                "result_refs": tuple(
+                    result_by_query_ref[query_ref]
+                    for query_ref in query_contract_refs
+                ),
+                "failure_stage": "capability_binding",
+                "publication_authority": "none",
+            }
+        )
+    return tuple(records)
+
+
+def _persistence_repair_records(
+    *,
+    analysis_contract_ref: str,
+    repair_decisions: Sequence[QueryRepairDecision],
+    auxiliary_terminal_records: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    records = [
+        {
+            "failed_signature": str(item.failed_signature),
+            "action": str(item.action),
+            "reason": str(item.reason),
+        }
+        for item in repair_decisions
+    ]
+    records.extend(dict(item) for item in auxiliary_terminal_records)
+    return tuple(
+        {
+            "attempt_ref": f"repair:{analysis_contract_ref}:{index}",
+            **record,
+        }
+        for index, record in enumerate(records, start=1)
+    )
 
 
 def analysis_outcome_requires_route_clarification(
@@ -313,6 +488,68 @@ def analysis_outcome_requires_preexecution_clarification(
     return (
         analysis_outcome_requires_route_clarification(outcome)
         and not analysis_outcome_has_executable_ready_capability(outcome)
+    )
+
+
+def analysis_outcome_requires_preexecution_window_block(
+    outcome: AnalysisCompileOutcome,
+) -> bool:
+    terminal_gaps = _terminal_window_gaps(outcome)
+    if not terminal_gaps:
+        return False
+    affected_capabilities = {
+        str(capability_id)
+        for gap in terminal_gaps
+        for capability_id in gap.affected_capabilities
+        if capability_id
+    }
+    available_refs = {
+        contract.query_contract_id for contract in outcome.query_contracts
+    }
+    executable_capabilities = {
+        plan.capability_id
+        for plan in outcome.capability_plans
+        if capability_plan_has_executable_query_contracts(
+            plan,
+            available_refs,
+        )
+    }
+    return bool(executable_capabilities) and executable_capabilities.issubset(
+        affected_capabilities
+    )
+
+
+def _terminal_window_gaps(
+    outcome: AnalysisCompileOutcome,
+) -> tuple[Any, ...]:
+    return tuple(
+        gap
+        for gap in outcome.analysis_contract.contract_gaps
+        if gap.gap_type == "window_data_unavailable"
+        and isinstance(gap.diagnostic_context, Mapping)
+        and gap.diagnostic_context.get("terminal_for_current_window") is True
+    )
+
+
+def _preexecution_window_block_decisions(
+    outcome: AnalysisCompileOutcome,
+) -> tuple[QueryRepairDecision, ...]:
+    failure_reasons = tuple(
+        f"window_data_unavailable:{gap.gap_id}"
+        for gap in _terminal_window_gaps(outcome)
+    )
+    return tuple(
+        QueryRepairDecision(
+            action="block",
+            reason="window_coverage_failure",
+            failed_query_contract_ref=contract.query_contract_id,
+            failed_signature=contract.contract_signature,
+            requires_llm=False,
+            requires_clarification=False,
+            report_ref="",
+            failure_reasons=failure_reasons,
+        )
+        for contract in outcome.query_contracts
     )
 
 
@@ -422,7 +659,13 @@ class AnalysisRuntime:
         catalog = self._active_catalog()
         compiled = self._compile_with_catalog(typed, catalog)
         snapshots = {item.snapshot_ref: item for item in catalog.snapshots()}
-        if analysis_outcome_requires_preexecution_clarification(compiled):
+        preexecution_window_block = (
+            analysis_outcome_requires_preexecution_window_block(compiled)
+        )
+        if (
+            analysis_outcome_requires_preexecution_clarification(compiled)
+            or preexecution_window_block
+        ):
             persistence = self._authority_records(
                 compiled, (), {}, snapshots=snapshots
             )
@@ -433,7 +676,11 @@ class AnalysisRuntime:
                 completeness_reports=(),
                 capability_plans=compiled.capability_plans,
                 bound_capability_inputs=MappingProxyType({}),
-                repair_decisions=(),
+                repair_decisions=(
+                    _preexecution_window_block_decisions(compiled)
+                    if preexecution_window_block
+                    else ()
+                ),
                 typed_gaps=tuple(
                     item.to_dict()
                     for item in compiled.analysis_contract.contract_gaps
@@ -609,6 +856,20 @@ class AnalysisRuntime:
                 release_resolver=self.release_resolver,
                 run_mode=typed.run_mode,
             )
+        auxiliary_terminal_records = (
+            _auxiliary_terminal_records_for_unbound_results(
+                capability_plans=compiled.capability_plans,
+                bound_capability_inputs=bound,
+                query_results=results,
+                candidate_claim_intents=tuple(
+                    str(claim_type)
+                    for claim_type in (
+                        typed.proposal.get("candidate_claim_intents") or ()
+                    )
+                    if str(claim_type)
+                ),
+            )
+        )
         persistence = self._authority_records(
             compiled, results, bound, snapshots=snapshots
         )
@@ -624,6 +885,7 @@ class AnalysisRuntime:
             typed_gaps=gaps,
             persistence_records=MappingProxyType(persistence),
             reuse_decisions=tuple(reuse_decisions),
+            auxiliary_terminal_records=auxiliary_terminal_records,
         )
 
     def _validated_reuse_candidate(
@@ -1157,14 +1419,27 @@ class AnalysisRuntime:
             for item in (section.get("payload") or {}).get("evidence") or ()
             if isinstance(item, Mapping) and item.get("binding_manifest_ref")
         }
-        claims = tuple(
-            dict(claim)
+        display_claims = tuple(
+            claim
             for section in answer_package.get("sections") or ()
             if isinstance(section, Mapping)
             and (section.get("section_id") or section.get("id")) == "summary"
             for claim in (section.get("payload") or {}).get("claims") or ()
             if isinstance(claim, Mapping)
         )
+        package_admin = answer_package.get("admin_audit")
+        package_admin = (
+            package_admin if isinstance(package_admin, Mapping) else {}
+        )
+        claims = tuple(
+            dict(claim)
+            for claim in package_admin.get("verified_claims") or ()
+            if isinstance(claim, Mapping)
+        )
+        if display_claims and not claims:
+            raise EvidenceIntegrityError(
+                "analysis_runtime_verified_claim_authority_missing"
+            )
         claim_evidence_refs = {
             str(ref)
             for claim in claims
@@ -1369,14 +1644,14 @@ class AnalysisRuntime:
             "trusted_provenance_records": provenance_records,
             "verified_claims": verified_claims,
             "claim_links": claim_links,
-            "repair_attempts": tuple(
-                {
-                    "attempt_ref": f"repair:{result.analysis_contract.analysis_contract_id}:{index}",
-                    "failed_signature": item.failed_signature,
-                    "action": item.action,
-                    "reason": item.reason,
-                }
-                for index, item in enumerate(result.repair_decisions, start=1)
+            "repair_attempts": _persistence_repair_records(
+                analysis_contract_ref=(
+                    result.analysis_contract.analysis_contract_id
+                ),
+                repair_decisions=result.repair_decisions,
+                auxiliary_terminal_records=tuple(
+                    getattr(result, "auxiliary_terminal_records", ()) or ()
+                ),
             ),
         }
 

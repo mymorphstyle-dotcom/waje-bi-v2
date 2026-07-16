@@ -74,9 +74,8 @@ _CONVERSATION_DIAGNOSTIC_SUGGESTIONS = {
     ),
     "factor_topk": (
         "data_quality_profile",
-        "segment_contribution",
-        "joint_attribution",
         "driver_decomposition",
+        "candidate_dimension_screen",
         "answer_verify",
     ),
     "anomaly": (
@@ -113,6 +112,7 @@ CAPABILITY_ORDER = {
     "gameplay_activity_context": 31,
     "formula_decompose": 40,
     "driver_decomposition": 41,
+    "candidate_dimension_screen": 49,
     "segment_bridge": 50,
     "segment_contribution": 51,
     "joint_attribution": 52,

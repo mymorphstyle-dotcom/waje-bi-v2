@@ -1340,11 +1340,12 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertIsNotNone(first.topic_id)
 
         second = runtime.handle_message("thread-live-case", "那具体哪些渠道贡献最大？")
-        self.assertIn("segment_contribution", second.run_request.requested_nodes)
-        self.assertIn("joint_attribution", second.run_request.requested_nodes)
+        self.assertIn("candidate_dimension_screen", second.run_request.requested_nodes)
+        self.assertNotIn("joint_attribution", second.run_request.requested_nodes)
 
         third = runtime.handle_message("thread-live-case", "这些渠道里 WajeSpecial 是主要原因吗？")
-        self.assertIn("joint_attribution", third.run_request.requested_nodes)
+        self.assertIn("candidate_dimension_screen", third.run_request.requested_nodes)
+        self.assertNotIn("joint_attribution", third.run_request.requested_nodes)
 
         follow_up = runtime.handle_message("thread-live-case", "如果去掉异常天还成立吗？")
         self.assertEqual(follow_up.turn_intent.intent, "challenge")
@@ -1608,6 +1609,7 @@ class ConversationRuntimeTest(unittest.TestCase):
                 "topic_relation": "inherit_current",
                 "business_summary": "用户在质疑既有结论是否受到 WajeSpecial 干扰。",
                 "confidence": 0.91,
+                "display_summary": "已识别为对当前结论的追问。",
             }
         )
         runtime = ConversationRuntime(store, llm_client=fake)
@@ -1634,6 +1636,7 @@ class ConversationRuntimeTest(unittest.TestCase):
                 "topic_relation": "inherit_current",
                 "business_summary": "用户希望执行一项业务分析。",
                 "confidence": 0.91,
+                "display_summary": "已识别为新的业务分析请求。",
             }
         )
         runtime = ConversationRuntime(store, llm_client=fake)
@@ -1669,6 +1672,7 @@ class ConversationRuntimeTest(unittest.TestCase):
                 "topic_relation": "new_topic",
                 "business_summary": "不应调用。",
                 "confidence": 0.99,
+                "display_summary": "该请求应由本地路由直接处理。",
             }
         )
         runtime = ConversationRuntime(store, llm_client=fake)
@@ -1689,6 +1693,7 @@ class ConversationRuntimeTest(unittest.TestCase):
                 "topic_relation": "inherit_current",
                 "business_summary": "用户想继续分析。",
                 "confidence": 0.93,
+                "display_summary": "已识别为继续分析请求。",
             }
         )
         runtime = ConversationRuntime(store, llm_client=fake)
@@ -1723,6 +1728,7 @@ class ConversationRuntimeTest(unittest.TestCase):
                 "topic_relation": "magic_route",
                 "business_summary": "无效输出。",
                 "confidence": 0.99,
+                "display_summary": "当前路由输出无效。",
             }
         )
         runtime = ConversationRuntime(store, llm_client=fake)
@@ -1762,6 +1768,7 @@ class ConversationRuntimeTest(unittest.TestCase):
                 "topic_relation": "ask_topic_choice",
                 "business_summary": "",
                 "confidence": 0.91,
+                "display_summary": "当前需要选择关联的业务主题。",
             }
         )
         runtime = ConversationRuntime(store, llm_client=fake)
@@ -2219,8 +2226,6 @@ class FakeConversationLLM:
             }
         )
         output = dict(self.output)
-        for key in required_keys:
-            output.setdefault(key, "已完成本轮对话路由判断。")
         return SimpleNamespace(
             output=output,
             audit={

@@ -754,6 +754,43 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
         )
         self.assertNotIn("private-admin-mismatch-package", json.dumps(result))
 
+    def test_gateway_preserves_reviewed_runtime_publication_stage_codes(self):
+        reasons = _run_typescript(
+            textwrap.dedent(
+                """
+                const { filterAgentCoreForRole } = await import("./app/api/_conversationStore.ts");
+                const reasons = [
+                  "material_authority_projection_failed",
+                  "analysis_runtime_bundle_validation_failed",
+                  "analysis_runtime_artifact_sync_failed",
+                  "analysis_runtime_store_commit_failed",
+                ];
+                console.log(JSON.stringify(reasons.map((failure_reason, index) =>
+                  filterAgentCoreForRole({
+                    status: "failed",
+                    result: {
+                      run_id: `run-stage-${index}`,
+                      turn_id: `turn-stage-${index}`,
+                      topic_id: `topic-stage-${index}`,
+                      status: "failed",
+                      failure_reason,
+                    },
+                  }, "business_reader").result.failure_reason
+                )));
+                """
+            )
+        )
+
+        self.assertEqual(
+            reasons,
+            [
+                "material_authority_projection_failed",
+                "analysis_runtime_bundle_validation_failed",
+                "analysis_runtime_artifact_sync_failed",
+                "analysis_runtime_store_commit_failed",
+            ],
+        )
+
 
 def _run_agent_core_inline(
     stdout: str | None,

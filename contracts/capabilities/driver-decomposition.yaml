@@ -29,6 +29,35 @@ non_uses:
 
 evidence_outputs:
   typed_payload: driver_decomposition_result
+  claim_numeric_fields:
+    paid_users_contribution:
+      value_semantics: target_metric_scalar
+      display_format: number
+      derivation: multiplicative_shapley_v1
+    paid_users_contribution_share:
+      value_semantics: signed_unbounded_ratio
+      display_format: percent
+      derivation: multiplicative_shapley_v1
+    paid_frequency_contribution:
+      value_semantics: target_metric_scalar
+      display_format: number
+      derivation: multiplicative_shapley_v1
+    paid_frequency_contribution_share:
+      value_semantics: signed_unbounded_ratio
+      display_format: percent
+      derivation: multiplicative_shapley_v1
+    avg_order_amount_contribution:
+      value_semantics: target_metric_scalar
+      display_format: number
+      derivation: multiplicative_shapley_v1
+    avg_order_amount_contribution_share:
+      value_semantics: signed_unbounded_ratio
+      display_format: percent
+      derivation: multiplicative_shapley_v1
+    formula_contribution_total:
+      value_semantics: target_metric_scalar
+      display_format: number
+      derivation: multiplicative_shapley_v1
   envelope_fields:
     - evidence_type
     - strength
@@ -42,6 +71,31 @@ evidence_outputs:
     - volume_share
     - unit_value_share
     - amount_delta_ratio
+    - primary_core_driver
+    - core_driver_ranking
+    - core_factor_contributions
+    - core_factor_effect_total
+    - core_reconciliation_residual
+    - core_reconciliation_status
+    - payment_success_assumption
+    - paid_users_baseline_value
+    - paid_users_target_value
+    - paid_users_delta
+    - paid_users_delta_ratio
+    - paid_users_contribution
+    - paid_users_contribution_share
+    - paid_frequency_baseline_value
+    - paid_frequency_target_value
+    - paid_frequency_delta
+    - paid_frequency_delta_ratio
+    - paid_frequency_contribution
+    - paid_frequency_contribution_share
+    - avg_order_amount_baseline_value
+    - avg_order_amount_target_value
+    - avg_order_amount_delta
+    - avg_order_amount_delta_ratio
+    - avg_order_amount_contribution
+    - avg_order_amount_contribution_share
 
 limitations:
   - Accounting contribution can support contribution wording, not causal wording.

@@ -41,6 +41,12 @@ from bi_agent.runtime.dataset_catalog import (
     DatasetReleaseResolver,
     canonical_dataset_requires_release,
 )
+from bi_agent.runtime.degradation_policy import (
+    KNOWN_DEGRADATION_ACTIONS,
+    NON_BLOCKING_DEGRADATION_ACTIONS,
+    degradation_action_is_non_blocking,
+    degraded_binding_projection_is_authorized,
+)
 
 
 _BOUND_CONSTRUCTION_TOKEN = object()
@@ -110,6 +116,7 @@ def capability_plan_has_executable_query_contracts(
     required_slots = tuple(plan.required_input_slots)
     if not required_slots:
         return False
+    slot_readiness = []
     for slot in required_slots:
         primary_refs = (
             tuple(slot.get("query_contract_refs") or ())
@@ -121,13 +128,22 @@ def capability_plan_has_executable_query_contracts(
             if isinstance(slot, Mapping)
             else slot.validation_query_contract_refs
         )
-        if len(primary_refs) != 1:
-            return False
-        if primary_refs[0] not in available_query_contract_refs:
-            return False
-        if any(ref not in available_query_contract_refs for ref in validation_refs):
-            return False
-    return True
+        slot_readiness.append(
+            len(primary_refs) == 1
+            and primary_refs[0] in available_query_contract_refs
+            and all(
+                ref in available_query_contract_refs
+                for ref in validation_refs
+            )
+        )
+    required_mode = str(
+        plan.minimum_readiness.get("required_slots") or ""
+    )
+    if required_mode == "all":
+        return all(slot_readiness)
+    if required_mode == "at_least_one":
+        return any(slot_readiness)
+    return False
 
 
 def bind_capability_inputs(
@@ -198,6 +214,10 @@ def bind_capability_inputs(
     validation_results: list[QueryResultEnvelope] = []
     validation_reports: list[CompletenessReport] = []
     required_match_failed = bool(plan_schema_reasons)
+    required_matches = 0
+    required_mode = str(
+        plan.minimum_readiness.get("required_slots") or ""
+    )
     seen_slot_ids: set[str] = set()
     seen_primary_refs: set[str] = set()
     plan_completeness = tuple(
@@ -243,7 +263,13 @@ def bind_capability_inputs(
             )
             if match is None:
                 if slot.required:
-                    required_match_failed = True
+                    if (
+                        required_mode != "at_least_one"
+                        or reason.startswith(
+                            "primary_query_ref_cardinality_invalid:"
+                        )
+                    ):
+                        required_match_failed = True
                 elif _optional_failure_blocks(plan, reason):
                     required_match_failed = True
                 reasons.append(
@@ -255,6 +281,8 @@ def bind_capability_inputs(
                     )
                 )
                 continue
+            if slot.required:
+                required_matches += 1
             seen_primary_refs.add(match.result.query_contract_ref)
             if match.report.completeness_status != "complete":
                 reasons.append(
@@ -270,6 +298,9 @@ def bind_capability_inputs(
                 validation_results.append(validation_result)
                 validation_reports.append(validation_report)
 
+    if required_mode == "at_least_one" and required_matches == 0:
+        required_match_failed = True
+
     status = "blocked" if required_match_failed else "degraded" if reasons else "ready"
     collision_reasons = _reference_collision_reasons(
         primary_results,
@@ -280,6 +311,14 @@ def bind_capability_inputs(
     if collision_reasons:
         reasons.extend(collision_reasons)
         status = "blocked"
+    primary_results, primary_reports = _unique_ordered_query_inputs(
+        primary_results,
+        primary_reports,
+    )
+    validation_results, validation_reports = _unique_ordered_query_inputs(
+        validation_results,
+        validation_reports,
+    )
     values = {
         "capability_id": plan.capability_id,
         "capability_contract_ref": plan.capability_contract_ref,
@@ -371,6 +410,8 @@ def bind_capability_inputs(
             for report in (*primary_reports, *validation_reports)
         ),
     }
+    if status == "blocked":
+        return _create_bound_capability_input(plan, values)
     try:
         return _create_bound_capability_input(
             plan,
@@ -595,7 +636,9 @@ def _match_exact_slot_with_validation_dependencies(
     results: Mapping[str, QueryResultEnvelope],
     reports: Mapping[str, CompletenessReport],
 ) -> tuple[_SlotMatch | None, str]:
-    if len(slot.query_contract_refs) != 1:
+    if not slot.query_contract_refs:
+        return None, ""
+    if len(slot.query_contract_refs) > 1:
         return None, f"primary_query_ref_cardinality_invalid:{slot.slot_id}"
     query_ref = slot.query_contract_refs[0]
     result = results.get(query_ref)
@@ -849,45 +892,23 @@ def _optional_failure_blocks(
     plan: CapabilityExecutionPlan,
     reason: str,
 ) -> bool:
+    if reason.startswith("primary_query_ref_cardinality_invalid:"):
+        return True
     policy_key = (
         "missing_optional_input"
         if not reason or reason.startswith("missing_")
         else "incomplete_input"
     )
     action = str(plan.degradation_policy.get(policy_key) or "")
-    return action not in _NON_BLOCKING_DEGRADATION_ACTIONS
-
-
-_NON_BLOCKING_DEGRADATION_ACTIONS = frozenset(
-    {
-        "context_only",
-        "degrade_claim",
-        "omit_optional_component",
-        "omit_path",
-        "report_contract_gap",
-        "report_limitation",
-        "sensitivity_only",
-    }
-)
-_BLOCKING_DEGRADATION_ACTIONS = frozenset(
-    {
-        "block_candidate_impact",
-        "block_claim",
-        "block_reduced_claim",
-        "block_unverified_claim",
-    }
-)
-_KNOWN_DEGRADATION_ACTIONS = (
-    _NON_BLOCKING_DEGRADATION_ACTIONS | _BLOCKING_DEGRADATION_ACTIONS
-)
+    return action not in NON_BLOCKING_DEGRADATION_ACTIONS
 
 
 def _plan_schema_reasons(plan: CapabilityExecutionPlan) -> tuple[str, ...]:
     reasons = []
     required_mode = str(plan.minimum_readiness.get("required_slots") or "")
-    if required_mode == "all":
+    if required_mode in {"all", "at_least_one"}:
         if not plan.required_input_slots:
-            reasons.append("required_slot_mode_mismatch:all")
+            reasons.append(f"required_slot_mode_mismatch:{required_mode}")
     elif required_mode == "none":
         if plan.required_input_slots:
             reasons.append("required_slot_mode_mismatch:none")
@@ -904,7 +925,7 @@ def _plan_schema_reasons(plan: CapabilityExecutionPlan) -> tuple[str, ...]:
     if not slots and accepted:
         reasons.append("accepted_completeness_without_slots")
     for key, action in plan.degradation_policy.items():
-        if str(action) not in _KNOWN_DEGRADATION_ACTIONS:
+        if str(action) not in KNOWN_DEGRADATION_ACTIONS:
             reasons.append(f"degradation_action_unknown:{key}:{action}")
     return tuple(reasons)
 
@@ -950,6 +971,22 @@ def _reference_collision_reasons(
             for ref in sorted(primary.intersection(validation))
         )
     return tuple(reasons)
+
+
+def _unique_ordered_query_inputs(
+    results: list[QueryResultEnvelope],
+    reports: list[CompletenessReport],
+) -> tuple[list[QueryResultEnvelope], list[CompletenessReport]]:
+    unique_pairs: dict[
+        str,
+        tuple[QueryResultEnvelope, CompletenessReport],
+    ] = {}
+    for result, report in zip(results, reports):
+        unique_pairs.setdefault(result.query_contract_ref, (result, report))
+    return (
+        [result for result, _ in unique_pairs.values()],
+        [report for _, report in unique_pairs.values()],
+    )
 
 
 def _create_bound_capability_input(
@@ -1038,6 +1075,8 @@ def validate_bound_capability_input(
     if current != binding:
         return "binding_manifest_payload_mismatch"
     if not bound.binding_manifest_ref and not allow_fixture:
+        if bound.status == "blocked" and bound.reasons:
+            return str(bound.reasons[0])
         return "capability_binding_record_missing"
     if bound.binding_manifest_ref:
         if resolver is None:
@@ -1060,6 +1099,99 @@ def validate_bound_capability_input(
     if not bound.capability_id or not bound.capability_contract_ref:
         return "binding_manifest_schema_invalid"
     return ""
+
+
+def capability_binding_claim_ready(binding: Any) -> bool:
+    """Return whether an authenticated binding can support its declared claim.
+
+    A degraded binding remains claim-ready only when every bound input is
+    complete, the declared minimum required-slot mode is satisfied, and each
+    missing slot is authorized by a non-blocking degradation policy.
+    """
+
+    status = str(getattr(binding, "status", "") or "")
+    completeness = tuple(
+        str(item)
+        for item in getattr(binding, "input_completeness_statuses", ()) or ()
+    )
+    if not completeness or any(item != "complete" for item in completeness):
+        return False
+    if status not in {"ready", "degraded"}:
+        return False
+
+    plan = getattr(binding, "plan_payload", {}) or {}
+    payload = getattr(binding, "binding_payload", {}) or {}
+    manifest = getattr(binding, "binding_manifest", {}) or {}
+    if isinstance(manifest, Mapping):
+        if not plan:
+            plan = manifest.get("plan") or {}
+        if not payload:
+            payload = manifest.get("binding") or {}
+    if not isinstance(plan, Mapping) or not isinstance(payload, Mapping):
+        return False
+
+    required_slots = tuple(plan.get("required_input_slots") or ())
+    optional_slots = tuple(plan.get("optional_input_slots") or ())
+    if not required_slots or any(not isinstance(item, Mapping) for item in required_slots):
+        return False
+    if any(not isinstance(item, Mapping) for item in optional_slots):
+        return False
+
+    available_query_refs = {
+        str(ref)
+        for ref in getattr(binding, "query_contract_refs", ()) or ()
+        if ref
+    }
+    available_validation_refs = {
+        str(ref)
+        for ref in getattr(binding, "validation_query_contract_refs", ()) or ()
+        if ref
+    }
+
+    def slot_ready(slot: Mapping[str, Any]) -> bool:
+        query_refs = tuple(
+            str(ref) for ref in slot.get("query_contract_refs") or () if ref
+        )
+        validation_refs = tuple(
+            str(ref)
+            for ref in slot.get("validation_query_contract_refs") or ()
+            if ref
+        )
+        return bool(
+            len(query_refs) == 1
+            and query_refs[0] in available_query_refs
+            and all(ref in available_validation_refs for ref in validation_refs)
+        )
+
+    required_mode = str(
+        (plan.get("minimum_readiness") or {}).get("required_slots") or ""
+    )
+    required_readiness = tuple(slot_ready(slot) for slot in required_slots)
+    if required_mode == "all":
+        minimum_ready = all(required_readiness)
+    elif required_mode == "at_least_one":
+        minimum_ready = any(required_readiness)
+    else:
+        minimum_ready = False
+    if not minimum_ready:
+        return False
+
+    if status == "ready":
+        return True
+
+    return degraded_binding_projection_is_authorized(
+        plan,
+        {
+            **dict(payload),
+            "status": status,
+            "query_contract_refs": tuple(
+                getattr(binding, "query_contract_refs", ()) or ()
+            ),
+            "validation_query_contract_refs": tuple(
+                getattr(binding, "validation_query_contract_refs", ()) or ()
+            ),
+        },
+    )
 
 
 def _blocked_bound(

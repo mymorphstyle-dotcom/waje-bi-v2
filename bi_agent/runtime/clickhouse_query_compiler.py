@@ -209,6 +209,7 @@ def _compile_clickhouse_query_with_registry(
             snapshot,
             date_expression=date_expression,
             filter_sql=filter_sql,
+            parameters=parameters,
         )
 
     settings = {"result_overflow_mode": "throw", "readonly": 2}
@@ -273,8 +274,13 @@ def _compile_grouped_query(
     *,
     date_expression: str,
     filter_sql: tuple[str, ...],
+    parameters: dict[str, Any],
 ) -> str:
-    dimensions = _dimension_selects(contract, snapshot)
+    dimensions = _dimension_selects(
+        contract,
+        snapshot,
+        parameters=parameters,
+    )
     metrics = _metric_selects(contract, snapshot)
     intent_selects, intent_groups = _intent_selects(
         contract.query_intent,
@@ -1167,10 +1173,12 @@ def _filter_scalar(value: Any, *, operator: str) -> Any:
 def _dimension_selects(
     contract: QueryContract,
     snapshot: DatasetSnapshot,
+    *,
+    parameters: dict[str, Any],
 ) -> tuple[tuple[str, str], ...]:
     selected = []
     seen: set[str] = set()
-    for binding in contract.dimension_bindings:
+    for index, binding in enumerate(contract.dimension_bindings):
         if binding.dimension_id in seen:
             raise ValueError(f"duplicate_dimension_binding:{binding.dimension_id}")
         seen.add(binding.dimension_id)
@@ -1178,7 +1186,13 @@ def _dimension_selects(
             raise ValueError(f"dimension_field_missing:{binding.source_field}")
         source = _quote_identifier(binding.source_field)
         alias = _quote_identifier(binding.dimension_id)
-        selected.append((f"{source} AS {alias}", alias))
+        parameter_name = f"dimension_null_bucket_{index}"
+        parameters[parameter_name] = binding.null_bucket
+        normalized = (
+            f"ifNull(nullIf(trim(toString({source})), ''), "
+            f"%({parameter_name})s)"
+        )
+        selected.append((f"{normalized} AS {alias}", alias))
     return tuple(selected)
 
 

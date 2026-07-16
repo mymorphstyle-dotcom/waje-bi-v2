@@ -27,13 +27,14 @@ from bi_agent.runtime.window_metric_evidence import (
 PATTERN_COMPARE_CAPABILITIES = frozenset(
     {
         "compare_period_phases",
-        "compare_periods",
         "rolling_window_compare",
         "weekday_calendar_compare",
         "event_window_compare",
     }
 )
-WINDOW_METRIC_COMPARE_CAPABILITIES = frozenset({"market_health_compare"})
+WINDOW_METRIC_COMPARE_CAPABILITIES = frozenset(
+    {"compare_periods", "market_health_compare"}
+)
 
 
 def execute_capability(request: CapabilityRequest) -> CapabilityEvidenceEnvelope:
@@ -45,6 +46,12 @@ def execute_capability(request: CapabilityRequest) -> CapabilityEvidenceEnvelope
     budget_limitation = _budget_limitation(request)
     if budget_limitation:
         return _blocked_envelope(request, budget_limitation)
+    if request.capability_id == "compare_periods":
+        return (
+            _execute_window_metric_compare(request)
+            if _bound_input(request) is not None
+            else _execute_pattern_compare(request)
+        )
     if request.capability_id in PATTERN_COMPARE_CAPABILITIES:
         return _execute_pattern_compare(request)
     if request.capability_id in WINDOW_METRIC_COMPARE_CAPABILITIES:
@@ -267,6 +274,9 @@ def _authoritative_window_metric_comparison(
         contract,
         result.rows,
         metric_id=request.metric,
+        primary_baseline_window_id=str(
+            request.params.get("primary_baseline_window_id") or ""
+        ),
     )
 
 

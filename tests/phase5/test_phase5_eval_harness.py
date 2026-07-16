@@ -8,7 +8,7 @@ from tools.phase4.validate_phase4 import classify_route_drift
 
 class NeedsQuestionLLM:
     def invoke_json(self, *, task, prompt_version, messages, required_keys):
-        output = {key: None for key in required_keys}
+        output = {}
         if task == "business_intent":
             output.update(
                 {
@@ -26,6 +26,7 @@ class NeedsQuestionLLM:
                         "requested_components": [],
                     },
                     "status_message": "已识别为渠道对比。",
+                    "display_summary": "已识别为渠道表现对比问题。",
                 }
             )
         elif task == "boundary_decision":
@@ -44,6 +45,7 @@ class NeedsQuestionLLM:
                         }
                     ],
                     "decision_summary": "指标口径会影响结论。",
+                    "display_summary": "总金额与日均金额口径会改变结论。",
                 }
             )
         elif task == "clarification_question":
@@ -61,6 +63,7 @@ class NeedsQuestionLLM:
                     ],
                     "recommended_assumption": {"option": "按日均付费金额比较"},
                     "status_message": "需要先确认指标口径。",
+                    "display_summary": "需要确认按总金额还是日均金额比较。",
                 }
             )
         elif task == "blocked_explanation":
@@ -68,12 +71,10 @@ class NeedsQuestionLLM:
                 {
                     "status": "blocked",
                     "explanation": "指标口径会影响结论，需要先确认。",
-                    "owner": "业务使用者",
                     "repair_path": "确认总金额或日均金额后继续。",
+                    "display_summary": "确认指标口径后可以继续分析。",
                 }
             )
-        elif task == "final_business_summary":
-            output["summary_text"] = "需要先确认指标口径后再继续。"
         return SimpleNamespace(
             output=output,
             audit={"task": task, "output": output, "prompt_version": prompt_version},

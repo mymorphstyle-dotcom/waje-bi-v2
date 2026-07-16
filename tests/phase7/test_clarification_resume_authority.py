@@ -102,6 +102,113 @@ def test_early_clarification_resume_preserves_source_topic_family(monkeypatch):
     assert state["intent"]["question"] == "original topic question"
 
 
+def _baseline_ambiguous_resume_intent():
+    return {
+        "question_family": "custom_baseline_comparison",
+        "question_families": ["custom_baseline_comparison"],
+        "primary_question_family": "custom_baseline_comparison",
+        "secondary_question_families": [],
+        "target_metric": "paid_amount",
+        "pattern_family": "custom_baseline",
+        "pattern_params": {},
+        "scope": "full_sample",
+        "time_window": "latest_complete_day",
+        "target_claim": "comparative_change",
+        "baseline_candidates": [],
+        "sub_intents": [],
+        "ambiguous_slots": ["baseline"],
+        "answer_contract": {"direct_answer": True},
+        "context_sources": [],
+        "claim_intents": ["comparative_change"],
+        "requested_dimensions": [],
+        "requested_components": [],
+        "baseline": {},
+        "target": {},
+        "question": "source question",
+    }
+
+
+def _baseline_ambiguous_resume_material_slots():
+    return {
+        **_complete_material_slots(claim_intents=["comparative_change"]),
+        "scope": "full_sample",
+    }
+
+
+@pytest.mark.parametrize(
+    "selected_baseline",
+    [
+        "previous_day",
+        "rolling_7_day_baseline",
+        "same_weekday_last_week",
+    ],
+)
+def test_resume_binds_validated_value_for_originally_ambiguous_baseline(
+    selected_baseline,
+):
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = _baseline_ambiguous_resume_intent()
+    current = {
+        **deepcopy(original),
+        "baseline_candidates": [selected_baseline],
+        "ambiguous_slots": [],
+    }
+    bound = workflow._bind_clarification_resume_intent(
+        current,
+        _resume_request(original, _baseline_ambiguous_resume_material_slots()),
+        RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+    )
+
+    assert bound["baseline_candidates"] == [selected_baseline]
+    assert "baseline" not in workflow._ambiguous_slot_names(bound)
+
+
+def test_resume_keeps_original_ambiguity_when_provider_does_not_resolve_it():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = _baseline_ambiguous_resume_intent()
+    current = {
+        **deepcopy(original),
+        "baseline_candidates": [],
+        "ambiguous_slots": ["baseline"],
+    }
+    bound = workflow._bind_clarification_resume_intent(
+        current,
+        _resume_request(original, _baseline_ambiguous_resume_material_slots()),
+        RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+    )
+
+    assert bound["baseline_candidates"] == []
+    assert workflow._ambiguous_slot_names(bound) == {"baseline"}
+
+
+def test_resume_preserves_original_value_for_nonambiguous_material_axis():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    original = _baseline_ambiguous_resume_intent()
+    current = {
+        **deepcopy(original),
+        "target_metric": "active_users",
+        "baseline_candidates": ["previous_day"],
+        "ambiguous_slots": [],
+    }
+    bound = workflow._bind_clarification_resume_intent(
+        current,
+        _resume_request(original, _baseline_ambiguous_resume_material_slots()),
+        RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        ),
+    )
+
+    assert bound["target_metric"] == "paid_amount"
+    assert bound["baseline_candidates"] == ["previous_day"]
+
+
 def test_query_gap_clarification_persists_original_topic_material(tmp_path):
     from types import SimpleNamespace
     from bi_agent.runtime import langgraph_workflow as workflow
@@ -1986,6 +2093,151 @@ def test_completed_material_preflight_resolves_queryless_reviewed_target_ref(
     ) == ("paid_amount",)
 
 
+def test_completed_material_preflight_resolves_multi_metric_ref_by_signed_target_intersection():
+    from bi_agent.conversation.clarification_authority import (
+        preflight_completed_material_authority,
+    )
+
+    contract = _source_contract_with_target_metrics(("paid_users",))
+    material = _signed_material_authority(
+        original_intent={"target_metric": "paid_users"},
+        material_slots={"target_metrics": ["paid_users"]},
+        runtime_material=_runtime_material_for_contract(contract),
+    )
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+
+    assert preflight_completed_material_authority(
+        material_authority=material,
+        analysis_contract=contract,
+        run_id="run-source",
+        thread_id="thread-source",
+        topic_id="topic-source",
+        runtime_registry=registry,
+    ) == ("paid_users",)
+
+
+def test_completed_material_preflight_rejects_signed_but_noncanonical_target_ref_binding_shape():
+    from bi_agent.conversation.clarification_authority import (
+        preflight_completed_material_authority,
+    )
+
+    contract = _source_contract_with_target_metrics(("paid_users", "paid_amount"))
+    contract["target_metric_refs"] = [
+        "contracts/backlog/missing-contracts.yaml#component_contracts",
+        "contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.paid_users",
+    ]
+    contract["metric_bindings"] = [
+        binding
+        for binding in contract["metric_bindings"]
+        if binding["metric_id"] == "paid_amount"
+    ]
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    material = _signed_material_authority(
+        original_intent={"target_metric": "paid_users"},
+        material_slots={"target_metrics": ["paid_users"]},
+        runtime_material=_runtime_material_for_contract(contract),
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^material_authority_contract_target_metrics_unresolvable$",
+    ):
+        preflight_completed_material_authority(
+            material_authority=material,
+            analysis_contract=contract,
+            run_id="run-source",
+            thread_id="thread-source",
+            topic_id="topic-source",
+            runtime_registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("scope_targets", "material_targets"),
+    [
+        (("paid_users",), ("active_users",)),
+        (
+            ("paid_users", "first_paid_users"),
+            ("paid_users", "first_paid_users"),
+        ),
+    ],
+)
+def test_completed_material_preflight_rejects_nonunique_signed_target_intersection(
+    scope_targets,
+    material_targets,
+):
+    from bi_agent.conversation.clarification_authority import (
+        preflight_completed_material_authority,
+    )
+
+    contract = _source_contract()
+    contract["target_metric_refs"] = [
+        "contracts/backlog/missing-contracts.yaml#component_contracts"
+    ]
+    contract["metric_bindings"] = []
+    contract["scope"]["requested_metric_ids"] = list(scope_targets)
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    material = _signed_material_authority(
+        original_intent={"target_metric": material_targets[0]},
+        material_slots={"target_metrics": list(material_targets)},
+        runtime_material=_runtime_material_for_contract(contract),
+    )
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^material_authority_contract_target_metrics_unresolvable$",
+    ):
+        preflight_completed_material_authority(
+            material_authority=material,
+            analysis_contract=contract,
+            run_id="run-source",
+            thread_id="thread-source",
+            topic_id="topic-source",
+            runtime_registry=registry,
+        )
+
+
+def test_completed_material_preflight_rejects_bound_metric_material_target_drift():
+    from bi_agent.conversation.clarification_authority import (
+        preflight_completed_material_authority,
+    )
+
+    contract = _source_contract()
+    contract["scope"]["requested_metric_ids"] = [
+        "paid_amount",
+        "paid_users",
+    ]
+    contract["contract_signature"] = analysis_contract_signature(contract)
+    material = _signed_material_authority(
+        original_intent={"target_metric": "paid_users"},
+        material_slots={"target_metrics": ["paid_users"]},
+        runtime_material=_runtime_material_for_contract(contract),
+    )
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="^material_authority_contract_target_metrics_mismatch$",
+    ):
+        preflight_completed_material_authority(
+            material_authority=material,
+            analysis_contract=contract,
+            run_id="run-source",
+            thread_id="thread-source",
+            topic_id="topic-source",
+            runtime_registry=registry,
+        )
+
+
 @pytest.mark.parametrize(
     "target_ref",
     [
@@ -2838,7 +3090,7 @@ def test_resume_allows_source_contract_authorized_trust_boundary_claim():
     assert bound["claim_intents"] == ["comparative_change"]
 
 
-def test_resume_allows_gap_scoped_requested_claim_without_promoting_bound_intent():
+def test_resume_cannot_promote_nonclarifying_unavailable_claim_into_bound_intent():
     from bi_agent.runtime import langgraph_workflow as workflow
 
     registry = RuntimeContractRegistry.from_path(
@@ -2861,19 +3113,20 @@ def test_resume_allows_gap_scoped_requested_claim_without_promoting_bound_intent
         "baseline_stability",
     )
 
-    bound = workflow._bind_clarification_resume_intent(
-        {},
-        _resume_request(
-            original,
-            material,
-            analysis_contract=_typed_contract_payload(source_contract),
-            authority_contract=source_contract,
-        ),
-        registry,
-    )
-
-    assert bound["claim_intents"] == ["comparative_change"]
-    assert "baseline_stability" not in bound["claim_intents"]
+    with pytest.raises(
+        workflow.WorkflowFailure,
+        match="clarification_resume_material_slots_conflict:claim_intents",
+    ):
+        workflow._bind_clarification_resume_intent(
+            {},
+            _resume_request(
+                original,
+                material,
+                analysis_contract=_typed_contract_payload(source_contract),
+                authority_contract=source_contract,
+            ),
+            registry,
+        )
 
 
 @pytest.mark.parametrize(

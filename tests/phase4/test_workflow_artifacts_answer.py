@@ -49,6 +49,598 @@ def _llm_input_payload(answer_package, task):
 
 
 class WorkflowArtifactsAnswerTest(unittest.TestCase):
+    def test_build_keeps_verified_comparison_when_required_formula_claim_is_rejected(self):
+        evidence = (
+            {
+                "evidence_ref": "compare_periods:partial",
+                "capability_id": "compare_periods",
+                "claim_type": "comparative_change",
+                "claim_input_ready": True,
+                "binding_manifest_ref": "binding:compare",
+                "evidence_type": "statistical_association",
+                "supported_evidence_types": ["statistical_association"],
+                "supported_claim_types": ["comparative_change"],
+                "strength": "directional",
+                "wording_limit": "quantified",
+                "limitations": [],
+                "numeric_facts": {"absolute_change": 20.0},
+                "typed_payload": {
+                    "absolute_change": 20.0,
+                    "scope": "full_sample",
+                    "time_window": "2026-06-01",
+                },
+            },
+            {
+                "evidence_ref": "driver_decomposition:partial",
+                "capability_id": "driver_decomposition",
+                "claim_type": "formula_component_contribution",
+                "claim_input_ready": True,
+                "binding_manifest_ref": "binding:driver",
+                "evidence_type": "accounting_contribution",
+                "supported_evidence_types": ["accounting_contribution"],
+                "supported_claim_types": ["formula_component_contribution"],
+                "strength": "high",
+                "wording_limit": "quantified",
+                "limitations": [],
+                "numeric_facts": {"paid_users_contribution_share": 0.5},
+                "typed_payload": {
+                    "paid_users_contribution_share": 0.5,
+                    "scope": "full_sample",
+                    "time_window": "2026-06-01",
+                },
+            },
+        )
+        claims = (
+            {
+                "text": "2026年6月1日付费金额较前一天上涨20。",
+                "claim_type": "comparative_change",
+                "claim_strength": "observed",
+                "evidence_refs": ("compare_periods:partial",),
+                "numbers": {"absolute_change": 20.0},
+                "scope": "full_sample",
+                "time_window": "2026-06-01",
+            },
+            {
+                "text": "单笔付费金额是主要贡献项。",
+                "claim_type": "formula_component_contribution",
+                "claim_strength": "quantified_contribution",
+                "evidence_refs": ("driver_decomposition:partial",),
+                "numbers": {"paid_users_contribution_share": 0.9},
+                "scope": "full_sample",
+                "time_window": "2026-06-01",
+            },
+        )
+        projected_comparison = {
+            **claims[0],
+            "fact_refs": ["fact:comparison"],
+            "fact_selectors": {
+                "absolute_change": {"metric_id": "paid_amount"}
+            },
+        }
+
+        with patch(
+            "bi_agent.runtime.answer_package._claim_authority_errors",
+            return_value=(),
+        ), patch(
+            "bi_agent.runtime.answer_package._authority_bound_claim_projections",
+            return_value=((projected_comparison,), []),
+        ):
+            package = build_answer_package(
+                run_id="partial-required-claim",
+                draft_claims=claims,
+                evidence=evidence,
+                checkpoint_events=(),
+                proposed_graph=(),
+                accepted_graph=(),
+                rejected_or_degraded_mutations=(),
+                validator_results=(),
+                sql_text="",
+                sql_hash="",
+                artifact_audit={},
+                answer_text=(
+                    "2026年6月1日付费金额较前一天上涨20。"
+                    "单笔付费金额是主要贡献项。"
+                ),
+                claim_intent_resolution={
+                    "required_claim_intents": [
+                        "comparative_change",
+                        "formula_component_contribution",
+                    ]
+                },
+            )
+            delivered = reverify_answer_package_for_delivery(
+                package,
+                evidence_resolver=None,
+                rows_loader=None,
+                runtime_registry=None,
+            )
+
+        verifier = package["admin_audit"]["verifier"]
+        summary = package["sections"][0]["payload"]
+        self.assertEqual(package["status"], "draft")
+        self.assertEqual(verifier["status"], "degraded")
+        self.assertEqual(len(summary["claims"]), 1)
+        self.assertEqual(summary["claims"][0]["claim_type"], "comparative_change")
+        self.assertEqual(summary["final_business_summary"], "")
+        self.assertIn("付费金额", package["final_answer"])
+        self.assertIn("因素贡献结论本轮未发布", package["final_answer"])
+        self.assertNotIn("单笔付费金额是主要贡献项", package["final_answer"])
+        self.assertEqual(package["quality_gate"]["truth_status"], "verified")
+        self.assertEqual(package["quality_gate"]["coverage_status"], "partial")
+        self.assertFalse(package["quality_gate"]["blocks_display"])
+        delivered_summary = delivered["sections"][0]["payload"]
+        self.assertEqual(delivered["status"], "draft")
+        self.assertEqual(
+            delivered["admin_audit"]["verifier"]["status"],
+            "degraded",
+        )
+        self.assertEqual(len(delivered_summary["claims"]), 1)
+        self.assertEqual(
+            delivered_summary["claims"][0]["claim_type"],
+            "comparative_change",
+        )
+        self.assertEqual(delivered_summary["final_business_summary"], "")
+        self.assertIn("因素贡献结论本轮未发布", delivered["final_answer"])
+        self.assertFalse(delivered["quality_gate"]["blocks_display"])
+
+    def test_publishable_required_evidence_cannot_finish_with_zero_claims(self):
+        verifier = verify_answer_package(
+            draft_claims=(),
+            evidence=(
+                {
+                    "evidence_ref": "driver_decomposition:ready",
+                    "capability_id": "driver_decomposition",
+                    "claim_type": "formula_component_contribution",
+                    "claim_input_ready": True,
+                    "binding_manifest_ref": "binding:driver",
+                    "evidence_type": "accounting_contribution",
+                    "supported_evidence_types": ["accounting_contribution"],
+                    "supported_claim_types": ["formula_component_contribution"],
+                    "strength": "high",
+                    "wording_limit": "quantified",
+                    "limitations": [],
+                    "typed_payload": {"core_reconciliation_status": "reconciled"},
+                },
+            ),
+            visible_limitations=(),
+            required_claim_intents=("formula_component_contribution",),
+            delivery_text={
+                "final_explanation": {
+                    "status": "degraded",
+                    "explanation": "当前暂时无法形成因素贡献结论。",
+                }
+            },
+        )
+
+        self.assertEqual(verifier["status"], "failed")
+        missing = [
+            item
+            for item in verifier["errors"]
+            if item["code"] == "missing_required_claim"
+        ]
+        self.assertEqual(
+            missing,
+            [
+                {
+                    "code": "missing_required_claim",
+                    "claim_type": "formula_component_contribution",
+                    "status": "draft_missing",
+                    "evidence_refs": ["driver_decomposition:ready"],
+                    "publishable_evidence_refs": ["driver_decomposition:ready"],
+                    "limitations": [],
+                }
+            ],
+        )
+        self.assertEqual(
+            verifier["required_claim_obligations"],
+            [
+                {
+                    "claim_type": "formula_component_contribution",
+                    "status": "draft_missing",
+                    "evidence_refs": ["driver_decomposition:ready"],
+                    "publishable_evidence_refs": ["driver_decomposition:ready"],
+                    "limitations": [],
+                }
+            ],
+        )
+
+    def test_claim_scoped_authority_projection_failure_keeps_successful_sibling(self):
+        claims = (
+            {
+                "text": "付费金额较基线增加20。",
+                "claim_type": "comparative_change",
+                "claim_strength": "observed",
+                "evidence_refs": ("compare:projection",),
+                "numbers": {"absolute_change": 20.0},
+            },
+            {
+                "text": "单笔付费金额是主要贡献项。",
+                "claim_type": "formula_component_contribution",
+                "claim_strength": "quantified_contribution",
+                "evidence_refs": ("driver:projection",),
+                "numbers": {"avg_order_amount_contribution": 30.0},
+            },
+        )
+        evidence = (
+            {"evidence_ref": "compare:projection", "typed_payload": {}},
+            {"evidence_ref": "driver:projection", "typed_payload": {}},
+        )
+        projected_comparison = {
+            **claims[0],
+            "fact_refs": ["fact:comparison"],
+            "fact_selectors": {"absolute_change": {"metric_id": "paid_amount"}},
+        }
+        initial_verifier = {
+            "status": "passed",
+            "errors": [],
+            "global_errors": [],
+            "claim_rejections": [],
+            "required_claim_gaps": [],
+            "warnings": [],
+            "accepted_claim_indexes": (0, 1),
+            "rejected_claim_indexes": (),
+            "accepted_assumptions": [],
+        }
+        projected_verifier = {
+            "status": "degraded",
+            "errors": [
+                {
+                    "code": "missing_required_claim",
+                    "claim_type": "formula_component_contribution",
+                    "evidence_refs": ["driver:projection"],
+                }
+            ],
+            "global_errors": [],
+            "claim_rejections": [],
+            "required_claim_gaps": [
+                {
+                    "code": "missing_required_claim",
+                    "claim_type": "formula_component_contribution",
+                    "evidence_refs": ["driver:projection"],
+                }
+            ],
+            "warnings": [],
+            "accepted_claim_indexes": (0,),
+            "rejected_claim_indexes": (),
+            "accepted_assumptions": [],
+        }
+
+        with patch(
+            "bi_agent.runtime.answer_package.verify_answer_package",
+            side_effect=(initial_verifier, projected_verifier),
+        ), patch(
+            "bi_agent.runtime.answer_package._authority_bound_claim_projections",
+            return_value=(
+                (projected_comparison,),
+                [
+                    {
+                        "code": "claim_factual_projection_failed",
+                        "claim_index": 1,
+                        "reason": "claim_number_field_unbound",
+                    }
+                ],
+            ),
+        ):
+            package = build_answer_package(
+                run_id="claim-scoped-projection",
+                draft_claims=claims,
+                evidence=evidence,
+                checkpoint_events=(),
+                proposed_graph=(),
+                accepted_graph=(),
+                rejected_or_degraded_mutations=(),
+                validator_results=(),
+                sql_text="",
+                sql_hash="",
+                artifact_audit={},
+                answer_text="付费金额较基线增加20。单笔付费金额是主要贡献项。",
+                claim_intent_resolution={
+                    "required_claim_intents": [
+                        "comparative_change",
+                        "formula_component_contribution",
+                    ]
+                },
+            )
+
+        summary = package["sections"][0]["payload"]
+        self.assertEqual(package["status"], "draft")
+        self.assertEqual(package["admin_audit"]["verifier"]["status"], "degraded")
+        self.assertEqual(len(summary["claims"]), 1)
+        self.assertEqual(summary["claims"][0]["claim_type"], "comparative_change")
+        self.assertIn("因素贡献结论本轮未发布", package["final_answer"])
+        self.assertFalse(package["quality_gate"]["blocks_display"])
+
+    def test_rejected_draft_claim_does_not_satisfy_required_claim_completeness(self):
+        verifier = verify_answer_package(
+            draft_claims=(
+                {
+                    "text": "单笔付费金额是主要贡献项。",
+                    "claim_type": "formula_component_contribution",
+                    "claim_strength": "high",
+                    "evidence_refs": ("driver_decomposition:ready",),
+                    "numbers": {},
+                },
+            ),
+            evidence=(
+                {
+                    "evidence_ref": "driver_decomposition:ready",
+                    "capability_id": "driver_decomposition",
+                    "claim_type": "formula_component_contribution",
+                    "claim_input_ready": True,
+                    "binding_manifest_ref": "binding:driver",
+                    "evidence_type": "accounting_contribution",
+                    "supported_evidence_types": ["accounting_contribution"],
+                    "supported_claim_types": ["formula_component_contribution"],
+                    "strength": "high",
+                    "wording_limit": "quantified",
+                    "limitations": [],
+                    "typed_payload": {"core_reconciliation_status": "reconciled"},
+                },
+            ),
+            visible_limitations=(),
+            required_claim_intents=("formula_component_contribution",),
+        )
+
+        self.assertEqual(verifier["accepted_claim_indexes"], ())
+        self.assertIn(
+            "missing_required_claim",
+            {item["code"] for item in verifier["errors"]},
+        )
+
+    def test_unavailable_required_evidence_remains_a_terminal_boundary_obligation(self):
+        verifier = verify_answer_package(
+            draft_claims=(),
+            evidence=(
+                {
+                    "evidence_ref": "driver_decomposition:blocked",
+                    "claim_type": "formula_component_contribution",
+                    "claim_input_ready": False,
+                    "binding_manifest_ref": "binding:driver",
+                    "evidence_type": "insufficient",
+                    "strength": "low",
+                    "wording_limit": "blocked",
+                    "limitations": ["driver_components_missing"],
+                    "typed_payload": {},
+                },
+            ),
+            visible_limitations=("driver_components_missing",),
+            required_claim_intents=("formula_component_contribution",),
+            delivery_text={
+                "final_explanation": {
+                    "status": "degraded",
+                    "explanation": "当前因素证据不足，无法发布贡献结论。",
+                    "repair_path": "补齐因素数据后继续。",
+                }
+            },
+        )
+
+        self.assertEqual(verifier["status"], "degraded")
+        self.assertTrue(verifier["terminal_boundary_accepted"])
+        self.assertEqual(
+            verifier["required_claim_obligations"],
+            [
+                {
+                    "claim_type": "formula_component_contribution",
+                    "status": "evidence_degraded",
+                    "evidence_refs": ["driver_decomposition:blocked"],
+                    "publishable_evidence_refs": [],
+                    "limitations": ["driver_components_missing"],
+                }
+            ],
+        )
+        self.assertEqual(
+            verifier["required_claim_gaps"],
+            [
+                {
+                    "code": "missing_required_claim",
+                    "claim_type": "formula_component_contribution",
+                    "status": "evidence_degraded",
+                    "evidence_refs": ["driver_decomposition:blocked"],
+                    "publishable_evidence_refs": [],
+                    "limitations": ["driver_components_missing"],
+                }
+            ],
+        )
+
+    def test_verified_comparison_keeps_degraded_formula_obligation_visible(self):
+        evidence = (
+            {
+                "evidence_ref": "compare_periods:ready",
+                "capability_id": "compare_periods",
+                "claim_type": "comparative_change",
+                "claim_input_ready": True,
+                "binding_manifest_ref": "binding:compare",
+                "evidence_type": "statistical_association",
+                "supported_evidence_types": ["statistical_association"],
+                "supported_claim_types": ["comparative_change"],
+                "strength": "directional",
+                "wording_limit": "quantified",
+                "limitations": [],
+                "numeric_facts": {"absolute_change": 20.0},
+                "typed_payload": {},
+            },
+            {
+                "evidence_ref": "formula_decompose:degraded",
+                "capability_id": "formula_decompose",
+                "claim_type": "formula_component_contribution",
+                "claim_input_ready": True,
+                "binding_manifest_ref": "binding:formula",
+                "evidence_type": "accounting_contribution",
+                "supported_evidence_types": ["accounting_contribution"],
+                "supported_claim_types": ["formula_component_contribution"],
+                "strength": "low",
+                "wording_limit": "blocked",
+                "limitations": ["formula_numbers_missing"],
+                "typed_payload": {},
+            },
+            {
+                "evidence_ref": "driver_decomposition:degraded",
+                "capability_id": "driver_decomposition",
+                "claim_type": "formula_component_contribution",
+                "claim_input_ready": False,
+                "binding_manifest_ref": "binding:driver",
+                "evidence_type": "insufficient",
+                "strength": "low",
+                "wording_limit": "blocked",
+                "limitations": ["driver_components_missing"],
+                "typed_payload": {},
+            },
+        )
+        with patch(
+            "bi_agent.runtime.answer_package._claim_authority_errors",
+            return_value=(),
+        ):
+            verifier = verify_answer_package(
+                draft_claims=(
+                    {
+                        "text": "目标日付费金额较前一日增加20。",
+                        "claim_type": "comparative_change",
+                        "claim_strength": "observed",
+                        "evidence_refs": ("compare_periods:ready",),
+                        "numbers": {"absolute_change": 20.0},
+                    },
+                ),
+                evidence=evidence,
+                visible_limitations=(
+                    "formula_numbers_missing",
+                    "driver_components_missing",
+                ),
+                required_claim_intents=(
+                    "comparative_change",
+                    "formula_component_contribution",
+                ),
+            )
+
+        self.assertEqual(verifier["status"], "degraded")
+        self.assertEqual(verifier["accepted_claim_indexes"], (0,))
+        self.assertEqual(
+            verifier["required_claim_obligations"],
+            [
+                {
+                    "claim_type": "comparative_change",
+                    "status": "satisfied",
+                    "evidence_refs": ["compare_periods:ready"],
+                    "publishable_evidence_refs": ["compare_periods:ready"],
+                    "limitations": [],
+                },
+                {
+                    "claim_type": "formula_component_contribution",
+                    "status": "evidence_degraded",
+                    "evidence_refs": [
+                        "formula_decompose:degraded",
+                        "driver_decomposition:degraded",
+                    ],
+                    "publishable_evidence_refs": [],
+                    "limitations": [
+                        "formula_numbers_missing",
+                        "driver_components_missing",
+                    ],
+                },
+            ],
+        )
+
+    def test_publishable_auxiliary_evidence_does_not_create_required_claim(self):
+        verifier = verify_answer_package(
+            draft_claims=(),
+            evidence=(
+                {
+                    "evidence_ref": "rolling_window_compare:ready",
+                    "claim_type": "baseline_stability",
+                    "claim_input_ready": True,
+                    "binding_manifest_ref": "binding:rolling",
+                    "evidence_type": "statistical_association",
+                    "supported_evidence_types": ["statistical_association"],
+                    "supported_claim_types": ["baseline_stability"],
+                    "strength": "high",
+                    "wording_limit": "supported",
+                    "limitations": [],
+                    "typed_payload": {},
+                },
+            ),
+            visible_limitations=(),
+            required_claim_intents=("comparative_change",),
+        )
+
+        self.assertEqual(verifier["status"], "failed")
+        self.assertEqual(
+            verifier["required_claim_obligations"],
+            [
+                {
+                    "claim_type": "comparative_change",
+                    "status": "evidence_absent",
+                    "evidence_refs": [],
+                    "publishable_evidence_refs": [],
+                    "limitations": [],
+                }
+            ],
+        )
+
+    def test_required_claim_partition_survives_build_and_delivery_reverify(self):
+        evidence = (
+            {
+                "evidence_ref": "driver_decomposition:ready",
+                "capability_id": "driver_decomposition",
+                "claim_type": "formula_component_contribution",
+                "claim_input_ready": True,
+                "binding_manifest_ref": "binding:driver",
+                "evidence_type": "accounting_contribution",
+                "supported_evidence_types": ["accounting_contribution"],
+                "supported_claim_types": ["formula_component_contribution"],
+                "strength": "high",
+                "wording_limit": "quantified",
+                "limitations": [],
+                "typed_payload": {"core_reconciliation_status": "reconciled"},
+            },
+        )
+        resolution = {
+            "schema_version": "claim_intent_resolution.v1",
+            "required_claim_intents": ["formula_component_contribution"],
+            "auxiliary_claim_intents": ["baseline_stability"],
+        }
+        package = build_answer_package(
+            run_id="required-claim-delivery-reverify",
+            draft_claims=(),
+            evidence=evidence,
+            checkpoint_events=(),
+            proposed_graph=(),
+            accepted_graph=(),
+            rejected_or_degraded_mutations=(),
+            validator_results=(),
+            sql_text="",
+            sql_hash="",
+            artifact_audit={},
+            final_explanation={
+                "status": "degraded",
+                "explanation": "当前暂时无法形成因素贡献结论。",
+                "repair_path": "重新生成证据支持的因素贡献结论。",
+            },
+            claim_intent_resolution=resolution,
+        )
+
+        delivered = reverify_answer_package_for_delivery(
+            package,
+            evidence_resolver=None,
+            rows_loader=None,
+            runtime_registry=None,
+        )
+
+        self.assertEqual(delivered["claim_intent_resolution"], resolution)
+        self.assertIn(
+            "missing_required_claim",
+            {
+                item["code"]
+                for item in delivered["admin_audit"]["verifier"]["errors"]
+            },
+        )
+        self.assertEqual(
+            delivered["admin_audit"]["verifier"]["status"],
+            "degraded",
+        )
+        self.assertTrue(
+            delivered["admin_audit"]["verifier"]["terminal_boundary_accepted"]
+        )
+        self.assertFalse(delivered["quality_gate"]["blocks_display"])
+
     def test_authority_bound_blocked_evidence_can_project_terminal_explanation(self):
         from types import SimpleNamespace
 
@@ -57,7 +649,6 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             "final_explanation": {
                 "status": "degraded",
                 "explanation": "当前比较证据不足，无法发布收入变化结论。",
-                "owner": "业务分析负责人",
                 "repair_path": "补齐可比较窗口后重跑。",
             },
             "admin_audit": {
@@ -138,7 +729,6 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             final_explanation={
                 "status": "blocked",
                 "explanation": "当前缺少可用的数据快照，无法发布业务结论。",
-                "owner": "数据负责人",
                 "repair_path": "注册并验收对应数据快照后继续。",
             },
             follow_up_questions=(),
@@ -643,7 +1233,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             ["summary"],
         )
 
-    def test_successful_workflow_persists_answer_package_and_checkpoints(self):
+    def test_workflow_persists_answer_package_and_key_checkpoints(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             result = run_pattern_workflow(
                 {
@@ -660,38 +1250,25 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 artifact = json.load(handle)
 
         self.assertEqual(artifact["run_id"], "test-run")
-        self.assertEqual(
-            [event["node"] for event in artifact["checkpoint_events"]],
-            [
-                "understand_business_intent",
-                "decide_question_boundary",
-                "clarification_policy_gate",
-                "confirm_business_understanding",
-                "design_analysis_route",
-                "accept_analysis_route",
-                "inspect_schema",
-                "validate_runtime_binding",
-                "fetch_runtime_rows",
-                "validate_query_completeness",
-                "decide_query_repair",
-                "interpret_data_coverage",
-                "execute_capabilities",
-                "reduce_evidence",
-                "decide_next_action",
-                "interpret_evidence",
-                "audit_causal_implications",
-                "synthesize_answer",
-                "semantic_audit",
-                "hard_verify_answer",
-                "repair_answer",
-                "semantic_audit",
-                "hard_verify_answer",
-                "generate_degraded_explanation",
-                "final_business_summary",
-                "answer_quality_gate",
-                "persist_artifact",
-            ],
-        )
+        nodes = [event["node"] for event in artifact["checkpoint_events"]]
+        for node in (
+            "understand_business_intent",
+            "accept_analysis_route",
+            "validate_runtime_binding",
+            "validate_query_completeness",
+            "execute_capabilities",
+            "reduce_evidence",
+            "synthesize_answer",
+            "semantic_audit",
+            "hard_verify_answer",
+            "final_business_summary",
+            "answer_quality_gate",
+            "persist_artifact",
+        ):
+            self.assertIn(node, nodes)
+        self.assertLess(nodes.index("synthesize_answer"), nodes.index("hard_verify_answer"))
+        self.assertLess(nodes.index("hard_verify_answer"), nodes.index("final_business_summary"))
+        self.assertEqual(nodes[-1], "persist_artifact")
         self.assertIn("accepted_graph", artifact)
         self.assertIn("proposed_graph", artifact)
         self.assertIn("validator_results", artifact)
@@ -785,6 +1362,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                     "evidence_type": "statistical_association",
                     "strength": "high",
                     "wording_limit": "supported",
+                    "numeric_facts": {"median_uplift": 0.2},
                     "typed_payload": {
                         "median_uplift": 0.2,
                         "scope": "full_sample",
@@ -830,280 +1408,6 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
 
         self.assertEqual(verifier["warnings"], [])
 
-    def test_final_business_summary_enforces_user_facing_shape(self):
-        fake = FakeLLMClient(
-            {
-                "final_business_summary": {
-                    "summary_text": "paid_amount rose. pattern_scan says ok.",
-                }
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "final-summary-shape",
-                    "llm_client": fake,
-                }
-            )
-
-        self.assertEqual(result.status, "draft")
-        self.assertIsNotNone(result.answer_package)
-        self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
-        self.assertEqual(
-            result.answer_package["quality_gate"]["code"],
-            "evidence_verifier_failed",
-        )
-        self.assertFalse(result.answer_package["quality_gate"]["has_verified_claims"])
-
-    def test_final_business_summary_allows_bounded_insight_without_exact_claim_copy(self):
-        fake = FakeLLMClient(
-            {
-                "final_business_summary": {
-                    "summary_text": (
-                        "我对问题的理解是：你想判断全样本付费金额是否存在周期内模式。\n"
-                        "分析脉络：系统先确认数据口径，再比较目标阶段和基线阶段。\n"
-                        "关键发现：中位提升 20.0%，方向一致比例 100.0%，共有 29 个可比周期。\n"
-                        "最终结论：这个现象支持一个有边界的周期内观察，但仍然停留在统计相关层面。\n"
-                        "需要注意：洞察上可以继续观察支付节奏和用户结构，但不能归因。"
-                    ),
-                }
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "final-summary-insight",
-                    "llm_client": fake,
-                }
-            )
-
-        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
-        self.assertEqual(summary, "")
-        self.assertEqual(
-            result.answer_package["status"],
-            "failed",
-        )
-
-    def test_final_business_summary_does_not_create_local_material_claim_warning(self):
-        fake = FakeLLMClient(
-            {
-                "next_action": {
-                    "next_action": "degrade",
-                    "decision_summary": "证据不足。",
-                },
-                "final_business_summary": {
-                    "summary_text": (
-                        "我对问题的理解是：你想看目标相比基线是否提升。\n"
-                        "分析脉络：我做了周期对比。\n"
-                        "关键发现：目标相比基线提升 20.0%。\n"
-                        "最终结论：当前证据不足以发布这个主结论。\n"
-                        "需要注意：继续观察。"
-                    ),
-                },
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "final-summary-custom-baseline-limit",
-                    "llm_client": fake,
-                    "question": "目标期相比基线期是否稳定提升？",
-                    "pattern_family": "custom_baseline",
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 2,
-                    },
-                    "baseline": {"label": "基线期"},
-                    "target": {"label": "目标期"},
-                    "rows": [
-                        {"period": "p1", "group": "baseline", "amount": 100},
-                        {"period": "p1", "group": "target", "amount": 120},
-                    ],
-                }
-            )
-
-        self.assertEqual(result.status, "draft")
-        self.assertIsNotNone(result.answer_package)
-        self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
-
-    def test_final_business_summary_businessizes_driver_scope_and_labels(self):
-        fake = FakeLLMClient(
-            {
-                "business_intent": {
-                    "question_family": "segment_or_factor_attribution",
-                    "pattern_family": "custom_baseline",
-                    "scope": "all_users",
-                    "target_claim": "Q2提升来自付费用户数还是单付费用户金额",
-                    "baseline_candidates": [],
-                },
-                "analysis_route": {
-                    "requested_nodes": ["driver_decomposition", "answer_verify"],
-                },
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "final-summary-driver-labels",
-                    "llm_client": fake,
-                    "question": "Q2提升主要来自付费用户数还是单付费用户金额？",
-                    "pattern_family": "custom_baseline",
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 1,
-                    },
-                    "scope": "all_users",
-                    "baseline": {"label": "Q1"},
-                    "target": {"label": "Q2"},
-                    "rows": [
-                        {
-                            "period": "h1",
-                            "group": "baseline",
-                            "amount": 100,
-                            "paid_users": 10,
-                        },
-                        {
-                            "period": "h1",
-                            "group": "target",
-                            "amount": 160,
-                            "paid_users": 12,
-                        },
-                    ],
-                }
-            )
-
-        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
-        self.assertEqual(summary, "")
-        self.assertEqual(
-            result.answer_package["status"],
-            "failed",
-        )
-
-    def test_final_business_summary_receives_composite_business_threads(self):
-        fake = FakeLLMClient(
-            {
-                "business_intent": {
-                    "question_family": "paid_amount_change_explanation",
-                    "question_families": [
-                        "paid_amount_change_explanation",
-                        "segment_or_factor_attribution",
-                    ],
-                    "pattern_family": "custom_baseline",
-                    "scope": "all_users",
-                    "target_claim": "Q2增长的渠道和驱动贡献",
-                    "baseline_candidates": [],
-                },
-                "analysis_route": {
-                    "requested_nodes": [
-                        "driver_decomposition",
-                        "segment_contribution",
-                        "answer_verify",
-                    ],
-                },
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "final-summary-composite-context",
-                    "llm_client": fake,
-                    "question": "2026年Q2为什么增长，主要渠道和付费用户数/单付费用户金额分别怎么贡献？",
-                    "pattern_family": "custom_baseline",
-                    "pattern_params": {
-                        "period_key": "channel",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                    },
-                    "scope": "all_users",
-                    "baseline": {"label": "Q1"},
-                    "target": {"label": "Q2"},
-                    "rows": [
-                        {
-                            "channel": "WajeSpecial",
-                            "group": "baseline",
-                            "amount": 100,
-                            "paid_users": 10,
-                            "orders": 20,
-                        },
-                        {
-                            "channel": "WajeSpecial",
-                            "group": "target",
-                            "amount": 160,
-                            "paid_users": 12,
-                            "orders": 24,
-                        },
-                        {
-                            "channel": "Organic",
-                            "group": "baseline",
-                            "amount": 100,
-                            "paid_users": 10,
-                            "orders": 20,
-                        },
-                        {
-                            "channel": "Organic",
-                            "group": "target",
-                            "amount": 90,
-                            "paid_users": 9,
-                            "orders": 18,
-                        },
-                    ],
-                }
-            )
-
-        payload = _llm_input_payload(result.answer_package, "final_business_summary")
-
-        families = payload["intent"]["question_families"]
-        self.assertEqual(families[:2], [
-            "paid_amount_change_explanation",
-            "segment_or_factor_attribution",
-        ])
-        self.assertEqual(len(families), 2)
-        self.assertEqual(
-            [item["label"] for item in payload["business_threads"]],
-            ["付费金额变化解释", "分群或因素归因"],
-        )
-
-    def test_final_business_summary_allows_negated_attribution_boundary(self):
-        fake = FakeLLMClient(
-            {
-                "final_business_summary": {
-                    "summary_text": (
-                        "我对问题的理解是：你想判断全样本付费金额是否存在周期内模式。\n"
-                        "分析脉络：系统先确认数据口径，再比较目标阶段和基线阶段。\n"
-                        "关键发现：中位提升 20.0%，方向命中率 100.0%，共有 29 个可比周期。\n"
-                        "最终结论：当前支持一个有边界的周期内观察，但不能归因于特定原因。\n"
-                        "需要注意：洞察上可以继续观察支付节奏和用户结构。"
-                    ),
-                }
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "final-summary-negated-attribution",
-                    "llm_client": fake,
-                }
-            )
-
-        summary = result.answer_package["sections"][0]["payload"]["final_business_summary"]
-        self.assertEqual(summary, "")
-        self.assertEqual(
-            result.answer_package["status"],
-            "failed",
-        )
 
     def test_medium_pattern_blocks_reliable_wording(self):
         verifier = verify_answer_package(
@@ -1123,6 +1427,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                     "evidence_type": "statistical_association",
                     "strength": "medium",
                     "wording_limit": "supported",
+                    "numeric_facts": {"median_uplift": 0.04},
                     "typed_payload": {
                         "median_uplift": 0.04,
                         "scope": "full_sample",
@@ -1157,6 +1462,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                     "evidence_type": "statistical_association",
                     "strength": "high",
                     "wording_limit": "supported",
+                    "numeric_facts": {"median_uplift": 0.15},
                     "typed_payload": {
                         "median_uplift": 0.15,
                         "scope": "full_sample",
@@ -1332,11 +1638,8 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 "business_intent": {
                     "question_family": "data_quality_or_evidence_review",
                 },
-                "analysis_route": {
+                "analysis_route_plan": {
                     "requested_nodes": ["data_quality_profile", "answer_verify"],
-                },
-                "final_business_summary": {
-                    "summary_text": "当前支付状态与重复订单合同仍有缺口，需要补齐合同后继续。"
                 },
             }
         )
@@ -1357,13 +1660,8 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         diagnostics = {item["gap_id"]: item for item in payload["contract_gap_diagnostics"]}
         self.assertEqual(diagnostics["payment_status_contract_missing"]["status"], "contract_absent")
         self.assertEqual(diagnostics["duplicate_order_contract_missing"]["status"], "data_absent")
-        final_payload = _llm_input_payload(result.answer_package, "final_business_summary")
         self.assertEqual(
             result.answer_package["admin_audit"]["contract_gap_diagnostics"],
-            payload["contract_gap_diagnostics"],
-        )
-        self.assertEqual(
-            final_payload["contract_gap_diagnostics"],
             payload["contract_gap_diagnostics"],
         )
 
@@ -1373,7 +1671,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 "business_intent": {
                     "question_family": "business_object_impact_review",
                 },
-                "analysis_route": {
+                "analysis_route_plan": {
                     "requested_nodes": [
                         "data_quality_profile",
                         "compare_periods",
@@ -1387,11 +1685,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
                 "blocked_explanation": {
                     "status": "blocked",
                     "explanation": "当前缺少活动事件上下文合同与数据，不能判断这些事件是否影响了付费金额。",
-                    "owner": "语义合同 owner",
                     "repair_path": "补活动事件上下文合同与数据后重跑。",
-                },
-                "final_business_summary": {
-                    "summary_text": "当前缺少活动事件上下文合同与数据，暂不能判断事件影响。"
                 },
             }
         )

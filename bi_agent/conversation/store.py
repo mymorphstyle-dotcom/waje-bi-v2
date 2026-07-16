@@ -121,6 +121,112 @@ class InMemoryConversationStore:
     def save_clarification_state(self, state: ClarificationState) -> None:
         self.clarification_states[state.run_id] = state
 
+    def finalize_waiting_clarification(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        turn_id: str,
+        topic_id: str,
+        request: Mapping[str, Any],
+        clarification_state: ClarificationState,
+    ) -> str:
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        if (
+            clarification_state.run_id != run_id
+            or clarification_state.topic_id != topic_id
+            or clarification_state.status != "waiting"
+        ):
+            raise EvidenceIntegrityError(
+                "waiting_clarification_state_owner_mismatch"
+            )
+        run = self.runs.get(run_id)
+        thread = self.threads.get(thread_id)
+        topic = self.topics.get(topic_id)
+        if (
+            not isinstance(run, Mapping)
+            or thread is None
+            or topic is None
+            or topic.thread_id != thread_id
+        ):
+            raise EvidenceIntegrityError(
+                "waiting_clarification_source_missing"
+            )
+        action = validate_run_status_transition(
+            current_status=str(run.get("status") or ""),
+            next_status="waiting_for_clarification",
+            current_thread_id=str(run.get("thread_id") or ""),
+            current_turn_id=str(run.get("turn_id") or ""),
+            current_topic_id=str(run.get("topic_id") or ""),
+            next_thread_id=thread_id,
+            next_turn_id=turn_id,
+            next_topic_id=topic_id,
+            current_request=run.get("request") or {},
+            next_request=dict(request),
+        )
+        if action == "replay":
+            existing_state = self.clarification_states.get(run_id)
+            if (
+                thread.pending_clarification_id == run_id
+                and thread.pending_clarification_topic_id == topic_id
+                and existing_state is not None
+                and existing_state.to_dict() == clarification_state.to_dict()
+            ):
+                return "replayed"
+            raise EvidenceIntegrityError(
+                "waiting_clarification_replay_conflict"
+            )
+
+        staged_runs = deepcopy(self.runs)
+        staged_threads = deepcopy(self.threads)
+        staged_states = deepcopy(self.clarification_states)
+        staged_events = deepcopy(self._audit_events)
+        staged_thread = staged_threads[thread_id]
+        staged_thread.pending_clarification_topic_id = topic_id
+        staged_thread.pending_clarification_id = run_id
+        staged_states[run_id] = deepcopy(clarification_state)
+        staged_runs[run_id] = {
+            **dict(run),
+            "thread_id": thread_id,
+            "turn_id": turn_id,
+            "topic_id": topic_id,
+            "status": "waiting_for_clarification",
+            "request": deepcopy(dict(request)),
+        }
+        for event in (
+            {
+                "event_type": "run_status_changed",
+                "thread_id": thread_id,
+                "topic_id": topic_id,
+                "run_id": run_id,
+                "ref": run_id,
+                "payload": {"status": "waiting_for_clarification"},
+            },
+            {
+                "event_type": "clarification_pending",
+                "thread_id": thread_id,
+                "topic_id": topic_id,
+                "run_id": run_id,
+                "ref": run_id,
+                "payload": {},
+            },
+            {
+                "event_type": "clarification_state_saved",
+                "thread_id": thread_id,
+                "topic_id": topic_id,
+                "run_id": run_id,
+                "ref": run_id,
+                "payload": clarification_state.to_dict(),
+            },
+        ):
+            self._append_staged_audit_event(staged_events, event)
+        self.runs = staged_runs
+        self.threads = staged_threads
+        self.clarification_states = staged_states
+        self._audit_events = staged_events
+        return "inserted"
+
     def get_open_clarification(self, thread_id: str) -> Optional[ClarificationState]:
         topic_ids = set(self.thread_topics.get(thread_id, []))
         for state in reversed(tuple(self.clarification_states.values())):

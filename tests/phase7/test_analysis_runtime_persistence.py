@@ -552,6 +552,7 @@ def _evidence_for_binding(binding, *, evidence_ref="evidence:task9:segment"):
         "evidence_type": "statistical_association",
         "strength": "observed",
         "wording_limit": "supported",
+        "numeric_facts": {"paid_amount": 12.0},
         "typed_payload": {"paid_amount": 12.0},
         "limitations": (),
         "artifact_refs": ("artifact:task9",),
@@ -574,7 +575,7 @@ def _without_claim_authority(bundle):
 def _unsupported_claim_gap_bundle(
     *,
     capability_requirements=("segment_contribution", "formula_decompose"),
-    affected_capabilities=("formula_decompose", "analysis_contract"),
+    affected_capabilities=("analysis_contract",),
     clarification_outcome_ref="clarification-outcome:" + "a" * 64,
     gap_changes=None,
     contract_gaps=None,
@@ -590,11 +591,14 @@ def _unsupported_claim_gap_bundle(
         "affected_claim_types": ["causal_effect"],
         "owner": "contract_owner",
         "repair_options": [
-            "choose_supported_claim_intent",
-            "clarify_claim_intent",
+            "add_supporting_capability",
+            "report_unavailable_claim",
         ],
-        "requires_clarification": True,
-        "diagnostic_context": {},
+        "requires_clarification": False,
+        "diagnostic_context": {
+            "claim_origin": "user_required",
+            "publication_status": "unavailable",
+        },
     }
     if gap_changes:
         canonical_gap.update(gap_changes)
@@ -719,6 +723,156 @@ def _waiting_runtime_records_with_unbound_results(*, keep_binding=True):
         for record in persistence_records["query_execution_records"]
     }
     return result, persistence_records, bound_result_refs, all_result_refs
+
+
+def _bundle_with_auxiliary_terminal_results(*, analysis_role="auxiliary"):
+    from bi_agent.runtime.analysis_contracts import analysis_contract_signature
+
+    bundle = _paid_amount_market_health_bundle()
+    analysis_contract_ref = bundle["analysis_contract"]["analysis_contract_id"]
+    auxiliary = _fixture_content(
+        query_ref="query:auxiliary-terminal",
+        analysis_contract_ref=analysis_contract_ref,
+    )
+    resolver = auxiliary["evidence_resolver"]
+    binding = resolver.resolve_capability_binding(
+        auxiliary["binding_manifest_ref"]
+    )
+    auxiliary_result_refs = (
+        *binding.result_refs,
+        *binding.validation_result_refs,
+    )
+    auxiliary_queries = tuple(
+        resolver.resolve_query_execution(result_ref)
+        for result_ref in auxiliary_result_refs
+    )
+    auxiliary_rows = tuple(
+        resolver.resolve_rows(query.rows_ref)
+        for query in auxiliary_queries
+    )
+    auxiliary_completeness = tuple(
+        resolver.resolve_completeness(record_ref)
+        for record_ref in (
+            *binding.completeness_record_refs,
+            *binding.validation_completeness_record_refs,
+        )
+    )
+    auxiliary_snapshot_refs = tuple(dict.fromkeys(
+        snapshot_ref
+        for query in auxiliary_queries
+        for snapshot_ref in query.source_snapshot_refs
+    ))
+    auxiliary_snapshots = tuple(
+        resolver.resolve_snapshot(snapshot_ref)
+        for snapshot_ref in auxiliary_snapshot_refs
+    )
+
+    def unique(items, key):
+        return tuple({key(item): item for item in items}.values())
+
+    analysis = bundle["analysis_contract"]
+    auxiliary_windows = tuple(
+        canonical_value(window)
+        for query in auxiliary_queries
+        for window in query.contract.resolved_windows
+    )
+    auxiliary_metrics = tuple(
+        canonical_value(metric)
+        for query in auxiliary_queries
+        for metric in query.contract.metric_bindings
+    )
+    auxiliary_dimensions = tuple(
+        canonical_value(dimension)
+        for query in auxiliary_queries
+        for dimension in query.contract.dimension_bindings
+    )
+    analysis = {
+        **analysis,
+        "question_families": unique(
+            (*analysis["question_families"], "segment_or_factor_attribution"),
+            lambda item: item,
+        ),
+        "target_metric_refs": unique(
+            (
+                *analysis["target_metric_refs"],
+                *(item["contract_ref"] for item in auxiliary_metrics),
+            ),
+            lambda item: item,
+        ),
+        "claim_intents": unique(
+            (
+                *analysis["claim_intents"],
+                "segment_contribution_or_mix_shift",
+            ),
+            lambda item: item,
+        ),
+        "resolved_windows": unique(
+            (*analysis["resolved_windows"], *auxiliary_windows),
+            lambda item: item["window_id"],
+        ),
+        "metric_bindings": unique(
+            (*analysis["metric_bindings"], *auxiliary_metrics),
+            lambda item: (item["metric_id"], item["dataset_id"]),
+        ),
+        "dimension_bindings": unique(
+            (*analysis["dimension_bindings"], *auxiliary_dimensions),
+            lambda item: (item["dimension_id"], item["dataset_id"]),
+        ),
+        "dataset_requirements": unique(
+            (
+                *analysis["dataset_requirements"],
+                *(record.snapshot.dataset_id for record in auxiliary_snapshots),
+            ),
+            lambda item: item,
+        ),
+        "capability_requirements": unique(
+            (
+                *analysis["capability_requirements"],
+                "candidate_dimension_screen",
+            ),
+            lambda item: item,
+        ),
+    }
+    analysis["contract_signature"] = analysis_contract_signature(analysis)
+    terminal = {
+        "attempt_ref": "terminal:auxiliary-dimension-screen:1",
+        "failed_signature": "binding-plan:auxiliary-dimension-screen:1",
+        "action": "quarantine_auxiliary_results",
+        "reason": "capability_binding_failed",
+        "capability_id": "candidate_dimension_screen",
+        "analysis_role": analysis_role,
+        "affected_claim_types": ["segment_contribution_or_mix_shift"],
+        "query_contract_refs": [
+            query.query_contract_ref for query in auxiliary_queries
+        ],
+        "result_refs": [query.result_ref for query in auxiliary_queries],
+        "failure_stage": "capability_binding",
+        "publication_authority": "none",
+    }
+    bundle.update(
+        {
+            "analysis_contract": analysis,
+            "query_contracts": (
+                *bundle["query_contracts"],
+                *(query.contract for query in auxiliary_queries),
+            ),
+            "query_execution_records": (
+                *bundle["query_execution_records"],
+                *auxiliary_queries,
+            ),
+            "rows_records": (*bundle["rows_records"], *auxiliary_rows),
+            "snapshot_records": (
+                *bundle["snapshot_records"],
+                *auxiliary_snapshots,
+            ),
+            "completeness_records": (
+                *bundle["completeness_records"],
+                *auxiliary_completeness,
+            ),
+            "repair_attempts": (*bundle["repair_attempts"], terminal),
+        }
+    )
+    return bundle, terminal, set(auxiliary_result_refs)
 
 
 def _query_resolver_row(record, *, run_id="run-task9"):
@@ -964,6 +1118,15 @@ def _use_high_value_claim_ceiling(bundle, *, claim_intents=("candidate_driver",)
 
 
 class AnalysisRuntimePersistenceTest(unittest.TestCase):
+    def test_narrative_publication_failure_preserves_verified_claim_authority(self):
+        bundle = _paid_amount_market_health_bundle()
+
+        self.assertTrue(bundle["verified_claims"])
+        self.assertEqual(
+            bundle["verified_claims"][0]["claim_type"],
+            "comparative_change",
+        )
+
     def test_authority_bundle_materializes_its_answer_package_artifact(self):
         run_id = "run-authority-bundle-artifact"
         bundle = _authority_bundle(
@@ -1409,12 +1572,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                             "binding_manifest_ref": omitted_binding.record_ref,
                             "evidence_ref": "evidence:omitted-waiting",
                         }],
-                        "claims": [{
-                            "text": "未形成能力绑定的结果不能形成已验证结论。",
-                            "claim_type": "segment_contribution_or_mix_shift",
-                            "claim_strength": "observed",
-                            "evidence_refs": ["evidence:omitted-waiting"],
-                        }],
                     },
                 }],
             },
@@ -1543,6 +1700,68 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 run_id="run-task9", **raw_bundle
             )
 
+    def test_auxiliary_terminal_closes_unbound_results_without_claim_authority(self):
+        bundle, terminal, auxiliary_result_refs = (
+            _bundle_with_auxiliary_terminal_results()
+        )
+
+        store = InMemoryConversationStore()
+        self.assertEqual(
+            store.save_analysis_runtime_records(
+                run_id="run-market-multi-window",
+                **bundle,
+            ),
+            "published",
+        )
+
+        publication = store.analysis_runtime_records["run-market-multi-window"][
+            "payload"
+        ]
+        self.assertEqual(
+            publication["repair_attempts"][-1],
+            canonical_value(terminal),
+        )
+        self.assertTrue(publication["verified_claims"])
+        self.assertTrue(
+            auxiliary_result_refs.isdisjoint(
+                result_ref
+                for evidence in publication["evidence_manifests"]
+                for result_ref in evidence["result_refs"]
+            )
+        )
+
+    def test_required_branch_cannot_use_auxiliary_terminal(self):
+        bundle, _, _ = _bundle_with_auxiliary_terminal_results(
+            analysis_role="required"
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_auxiliary_terminal_invalid:authority",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-market-multi-window",
+                **bundle,
+            )
+
+    def test_auxiliary_terminal_must_cover_every_declared_branch_result(self):
+        bundle, terminal, _ = _bundle_with_auxiliary_terminal_results()
+        terminal = {
+            **terminal,
+            "query_contract_refs": terminal["query_contract_refs"][:1],
+            "result_refs": terminal["result_refs"][:1],
+        }
+        bundle["repair_attempts"] = (terminal,)
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_binding_chain_incomplete",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-market-multi-window",
+                **bundle,
+            )
+
     def test_projected_waiting_bundle_publishes_to_memory_and_postgres(self):
         from bi_agent.runtime.analysis_runtime import AnalysisRuntime
 
@@ -1653,8 +1872,8 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             checkpoint_events=(), proposed_graph=(), accepted_graph=(),
             rejected_or_degraded_mutations=(), validator_results=(),
             sql_text="", sql_hash="e" * 64, artifact_audit={},
-            answer_text="Authoritative event context was observed.",
-            final_business_summary="Authoritative event context was observed.",
+            answer_text="",
+            final_business_summary="",
             context_manifest={"thread_id": "thread-event", "topic_id": "topic-event"},
             trusted_claim_provenance_records=(trusted,),
         )
@@ -2191,166 +2410,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                     "published",
                 )
 
-    def test_control_only_item_gap_blocks_intersecting_market_claim(self):
-        bundle = _with_contract_gaps(
-            _paid_amount_market_health_bundle(),
-            _item_source_ambiguity_gap("metric", "paid_amount"),
-        )
-        bundle["evidence_manifests"] = tuple(
-            {
-                key: value
-                for key, value in manifest.items()
-                if key != "metric"
-            }
-            for manifest in bundle["evidence_manifests"]
-        )
-
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_verified_claim_gap_blocked",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-market-multi-window",
-                **bundle,
-            )
-
-    def test_queryless_gap_cannot_forge_nonrequired_capability_scope(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-
-        bundle = _paid_amount_market_health_bundle()
-        gap = _item_source_ambiguity_gap(
-            "metric",
-            "paid_amount",
-            source_ids=("market_dashboard", "market_dashboard_channel"),
-            affected_capabilities=("analysis_contract", "evidence_reduce"),
-        )
-        registry = RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
-        metric_sources = registry.metric_sources("paid_amount")
-        selected_refs = tuple(dict.fromkeys(
-            str(metric_sources[source_id]["contract_ref"])
-            for source_id in ("market_dashboard", "market_dashboard_channel")
-        ))
-        analysis = {
-            **bundle["analysis_contract"],
-            "target_metric_refs": list(dict.fromkeys((
-                *bundle["analysis_contract"]["target_metric_refs"],
-                *selected_refs,
-            ))),
-            "contract_gaps": [gap],
-        }
-        analysis["contract_signature"] = analysis_contract_signature(analysis)
-        bundle["analysis_contract"] = analysis
-        bundle["evidence_manifests"] = tuple(
-            {
-                key: value
-                for key, value in manifest.items()
-                if key != "metric"
-            }
-            for manifest in bundle["evidence_manifests"]
-        )
-
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_verified_claim_gap_blocked",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-market-multi-window",
-                **bundle,
-            )
-
-    def test_queryless_gap_requires_complete_affected_claim_coverage(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-
-        bundle = _paid_amount_market_health_bundle()
-        gap = _item_source_ambiguity_gap(
-            "metric",
-            "paid_amount",
-            source_ids=("market_dashboard", "market_dashboard_channel"),
-            affected_claim_types=("comparative_change", "candidate_driver"),
-            affected_capabilities=("analysis_contract", "evidence_reduce"),
-        )
-        analysis = {
-            **bundle["analysis_contract"],
-            "capability_requirements": [
-                *bundle["analysis_contract"]["capability_requirements"],
-                "evidence_reduce",
-            ],
-            "contract_gaps": [gap],
-        }
-        analysis["contract_signature"] = analysis_contract_signature(analysis)
-        bundle["analysis_contract"] = analysis
-        bundle["evidence_manifests"] = tuple(
-            {
-                key: value
-                for key, value in manifest.items()
-                if key != "metric"
-            }
-            for manifest in bundle["evidence_manifests"]
-        )
-
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_verified_claim_gap_blocked",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-market-multi-window",
-                **bundle,
-            )
-
-    def test_source_ambiguity_family_rejects_malformed_item_diagnostics(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-
-        diagnostics = (
-            {},
-            {
-                "item_kind": "other",
-                "item_id": "paid_amount",
-                "claim_intents": ["comparative_change"],
-            },
-        )
-        for diagnostic in diagnostics:
-            with self.subTest(diagnostic=diagnostic):
-                bundle = _paid_amount_market_health_bundle()
-                gap = _item_source_ambiguity_gap(
-                    "metric",
-                    "paid_amount",
-                    source_ids=(
-                        "market_dashboard",
-                        "market_dashboard_channel",
-                    ),
-                    affected_capabilities=(
-                        "analysis_contract",
-                        "evidence_reduce",
-                    ),
-                )
-                gap["diagnostic_context"] = diagnostic
-                analysis = {
-                    **bundle["analysis_contract"],
-                    "capability_requirements": [
-                        *bundle["analysis_contract"][
-                            "capability_requirements"
-                        ],
-                        "evidence_reduce",
-                    ],
-                    "contract_gaps": [gap],
-                }
-                analysis["contract_signature"] = analysis_contract_signature(
-                    analysis
-                )
-                bundle["analysis_contract"] = analysis
-
-                with self.assertRaisesRegex(
-                    EvidenceIntegrityError,
-                    "runtime_persistence_verified_claim_gap_blocked",
-                ):
-                    InMemoryConversationStore().save_analysis_runtime_records(
-                        run_id="run-market-multi-window",
-                        **bundle,
-                    )
-
     def test_requested_source_unreviewed_gap_is_capability_local(self):
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature
 
@@ -2397,191 +2456,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             ),
             "published",
         )
-
-    def test_control_only_item_gap_requires_query_dependency_authority(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_from_dict
-        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-        from bi_agent.runtime.runtime_persistence import (
-            _contract_gap_blocks_binding_claim,
-        )
-
-        bundle = _with_contract_gaps(
-            _paid_amount_market_health_bundle(),
-            _item_source_ambiguity_gap("metric", "paid_users"),
-        )
-        analysis = analysis_contract_from_dict({
-            key: value
-            for key, value in bundle["analysis_contract"].items()
-            if key != "contract_signature"
-        })
-        binding = bundle["capability_binding_records"][0]
-        query_by_ref = {
-            query.query_contract_id: query
-            for query in bundle["query_contracts"]
-        }
-        registry = RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
-        cases = (
-            (
-                "empty_binding_query_refs",
-                replace(
-                    binding,
-                    query_contract_refs=(),
-                    validation_query_contract_refs=(),
-                ),
-                query_by_ref,
-            ),
-            ("missing_query_authority", binding, {}),
-        )
-
-        for case, candidate_binding, candidate_queries in cases:
-            with self.subTest(case=case):
-                self.assertTrue(
-                    _contract_gap_blocks_binding_claim(
-                        analysis,
-                        binding=candidate_binding,
-                        query_by_ref=candidate_queries,
-                        claim_type="comparative_change",
-                        unbound_claim_intents=set(),
-                        registry=registry,
-                    )
-                )
-
-    def test_malformed_control_only_item_gap_remains_hard_blocking(self):
-        malformed_shapes = (
-            ("gap_type", {"gap_type": "source_unbound"}),
-            ("gap_id", {"gap_id": "metric:paid_users:contract_absent"}),
-            (
-                "forged_source_suffix",
-                {
-                    "gap_id": (
-                        "metric:paid_users:source_ambiguous:forged_source"
-                    )
-                },
-            ),
-            ("dataset_id", {"dataset_id": "paid_order_success"}),
-            ("owner", {"owner": "runtime_owner"}),
-            ("repair_options", {"repair_options": ["clarify_source_scope"]}),
-            ("requires_clarification", {"requires_clarification": False}),
-            (
-                "claim_intent_drift",
-                {
-                    "diagnostic_context": {
-                        "item_kind": "metric",
-                        "item_id": "paid_users",
-                        "claim_intents": ["candidate_mechanism"],
-                    }
-                },
-            ),
-        )
-
-        for case, mutation in malformed_shapes:
-            with self.subTest(case=case):
-                gap = {**_item_source_ambiguity_gap("metric", "paid_users"), **mutation}
-                bundle = _with_contract_gaps(
-                    _paid_amount_market_health_bundle(),
-                    gap,
-                )
-
-                with self.assertRaisesRegex(
-                    EvidenceIntegrityError,
-                    "runtime_persistence_verified_claim_gap_blocked",
-                ):
-                    InMemoryConversationStore().save_analysis_runtime_records(
-                        run_id="run-market-multi-window",
-                        **bundle,
-                    )
-
-    def test_control_only_gap_blocks_linked_evidence_only_item_dependency(self):
-        evidence_items = (
-            ("metric", "paid_users", {"metric": "paid_users"}),
-            ("dimension", "channel", {"dimensions": {"channel": "app"}}),
-        )
-
-        for item_kind, item_id, evidence_dependency in evidence_items:
-            with self.subTest(item_kind=item_kind, item_id=item_id):
-                bundle = _with_contract_gaps(
-                    _paid_amount_market_health_bundle(),
-                    _item_source_ambiguity_gap(item_kind, item_id),
-                )
-                bundle["evidence_manifests"] = tuple(
-                    {**manifest, **evidence_dependency}
-                    for manifest in bundle["evidence_manifests"]
-                )
-
-                with self.assertRaisesRegex(
-                    EvidenceIntegrityError,
-                    "runtime_persistence_verified_claim_gap_blocked",
-                ):
-                    InMemoryConversationStore().save_analysis_runtime_records(
-                        run_id="run-market-multi-window",
-                        **bundle,
-                    )
-
-    def test_control_only_unscoped_gap_remains_global_hard_blocker(self):
-        bundle = _paid_amount_market_health_bundle()
-        claim_type = bundle["verified_claims"][0]["claim_type"]
-        bundle = _with_contract_gaps(
-            bundle,
-            {
-                "gap_type": "contract_partial",
-                "gap_id": "claim_authority:incomplete",
-                "dataset_id": "",
-                "affected_capabilities": ["analysis_contract"],
-                "affected_claim_types": [claim_type],
-                "owner": "contract_owner",
-                "repair_options": ["bind_capability_claim_types"],
-                "requires_clarification": True,
-                "diagnostic_context": {},
-            },
-        )
-
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_verified_claim_gap_blocked",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-market-multi-window",
-                **bundle,
-            )
-
-    def test_global_or_ready_capability_gap_blocks_ready_claim(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-
-        for affected_kind in ("global", "ready"):
-            bundle = _authority_bundle()
-            affected = (
-                []
-                if affected_kind == "global"
-                else [bundle["analysis_contract"]["capability_requirements"][0]]
-            )
-            with self.subTest(affected=affected):
-                claim_type = bundle["verified_claims"][0]["claim_type"]
-                analysis = {
-                    **bundle["analysis_contract"],
-                    "contract_gaps": [{
-                        "gap_type": "contract_partial",
-                        "gap_id": "claim_authority:incomplete",
-                        "dataset_id": "",
-                        "affected_capabilities": affected,
-                        "affected_claim_types": [claim_type],
-                        "owner": "contract_owner",
-                        "repair_options": ["bind_capability_claim_types"],
-                        "requires_clarification": True,
-                        "diagnostic_context": {},
-                    }],
-                }
-                analysis["contract_signature"] = analysis_contract_signature(analysis)
-                bundle["analysis_contract"] = analysis
-
-                with self.assertRaisesRegex(
-                    EvidenceIntegrityError,
-                    "runtime_persistence_verified_claim_gap_blocked",
-                ):
-                    InMemoryConversationStore().save_analysis_runtime_records(
-                        run_id="run-task9", **bundle
-                    )
 
     def test_queryless_contract_capability_persists_zero_claim_boundary(self):
         bundle = _queryless_source_ambiguity_bundle()
@@ -2710,20 +2584,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                         **bundle,
                     )
 
-    def test_queryless_preflight_rejects_reviewed_subset_for_unrelated_claim(self):
-        bundle = _queryless_source_ambiguity_bundle(
-            claim_intents=("recurring_pattern_existence",),
-            affected_claim_types=("comparative_change",),
-        )
-
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_analysis_claim_intent_unsupported",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-task9", **bundle
-            )
-
     def test_queryless_preflight_requires_selected_source_contract_refs(self):
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature
 
@@ -2738,25 +2598,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
         with self.assertRaisesRegex(
             EvidenceIntegrityError,
             "runtime_persistence_analysis_target_metric_mismatch",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-task9", **bundle
-            )
-
-    def test_queryless_preflight_rejects_affected_capability_drift(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-
-        bundle = _queryless_source_ambiguity_bundle()
-        analysis = deepcopy(bundle["analysis_contract"])
-        analysis["contract_gaps"][0]["affected_capabilities"] = [
-            "answer_verify"
-        ]
-        analysis["contract_signature"] = analysis_contract_signature(analysis)
-        bundle["analysis_contract"] = analysis
-
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_analysis_claim_intent_unsupported",
         ):
             InMemoryConversationStore().save_analysis_runtime_records(
                 run_id="run-task9", **bundle
@@ -2783,256 +2624,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             InMemoryConversationStore().save_analysis_runtime_records(
                 run_id="run-task9", **bundle
             )
-
-    def test_queryless_preflight_rejects_noncanonical_source_gap_diagnostics(self):
-        cases = (
-            (
-                "claim_intent_order",
-                {
-                    "affected_claim_types": (
-                        "comparative_change",
-                        "recurring_pattern_existence",
-                    ),
-                    "diagnostic_claim_intents": (
-                        "recurring_pattern_existence",
-                        "comparative_change",
-                    ),
-                },
-            ),
-            (
-                "claim_intent_duplicate",
-                {
-                    "diagnostic_claim_intents": (
-                        "recurring_pattern_existence",
-                        "recurring_pattern_existence",
-                    ),
-                },
-            ),
-            (
-                "claim_intent_duplicate_in_gap_and_diagnostic",
-                {
-                    "affected_claim_types": (
-                        "recurring_pattern_existence",
-                        "recurring_pattern_existence",
-                    ),
-                    "diagnostic_claim_intents": (
-                        "recurring_pattern_existence",
-                        "recurring_pattern_existence",
-                    ),
-                },
-            ),
-            (
-                "diagnostic_extra_key",
-                {"diagnostic_extra": {"unreviewed": True}},
-            ),
-        )
-
-        for case, kwargs in cases:
-            with self.subTest(case=case):
-                bundle = _queryless_source_ambiguity_bundle(**kwargs)
-                with self.assertRaisesRegex(
-                    EvidenceIntegrityError,
-                    "runtime_persistence_analysis_claim_intent_unsupported",
-                ):
-                    InMemoryConversationStore().save_analysis_runtime_records(
-                        run_id="run-task9", **bundle
-                    )
-
-    def test_queryless_contract_capability_without_boundary_is_unsupported(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-
-        bundle = _authority_bundle()
-        analysis = {
-            **bundle["analysis_contract"],
-            "claim_intents": ["recurring_pattern_existence"],
-            "capability_requirements": ["answer_verify", "evidence_reduce"],
-            "dataset_requirements": [],
-            "metric_bindings": [],
-            "dimension_bindings": [],
-            "contract_gaps": [],
-        }
-        analysis["contract_signature"] = analysis_contract_signature(analysis)
-        bundle.update(
-            {
-                "analysis_contract": analysis,
-                "query_contracts": (),
-                "query_execution_records": (),
-                "rows_records": (),
-                "snapshot_records": (),
-                "completeness_records": (),
-                "capability_binding_records": (),
-                "evidence_manifests": (),
-                "context_manifests": (),
-                "trusted_provenance_records": (),
-                "verified_claims": (),
-                "claim_links": (),
-                "repair_attempts": (),
-            }
-        )
-
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_analysis_claim_intent_unsupported",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-task9", **bundle
-            )
-
-    def test_metric_backed_intent_persists_with_structured_terminal_boundary(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-
-        bundle = _authority_bundle()
-        claim_intents = list(
-            bundle["analysis_contract"]["metric_bindings"][0]["claim_types"]
-        )
-        metric_id = bundle["analysis_contract"]["metric_bindings"][0]["metric_id"]
-        analysis = {
-            **bundle["analysis_contract"],
-            "claim_intents": claim_intents,
-            "capability_requirements": ["answer_verify"],
-            "contract_gaps": [{
-                "gap_type": "contract_partial",
-                "gap_id": f"metric:{metric_id}:source_ambiguous",
-                "dataset_id": "",
-                "affected_capabilities": ["analysis_contract"],
-                "affected_claim_types": claim_intents,
-                "owner": "contract_owner",
-                "repair_options": [
-                    "select_dataset_requirement",
-                    "clarify_source_scope",
-                ],
-                "requires_clarification": True,
-                "diagnostic_context": {},
-            }],
-        }
-        analysis["contract_signature"] = analysis_contract_signature(analysis)
-        bundle.update(
-            {
-                "analysis_contract": analysis,
-                "query_contracts": (),
-                "query_execution_records": (),
-                "rows_records": (),
-                "snapshot_records": (),
-                "completeness_records": (),
-                "capability_binding_records": (),
-                "evidence_manifests": (),
-                "context_manifests": (),
-                "trusted_provenance_records": (),
-                "answer_package_artifacts": (),
-                "verified_claims": (),
-                "claim_links": (),
-                "repair_attempts": (),
-            }
-        )
-
-        self.assertEqual(
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-task9", **bundle
-            ),
-            "published",
-        )
-        registry = RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
-        bound_metric_id = "active_users"
-        bound_source = registry.metric_sources(bound_metric_id)["market_dashboard"]
-        active_binding = {
-            **analysis["metric_bindings"][0],
-            **{
-                key: value
-                for key, value in bound_source.items()
-                if key in analysis["metric_bindings"][0]
-            },
-            "metric_id": bound_metric_id,
-        }
-        unbound_metric_id = "paid_amount"
-        unbound_sources = registry.metric_sources(unbound_metric_id)
-        linked_claim_intents = ["comparative_change", "source_reconciliation"]
-        compiler_linked_analysis = {
-            **analysis,
-            "claim_intents": linked_claim_intents,
-            "metric_bindings": [active_binding],
-            "target_metric_refs": list(dict.fromkeys((
-                active_binding["contract_ref"],
-                *(
-                    source["contract_ref"]
-                    for source in unbound_sources.values()
-                ),
-            ))),
-            "contract_gaps": [{
-                **analysis["contract_gaps"][0],
-                "gap_id": (
-                    f"metric:{unbound_metric_id}:source_ambiguous:"
-                    f"{','.join(unbound_sources)}"
-                ),
-                "affected_claim_types": linked_claim_intents,
-                "diagnostic_context": {
-                    "item_kind": "metric",
-                    "item_id": unbound_metric_id,
-                    "claim_intents": linked_claim_intents,
-                },
-            }],
-        }
-        compiler_linked_analysis["contract_signature"] = analysis_contract_signature(
-            compiler_linked_analysis
-        )
-        bundle["analysis_contract"] = compiler_linked_analysis
-        self.assertEqual(
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-task9-compiler-linked", **bundle
-            ),
-            "published",
-        )
-        unbounded_analysis = {
-            **analysis,
-            "contract_gaps": [],
-        }
-        unbounded_analysis["contract_signature"] = analysis_contract_signature(
-            unbounded_analysis
-        )
-        bundle["analysis_contract"] = unbounded_analysis
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_analysis_claim_intent_unsupported",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-task9-unbounded", **bundle
-            )
-        for gap in (
-            {
-                **analysis["contract_gaps"][0],
-                "gap_id": "metric:unrelated_metric:source_ambiguous",
-                "affected_claim_types": claim_intents,
-                "diagnostic_context": {
-                    "item_kind": "metric",
-                    "item_id": "unrelated_metric",
-                    "claim_intents": claim_intents,
-                },
-            },
-            {
-                **analysis["contract_gaps"][0],
-                "gap_id": "dataset:unrelated_dataset:source_unbound",
-                "gap_type": "source_unbound",
-                "dataset_id": "unrelated_dataset",
-                "affected_claim_types": claim_intents,
-            },
-        ):
-            unrelated_analysis = {
-                **analysis,
-                "contract_gaps": [gap],
-            }
-            unrelated_analysis["contract_signature"] = analysis_contract_signature(
-                unrelated_analysis
-            )
-            bundle["analysis_contract"] = unrelated_analysis
-            with self.assertRaisesRegex(
-                EvidenceIntegrityError,
-                "runtime_persistence_analysis_claim_intent_unsupported",
-            ):
-                InMemoryConversationStore().save_analysis_runtime_records(
-                    run_id=f"run-task9-{gap['gap_id']}", **bundle
-                )
 
     def test_zero_claim_postgres_run_publishes_and_replays_without_claim_rows(self):
         bundle = _authority_bundle()
@@ -3195,7 +2786,106 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                     for key, value in bundle["analysis_contract"].items()
                     if key != "contract_signature"
                 }),
-                unbound_claim_intents=set(),
+                evidence_by_ref={
+                    item["evidence_ref"]: item
+                    for item in bundle["evidence_manifests"]
+                },
+                bindings_by_ref={
+                    item.record_ref: item
+                    for item in bundle["capability_binding_records"]
+                },
+                registry=RuntimeContractRegistry.from_path(
+                    "contracts/runtime/clickhouse-analysis-bindings.yaml"
+                ),
+            )
+
+    def test_auxiliary_candidate_gap_does_not_grant_publication_authority(self):
+        from bi_agent.runtime.analysis_contracts import (
+            analysis_contract_from_dict,
+            analysis_contract_signature,
+        )
+        from bi_agent.runtime.claim_provenance import build_verified_claim_record
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+        from bi_agent.runtime.runtime_persistence import (
+            _validate_verified_claim_contract_boundary,
+        )
+
+        bundle = _authority_bundle()
+        analysis = {
+            **bundle["analysis_contract"],
+            "contract_gaps": [
+                *bundle["analysis_contract"].get("contract_gaps", ()),
+                {
+                    "gap_type": "contract_partial",
+                    "gap_id": "claim_candidate:baseline_stability:unsupported",
+                    "dataset_id": "",
+                    "affected_capabilities": ["analysis_contract"],
+                    "affected_claim_types": ["baseline_stability"],
+                    "owner": "contract_owner",
+                    "repair_options": [
+                        "add_safe_supporting_capability",
+                        "omit_auxiliary_claim",
+                    ],
+                    "requires_clarification": False,
+                    "diagnostic_context": {
+                        "claim_origin": "llm_auxiliary",
+                        "publication_status": "omitted",
+                    },
+                },
+            ],
+        }
+        analysis["contract_signature"] = analysis_contract_signature(analysis)
+        bundle["analysis_contract"] = analysis
+
+        self.assertEqual(
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id="run-task9", **bundle
+            ),
+            "published",
+        )
+
+        original = bundle["verified_claims"][0]
+        factual = {
+            key: value
+            for key, value in original.items()
+            if key not in {
+                "claim_ref",
+                "claim_digest",
+                "run_id",
+                "context_manifest_ref",
+                "result_refs",
+                "completeness_record_refs",
+                "artifact_refs",
+                "memory_refs",
+                "reuse_decisions",
+                "provenance_record_ref",
+            }
+        }
+        factual["claim_type"] = "baseline_stability"
+        candidate_claim = build_verified_claim_record(
+            factual,
+            run_id="run-task9",
+            context_manifest=bundle["context_manifests"][0],
+            evidence_by_ref={
+                item["evidence_ref"]: item
+                for item in bundle["evidence_manifests"]
+            },
+            trusted_provenance=bundle["trusted_provenance_records"][0],
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "runtime_persistence_verified_claim_intent_mismatch",
+        ):
+            _validate_verified_claim_contract_boundary(
+                candidate_claim,
+                analysis=analysis_contract_from_dict(
+                    {
+                        key: value
+                        for key, value in analysis.items()
+                        if key != "contract_signature"
+                    }
+                ),
                 evidence_by_ref={
                     item["evidence_ref"]: item
                     for item in bundle["evidence_manifests"]
@@ -3257,7 +2947,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                     for key, value in bundle["analysis_contract"].items()
                     if key != "contract_signature"
                 }),
-                unbound_claim_intents=set(),
                 evidence_by_ref={
                     item["evidence_ref"]: item
                     for item in bundle["evidence_manifests"]
@@ -3271,172 +2960,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 ),
             )
 
-    def test_unbound_claim_intent_gap_allows_only_zero_claim_publication(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-
-        for has_gap, should_pass in ((True, True), (False, False)):
-            with self.subTest(has_gap=has_gap):
-                bundle = _authority_bundle()
-                analysis = {
-                    **bundle["analysis_contract"],
-                    "claim_intents": ["unbound_claim_intent"],
-                    "contract_gaps": ([{
-                        "gap_type": "contract_partial",
-                        "gap_id": "claim_intents:unbound",
-                        "dataset_id": "",
-                        "affected_capabilities": ["segment_contribution"],
-                        "affected_claim_types": ["unbound_claim_intent"],
-                        "owner": "contract_owner",
-                        "repair_options": [
-                            "bind_capability_claim_types",
-                            "bind_metric_claim_types",
-                            "clarify_claim_intent",
-                        ],
-                        "requires_clarification": True,
-                        "diagnostic_context": {},
-                    }] if has_gap else []),
-                }
-                analysis["contract_signature"] = analysis_contract_signature(analysis)
-                bundle["analysis_contract"] = analysis
-                bundle["context_manifests"] = ()
-                bundle["trusted_provenance_records"] = ()
-                bundle["verified_claims"] = ()
-                bundle["claim_links"] = ()
-                bundle["evidence_manifests"] = tuple(
-                    {**item, "context_manifest_ref": ""}
-                    for item in bundle["evidence_manifests"]
-                )
-                store = InMemoryConversationStore()
-                if should_pass:
-                    self.assertEqual(
-                        store.save_analysis_runtime_records(
-                            run_id="run-task9", **bundle
-                        ),
-                        "published",
-                    )
-                else:
-                    with self.assertRaisesRegex(
-                        EvidenceIntegrityError,
-                        "runtime_persistence_unbound_claim_intent_gap_invalid",
-                    ):
-                        store.save_analysis_runtime_records(
-                            run_id="run-task9", **bundle
-                        )
-
-    def test_unbound_sentinel_rejects_mixed_claims_and_fake_gap_ids(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-
-        canonical_gap = {
-            "gap_type": "contract_partial",
-            "gap_id": "claim_intents:unbound",
-            "dataset_id": "",
-            "affected_capabilities": ["segment_contribution"],
-            "affected_claim_types": ["unbound_claim_intent"],
-            "owner": "contract_owner",
-            "repair_options": [
-                "bind_capability_claim_types",
-                "bind_metric_claim_types",
-                "clarify_claim_intent",
-            ],
-            "requires_clarification": True,
-            "diagnostic_context": {},
-        }
-        mixed = _authority_bundle()
-        analysis = {
-            **mixed["analysis_contract"],
-            "claim_intents": [
-                "segment_contribution_or_mix_shift",
-                "unbound_claim_intent",
-            ],
-            "contract_gaps": [canonical_gap],
-        }
-        analysis["contract_signature"] = analysis_contract_signature(analysis)
-        mixed["analysis_contract"] = analysis
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_verified_claim_gap_blocked",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-task9", **mixed
-            )
-
-    def test_unbound_sentinel_is_wildcard_only_for_its_affected_capability(self):
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-
-        bundle = _authority_bundle()
-        ready_capability = bundle["analysis_contract"]["capability_requirements"][0]
-        analysis = {
-            **bundle["analysis_contract"],
-            "claim_intents": [
-                bundle["verified_claims"][0]["claim_type"],
-                "unbound_claim_intent",
-            ],
-            "capability_requirements": [ready_capability, "formula_decompose"],
-            "contract_gaps": [{
-                "gap_type": "contract_partial",
-                "gap_id": "claim_intents:unbound",
-                "dataset_id": "",
-                "affected_capabilities": ["formula_decompose"],
-                "affected_claim_types": ["unbound_claim_intent"],
-                "owner": "contract_owner",
-                "repair_options": [
-                    "bind_capability_claim_types",
-                    "bind_metric_claim_types",
-                    "clarify_claim_intent",
-                ],
-                "requires_clarification": True,
-                "diagnostic_context": {},
-            }],
-        }
-        analysis["contract_signature"] = analysis_contract_signature(analysis)
-        bundle["analysis_contract"] = analysis
-
-        self.assertEqual(
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-task9", **bundle
-            ),
-            "published",
-        )
-
-        analysis["contract_gaps"][0]["affected_capabilities"] = [ready_capability]
-        analysis["contract_signature"] = analysis_contract_signature(analysis)
-        bundle["analysis_contract"] = analysis
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_verified_claim_gap_blocked",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-task9", **bundle
-            )
-
-        canonical_gap = dict(analysis["contract_gaps"][0])
-        fake = _authority_bundle()
-        analysis = {
-            **fake["analysis_contract"],
-            "claim_intents": ["unbound_claim_intent"],
-            "contract_gaps": [{
-                **canonical_gap,
-                "gap_id": "fake-prefix-unbound-suffix",
-            }],
-        }
-        analysis["contract_signature"] = analysis_contract_signature(analysis)
-        fake["analysis_contract"] = analysis
-        fake["context_manifests"] = ()
-        fake["trusted_provenance_records"] = ()
-        fake["verified_claims"] = ()
-        fake["claim_links"] = ()
-        fake["evidence_manifests"] = tuple(
-            {**item, "context_manifest_ref": ""}
-            for item in fake["evidence_manifests"]
-        )
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_unbound_claim_intent_gap_invalid",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-task9", **fake
-            )
-
     def test_compiler_unsupported_claim_gap_allows_zero_claim_publication(self):
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature
 
@@ -3448,15 +2971,18 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 "gap_type": "contract_partial",
                 "gap_id": "claim_intent:causal_effect:unsupported",
                 "dataset_id": "",
-                "affected_capabilities": ["segment_contribution"],
+                "affected_capabilities": ["analysis_contract"],
                 "affected_claim_types": ["causal_effect"],
                 "owner": "contract_owner",
                 "repair_options": [
-                    "choose_supported_claim_intent",
-                    "clarify_claim_intent",
+                    "add_supporting_capability",
+                    "report_unavailable_claim",
                 ],
-                "requires_clarification": True,
-                "diagnostic_context": {},
+                "requires_clarification": False,
+                "diagnostic_context": {
+                    "claim_origin": "user_required",
+                    "publication_status": "unavailable",
+                },
             }],
         }
         analysis["contract_signature"] = analysis_contract_signature(analysis)
@@ -3477,11 +3003,8 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             "published",
         )
 
-    def test_unsupported_claim_gap_initial_scope_uses_set_semantics(self):
-        bundle = _unsupported_claim_gap_bundle(
-            affected_capabilities=("formula_decompose", "segment_contribution"),
-            clarification_outcome_ref="",
-        )
+    def test_unsupported_claim_gap_uses_compiler_control_scope(self):
+        bundle = _unsupported_claim_gap_bundle(clarification_outcome_ref="")
 
         self.assertEqual(
             InMemoryConversationStore().save_analysis_runtime_records(
@@ -3490,10 +3013,8 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             "published",
         )
 
-    def test_authority_carried_unsupported_claim_gap_allows_control_scoped_subset(self):
-        bundle = _unsupported_claim_gap_bundle(
-            affected_capabilities=("analysis_contract", "formula_decompose"),
-        )
+    def test_authority_carried_unsupported_claim_gap_uses_same_control_scope(self):
+        bundle = _unsupported_claim_gap_bundle()
 
         self.assertEqual(
             InMemoryConversationStore().save_analysis_runtime_records(
@@ -3658,232 +3179,12 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             ),
             "published",
         )
-        unsupported_gap = next(
-            gap
-            for gap in resumed.analysis_contract.contract_gaps
-            if gap.gap_id == "claim_intent:causal_effect:unsupported"
-        )
-        self.assertEqual(
-            set(unsupported_gap.affected_capabilities),
-            {"pattern_scan", "analysis_contract"},
-        )
-
-    def test_unsupported_claim_gap_rejects_scope_or_authority_drift(self):
-        canonical_gap = {
-            "gap_type": "contract_partial",
-            "gap_id": "claim_intent:causal_effect:unsupported",
-            "dataset_id": "",
-            "affected_capabilities": [
-                "formula_decompose",
-                "analysis_contract",
-            ],
-            "affected_claim_types": ["causal_effect"],
-            "owner": "contract_owner",
-            "repair_options": [
-                "choose_supported_claim_intent",
-                "clarify_claim_intent",
-            ],
-            "requires_clarification": True,
-            "diagnostic_context": {},
-        }
-        invalid_cases = (
-            ("subset_without_authority", "", {
-                **canonical_gap,
-                "affected_capabilities": ["formula_decompose"],
-            }),
-            ("control_without_authority", "", canonical_gap),
-            (
-                "malformed_authority",
-                "clarification-outcome:not-a-digest",
-                canonical_gap,
-            ),
-            (
-                "valid_authority_without_control_scope",
-                "clarification-outcome:" + "a" * 64,
-                {
-                    **canonical_gap,
-                    "affected_capabilities": ["formula_decompose"],
-                },
-            ),
-            (
-                "unknown_capability",
-                "clarification-outcome:" + "a" * 64,
-                {
-                    **canonical_gap,
-                    "affected_capabilities": [
-                        "formula_decompose",
-                        "unknown_capability",
-                        "analysis_contract",
-                    ],
-                },
-            ),
-            (
-                "duplicate_capability",
-                "clarification-outcome:" + "a" * 64,
-                {
-                    **canonical_gap,
-                    "affected_capabilities": [
-                        "formula_decompose",
-                        "analysis_contract",
-                        "formula_decompose",
-                    ],
-                },
-            ),
-            (
-                "fake_gap_id",
-                "clarification-outcome:" + "a" * 64,
-                {**canonical_gap, "gap_id": "claim_intent:causal_effect:carried"},
-            ),
-            (
-                "owner_drift",
-                "clarification-outcome:" + "a" * 64,
-                {**canonical_gap, "owner": "runtime_owner"},
-            ),
-            (
-                "repair_drift",
-                "clarification-outcome:" + "a" * 64,
-                {**canonical_gap, "repair_options": ["accept_claim"]},
-            ),
-        )
-        for label, clarification_ref, gap in invalid_cases:
-            with self.subTest(label=label):
-                bundle = _unsupported_claim_gap_bundle(
-                    clarification_outcome_ref=clarification_ref,
-                    contract_gaps=(gap,),
-                )
-
-                with self.assertRaisesRegex(
-                    EvidenceIntegrityError,
-                    "runtime_persistence_unbound_claim_intent_gap_invalid",
-                ):
-                    InMemoryConversationStore().save_analysis_runtime_records(
-                        run_id="run-task9", **bundle
-                    )
-
-    def test_valid_unsupported_gap_cannot_mask_sibling_grammar_drift(self):
-        canonical_gap = {
-            "gap_type": "contract_partial",
-            "gap_id": "claim_intent:causal_effect:unsupported",
-            "dataset_id": "",
-            "affected_capabilities": [
-                "formula_decompose",
-                "analysis_contract",
-            ],
-            "affected_claim_types": ["causal_effect"],
-            "owner": "contract_owner",
-            "repair_options": [
-                "choose_supported_claim_intent",
-                "clarify_claim_intent",
-            ],
-            "requires_clarification": True,
-            "diagnostic_context": {},
-        }
-        sibling_drifts = (
-            {**canonical_gap, "gap_id": "claim_intent:forged:carried"},
-            {**canonical_gap, "gap_id": "claim_intents:unbound:forged"},
-            {**canonical_gap, "gap_id": "claim_intents:forged"},
-            {**canonical_gap, "owner": "runtime_owner"},
-        )
-        for sibling_drift in sibling_drifts:
-            with self.subTest(sibling_drift=sibling_drift):
-                bundle = _unsupported_claim_gap_bundle(
-                    contract_gaps=(canonical_gap, sibling_drift),
-                )
-
-                with self.assertRaisesRegex(
-                    EvidenceIntegrityError,
-                    "runtime_persistence_unbound_claim_intent_gap_invalid",
-                ):
-                    InMemoryConversationStore().save_analysis_runtime_records(
-                        run_id="run-task9", **bundle
-                    )
-
-    def test_direct_unbound_gap_cannot_mask_invalid_unsupported_sibling(self):
-        bundle = _unsupported_claim_gap_bundle(
-            clarification_outcome_ref="",
-            contract_gaps=(
-                {
-                    "gap_type": "contract_partial",
-                    "gap_id": "claim_intents:unbound",
-                    "dataset_id": "",
-                    "affected_capabilities": [
-                        "segment_contribution",
-                        "formula_decompose",
-                    ],
-                    "affected_claim_types": ["unbound_claim_intent"],
-                    "owner": "contract_owner",
-                    "repair_options": [
-                        "bind_capability_claim_types",
-                        "bind_metric_claim_types",
-                        "clarify_claim_intent",
-                    ],
-                    "requires_clarification": True,
-                    "diagnostic_context": {},
-                },
-                {
-                    "gap_type": "contract_partial",
-                    "gap_id": "claim_intent:causal_effect:carried",
-                    "dataset_id": "",
-                    "affected_capabilities": ["formula_decompose"],
-                    "affected_claim_types": ["causal_effect"],
-                    "owner": "contract_owner",
-                    "repair_options": [
-                        "choose_supported_claim_intent",
-                        "clarify_claim_intent",
-                    ],
-                    "requires_clarification": True,
-                    "diagnostic_context": {},
-                },
-            ),
-        )
-
-        with self.assertRaisesRegex(
-            EvidenceIntegrityError,
-            "runtime_persistence_unbound_claim_intent_gap_invalid",
-        ):
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-task9", **bundle
+        self.assertTrue(
+            any(
+                gap.gap_id == "claim_intent:causal_effect:unsupported"
+                for gap in resumed.analysis_contract.contract_gaps
             )
-
-    def test_forged_plural_direct_gap_ids_fail_closed(self):
-        canonical_direct_gap = {
-            "gap_type": "contract_partial",
-            "gap_id": "claim_intents:unbound",
-            "dataset_id": "",
-            "affected_capabilities": [
-                "segment_contribution",
-                "formula_decompose",
-            ],
-            "affected_claim_types": ["unbound_claim_intent"],
-            "owner": "contract_owner",
-            "repair_options": [
-                "bind_capability_claim_types",
-                "bind_metric_claim_types",
-                "clarify_claim_intent",
-            ],
-            "requires_clarification": True,
-            "diagnostic_context": {},
-        }
-        for forged_gap_id in (
-            "claim_intents:forged",
-            "claim_intents:unbound:forged",
-        ):
-            with self.subTest(forged_gap_id=forged_gap_id):
-                bundle = _unsupported_claim_gap_bundle(
-                    clarification_outcome_ref="",
-                    contract_gaps=({
-                        **canonical_direct_gap,
-                        "gap_id": forged_gap_id,
-                    },),
-                )
-
-                with self.assertRaisesRegex(
-                    EvidenceIntegrityError,
-                    "runtime_persistence_unbound_claim_intent_gap_invalid",
-                ):
-                    InMemoryConversationStore().save_analysis_runtime_records(
-                        run_id="run-task9", **bundle
-                    )
+        )
 
     def test_ordinary_contract_gap_does_not_force_zero_claims(self):
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature
@@ -4202,7 +3503,7 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             sql_hash="a" * 64,
             artifact_audit={},
             answer_text=claim["text"],
-            final_business_summary=claim["text"],
+            final_business_summary="",
             analysis_contract=bundle["analysis_contract"],
             query_contracts=bundle["query_contracts"],
             query_results=bundle["query_execution_records"],

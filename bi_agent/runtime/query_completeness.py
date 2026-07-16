@@ -156,6 +156,10 @@ def validate_query_set(
     if not (len(contracts) == len(results) == len(reports)):
         raise ValueError("query_set_length_mismatch")
 
+    query_set_contract_refs = tuple(
+        sorted(contract.query_contract_id for contract in contracts)
+    )
+
     validated = []
     for index, (contract, result, report) in enumerate(
         zip(contracts, results, reports)
@@ -216,8 +220,8 @@ def validate_query_set(
             readiness = "blocked"
         coverage_summary = {
             **dict(report.coverage_summary),
-            "query_set_index": index,
             "query_set_size": len(contracts),
+            "query_set_contract_refs": query_set_contract_refs,
         }
         if contract.reconciliation_binding is not None:
             coverage_summary["reconciliation_validation"] = dict(
@@ -848,6 +852,8 @@ def _dimension_total_assertion(
         )
     reasons = []
     tolerance_details = {}
+    reconciled_metrics = []
+    non_additive_metrics = []
     for binding in contract.metric_bindings:
         total_binding = next(
             (
@@ -863,10 +869,9 @@ def _dimension_total_assertion(
         tolerance = binding.reconciliation_tolerance
         tolerance_details[binding.metric_id] = tolerance
         if binding.reconciliation_strategy == "unsupported_non_additive":
-            reasons.append(
-                f"metric_reconciliation_unsupported:{binding.metric_id}"
-            )
+            non_additive_metrics.append(binding.metric_id)
             continue
+        reconciled_metrics.append(binding.metric_id)
         if binding.reconciliation_strategy == "ratio_from_components":
             reasons.extend(
                 _ratio_reconciliation_reasons(
@@ -893,6 +898,11 @@ def _dimension_total_assertion(
                     f"{_format_number(dimension_value)}:"
                     f"{_format_number(total_value)}:{tolerance}"
                 )
+    if non_additive_metrics and not reconciled_metrics:
+        reasons.append(
+            "dimension_total_reconciliation_unavailable:"
+            f"{','.join(non_additive_metrics)}"
+        )
     selected_tolerance = (
         next(iter(tolerance_details.values())) if len(tolerance_details) == 1 else None
     )
@@ -902,6 +912,8 @@ def _dimension_total_assertion(
             "reference_query_contract_ref": total_contract.query_contract_id,
             "tolerance": selected_tolerance,
             "metric_tolerances": tolerance_details,
+            "reconciled_metrics": tuple(reconciled_metrics),
+            "non_additive_metrics": tuple(non_additive_metrics),
         }
     )
     return _assertion(

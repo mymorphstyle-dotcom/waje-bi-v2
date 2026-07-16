@@ -11,7 +11,7 @@ from bi_agent.conversation import run_status as run_status_policy
 from bi_agent.conversation.agent_core import (
     ConversationAgentCore,
     RunFailureFinalizationError,
-    _completed_material_authority_failure,
+    _finalize_analysis_run_failure,
 )
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.store import InMemoryConversationStore
@@ -1221,7 +1221,7 @@ def test_postgres_nonterminal_run_can_still_transition_to_failed() -> None:
 
 
 def _delivery_failure_result(store):
-    return _completed_material_authority_failure(
+    return _finalize_analysis_run_failure(
         store=store,
         failure_reason="analysis_delivery_persistence_failed",
         failure_stage="answer_package",
@@ -1308,7 +1308,7 @@ def test_delivery_failure_secondary_audits_keep_unique_fallback_refs() -> None:
         request={"question": "检查付费金额"},
     )
 
-    _completed_material_authority_failure(
+    _finalize_analysis_run_failure(
         store=store,
         failure_reason="analysis_delivery_persistence_failed",
         failure_stage="answer_package",

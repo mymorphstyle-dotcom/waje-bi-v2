@@ -354,6 +354,13 @@ formula_components:
       current_paid_order_snapshot: contract_backed
     contract_state: contract_backed
     role: count
+  - component_id: previous_paid_dau_retained_users
+    business_name: 昨日付费日活留存人数
+    ssot_node_id: 2005ff7adbf186ac07ecc9565fbb5da9
+    source_coverage:
+      market_dashboard_2024_2026: evidence_linked_pending_metric_contract
+    contract_state: evidence_linked
+    role: count
 
 decomposition_paths:
   - path_id: paid_dau_arpu
@@ -367,6 +374,15 @@ decomposition_paths:
       required: true
       residual_policy: must_report
     launch_status: available_for_current_paid_order_snapshot
+    path_role: root
+    runtime_projection:
+      target_metric: paid_amount
+      requires_components:
+        - paid_dau
+        - paid_dau_arpu
+      component_bindings:
+        paid_dau: paid_dau
+        paid_dau_arpu: paid_dau_arpu
   - path_id: paid_user_arppu
     ssot_node_id: 2ba635b7fc42ce997a777af0aef22d9f
     expression: paid_amount = paid_dau * paid_user_conversion_rate * paid_amount_per_paid_user
@@ -380,6 +396,17 @@ decomposition_paths:
       residual_policy: must_report
     launch_status: evidence_linked_dashboard_daily_only
     launch_note: Uses market dashboard 付费日活 and 付费人数 components; paid-order detail remains the joint-analysis source.
+    path_role: root
+    runtime_projection:
+      target_metric: paid_amount
+      requires_components:
+        - paid_dau
+        - paid_user_conversion_rate
+        - paid_amount_per_paid_user
+      component_bindings:
+        paid_dau: paid_dau
+        paid_user_conversion_rate: paid_user_conversion_rate
+        paid_amount_per_paid_user: paid_amount_per_paid_user
   - path_id: new_user_funnel_dashboard
     ssot_node_id: 882c4c534d4d165796562109beb068da
     expression: dashboard_funnel_components = new_users, registrations, registration_rate_new_base, first_pay_users, first_pay_rate_new_base, same_day_new_paid_users, same_day_new_paid_rate
@@ -397,6 +424,18 @@ decomposition_paths:
       residual_policy: must_report
     launch_status: evidence_linked_dashboard_daily_only
     launch_note: Use market dashboard source fields 注册率, 首充率, and 新增付费率 as the v2 business metrics confirmed by owner.
+    path_role: supporting
+    target_component: first_pay_users
+    runtime_projection:
+      target_metric: first_paid_users
+      component_bindings:
+        new_users: new_users
+        registrations: registrations
+        registration_rate_new_base: registration_rate_new_base
+        first_pay_users: first_paid_users
+        first_pay_rate_new_base: first_pay_rate_new_base
+        same_day_new_paid_users: same_day_new_paid_users
+        same_day_new_paid_rate: same_day_new_paid_rate
   - path_id: frequency_ticket_size
     ssot_node_id: 9b7c5bb205584cffddef346dfc54c38b
     expression: paid_amount = paid_dau * paid_user_conversion_rate * payment_frequency_per_paid_user * avg_paid_amount_per_payment
@@ -411,6 +450,18 @@ decomposition_paths:
       residual_policy: must_report
     launch_status: available_with_paid_user_count_expression_for_current_paid_order_snapshot
     accepted_runtime_expression: paid_amount = paid_user_count * payment_frequency_per_paid_user * avg_paid_amount_per_payment
+    path_role: root
+    runtime_projection:
+      target_metric: paid_amount
+      runtime_expression: paid_amount = paid_user_count * payment_frequency_per_paid_user * avg_paid_amount_per_payment
+      requires_components:
+        - paid_user_count
+        - payment_frequency_per_paid_user
+        - avg_paid_amount_per_payment
+      component_bindings:
+        paid_user_count: paid_users
+        payment_frequency_per_paid_user: paid_frequency
+        avg_paid_amount_per_payment: avg_order_amount
   - path_id: region_sum
     ssot_node_id: 34d9c39ebe6b3c9e5a4034411a58e4d6
     expression: paid_amount = sum(paid_amount by region)
@@ -421,6 +472,15 @@ decomposition_paths:
       required: true
       residual_policy: must_report
     launch_status: needs_dimension_contract
+    path_role: root
+    runtime_projection:
+      target_metric: paid_amount
+      requires_components:
+        - paid_amount
+      component_bindings:
+        paid_amount: paid_amount
+      dimension_bindings:
+        region: region
   - path_id: device_sum
     ssot_node_id: 21be18da5198d1d5d012873a1fcf4808
     expression: paid_amount = sum(paid_amount by device_model)
@@ -431,6 +491,304 @@ decomposition_paths:
       required: true
       residual_policy: must_report
     launch_status: needs_dimension_contract
+    path_role: root
+    runtime_projection:
+      target_metric: paid_amount
+      requires_components:
+        - paid_amount
+      component_bindings:
+        paid_amount: paid_amount
+      dimension_bindings:
+        device_model: device_model
+  - path_id: paid_dau_first_pay_retention
+    ssot_node_id: 16c91789eebf307d4e4ce97bbc07797b
+    expression: paid_dau = first_pay_users + previous_paid_dau_retained_users
+    evidence_type: accounting_contribution
+    requires_components:
+      - first_pay_users
+      - previous_paid_dau_retained_users
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_retention_metric_contract
+    path_role: supporting
+    target_component: paid_dau
+    runtime_projection:
+      target_metric: paid_dau
+      component_bindings:
+        first_pay_users: first_paid_users
+        previous_paid_dau_retained_users: previous_paid_dau_retained_users
+  - path_id: avg_order_amount_identity
+    ssot_node_id: cfd21a9008583879867471bc21fc0271
+    expression: avg_paid_amount_per_payment = paid_amount / paid_order_count
+    evidence_type: accounting_contribution
+    requires_components:
+      - paid_amount
+      - paid_order_count
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: available_for_current_paid_order_snapshot
+    path_role: supporting
+    target_component: avg_paid_amount_per_payment
+    runtime_projection:
+      target_metric: avg_order_amount
+      component_bindings:
+        paid_amount: paid_amount
+        paid_order_count: paid_orders
+  - path_id: payment_success_chain
+    ssot_node_id: ceba4f72086e02d7902722f407a673b1
+    expression: paid_order_count = initiated_payment_count * payment_success_rate
+    evidence_type: accounting_contribution
+    requires_components:
+      - initiated_payment_count
+      - payment_success_rate
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_payment_attempt_runtime_source
+    path_role: supporting
+    target_component: paid_order_count
+    runtime_projection:
+      target_metric: paid_orders
+      component_bindings:
+        initiated_payment_count: initiated_payment_count
+        payment_success_rate: payment_success_rate
+  - path_id: previous_paid_dau_retention
+    ssot_node_id: 2005ff7adbf186ac07ecc9565fbb5da9
+    expression: previous_paid_dau_retained_users = previous_paid_dau * previous_paid_dau_retention_rate
+    evidence_type: accounting_contribution
+    requires_components:
+      - previous_paid_dau
+      - previous_paid_dau_retention_rate
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_retention_metric_contract
+    path_role: supporting
+    target_component: previous_paid_dau_retained_users
+    runtime_projection:
+      target_metric: previous_paid_dau_retained_users
+      component_bindings:
+        previous_paid_dau: previous_paid_dau
+        previous_paid_dau_retention_rate: previous_paid_dau_retention_rate
+  - path_id: paid_user_conversion_identity
+    ssot_node_id: 2b5fdcf0e59d1b940f887a21bf128004
+    expression: paid_user_conversion_rate = paid_user_count / paid_dau
+    evidence_type: accounting_contribution
+    requires_components:
+      - paid_user_count
+      - paid_dau
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_paid_dau_runtime_source
+    path_role: supporting
+    target_component: paid_user_conversion_rate
+    runtime_projection:
+      target_metric: paid_user_conversion_rate
+      component_bindings:
+        paid_user_count: paid_users
+        paid_dau: paid_dau
+  - path_id: paid_frequency_identity
+    ssot_node_id: 058de25c67739e82efa3e6195b1cdfda
+    expression: payment_frequency_per_paid_user = paid_order_count / paid_user_count
+    evidence_type: accounting_contribution
+    requires_components:
+      - paid_order_count
+      - paid_user_count
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: available_for_current_paid_order_snapshot
+    path_role: supporting
+    target_component: payment_frequency_per_paid_user
+    runtime_projection:
+      target_metric: paid_frequency
+      component_bindings:
+        paid_order_count: paid_orders
+        paid_user_count: paid_users
+  - path_id: paid_amount_gameplay_sum
+    ssot_node_id: e57d88831a2369589f6b531b8c2a8786
+    expression: paid_amount ~= sum(gameplay_active_users * gameplay_arpu by gameplay)
+    evidence_type: statistical_association
+    requires_components:
+      - gameplay_active_users
+      - gameplay_arpu
+    requires_dimensions:
+      - gameplay
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_gameplay_payment_attribution_contract
+    path_role: root
+    runtime_projection:
+      target_metric: paid_amount
+      component_bindings:
+        gameplay_active_users: gameplay_active_users
+        gameplay_arpu: gameplay_arpu
+      dimension_bindings:
+        gameplay: gameplay_id
+  - path_id: gameplay_paid_amount_arppu
+    ssot_node_id: dcf8e5311ba0156a44926cdd132021a9
+    expression: gameplay_paid_amount = gameplay_active_users * gameplay_paid_rate * gameplay_amount_per_paid_user
+    evidence_type: accounting_contribution
+    requires_components:
+      - gameplay_active_users
+      - gameplay_paid_rate
+      - gameplay_amount_per_paid_user
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_gameplay_payment_attribution_contract
+    path_role: supporting
+    target_component: gameplay_paid_amount
+    runtime_projection:
+      target_metric: gameplay_paid_amount
+      component_bindings:
+        gameplay_active_users: gameplay_active_users
+        gameplay_paid_rate: gameplay_paid_rate
+        gameplay_amount_per_paid_user: gameplay_amount_per_paid_user
+  - path_id: gameplay_frequency_ticket_size
+    ssot_node_id: a7ab2b44f3b98f2cdead795e72354490
+    expression: gameplay_paid_amount = gameplay_active_users * gameplay_paid_rate * gameplay_paid_frequency * gameplay_avg_paid_amount
+    evidence_type: accounting_contribution
+    requires_components:
+      - gameplay_active_users
+      - gameplay_paid_rate
+      - gameplay_paid_frequency
+      - gameplay_avg_paid_amount
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_gameplay_payment_attribution_contract
+    path_role: supporting
+    target_component: gameplay_paid_amount
+    runtime_projection:
+      target_metric: gameplay_paid_amount
+      component_bindings:
+        gameplay_active_users: gameplay_active_users
+        gameplay_paid_rate: gameplay_paid_rate
+        gameplay_paid_frequency: gameplay_paid_frequency
+        gameplay_avg_paid_amount: gameplay_avg_paid_amount
+  - path_id: gameplay_active_exposure_click
+    ssot_node_id: b2881f5daa33a482f24b4defd7d1f548
+    expression: gameplay_active_users = gameplay_icon_exposures * gameplay_icon_click_rate
+    evidence_type: accounting_contribution
+    requires_components:
+      - gameplay_icon_exposures
+      - gameplay_icon_click_rate
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_gameplay_icon_event_contract
+    path_role: supporting
+    target_component: gameplay_active_users
+    runtime_projection:
+      target_metric: gameplay_active_users
+      component_bindings:
+        gameplay_icon_exposures: gameplay_icon_exposures
+        gameplay_icon_click_rate: gameplay_icon_click_rate
+  - path_id: gameplay_icon_position_mechanism
+    ssot_node_id: 9d4f5f07a6b03970bfbf9442428ff524
+    expression: gameplay_icon_exposures may vary with gameplay_icon_position
+    evidence_type: candidate_mechanism
+    requires_components:
+      - gameplay_icon_exposures
+    requires_dimensions:
+      - gameplay_icon_position
+    reconciliation:
+      required: false
+      residual_policy: not_applicable
+    launch_status: needs_gameplay_icon_event_contract
+    path_role: contextual
+    target_component: gameplay_icon_exposures
+    runtime_projection:
+      target_metric: gameplay_icon_exposures
+      component_bindings:
+        gameplay_icon_exposures: gameplay_icon_exposures
+      dimension_bindings:
+        gameplay_icon_position: gameplay_icon_position
+  - path_id: ggr_gameplay_sum
+    ssot_node_id: 777939ef030eb92e5a720f3ed56eed76
+    expression: ggr = sum(gameplay_turnover * (1 - gameplay_payout_rate) by gameplay)
+    evidence_type: accounting_contribution
+    requires_components:
+      - gameplay_turnover
+      - gameplay_payout_rate
+    requires_dimensions:
+      - gameplay
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_ggr_metric_contract
+    path_role: contextual
+    target_component: ggr
+    runtime_projection:
+      target_metric: ggr
+      component_bindings:
+        gameplay_turnover: gameplay_turnover
+        gameplay_payout_rate: gameplay_payout_rate
+      dimension_bindings:
+        gameplay: gameplay_id
+  - path_id: gameplay_turnover_components
+    ssot_node_id: c8d405e80d9a6e9bbde1a2c42facbdfa
+    expression: gameplay_turnover = gameplay_active_users * bets_per_active_user * avg_bet_amount
+    evidence_type: accounting_contribution
+    requires_components:
+      - gameplay_active_users
+      - bets_per_active_user
+      - avg_bet_amount
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_gameplay_turnover_metric_contract
+    path_role: contextual
+    target_component: gameplay_turnover
+    runtime_projection:
+      target_metric: gameplay_turnover
+      component_bindings:
+        gameplay_active_users: gameplay_active_users
+        bets_per_active_user: bets_per_active_user
+        avg_bet_amount: avg_bet_amount
+  - path_id: hour_sum
+    ssot_node_id: 9de2f481297fb95286bfa2e531be42b7
+    expression: paid_amount = sum(paid_amount by business_hour)
+    evidence_type: accounting_contribution
+    requires_dimensions:
+      - business_hour
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_business_hour_dimension_contract
+    path_role: root
+    runtime_projection:
+      target_metric: paid_amount
+      requires_components:
+        - paid_amount
+      component_bindings:
+        paid_amount: paid_amount
+      dimension_bindings:
+        business_hour: business_hour
+  - path_id: recharge_tier_sum
+    ssot_node_id: c11cfc32396526335d3124f92ec45dd3
+    expression: paid_amount = sum(paid_amount by recharge_tier)
+    evidence_type: accounting_contribution
+    requires_dimensions:
+      - recharge_tier
+    reconciliation:
+      required: true
+      residual_policy: must_report
+    launch_status: needs_recharge_tier_dimension_contract
+    path_role: root
+    runtime_projection:
+      target_metric: paid_amount
+      requires_components:
+        - paid_amount
+      component_bindings:
+        paid_amount: paid_amount
+      dimension_bindings:
+        recharge_tier: recharge_tier
 
 claim_boundaries:
   allowed_evidence_types:

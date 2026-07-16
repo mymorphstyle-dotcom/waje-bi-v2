@@ -410,10 +410,17 @@ def _runtime_evaluation_projection_fixture(*, artifact_path=None):
     fixture = _authoritative_reuse_review_fixture()
     run_id = fixture.current_run_id
     evidence_ref = f"evidence:{fixture.current_binding.record_ref}"
+    verified_claim = {
+        "text": "复用后结论",
+        "claim_type": "comparative_change",
+        "claim_strength": "observed",
+        "evidence_refs": [evidence_ref],
+    }
     answer_package = {
         "run_id": run_id,
         "status": "completed",
         "admin_audit": {
+            "verified_claims": [verified_claim],
             "analysis_runtime_persistence": {
                 "status": "persisted",
                 "analysis_contract_ref": (
@@ -424,12 +431,7 @@ def _runtime_evaluation_projection_fixture(*, artifact_path=None):
         "sections": [
             {
                 "section_id": "summary",
-                "payload": {"claims": [{
-                    "text": "复用后结论",
-                    "claim_type": "comparative_change",
-                    "claim_strength": "observed",
-                    "evidence_refs": [evidence_ref],
-                }]},
+                "payload": {"claims": [verified_claim]},
             },
             {
                 "section_id": "evidence",

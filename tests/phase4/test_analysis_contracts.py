@@ -94,6 +94,16 @@ class AnalysisContractsTest(unittest.TestCase):
         self.assertEqual(result.gaps[0].owner, "data_owner")
         self.assertEqual(result.gaps[0].affected_capabilities, ("compare_periods",))
         self.assertEqual(result.gaps[0].affected_claim_types, ("comparative_change",))
+        self.assertFalse(result.gaps[0].requires_clarification)
+        self.assertEqual(result.gaps[0].repair_options, ("wait_for_refresh",))
+        self.assertEqual(
+            result.gaps[0].diagnostic_context,
+            {
+                "target_date": "2026-07-09",
+                "latest_complete_business_date": "2026-07-04",
+                "terminal_for_current_window": True,
+            },
+        )
 
     def test_gap_identity_includes_requested_target_window(self):
         shared = {

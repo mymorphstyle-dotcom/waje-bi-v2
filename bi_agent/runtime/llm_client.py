@@ -12,6 +12,7 @@ import signal
 import threading
 from time import perf_counter
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
+from urllib.parse import urlparse
 
 from openai import OpenAI
 
@@ -60,12 +61,16 @@ class LLMTimeoutError(RuntimeError):
 
 class OpenAICompatibleLLMClient:
     supports_output_validator = True
+    supports_deferred_narrative_validation = True
+    supports_model_tier = True
+    supports_thinking_mode = True
 
     def __init__(
         self,
         *,
         provider: str,
         model: str,
+        critical_model: str = "",
         api_key: str,
         base_url: str = "",
         timeout_seconds: float | None = DEFAULT_TIMEOUT_SECONDS,
@@ -73,6 +78,7 @@ class OpenAICompatibleLLMClient:
     ):
         self.provider = provider
         self.model = model
+        self.critical_model = critical_model or model
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
         self.max_attempts = max_attempts
@@ -95,6 +101,7 @@ class OpenAICompatibleLLMClient:
         env = os.environ if environ is None else environ
         provider = env.get("WAJE_LLM_PROVIDER", "openai").strip()
         model = env.get("WAJE_LLM_MODEL", "").strip()
+        critical_model = env.get("WAJE_LLM_CRITICAL_MODEL", "").strip()
         api_key = (
             env.get("WAJE_LLM_API_KEY")
             or env.get("OPENAI_API_KEY")
@@ -113,6 +120,7 @@ class OpenAICompatibleLLMClient:
         return cls(
             provider=provider,
             model=model,
+            critical_model=critical_model,
             api_key=api_key,
             base_url=base_url,
             timeout_seconds=timeout_seconds,
@@ -126,6 +134,9 @@ class OpenAICompatibleLLMClient:
         messages: Sequence[Mapping[str, str]],
         required_keys: Sequence[str],
         output_validator: Callable[[Mapping[str, Any]], None] | None = None,
+        defer_narrative_validation: bool = False,
+        model_tier: str = "default",
+        thinking: str | None = None,
     ) -> LLMResult:
         started = perf_counter()
         started_at = _utc_now()
@@ -133,12 +144,27 @@ class OpenAICompatibleLLMClient:
         attempt_failures: list[dict[str, Any]] = []
         response_payload: dict[str, Any] = {}
         content = ""
+        actual_model = (
+            self.critical_model if model_tier == "critical" else self.model
+        )
         for attempt in range(1, self.max_attempts + 1):
+            parsed_output: dict[str, Any] | None = None
             try:
                 response_payload = {}
-                response_payload = self._request_json_once(messages_payload, attempt=attempt)
+                content = ""
+                response_payload = self._request_json_once(
+                    messages_payload,
+                    attempt=attempt,
+                    model=actual_model,
+                    thinking=thinking,
+                )
                 content = response_payload["content"] or "{}"
-                output = _localize_narrative_fields(_parse_json_object(content))
+                parsed_output = _parse_json_object(content)
+                output = (
+                    parsed_output
+                    if defer_narrative_validation
+                    else _localize_narrative_fields(parsed_output)
+                )
                 missing = [key for key in required_keys if key not in output]
                 if missing:
                     raise LLMOutputError(f"missing_llm_output_keys:{','.join(missing)}")
@@ -167,18 +193,26 @@ class OpenAICompatibleLLMClient:
                 break
             except Exception as exc:
                 failure_code = _safe_retry_failure_code(exc)
-                attempt_failures.append(
-                    {
-                        "attempt": attempt,
-                        "failure_code": failure_code,
-                        "response_id": str(response_payload.get("response_id") or ""),
-                    }
+                attempt_failure = {
+                    "attempt": attempt,
+                    "failure_code": failure_code,
+                    "response_id": str(response_payload.get("response_id") or ""),
+                }
+                if content:
+                    attempt_failure["raw_response_content"] = content
+                if parsed_output is not None:
+                    attempt_failure["structured_output"] = dict(parsed_output)
+                attempt_failure["reasoning_content_present"] = bool(
+                    response_payload.get("reasoning_content_present", False)
                 )
+                attempt_failures.append(attempt_failure)
                 if attempt >= self.max_attempts:
                     audit = _failed_llm_audit(
                         task=task,
                         provider=self.provider,
-                        model=self.model,
+                        model=actual_model,
+                        model_tier=model_tier,
+                        thinking=thinking,
                         prompt_version=prompt_version,
                         required_keys=required_keys,
                         messages=messages_payload,
@@ -199,39 +233,54 @@ class OpenAICompatibleLLMClient:
                     raise
         finished_at = _utc_now()
 
-        return LLMResult(
-            output=output,
-            audit={
-                "task": task,
-                "provider": self.provider,
-                "model": self.model,
-                "prompt_version": prompt_version,
-                "response_id": response_payload.get("response_id", ""),
-                "messages": messages_payload,
-                "required_keys": list(required_keys),
-                "raw_response_content": content,
-                "started_at": started_at,
-                "finished_at": finished_at,
-                "duration_ms": round((perf_counter() - started) * 1000, 3),
-                "attempt_count": attempt,
-                "input_hash": _hash_json(messages),
-                "output_hash": _hash_json(output),
-                "base_url_hash": _hash_text(self.base_url) if self.base_url else "",
-                "usage": dict(response_payload.get("usage") or {}),
-                "structured_output": output,
-            },
-        )
+        audit = {
+            "task": task,
+            "provider": self.provider,
+            "model": actual_model,
+            "model_tier": model_tier,
+            "thinking": thinking,
+            "reasoning_content_present": bool(
+                response_payload.get("reasoning_content_present", False)
+            ),
+            "prompt_version": prompt_version,
+            "response_id": response_payload.get("response_id", ""),
+            "messages": messages_payload,
+            "required_keys": list(required_keys),
+            "raw_response_content": content,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_ms": round((perf_counter() - started) * 1000, 3),
+            "attempt_count": attempt,
+            "input_hash": _hash_json(messages),
+            "output_hash": _hash_json(output),
+            "base_url_hash": _hash_text(self.base_url) if self.base_url else "",
+            "usage": dict(response_payload.get("usage") or {}),
+            "structured_output": output,
+        }
+        if attempt_failures:
+            audit["attempt_failures"] = [
+                dict(item) for item in attempt_failures
+            ]
+        return LLMResult(output=output, audit=audit)
 
     def _request_json_once(
-        self, messages: Sequence[Mapping[str, str]], *, attempt: int = 1
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        attempt: int = 1,
+        model: str | None = None,
+        thinking: str | None = None,
     ) -> dict[str, Any]:
+        actual_model = model or self.model
         if isinstance(self._client, OpenAI):
             return _request_openai_json_in_subprocess(
                 {
                     "api_key": self._api_key,
                     "base_url": self.base_url,
                     "timeout_seconds": self.timeout_seconds,
-                    "model": self.model,
+                    "model": actual_model,
+                    "thinking": thinking,
+                    "deepseek_endpoint": _is_deepseek_endpoint(self.base_url),
                     "attempt": attempt,
                 },
                 [dict(message) for message in messages],
@@ -239,16 +288,21 @@ class OpenAICompatibleLLMClient:
                 request_worker=self._request_worker or _request_openai_json_once,
             )
         with _wall_clock_timeout(self.timeout_seconds):
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=[dict(message) for message in messages],
-                response_format={"type": "json_object"},
-                temperature=0,
+            request = _chat_completion_request(
+                model=actual_model,
+                messages=messages,
+                thinking=thinking,
+                deepseek_endpoint=_is_deepseek_endpoint(self.base_url),
             )
+            response = self._client.chat.completions.create(**request)
+        message = response.choices[0].message
         return {
             "response_id": getattr(response, "id", ""),
-            "content": response.choices[0].message.content or "{}",
+            "content": message.content or "{}",
             "usage": _usage_dict(getattr(response, "usage", None)),
+            "reasoning_content_present": bool(
+                getattr(message, "reasoning_content", None)
+            ),
         }
 
 
@@ -304,6 +358,8 @@ def _failed_llm_audit(
     task: str,
     provider: str,
     model: str,
+    model_tier: str,
+    thinking: str | None,
     prompt_version: str,
     required_keys: Sequence[str],
     messages: Sequence[Mapping[str, str]],
@@ -319,9 +375,15 @@ def _failed_llm_audit(
         "task": task,
         "provider": provider,
         "model": model,
+        "model_tier": model_tier,
+        "thinking": thinking,
+        "reasoning_content_present": bool(
+            response_payload.get("reasoning_content_present", False)
+        ),
         "prompt_version": prompt_version,
         "response_id": str(response_payload.get("response_id") or ""),
         "required_keys": list(required_keys),
+        "messages": [dict(message) for message in messages],
         "started_at": started_at,
         "finished_at": _utc_now(),
         "duration_ms": round((perf_counter() - started) * 1000, 3),
@@ -487,16 +549,58 @@ def _request_openai_json_once(
         max_retries=0,
     )
     response = client.chat.completions.create(
-        model=config["model"],
-        messages=[dict(message) for message in messages],
-        response_format={"type": "json_object"},
-        temperature=0,
+        **_chat_completion_request(
+            model=str(config["model"]),
+            messages=messages,
+            thinking=(
+                str(config["thinking"])
+                if config.get("thinking") in {"enabled", "disabled"}
+                else None
+            ),
+            deepseek_endpoint=bool(
+                config.get(
+                    "deepseek_endpoint",
+                    _is_deepseek_endpoint(str(config.get("base_url") or "")),
+                )
+            ),
+        )
     )
+    message = response.choices[0].message
     return {
         "response_id": getattr(response, "id", ""),
-        "content": response.choices[0].message.content or "{}",
+        "content": message.content or "{}",
         "usage": _usage_dict(getattr(response, "usage", None)),
+        "reasoning_content_present": bool(
+            getattr(message, "reasoning_content", None)
+        ),
     }
+
+
+def _chat_completion_request(
+    *,
+    model: str,
+    messages: Sequence[Mapping[str, str]],
+    thinking: str | None,
+    deepseek_endpoint: bool,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "model": model,
+        "messages": [dict(message) for message in messages],
+        "response_format": {"type": "json_object"},
+    }
+    if deepseek_endpoint and thinking in {"enabled", "disabled"}:
+        request["extra_body"] = {"thinking": {"type": thinking}}
+    if thinking != "enabled":
+        request["temperature"] = 0
+    return request
+
+
+def _is_deepseek_endpoint(base_url: str) -> bool:
+    if not base_url:
+        return False
+    parsed = urlparse(base_url)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    return hostname == "deepseek.com" or hostname.endswith(".deepseek.com")
 
 
 @contextmanager
@@ -571,6 +675,16 @@ NARRATIVE_KEYS = frozenset(
         "business_summary",
         "description",
         "issue_description",
+        "display_summary",
+        "publishable_wording",
+        "supporting_reasons",
+        "main_risks",
+        "alternative_explanations",
+        "missing_checks",
+        "recommended_next_analysis",
+        "answer_guidance",
+        "business_audit_summary",
+        "retry_instruction",
     }
 )
 

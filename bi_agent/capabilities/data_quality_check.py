@@ -25,7 +25,7 @@ def data_quality_check(
     if not required_fields:
         return make_evidence_envelope(
             "data_quality_check",
-            evidence_type="data_quality",
+            evidence_type="insufficient",
             strength="low",
             wording_limit="degraded",
             typed_payload={
@@ -43,7 +43,7 @@ def data_quality_check(
     failed = {field: count for field, count in missing.items() if count}
     return make_evidence_envelope(
         "data_quality_check",
-        evidence_type="data_quality",
+        evidence_type="insufficient",
         strength="high" if not failed and not risk_limitations else "low",
         wording_limit="supported" if not failed and not risk_limitations else "degraded",
         typed_payload={

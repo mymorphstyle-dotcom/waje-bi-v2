@@ -260,10 +260,16 @@ def metric(dataset_id="paid_order_success", expression=None):
 def dimension(dimension_id="channel"):
     return DimensionBinding(
         dimension_id,
-        f"contracts/dimensions/dimensions.yaml#{dimension_id}",
+        (
+            "contracts/dimensions/dimensions.yaml#acquisition_channel"
+            if dimension_id == "channel"
+            else f"contracts/dimensions/dimensions.yaml#{dimension_id}"
+        ),
         "paid_order_success",
         dimension_id,
         ("day", "window_id"),
+        null_bucket=("Blank" if dimension_id == "channel" else "Unknown"),
+        permission_scope="analyst",
     )
 
 
@@ -502,6 +508,27 @@ def resigned(base, **changes):
 
 
 class ClickHouseQueryCompilerTest(unittest.TestCase):
+    def test_dimension_null_bucket_is_normalized_before_aggregation(self):
+        query = contract(
+            query_intent="dimension_contribution_scan",
+            dimensions=(dimension(),),
+        )
+
+        compiled = compile_clickhouse_query(
+            query,
+            {"snapshot:paid_order_success:1": snapshot()},
+        )
+
+        self.assertIn(
+            "ifNull(nullIf(trim(toString(`channel`)), ''), "
+            "%(dimension_null_bucket_0)s) AS `channel`",
+            compiled.sql_text,
+        )
+        self.assertEqual(
+            compiled.parameters["dimension_null_bucket_0"],
+            "Blank",
+        )
+
     def test_dashboard_bindings_require_verified_release_and_physical_revision(self):
         selected = snapshot(
             "market_dashboard",
@@ -609,7 +636,11 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         )
 
         compiled = compile_clickhouse_query(query, {selected.snapshot_ref: selected})
-        self.assertIn("`channel` AS `channel`", compiled.sql_text)
+        self.assertIn(
+            "ifNull(nullIf(trim(toString(`channel`)), ''), "
+            "%(dimension_null_bucket_0)s) AS `channel`",
+            compiled.sql_text,
+        )
 
         mismatched = replace(
             selected,
@@ -717,7 +748,11 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             {"snapshot:gameplay:1": snapshot("gameplay")},
         )
         self.assertIn("sum(player_bet_amount)", compiled.sql_text)
-        self.assertIn("`gameplay` AS `gameplay`", compiled.sql_text)
+        self.assertIn(
+            "ifNull(nullIf(trim(toString(`gameplay`)), ''), "
+            "%(dimension_null_bucket_0)s) AS `gameplay`",
+            compiled.sql_text,
+        )
         self.assertNotIn("paid_amount", compiled.sql_text)
         self.assertEqual(
             dimension_contract["allowed_grains"],
@@ -1271,15 +1306,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
     def test_compiles_contract_filters_with_parameters(self):
         compiled = compile_clickhouse_query(
             contract(
-                dimensions=(
-                    DimensionBinding(
-                        "channel",
-                        "contracts/dimensions/dimensions.yaml#channel",
-                        "paid_order_success",
-                        "channel",
-                        ("day", "window_id"),
-                    ),
-                ),
+                dimensions=(dimension(),),
                 filters=(
                     {"field": "channel", "op": "eq", "value": "ads' OR 1=1"},
                     {"field": "paid_amount_ngn", "op": "gte", "value": 10},

@@ -17,6 +17,11 @@ SINGLE_PERIOD_CONFIDENCE = re.compile(
     r"|统计置信|非随机|显著",
     re.IGNORECASE,
 )
+MECHANISM_CAUSAL_WORDING = re.compile(
+    r"\b(cause|caused|causes|causing|because|due to)\b"
+    r"|导致|造成|因果|归因于|唯一原因|根本原因|业务机制|作用机制|使得",
+    re.IGNORECASE,
+)
 
 
 def wording_warnings(
@@ -27,7 +32,11 @@ def wording_warnings(
     for index, claim in enumerate(claims):
         text = str(claim.get("text", ""))
         refs = claim.get("evidence_refs", ())
-        if _has_positive_causal_wording(text):
+        if _has_positive_causal_wording(text) and not _bounded_accounting_wording(
+            claim,
+            text,
+            evidence_by_ref,
+        ):
             has_causal_evidence = any(
                 evidence_by_ref.get(ref, {}).get("evidence_type") == "causal_evidence"
                 for ref in refs
@@ -63,6 +72,31 @@ def wording_warnings(
                 }
             )
     return warnings
+
+
+def _bounded_accounting_wording(
+    claim: Mapping[str, Any],
+    text: str,
+    evidence_by_ref: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    if str(claim.get("claim_type") or "") != "formula_component_contribution":
+        return False
+    refs = tuple(str(ref) for ref in claim.get("evidence_refs") or ())
+    if not any(
+        evidence_by_ref.get(ref, {}).get("evidence_type")
+        == "accounting_contribution"
+        for ref in refs
+    ):
+        return False
+    visible = text
+    for phrase in (
+        "驱动分解",
+        "会计驱动项",
+        "主要驱动项",
+        "核心驱动项",
+    ):
+        visible = visible.replace(phrase, "贡献分解")
+    return not MECHANISM_CAUSAL_WORDING.search(visible) and "驱动" not in visible
 
 
 def _has_positive_causal_wording(text: str) -> bool:

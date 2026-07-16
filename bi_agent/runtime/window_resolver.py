@@ -85,8 +85,13 @@ def resolve_revenue_windows(
                     affected_capabilities=affected_capabilities,
                     affected_claim_types=affected_claim_types,
                     owner="data_owner",
-                    repair_options=("wait_for_refresh", "use_latest_complete_business_day"),
-                    requires_clarification=True,
+                    repair_options=("wait_for_refresh",),
+                    requires_clarification=False,
+                    diagnostic_context={
+                        "target_date": target_day.isoformat(),
+                        "latest_complete_business_date": watermark.isoformat(),
+                        "terminal_for_current_window": True,
+                    },
                 )
             )
     return WindowResolution(windows=tuple(windows), gaps=tuple(gaps))

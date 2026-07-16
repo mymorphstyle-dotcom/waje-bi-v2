@@ -82,10 +82,10 @@ def plan_query_repair(
         return _decision(
             contract,
             report,
-            action="clarify",
+            action="block",
             reason="window_coverage_failure",
-            requires_llm=True,
-            requires_clarification=True,
+            requires_llm=False,
+            requires_clarification=False,
         )
 
     return _decision(

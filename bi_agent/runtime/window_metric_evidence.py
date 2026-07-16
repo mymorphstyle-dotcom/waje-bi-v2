@@ -93,8 +93,14 @@ def aggregate_window_metric_comparison(
     rows: Sequence[Mapping[str, Any]],
     *,
     metric_id: str,
+    primary_baseline_window_id: str = "",
+    allowed_query_intents: tuple[str, ...] = ("daily_metric_baselines",),
 ) -> WindowMetricComparison:
-    _validate_contract(contract, metric_id=metric_id)
+    _validate_contract(
+        contract,
+        metric_id=metric_id,
+        allowed_query_intents=allowed_query_intents,
+    )
     windows = tuple(contract.resolved_windows)
     by_id = {window.window_id: window for window in windows}
     rows_by_window: dict[str, list[Mapping[str, Any]]] = {
@@ -139,15 +145,37 @@ def aggregate_window_metric_comparison(
         _aggregate_window(window, rows_by_window[window.window_id], metric_id)
         for window in baselines
     )
+    if primary_baseline_window_id:
+        primary_candidates = tuple(
+            baseline
+            for baseline in aggregated_baselines
+            if baseline.window_id == primary_baseline_window_id
+        )
+        if len(primary_candidates) != 1:
+            raise WindowMetricEvidenceError(
+                "window_metric_primary_baseline_invalid"
+            )
+        primary_baseline = primary_candidates[0]
+    else:
+        primary_baseline = aggregated_baselines[0]
     return WindowMetricComparison(
         metric_id=metric_id,
         target=target,
-        primary_baseline=aggregated_baselines[0],
-        comparisons=aggregated_baselines[1:],
+        primary_baseline=primary_baseline,
+        comparisons=tuple(
+            baseline
+            for baseline in aggregated_baselines
+            if baseline.window_id != primary_baseline.window_id
+        ),
     )
 
 
-def _validate_contract(contract: QueryContract, *, metric_id: str) -> None:
+def _validate_contract(
+    contract: QueryContract,
+    *,
+    metric_id: str,
+    allowed_query_intents: tuple[str, ...],
+) -> None:
     if not isinstance(contract, QueryContract):
         raise WindowMetricEvidenceError("window_metric_query_contract_invalid")
     try:
@@ -156,7 +184,7 @@ def _validate_contract(contract: QueryContract, *, metric_id: str) -> None:
         raise WindowMetricEvidenceError("window_metric_query_contract_invalid") from exc
     if not contract.contract_signature or signature != contract.contract_signature:
         raise WindowMetricEvidenceError("window_metric_query_contract_signature_invalid")
-    if contract.query_intent != "daily_metric_baselines":
+    if contract.query_intent not in allowed_query_intents:
         raise WindowMetricEvidenceError("window_metric_query_intent_invalid")
     if (
         tuple(contract.result_shape.unique_key) != ("window_id", "observation_key")

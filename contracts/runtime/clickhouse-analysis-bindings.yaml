@@ -369,9 +369,16 @@ dimensions:
         allowed_grains: [day, window_id]
         allowed_query_families: [gameplay_activity_probe]
   channel:
-    contract_ref: contracts/dimensions/dimensions.yaml#channel
+    contract_ref: contracts/dimensions/dimensions.yaml#acquisition_channel
     dataset_id: paid_order_success
     source_field: channel
+    business_name: 渠道
+    screen_priority: 10
+    automatic_screening: allowed
+    output_policy: aggregate_only
+    hierarchy_id: acquisition
+    hierarchy_level: channel
+    null_bucket: Blank
     allowed_grains: [day, window_id]
     source_adapters:
       market_dashboard_channel:
@@ -380,15 +387,16 @@ dimensions:
         allowed_grains: [day, window_id]
         null_bucket: Unknown
         permission_scope: analyst
-  payment_method: {contract_ref: contracts/dimensions/dimensions.yaml#payment_method, dataset_id: paid_order_success, source_field: payment_method, allowed_grains: [day, window_id]}
-  region: {contract_ref: contracts/dimensions/dimensions.yaml#region, dataset_id: paid_order_success, source_field: region, allowed_grains: [day, window_id]}
-  device_brand: {contract_ref: contracts/dimensions/dimensions.yaml#device_brand, dataset_id: paid_order_success, source_field: device_brand, allowed_grains: [day, window_id]}
+  payment_method: {contract_ref: contracts/dimensions/dimensions.yaml#payment_method, dataset_id: paid_order_success, source_field: payment_method, business_name: 支付方式, screen_priority: 20, automatic_screening: allowed, output_policy: aggregate_only, hierarchy_id: payment, hierarchy_level: method, allowed_grains: [day, window_id]}
+  region: {contract_ref: contracts/dimensions/dimensions.yaml#geo, dataset_id: paid_order_success, source_field: region, business_name: 地区, screen_priority: 30, automatic_screening: allowed, output_policy: aggregate_only, hierarchy_id: geo, hierarchy_level: region, allowed_grains: [day, window_id]}
+  device_brand: {contract_ref: contracts/dimensions/dimensions.yaml#device_environment, dataset_id: paid_order_success, source_field: device_brand, business_name: 设备品牌, screen_priority: 40, automatic_screening: allowed, output_policy: aggregate_only, hierarchy_id: device_environment, hierarchy_level: brand, allowed_grains: [day, window_id]}
+  device_model: {contract_ref: contracts/dimensions/dimensions.yaml#device_environment, dataset_id: paid_order_success, source_field: device_model, business_name: 设备型号, screen_priority: 50, automatic_screening: allowed, output_policy: aggregate_only, hierarchy_id: device_environment, hierarchy_level: model, parent_dimension: device_brand, allowed_grains: [day, window_id]}
 
 query_shapes:
   daily_metric_baselines: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required, source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: overall_channel_when_paired, provider_bounds: throw_on_overflow}
   component_driver_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
   payment_success_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
-  dimension_contribution_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: independent, dimension_presence_policy: paired_required}
+  dimension_contribution_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: independent, dimension_presence_policy: sparse_allowed}
   joint_candidate_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: joint, dimension_presence_policy: paired_required}
   time_bucket_scan: {required_fields: [window_id, window_role, observation_key, calendar_week, weekday, month_phase], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
   data_quality_probe: {required_fields: [window_id, window_role, observation_key, source_row_count], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required, source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: overall_channel_when_paired, provider_bounds: throw_on_overflow}
@@ -433,7 +441,7 @@ question_family_obligations:
     missing_contract_owner: analysis_contract_owner
     degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
   paid_amount_change_explanation:
-    required_capabilities: [data_quality_profile, driver_decomposition, answer_verify]
+    required_capabilities: [data_quality_profile, driver_decomposition, formula_decompose, answer_verify]
     conditional_rules:
       - {condition: baselines_present, add: [compare_periods]}
       - {condition: dimensions_present, add: [segment_contribution]}
@@ -518,7 +526,7 @@ diagnostic_obligations:
     condition: components_present
     supported_question_families: [paid_amount_change_explanation, segment_or_factor_attribution]
   factor_topk:
-    required_capabilities: [segment_contribution, joint_attribution]
+    required_capabilities: [candidate_dimension_screen]
     condition: dimensions_present
     supported_question_families: [paid_amount_change_explanation, segment_or_factor_attribution]
   anomaly:
@@ -809,13 +817,13 @@ capability_inputs:
     supported_evidence_types: [statistical_association]
     maximum_claim_strength: quantified_contribution
   candidate_dimension_screen:
-    query_families: [joint_candidate_scan]
-    required_metrics: [paid_amount]
+    query_families: [dimension_contribution_scan]
+    required_metrics: [paid_amount, paid_orders, paid_users]
     allowed_datasets: [paid_order_success, payment_attempt]
     dimension_mode: requested
     supported_claim_types: [segment_contribution_or_mix_shift]
-    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
-    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
+    minimum_readiness: {required_slots: at_least_one, accepted_completeness: [complete]}
+    degradation_policy: {missing_required_input: degrade_claim, incomplete_input: degrade_claim}
     supported_evidence_types: [statistical_association]
     maximum_claim_strength: candidate_driver
   change_point_scan:

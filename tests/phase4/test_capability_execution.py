@@ -11,6 +11,8 @@ from bi_agent.runtime.analysis_contracts import (
 from bi_agent.runtime.capability_execution import (
     BoundCapabilityInput,
     bind_capability_inputs as _bind_capability_inputs,
+    capability_binding_claim_ready,
+    capability_plan_has_executable_query_contracts,
     validate_bound_capability_input,
 )
 
@@ -45,7 +47,13 @@ def slot(
     )
 
 
-def plan(*, required_slots=(), optional_slots=()):
+def plan(
+    *,
+    required_slots=(),
+    optional_slots=(),
+    required_mode=None,
+    degradation_policy=None,
+):
     return CapabilityExecutionPlan(
         capability_id="joint_attribution",
         capability_contract_ref="capability:joint@1",
@@ -53,13 +61,21 @@ def plan(*, required_slots=(), optional_slots=()):
         optional_input_slots=tuple(optional_slots),
         merge_strategy="by_query_family",
         minimum_readiness={
-            "required_slots": "all" if required_slots else "none",
+            "required_slots": (
+                required_mode
+                if required_mode is not None
+                else "all" if required_slots else "none"
+            ),
             "accepted_completeness": ("complete",),
         },
-        degradation_policy={
-            "missing_optional_input": "omit_optional_component",
-            "incomplete_input": "degrade_claim",
-        },
+        degradation_policy=(
+            dict(degradation_policy)
+            if degradation_policy is not None
+            else {
+                "missing_optional_input": "omit_optional_component",
+                "incomplete_input": "degrade_claim",
+            }
+        ),
         supported_evidence_types=("accounting_contribution",),
         maximum_claim_strength="high",
     )
@@ -126,6 +142,193 @@ def report(
 
 
 class CapabilityExecutionTest(unittest.TestCase):
+    def test_at_least_one_plan_is_executable_with_one_complete_required_slot(self):
+        grouped = plan(
+            required_slots=(
+                slot("first_profile", "query:first:1"),
+                slot("second_profile", "query:second:1"),
+            ),
+            required_mode="at_least_one",
+            degradation_policy={
+                "missing_required_input": "degrade_claim",
+                "incomplete_input": "degrade_claim",
+            },
+        )
+
+        self.assertTrue(
+            capability_plan_has_executable_query_contracts(
+                grouped,
+                {"query:first:1"},
+            )
+        )
+        self.assertFalse(
+            capability_plan_has_executable_query_contracts(grouped, set())
+        )
+        self.assertFalse(
+            capability_plan_has_executable_query_contracts(
+                plan(required_slots=grouped.required_input_slots),
+                {"query:first:1"},
+            )
+        )
+
+    def test_at_least_one_required_group_binds_available_slot_as_claim_ready(self):
+        grouped = plan(
+            required_slots=(
+                slot("first_profile", "query:first:1"),
+                slot("second_profile", "query:second:1"),
+            ),
+            required_mode="at_least_one",
+            degradation_policy={
+                "missing_required_input": "degrade_claim",
+                "incomplete_input": "degrade_claim",
+            },
+        )
+
+        bound = bind_capability_inputs(
+            grouped,
+            results={"query:first:1": result("query:first:1")},
+            reports={"query:first:1": report("query:first:1")},
+        )
+
+        self.assertEqual(bound.status, "degraded")
+        self.assertEqual(
+            bound.reasons,
+            ("missing_required_slot:second_profile",),
+        )
+        self.assertEqual(tuple(bound.rows_by_slot), ("first_profile",))
+        self.assertEqual(bound.query_contract_refs, ("query:first:1",))
+        self.assertTrue(capability_binding_claim_ready(bound))
+
+    def test_at_least_one_claim_readiness_requires_non_blocking_missing_policy(self):
+        grouped = plan(
+            required_slots=(
+                slot("first_profile", "query:first:1"),
+                slot("second_profile", "query:second:1"),
+            ),
+            required_mode="at_least_one",
+            degradation_policy={
+                "missing_required_input": "block_claim",
+                "incomplete_input": "degrade_claim",
+            },
+        )
+        bound = bind_capability_inputs(
+            grouped,
+            results={"query:first:1": result("query:first:1")},
+            reports={"query:first:1": report("query:first:1")},
+        )
+
+        self.assertEqual(bound.status, "degraded")
+        self.assertFalse(capability_binding_claim_ready(bound))
+
+    def test_at_least_one_claim_readiness_honors_declared_incomplete_branch_policy(self):
+        grouped = plan(
+            required_slots=(
+                slot("first_profile", "query:first:1"),
+                slot("second_profile", "query:second:1"),
+            ),
+            required_mode="at_least_one",
+            degradation_policy={
+                "missing_required_input": "degrade_claim",
+                "incomplete_input": "degrade_claim",
+            },
+        )
+        incomplete_report = replace(
+            report("query:second:1"),
+            completeness_status="partial",
+            analysis_readiness="degraded",
+        )
+        inputs = {
+            "results": {
+                "query:first:1": result("query:first:1"),
+                "query:second:1": result("query:second:1"),
+            },
+            "reports": {
+                "query:first:1": report("query:first:1"),
+                "query:second:1": incomplete_report,
+            },
+        }
+
+        degraded = bind_capability_inputs(grouped, **inputs)
+        blocked_policy = bind_capability_inputs(
+            replace(
+                grouped,
+                degradation_policy={
+                    "missing_required_input": "degrade_claim",
+                    "incomplete_input": "block_claim",
+                },
+            ),
+            **inputs,
+        )
+
+        self.assertEqual(degraded.status, "degraded")
+        self.assertEqual(
+            degraded.reasons,
+            ("completeness_not_accepted:second_profile",),
+        )
+        self.assertEqual(tuple(degraded.rows_by_slot), ("first_profile",))
+        self.assertTrue(capability_binding_claim_ready(degraded))
+        self.assertFalse(capability_binding_claim_ready(blocked_policy))
+
+    def test_at_least_one_required_group_blocks_when_every_slot_is_missing(self):
+        grouped = plan(
+            required_slots=(
+                slot("first_profile", "query:first:1"),
+                slot("second_profile", "query:second:1"),
+            ),
+            required_mode="at_least_one",
+            degradation_policy={
+                "missing_required_input": "degrade_claim",
+                "incomplete_input": "degrade_claim",
+            },
+        )
+
+        bound = bind_capability_inputs(grouped, results={}, reports={})
+
+        self.assertEqual(bound.status, "blocked")
+        self.assertEqual(
+            bound.reasons,
+            (
+                "missing_required_slot:first_profile",
+                "missing_required_slot:second_profile",
+            ),
+        )
+        self.assertFalse(capability_binding_claim_ready(bound))
+
+    def test_blocked_binding_preserves_readiness_reason_without_persistence_reclassification(self):
+        grouped = plan(
+            required_slots=(
+                slot("first_profile", "query:first:1"),
+                slot("second_profile", "query:second:1"),
+            ),
+            required_mode="at_least_one",
+            degradation_policy={
+                "missing_required_input": "degrade_claim",
+                "incomplete_input": "degrade_claim",
+            },
+        )
+
+        with patch(
+            "bi_agent.runtime.capability_execution._record_capability_binding",
+            side_effect=AssertionError("blocked input must not be persisted"),
+        ) as writer:
+            bound = bind_capability_inputs(
+                grouped,
+                results={},
+                reports={},
+                evidence_writer=object(),
+            )
+
+        writer.assert_not_called()
+        self.assertEqual(bound.status, "blocked")
+        self.assertEqual(
+            bound.reasons,
+            (
+                "missing_required_slot:first_profile",
+                "missing_required_slot:second_profile",
+            ),
+        )
+        self.assertEqual(bound.binding_manifest_ref, "")
+
     def test_production_binder_rejects_caller_signed_maps_without_authority(self):
         bound = _bind_capability_inputs(
             plan(required_slots=(slot(),)),
@@ -136,6 +339,18 @@ class CapabilityExecutionTest(unittest.TestCase):
         self.assertEqual(bound.status, "blocked")
         self.assertEqual(bound.reasons, ("runtime_evidence_authority_missing",))
         self.assertEqual(bound.binding_manifest_ref, "")
+
+    def test_blocked_bound_exposes_original_typed_reason_without_authority_record(self):
+        bound = _bind_capability_inputs(
+            plan(required_slots=(slot(),)),
+            results={"query:joint:1": result("query:joint:1")},
+            reports={"query:joint:1": report("query:joint:1")},
+        )
+
+        self.assertEqual(
+            validate_bound_capability_input(bound),
+            "runtime_evidence_authority_missing",
+        )
 
     def test_bound_rows_are_recursively_immutable_and_manifest_verified(self):
         primary = replace(
@@ -235,6 +450,82 @@ class CapabilityExecutionTest(unittest.TestCase):
         self.assertEqual(bound.status, "degraded")
         self.assertIn("missing_optional_slot:payment_success", bound.reasons)
         self.assertEqual(tuple(bound.rows_by_slot), ("component_drivers",))
+
+    def test_declared_optional_slot_without_compiled_query_is_missing_not_invalid(self):
+        required = slot("component_drivers", "query:components:1")
+        optional = CapabilityInputSlot(
+            slot_id="optional_context",
+            query_contract_refs=(),
+            required=False,
+            accepted_completeness=("complete",),
+            required_fields=(),
+            required_window_ids=(),
+        )
+
+        bound = bind_capability_inputs(
+            plan(required_slots=(required,), optional_slots=(optional,)),
+            results={"query:components:1": result("query:components:1")},
+            reports={"query:components:1": report("query:components:1")},
+        )
+
+        self.assertEqual(bound.status, "degraded")
+        self.assertEqual(
+            bound.reasons,
+            ("missing_optional_slot:optional_context",),
+        )
+        self.assertNotIn(
+            "primary_query_ref_cardinality_invalid:optional_context",
+            bound.reasons,
+        )
+        self.assertEqual(tuple(bound.rows_by_slot), ("component_drivers",))
+        self.assertTrue(capability_binding_claim_ready(bound))
+
+    def test_required_slot_without_compiled_query_is_missing_and_blocked(self):
+        missing = CapabilityInputSlot(
+            slot_id="required_measure",
+            query_contract_refs=(),
+            required=True,
+            accepted_completeness=("complete",),
+            required_fields=(),
+            required_window_ids=(),
+        )
+
+        bound = bind_capability_inputs(
+            plan(required_slots=(missing,)),
+            results={},
+            reports={},
+        )
+
+        self.assertEqual(bound.status, "blocked")
+        self.assertEqual(
+            bound.reasons,
+            ("missing_required_slot:required_measure",),
+        )
+        self.assertFalse(capability_binding_claim_ready(bound))
+
+    def test_optional_slot_with_multiple_primary_queries_remains_invalid(self):
+        required = slot("component_drivers", "query:components:1")
+        invalid = CapabilityInputSlot(
+            slot_id="optional_context",
+            query_contract_refs=("query:context:1", "query:context:2"),
+            required=False,
+            accepted_completeness=("complete",),
+            required_fields=(),
+            required_window_ids=(),
+        )
+
+        bound = bind_capability_inputs(
+            plan(required_slots=(required,), optional_slots=(invalid,)),
+            results={"query:components:1": result("query:components:1")},
+            reports={"query:components:1": report("query:components:1")},
+        )
+
+        self.assertEqual(bound.status, "blocked")
+        self.assertEqual(
+            bound.reasons,
+            ("primary_query_ref_cardinality_invalid:optional_context",),
+        )
+        self.assertFalse(capability_binding_claim_ready(bound))
 
     def test_primary_result_report_and_mapping_refs_must_link_exactly(self):
         mismatched = result("query:joint:1")
@@ -517,6 +808,15 @@ class CapabilityExecutionTest(unittest.TestCase):
         self.assertEqual(bound.status, "ready")
         self.assertEqual(bound.validation_query_contract_refs, (validation_ref,))
         self.assertEqual(bound.validation_result_refs, (validation.result_ref,))
+        self.assertEqual(bound.validation_rows_refs, (validation.rows_ref,))
+        self.assertEqual(
+            bound.validation_completeness_report_refs,
+            (validation.completeness_report_ref,),
+        )
+        self.assertEqual(
+            bound.input_completeness_statuses,
+            ("complete", "complete", "complete"),
+        )
 
     def test_required_fields_windows_and_readiness_are_hard_boundaries(self):
         primary = result("query:joint:1")

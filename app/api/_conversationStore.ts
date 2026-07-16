@@ -2815,7 +2815,10 @@ function reviewedAgentCoreError(value: unknown) {
 
 const SAFE_AGENT_CORE_FAILURE_REASONS = new Set([
   "analysis_delivery_persistence_failed",
-  "analysis_runtime_persistence_failed",
+  "material_authority_projection_failed",
+  "analysis_runtime_bundle_validation_failed",
+  "analysis_runtime_artifact_sync_failed",
+  "analysis_runtime_store_commit_failed",
   "clarification_resume_authority_failed",
   "delivery_verifier_failed",
 ]);

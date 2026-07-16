@@ -592,6 +592,217 @@ class PostgresConversationStore:
             payload=state.to_dict(),
         )
 
+    def finalize_waiting_clarification(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        turn_id: str,
+        topic_id: str,
+        request: Mapping[str, Any],
+        clarification_state: ClarificationState,
+    ) -> str:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        if (
+            clarification_state.run_id != run_id
+            or clarification_state.topic_id != topic_id
+            or clarification_state.status != "waiting"
+        ):
+            raise EvidenceIntegrityError(
+                "waiting_clarification_state_owner_mismatch"
+            )
+        finalized_request = canonical_value(dict(request))
+        params = {
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "turn_id": turn_id or None,
+            "topic_id": topic_id,
+            "request": _json(finalized_request),
+        }
+        active_dispatch = self._active_run_dispatches.get(run_id)
+        action = "transition"
+        try:
+            if active_dispatch is not None:
+                self._lock_active_run_dispatch(
+                    run_id=run_id,
+                    dispatch_owner_id=active_dispatch[0],
+                    lease_epoch=active_dispatch[1],
+                )
+            current = self._fetchone(
+                """
+                /* waiting_clarification_run_lock */
+                SELECT status, thread_id, turn_id, topic_id, request
+                FROM waje_runtime.analysis_runs
+                WHERE run_id = %(run_id)s
+                FOR UPDATE
+                """,
+                params,
+            )
+            thread = self._fetchone(
+                """
+                /* waiting_clarification_thread_lock */
+                SELECT pending_clarification_topic_id,
+                       pending_clarification_id
+                FROM waje_runtime.investigation_threads
+                WHERE thread_id = %(thread_id)s
+                FOR UPDATE
+                """,
+                params,
+            )
+            topic = self._fetchone(
+                """
+                SELECT thread_id
+                FROM waje_runtime.conversation_topics
+                WHERE topic_id = %(topic_id)s
+                """,
+                params,
+            )
+            if (
+                current is None
+                or thread is None
+                or topic is None
+                or str(_field(topic, "thread_id", 0) or "") != thread_id
+            ):
+                raise EvidenceIntegrityError(
+                    "waiting_clarification_source_missing"
+                )
+            action = validate_run_status_transition(
+                current_status=str(_field(current, "status", 0) or ""),
+                next_status="waiting_for_clarification",
+                current_thread_id=str(_field(current, "thread_id", 1) or ""),
+                current_turn_id=str(_field(current, "turn_id", 2) or ""),
+                current_topic_id=str(_field(current, "topic_id", 3) or ""),
+                next_thread_id=thread_id,
+                next_turn_id=turn_id,
+                next_topic_id=topic_id,
+                current_request=_json_value(_field(current, "request", 4)) or {},
+                next_request=finalized_request,
+            )
+            if action == "replay":
+                state_row = self._fetchone(
+                    """
+                    SELECT payload
+                    FROM waje_runtime.audit_events
+                    WHERE run_id = %(run_id)s
+                      AND event_type = 'clarification_state_saved'
+                    ORDER BY created_at DESC, audit_id DESC
+                    LIMIT 1
+                    FOR UPDATE
+                    """,
+                    params,
+                )
+                if (
+                    str(
+                        _field(
+                            thread,
+                            "pending_clarification_topic_id",
+                            0,
+                        )
+                        or ""
+                    )
+                    != topic_id
+                    or str(
+                        _field(thread, "pending_clarification_id", 1) or ""
+                    )
+                    != run_id
+                    or state_row is None
+                    or canonical_value(
+                        _json_value(_field(state_row, "payload", 0)) or {}
+                    )
+                    != canonical_value(clarification_state.to_dict())
+                ):
+                    raise EvidenceIntegrityError(
+                        "waiting_clarification_replay_conflict"
+                    )
+            else:
+                updated = self._execute(
+                    """
+                    /* waiting_clarification_run_transition */
+                    UPDATE waje_runtime.analysis_runs
+                    SET status = 'waiting_for_clarification',
+                        request = %(request)s::jsonb,
+                        turn_id = %(turn_id)s,
+                        topic_id = %(topic_id)s,
+                        updated_at = now()
+                    WHERE run_id = %(run_id)s
+                      AND status = %(current_status)s
+                    RETURNING status
+                    """,
+                    {
+                        **params,
+                        "current_status": str(
+                            _field(current, "status", 0) or ""
+                        ),
+                    },
+                    commit=False,
+                ).fetchone()
+                if updated is None:
+                    raise EvidenceIntegrityError(
+                        "analysis_run_status_transition_conflict"
+                    )
+                pending = self._execute(
+                    """
+                    /* waiting_clarification_pending_transition */
+                    UPDATE waje_runtime.investigation_threads
+                    SET pending_clarification_topic_id = %(topic_id)s,
+                        pending_clarification_id = %(run_id)s,
+                        updated_at = now()
+                    WHERE thread_id = %(thread_id)s
+                    RETURNING pending_clarification_id
+                    """,
+                    params,
+                    commit=False,
+                ).fetchone()
+                if pending is None:
+                    raise EvidenceIntegrityError(
+                        "waiting_clarification_thread_update_failed"
+                    )
+                self._audit(
+                    "run_status_changed",
+                    thread_id=thread_id,
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    ref=run_id,
+                    payload={"status": "waiting_for_clarification"},
+                    commit=False,
+                )
+                self._audit(
+                    "clarification_pending",
+                    thread_id=thread_id,
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    ref=run_id,
+                    commit=False,
+                )
+                self._audit(
+                    "clarification_state_saved",
+                    thread_id=thread_id,
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    ref=run_id,
+                    payload=clarification_state.to_dict(),
+                    commit=False,
+                )
+            if active_dispatch is not None:
+                self._terminalize_active_run_dispatch(
+                    run_id=run_id,
+                    dispatch_owner_id=active_dispatch[0],
+                    lease_epoch=active_dispatch[1],
+                    status="waiting_for_clarification",
+                )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        if active_dispatch is not None:
+            self._stop_run_dispatch_heartbeat(run_id)
+            self._active_run_dispatches.pop(run_id, None)
+        return "replayed" if action == "replay" else "inserted"
+
     def get_open_clarification(self, thread_id: str) -> Optional[ClarificationState]:
         rows = self._fetchall(
             """

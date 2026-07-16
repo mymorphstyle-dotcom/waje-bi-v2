@@ -79,6 +79,8 @@ def verified_dimension_scan_asset(
     )
     reviewed_metric = registry.metric("paid_amount")
     reviewed_dimension = registry.dimension("channel")
+    total_query_shape = registry.query_shape("daily_metric_baselines")
+    dimension_query_shape = registry.query_shape("dimension_contribution_scan")
     metric_binding = MetricBinding(
         metric_id="paid_amount",
         contract_ref=str(reviewed_metric["contract_ref"]),
@@ -101,6 +103,7 @@ def verified_dimension_scan_asset(
         dataset_id=str(reviewed_dimension["dataset_id"]),
         source_field=str(reviewed_dimension["source_field"]),
         allowed_grains=tuple(reviewed_dimension["allowed_grains"]),
+        null_bucket=str(reviewed_dimension.get("null_bucket") or "Unknown"),
         permission_scope="analyst",
     )
     total_query_ref = f"{query_ref}:total"
@@ -124,6 +127,9 @@ def verified_dimension_scan_asset(
             unique_key=("window_id", "observation_key"),
             grain=("window_id", "observation_key"),
             required_window_ids=tuple(resolved_windows),
+            dimension_presence_policy=str(
+                total_query_shape["dimension_presence_policy"]
+            ),
         ),
         completeness_assertions=ASSERTIONS,
         permission_scope="analyst",
@@ -156,6 +162,9 @@ def verified_dimension_scan_asset(
             unique_key=unique_key,
             grain=unique_key,
             required_window_ids=tuple(resolved_windows),
+            dimension_presence_policy=str(
+                dimension_query_shape["dimension_presence_policy"]
+            ),
         ),
         completeness_assertions=ASSERTIONS,
         permission_scope="analyst",

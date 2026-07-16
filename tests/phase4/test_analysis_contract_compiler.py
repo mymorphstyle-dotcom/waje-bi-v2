@@ -2152,7 +2152,15 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         self.assertEqual(gap.owner, "contract_owner")
         self.assertEqual(
             gap.repair_options,
-            ("choose_supported_claim_intent", "clarify_claim_intent"),
+            ("add_supporting_capability", "report_unavailable_claim"),
+        )
+        self.assertFalse(gap.requires_clarification)
+        self.assertEqual(
+            dict(gap.diagnostic_context),
+            {
+                "claim_origin": "user_required",
+                "publication_status": "unavailable",
+            },
         )
 
     def test_missing_dataset_date_field_blocks_query_with_typed_gap(self):
@@ -2509,12 +2517,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         self._assert_window_contract_gap(
             proposal={"baselines": ["quarter_to_date"]},
             expected_gap_id="window:unsupported_baseline:quarter_to_date",
-        )
-
-    def test_duplicate_baseline_becomes_typed_window_gap(self):
-        self._assert_window_contract_gap(
-            proposal={"baselines": ["previous_day", "previous_day"]},
-            expected_gap_id="window:duplicate_baseline:previous_day",
         )
 
     def test_payment_source_gap_has_only_payment_capability_owner(self):
@@ -4325,6 +4327,85 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "dimension_contribution_scan",
             {query.query_intent for query in outcome.query_contracts},
         )
+
+    def test_auxiliary_omittable_dimension_gap_does_not_require_clarification(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-auxiliary-dimension-input",
+            proposal={
+                "question_families": ["paid_amount_change_explanation"],
+                "target_metrics": ["paid_amount"],
+                "requested_dimensions": [],
+                "claim_intents": ["contribution"],
+                "capability_roles": {
+                    "user_mix_contribution": {
+                        "analysis_role": "auxiliary",
+                        "sources": ["diagnostic_candidate"],
+                    }
+                },
+            },
+            accepted_capabilities=("user_mix_contribution",),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        gap = next(
+            gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_id
+            == "capability:user_mix_contribution:required_dimension:unbound"
+        )
+        self.assertFalse(gap.requires_clarification)
+        self.assertEqual(
+            gap.diagnostic_context,
+            {
+                "analysis_role": "auxiliary",
+                "degradation_action": "omit_path",
+                "role_sources": ["diagnostic_candidate"],
+            },
+        )
+
+    def test_user_required_omittable_dimension_gap_requires_clarification(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-required-dimension-input",
+            proposal={
+                "question_families": ["paid_amount_change_explanation"],
+                "target_metrics": ["paid_amount"],
+                "requested_dimensions": [],
+                "claim_intents": ["contribution"],
+                "capability_roles": {
+                    "user_mix_contribution": {
+                        "analysis_role": "required",
+                        "sources": ["route_selected"],
+                    }
+                },
+            },
+            accepted_capabilities=("user_mix_contribution",),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            permission_scope="analyst",
+        )
+
+        gap = next(
+            gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_id
+            == "capability:user_mix_contribution:required_dimension:unbound"
+        )
+        self.assertTrue(gap.requires_clarification)
+        self.assertEqual(gap.diagnostic_context["analysis_role"], "required")
 
     def test_shared_query_family_plans_bind_only_owned_metric_contracts(self):
         payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")

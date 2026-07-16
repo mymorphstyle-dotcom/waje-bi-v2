@@ -699,9 +699,26 @@ def validate_material_authority_contract_overlap(
             raise EvidenceIntegrityError(
                 "material_authority_contract_runtime_registry_mismatch"
             )
+        try:
+            from bi_agent.runtime.runtime_persistence import (
+                _validate_analysis_target_metric_refs,
+            )
+
+            _validate_analysis_target_metric_refs(analysis_contract)
+        except EvidenceIntegrityError as exc:
+            raise EvidenceIntegrityError(
+                "material_authority_contract_target_metrics_unresolvable"
+            ) from exc
+    intent_target_metrics = tuple(intent_material.get("target_metrics") or ())
+    route_target_metrics = tuple(route_material.get("target_metrics") or ())
+    if intent_target_metrics != route_target_metrics:
+        raise EvidenceIntegrityError(
+            "material_authority_contract_target_metrics_mismatch"
+        )
     contract_target_metrics = _contract_target_metric_ids(
         analysis_contract,
         runtime_registry=runtime_registry,
+        material_target_metric_ids=intent_target_metrics,
     )
     if any(
         tuple(targets or ()) != contract_target_metrics
@@ -815,6 +832,9 @@ def preflight_completed_material_authority(
     return _contract_target_metric_ids(
         typed_contract,
         runtime_registry=registry,
+        material_target_metric_ids=tuple(
+            validated_material["intent_material"].get("target_metrics") or ()
+        ),
     )
 
 
@@ -2058,7 +2078,13 @@ def _contract_target_metric_ids(
     analysis_contract: AnalysisContract,
     *,
     runtime_registry: RuntimeContractRegistry | None = None,
+    material_target_metric_ids: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
+    requested_metric_ids = tuple(
+        analysis_contract.scope.get("requested_metric_ids") or ()
+    )
+    requested_metric_set = set(requested_metric_ids)
+    material_metric_set = set(material_target_metric_ids)
     metric_ids: list[str] = []
     for contract_ref in analysis_contract.target_metric_refs:
         bound_matches = tuple(
@@ -2069,12 +2095,28 @@ def _contract_target_metric_ids(
             )
         )
         if bound_matches:
+            if len(bound_matches) != 1:
+                raise EvidenceIntegrityError(
+                    "material_authority_contract_target_metrics_unresolvable"
+                )
             matches = bound_matches
         elif runtime_registry is None:
             matches = ()
         else:
             matches = runtime_registry.metric_ids_for_contract_ref(
                 contract_ref
+            )
+        if (
+            not bound_matches
+            and len(matches) != 1
+            and requested_metric_ids
+            and material_target_metric_ids
+        ):
+            matches = tuple(
+                metric_id
+                for metric_id in matches
+                if metric_id in requested_metric_set
+                and metric_id in material_metric_set
             )
         if len(matches) != 1:
             raise EvidenceIntegrityError(
@@ -2086,9 +2128,6 @@ def _contract_target_metric_ids(
         raise EvidenceIntegrityError(
             "material_authority_contract_target_metrics_unresolvable"
         )
-    requested_metric_ids = tuple(
-        analysis_contract.scope.get("requested_metric_ids") or ()
-    )
     resolved_metric_ids = tuple(metric_ids)
     resolved_metric_set = set(resolved_metric_ids)
     if requested_metric_ids and tuple(
@@ -2098,6 +2137,13 @@ def _contract_target_metric_ids(
     ) != resolved_metric_ids:
         raise EvidenceIntegrityError(
             "material_authority_contract_target_metrics_unresolvable"
+        )
+    if (
+        material_target_metric_ids
+        and resolved_metric_ids != material_target_metric_ids
+    ):
+        raise EvidenceIntegrityError(
+            "material_authority_contract_target_metrics_mismatch"
         )
     return resolved_metric_ids
 
@@ -2343,6 +2389,32 @@ def _intent_baseline_projection(
                 "material_authority_baselines_invalid"
             ) from exc
         selected_ids = ()
+
+    binding = original.get("baseline_binding")
+    if binding is not None:
+        if not isinstance(binding, Mapping) or type(
+            binding.get("confirmed")
+        ) is not bool:
+            raise EvidenceIntegrityError("material_authority_baselines_invalid")
+        try:
+            binding_ids = canonical_baseline_ids(binding.get("candidates"))
+        except BaselineSemanticError as exc:
+            raise EvidenceIntegrityError(
+                "material_authority_baselines_invalid"
+            ) from exc
+        if binding_ids != candidate_ids:
+            raise EvidenceIntegrityError("material_authority_baselines_invalid")
+        if not binding["confirmed"]:
+            if reviewed or (
+                selected_ids
+                and not set(selected_ids).issubset(candidate_ids)
+            ):
+                raise EvidenceIntegrityError(
+                    "material_authority_baselines_invalid"
+                )
+            return []
+        if not binding_ids:
+            raise EvidenceIntegrityError("material_authority_baselines_invalid")
 
     if candidate_ids and any(item not in reviewed for item in candidate_ids):
         raise EvidenceIntegrityError("material_authority_baselines_invalid")

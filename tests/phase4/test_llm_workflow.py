@@ -1,5 +1,6 @@
 import json
 from copy import deepcopy
+from dataclasses import asdict
 import multiprocessing
 import os
 import tempfile
@@ -26,7 +27,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _capability_result_refs_for,
     _capability_rows_for,
     _clarification_policy_gate,
-    _claims_from_llm_or_default,
+    _normalize_authority_claim_candidates,
     _default_claim_from_evidence,
     _decide_question_boundary,
     _design_analysis_route,
@@ -38,7 +39,6 @@ from bi_agent.runtime.langgraph_workflow import (
     _fetch_runtime_rows,
     _final_business_summary,
     _final_summary_needs_display_repair,
-    _legacy_quality_with_final_answer_audit,
     _merge_confirmed_material_requirements,
     _local_coverage_answerable_reason,
     _infer_question_families_from_requested_nodes,
@@ -62,7 +62,6 @@ from bi_agent.runtime.langgraph_workflow import (
     _render_query_gap_actions,
     _reduce_evidence,
     evaluate_answer_quality,
-    repair_final_answer_with_verified_claim,
     _route_after_next_action,
     _route_after_query_gap_clarification,
     _route_after_query_repair,
@@ -88,6 +87,11 @@ from bi_agent.runtime.analysis_runtime import (
     analysis_outcome_requires_route_clarification,
     analysis_outcome_requires_preexecution_clarification,
 )
+from bi_agent.runtime.analysis_contracts import (
+    CapabilityExecutionPlan,
+    CapabilityInputSlot,
+    ContractGap,
+)
 from bi_agent.runtime.llm_client import (
     LLMConfigurationError,
     LLMOutputError,
@@ -95,7 +99,11 @@ from bi_agent.runtime.llm_client import (
     OpenAICompatibleLLMClient,
     _localize_narrative_fields,
 )
-from bi_agent.runtime.llm_prompts import build_prompt, validate_prompt_specs
+from bi_agent.runtime.llm_prompts import (
+    TASK_REQUIRED_KEYS,
+    build_prompt,
+    validate_prompt_specs,
+)
 from bi_agent.runtime.data_contract_diagnostics import diagnose_contract_gaps
 from tests.phase4.fake_llm import FakeLLMClient
 from tests.phase4.fake_llm import FakeLLMResult
@@ -148,7 +156,7 @@ def _provider_client_with_outputs(outputs):
     return client, completions
 
 
-def _provider_claim(
+def _claim_fixture(
     *,
     text,
     evidence_refs,
@@ -182,6 +190,7 @@ def _provider_business_intent_output(**overrides):
         "analysis_requirements": {
             "context_sources": [],
             "claim_intents": [],
+            "claim_intent_roles": {},
             "requested_dimensions": [],
             "requested_components": [],
         },
@@ -189,6 +198,16 @@ def _provider_business_intent_output(**overrides):
         "display_summary": "已绑定业务问题与分析窗口。",
     }
     output.update(overrides)
+    requirements = output.get("analysis_requirements")
+    if isinstance(requirements, dict) and "claim_intents" in requirements:
+        requirements.setdefault(
+            "claim_intent_roles",
+            {
+                claim_intent: "user_required"
+                for claim_intent in requirements.get("claim_intents") or ()
+                if isinstance(claim_intent, str) and claim_intent
+            },
+        )
     return output
 
 
@@ -265,6 +284,31 @@ def _provider_capability_sections(
     }
 
 
+def _provider_final_route_narrative_output(
+    requested_nodes,
+    *,
+    route_summary="先核对真实变化方向，再沿已确定路线检查相关因素。",
+    decision_summary="路线保留查询前尚未验证的方向和证据边界。",
+    display_summary="分析路线已经确定，下一步核验数据。",
+    sections=None,
+):
+    if sections is None:
+        sections = [
+            {
+                "step_ref": f"step_{index}",
+                "route_step": "核对该步骤对应的业务问题。",
+                "expected_evidence": "获得该步骤对应的业务证据与限制说明。",
+            }
+            for index, _ in enumerate(requested_nodes, start=1)
+        ]
+    return {
+        "route_summary": route_summary,
+        "sections": sections,
+        "decision_summary": decision_summary,
+        "display_summary": display_summary,
+    }
+
+
 def _provider_closed_analysis_route_output(**overrides):
     requested_nodes = (
         "rolling_window_compare",
@@ -281,6 +325,17 @@ def _provider_closed_analysis_route_output(**overrides):
         expected_evidence={
             capability: "该业务能力对应的可验证证据与限制说明。"
             for capability in requested_nodes
+        },
+        analysis_requirements={
+            "target_metrics": ["paid_amount"],
+            "requested_components": [],
+            "requested_dimensions": [],
+            "baselines": ["rolling_7_day_baseline"],
+            "context_sources": [],
+            "dataset_requirements": ["paid_order_success"],
+            "diagnostic_tags": [],
+            "claim_intents": ["baseline_stability"],
+            "scope": "full_sample",
         },
     )
     output.update(overrides)
@@ -363,6 +418,101 @@ def run_pattern_workflow(request=None):
         return _run_pattern_workflow(fixture_request)
 
 
+def _answerable_custom_baseline_coverage_state(fake):
+    return {
+        "request": {
+            "run_mode": "fixture",
+            "rows": [
+                {"period": "h1", "group": "baseline", "amount": 100},
+                {"period": "h1", "group": "target", "amount": 120},
+            ],
+            "required_fields": ("period", "group", "amount"),
+        },
+        "intent": {
+            "pattern_family": "custom_baseline",
+            "pattern_params": {
+                "period_key": "period",
+                "group_key": "group",
+                "target_group": "target",
+                "baseline_group": "baseline",
+                "min_periods": 1,
+            },
+        },
+        "schema": {},
+        "validator_results": [],
+        "sql_hash": "",
+        "llm_client": fake,
+        "llm_calls": [],
+    }
+
+
+def _claim_ready_bound(binding_ref):
+    query_ref = f"query:{binding_ref}"
+    return type(
+        "ClaimReadyBound",
+        (),
+        {
+            "status": "ready",
+            "binding_manifest_ref": binding_ref,
+            "input_completeness_statuses": ("complete",),
+            "query_contract_refs": (query_ref,),
+            "validation_query_contract_refs": (),
+            "plan_payload": {
+                "required_input_slots": (
+                    {
+                        "slot_id": "primary",
+                        "query_contract_refs": (query_ref,),
+                    },
+                ),
+                "optional_input_slots": (),
+                "minimum_readiness": {"required_slots": "all"},
+            },
+            "binding_payload": {},
+        },
+    )()
+
+
+def _capability_plan_fixture(
+    capability_id,
+    *,
+    required_query_refs,
+    optional_query_refs=(),
+    required_mode="all",
+):
+    def slot(slot_id, query_refs, required):
+        return CapabilityInputSlot(
+            slot_id=slot_id,
+            query_contract_refs=tuple(query_refs),
+            required=required,
+            accepted_completeness=("complete",),
+            required_fields=(),
+            required_window_ids=(),
+            validation_query_contract_refs=(),
+        )
+
+    return CapabilityExecutionPlan(
+        capability_id=capability_id,
+        capability_contract_ref=f"capability:{capability_id}",
+        required_input_slots=tuple(
+            slot(f"required-{index}", refs, True)
+            for index, refs in enumerate(required_query_refs, start=1)
+        ),
+        optional_input_slots=tuple(
+            slot(f"optional-{index}", refs, False)
+            for index, refs in enumerate(optional_query_refs, start=1)
+        ),
+        merge_strategy="independent",
+        minimum_readiness={
+            "required_slots": required_mode,
+            "accepted_completeness": ("complete",),
+        },
+        degradation_policy={},
+        supported_evidence_types=("observed",),
+        maximum_claim_strength="descriptive",
+        supported_claim_types=("comparative_change",),
+    )
+
+
 def spawn_safe_fake_llm_request(config, messages):
     return {
         "response_id": "subprocess-response",
@@ -416,7 +566,358 @@ def _llm_input_payload(answer_package, task):
     return json.loads(content[start:end].strip())
 
 
+def _required_claim_resolution_state():
+    return {
+        "request": {"run_mode": "production"},
+        "checkpoint_events": [{"node": "decide_next_action"}],
+        "intent": {
+            "question_family": "paid_amount_change_explanation",
+            "target_metric": "paid_amount",
+            "pattern_family": "custom_baseline",
+            "scope": "full_sample",
+            "time_window": "2026-06-01",
+            "required_claim_intents": [
+                "comparative_change",
+                "formula_component_contribution",
+            ],
+            "candidate_claim_intents": ["baseline_stability"],
+            "claim_intents": [
+                "comparative_change",
+                "formula_component_contribution",
+                "baseline_stability",
+            ],
+            "baseline": {"label": "2026-05-31"},
+            "target": {"label": "2026-06-01"},
+        },
+        "evidence": [
+            {
+                "evidence_ref": "compare_periods:ready",
+                "capability_id": "compare_periods",
+                "claim_type": "comparative_change",
+                "claim_input_ready": True,
+                "binding_manifest_ref": "binding:compare",
+                "evidence_type": "statistical_association",
+                "supported_evidence_types": ["statistical_association"],
+                "supported_claim_types": ["comparative_change"],
+                "maximum_claim_strength": "directional",
+                "maximum_claim_strength_rank": 1,
+                "strength": "directional",
+                "wording_limit": "quantified",
+                "limitations": [],
+                "typed_payload": {
+                    "target_value": 308_240_309,
+                    "baseline_value": 304_142_630,
+                    "absolute_change": 4_097_679,
+                    "relative_change": 0.013472886060069909,
+                },
+            },
+            {
+                "evidence_ref": "rolling_window_compare:weak",
+                "capability_id": "rolling_window_compare",
+                "claim_type": "baseline_stability",
+                "claim_input_ready": True,
+                "binding_manifest_ref": "binding:rolling",
+                "evidence_type": "insufficient",
+                "supported_evidence_types": ["statistical_association"],
+                "supported_claim_types": ["baseline_stability"],
+                "maximum_claim_strength": "directional",
+                "maximum_claim_strength_rank": 1,
+                "strength": "low",
+                "wording_limit": "blocked",
+                "limitations": ["weak_direction", "below_materiality_floor"],
+                "typed_payload": {
+                    "pattern_family": "custom_baseline",
+                    "comparable_periods": 1,
+                    "median_uplift": 0.01,
+                },
+            },
+            {
+                "evidence_ref": "formula_decompose:auxiliary-gaps",
+                "capability_id": "formula_decompose",
+                "claim_type": "formula_component_contribution",
+                "claim_input_ready": True,
+                "binding_manifest_ref": "binding:formula",
+                "evidence_type": "accounting_contribution",
+                "supported_evidence_types": ["accounting_contribution"],
+                "supported_claim_types": ["formula_component_contribution"],
+                "maximum_claim_strength": "quantified_contribution",
+                "maximum_claim_strength_rank": 3,
+                "strength": "low",
+                "wording_limit": "degraded",
+                "limitations": [
+                    "missing_formula_component:payment_success_chain",
+                    "missing_formula_dimension:region_sum",
+                ],
+                "typed_payload": {
+                    "gaps": [
+                        {
+                            "formula_id": "payment_success_chain",
+                            "candidate_role": "auxiliary_candidate",
+                            "candidate_status": "blocked",
+                        }
+                    ]
+                },
+            },
+            {
+                "evidence_ref": "driver_decomposition:ready",
+                "capability_id": "driver_decomposition",
+                "claim_type": "formula_component_contribution",
+                "claim_input_ready": True,
+                "binding_manifest_ref": "binding:driver",
+                "evidence_type": "accounting_contribution",
+                "supported_evidence_types": ["accounting_contribution"],
+                "supported_claim_types": ["formula_component_contribution"],
+                "maximum_claim_strength": "quantified_contribution",
+                "maximum_claim_strength_rank": 3,
+                "strength": "high",
+                "wording_limit": "quantified",
+                "limitations": [],
+                "typed_payload": {
+                    "core_reconciliation_status": "reconciled",
+                    "primary_core_driver": "avg_order_amount",
+                    "amount_delta_ratio": 0.013472886060069909,
+                    "avg_order_amount_contribution_share": 1.2622775809926496,
+                    "paid_frequency_contribution_share": -0.28206726717258257,
+                    "paid_users_contribution_share": 0.01978968617993287,
+                    "decompositions": [
+                        {
+                            "primary_core_driver": "avg_order_amount",
+                            "core_reconciliation_status": "reconciled",
+                            "core_factor_contributions": [
+                                {
+                                    "component_id": "avg_order_amount",
+                                    "contribution_share": 1.2622775809926496,
+                                },
+                                {
+                                    "component_id": "paid_frequency",
+                                    "contribution_share": -0.28206726717258257,
+                                },
+                                {
+                                    "component_id": "paid_users",
+                                    "contribution_share": 0.01978968617993287,
+                                },
+                            ],
+                            "payment_success_assumption": {
+                                "observed": False,
+                                "status": "assumed_neutral",
+                            },
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+
+
 class LLMWorkflowTest(unittest.TestCase):
+    def test_evidence_interpretation_receives_business_projection_only(self):
+        state = _required_claim_resolution_state()
+        state.update(
+            {
+                "run_id": "business-evidence-projection",
+                "llm_client": FakeLLMClient(
+                    {
+                        "evidence_interpretation": {
+                            "interpretation": "业务证据支持当前对比结论。",
+                            "decision_summary": "保留已验证结论和局部边界。",
+                            "evidence_boundary": "支付成功率缺少独立观测。",
+                        }
+                    }
+                ),
+                "llm_calls": [],
+            }
+        )
+        _reduce_evidence(state)
+
+        workflow_module._interpret_evidence(state)
+
+        call = next(
+            item
+            for item in state["llm_calls"]
+            if item["task"] == "evidence_interpretation"
+        )
+        user_message = next(
+            item for item in call["messages"] if item["role"] == "user"
+        )
+        payload = json.loads(
+            user_message["content"]
+            .split("<input_json>", 1)[1]
+            .split("</input_json>", 1)[0]
+            .strip()
+        )
+        self.assertEqual(set(payload), {"businessContext"})
+        visible = json.dumps(payload, ensure_ascii=False)
+        self.assertIn("付费金额", visible)
+        for internal in (
+            "evidence_ref",
+            "capability_id",
+            "driver_decomposition",
+            "formula_component_contribution",
+            "avg_order_amount",
+        ):
+            self.assertNotIn(internal, visible)
+
+    def test_answer_synthesis_uses_authority_claims_and_provider_writes_only_prose(self):
+        state = _required_claim_resolution_state()
+        evidence_by_capability = {
+            item["capability_id"]: item for item in state["evidence"]
+        }
+        evidence_by_capability["compare_periods"]["numeric_facts"] = {
+            "target_value": 120.0,
+            "baseline_value": 100.0,
+            "absolute_change": 20.0,
+            "relative_change": 0.2,
+        }
+        evidence_by_capability["driver_decomposition"]["numeric_facts"] = {
+            "paid_users_contribution": 2.0,
+            "paid_users_contribution_share": 0.1,
+            "paid_frequency_contribution": -4.0,
+            "paid_frequency_contribution_share": -0.2,
+            "avg_order_amount_contribution": 22.0,
+            "avg_order_amount_contribution_share": 1.1,
+            "formula_contribution_total": 20.0,
+        }
+        fake = FakeLLMClient(
+            {
+                "answer_synthesis": {
+                    "answer_text": "业务答案保留本地权威事实，模型只负责表达。",
+                }
+            }
+        )
+        state.update(
+            {
+                "run_id": "authority-claim-projection",
+                "llm_client": fake,
+                "llm_calls": [],
+                "evidence_interpretation": {
+                    "interpretation": "当前证据支持目标日对比和组成因素贡献。"
+                },
+                "causal_audit": {},
+                "analysis_route": {},
+            }
+        )
+        _reduce_evidence(state)
+
+        workflow_module._synthesize_answer(state)
+
+        self.assertEqual(
+            [claim["claim_type"] for claim in state["draft_claims"]],
+            ["comparative_change", "formula_component_contribution"],
+        )
+        self.assertEqual(
+            state["draft_claims"][1]["numbers"],
+            evidence_by_capability["driver_decomposition"]["numeric_facts"],
+        )
+        answer_call = next(
+            call for call in state["llm_calls"] if call["task"] == "answer_synthesis"
+        )
+        self.assertNotIn("claims", answer_call["required_keys"])
+        user_message = next(
+            item for item in answer_call["messages"] if item["role"] == "user"
+        )
+        payload_text = user_message["content"]
+        payload = json.loads(
+            payload_text.split("<input_json>", 1)[1]
+            .split("</input_json>", 1)[0]
+            .strip()
+        )
+        self.assertEqual(set(payload), {"businessContext"})
+        visible_input = json.dumps(payload, ensure_ascii=False)
+        self.assertIn("付费金额", visible_input)
+        for internal in (
+            "claim_type",
+            "evidence_refs",
+            "formula_component_contribution",
+            "driver_decomposition",
+            "avg_order_amount",
+            "paid_frequency",
+            "paid_users",
+        ):
+            self.assertNotIn(internal, visible_input)
+
+    def test_answer_repair_rewrites_prose_without_mutating_authority_claims(self):
+        state = _required_claim_resolution_state()
+        for evidence in state["evidence"]:
+            if evidence["capability_id"] == "compare_periods":
+                evidence["numeric_facts"] = {
+                    "target_value": 120.0,
+                    "baseline_value": 100.0,
+                    "absolute_change": 20.0,
+                    "relative_change": 0.2,
+                }
+            elif evidence["capability_id"] == "driver_decomposition":
+                evidence["numeric_facts"] = {
+                    "paid_users_contribution": 2.0,
+                    "paid_frequency_contribution": -4.0,
+                    "avg_order_amount_contribution": 22.0,
+                    "formula_contribution_total": 20.0,
+                }
+        fake = FakeLLMClient(
+            {
+                "answer_repair": {
+                    "answer_text": "修复后的业务文案继续保留权威事实。",
+                }
+            }
+        )
+        state.update(
+            {
+                "run_id": "authority-claim-repair",
+                "llm_client": fake,
+                "llm_calls": [],
+                "evidence_interpretation": {},
+                "causal_audit": {},
+                "analysis_route": {},
+                "semantic_audit": {
+                    "audit_status": "needs_revision",
+                    "issues": [{"severity": "error", "description": "措辞过强"}],
+                },
+                "verifier": {"errors": []},
+                "retry_context": {
+                    "failed_node": "semantic_audit",
+                    "failure_type": "semantic_audit",
+                    "failure_reason": "措辞过强",
+                },
+            }
+        )
+        _reduce_evidence(state)
+        state["draft_claims"] = workflow_module._authority_claims_from_evidence(state)
+        original_claims = deepcopy(state["draft_claims"])
+
+        workflow_module._repair_answer(state)
+
+        self.assertEqual(state["draft_claims"], original_claims)
+        repair_call = next(
+            call for call in state["llm_calls"] if call["task"] == "answer_repair"
+        )
+        self.assertNotIn("claims", repair_call["required_keys"])
+        user_message = next(
+            item for item in repair_call["messages"] if item["role"] == "user"
+        )
+        payload = json.loads(
+            user_message["content"]
+            .split("<input_json>", 1)[1]
+            .split("</input_json>", 1)[0]
+            .strip()
+        )
+        self.assertEqual(
+            set(payload),
+            {"answerText", "businessContext", "displayReview"},
+        )
+        self.assertTrue(payload["displayReview"]["findings"])
+        self.assertIn(
+            "需要修正",
+            "".join(payload["displayReview"]["findings"]),
+        )
+        visible = json.dumps(payload, ensure_ascii=False)
+        for internal in (
+            "draft_claims",
+            "evidence_ref",
+            "driver_decomposition",
+            "formula_component_contribution",
+            "retry_context",
+        ):
+            self.assertNotIn(internal, visible)
+
     def test_query_gap_execution_material_survives_langgraph_node_boundary(self):
         from langgraph.graph import END, StateGraph
 
@@ -877,6 +1378,9 @@ class LLMWorkflowTest(unittest.TestCase):
             "analysis_requirements": {
                 "context_sources": [],
                 "claim_intents": ["comparative_change"],
+                "claim_intent_roles": {
+                    "comparative_change": "user_required",
+                },
                 "requested_dimensions": [],
                 "requested_components": [],
             },
@@ -960,6 +1464,9 @@ class LLMWorkflowTest(unittest.TestCase):
             "analysis_requirements": {
                 "context_sources": [],
                 "claim_intents": ["comparative_change"],
+                "claim_intent_roles": {
+                    "comparative_change": "user_required",
+                },
                 "requested_dimensions": [],
                 "requested_components": [],
             },
@@ -1349,6 +1856,9 @@ class LLMWorkflowTest(unittest.TestCase):
                         "analysis_requirements": {
                             "context_sources": [],
                             "claim_intents": ["comparative_change"],
+                            "claim_intent_roles": {
+                                "comparative_change": "user_required",
+                            },
                             "requested_dimensions": [],
                             "requested_components": [],
                         },
@@ -1445,6 +1955,9 @@ class LLMWorkflowTest(unittest.TestCase):
                     "analysis_requirements": {
                         "context_sources": [],
                         "claim_intents": ["comparative_change"],
+                        "claim_intent_roles": {
+                            "comparative_change": "user_required",
+                        },
                         "requested_dimensions": [],
                         "requested_components": [],
                     },
@@ -1523,7 +2036,6 @@ class LLMWorkflowTest(unittest.TestCase):
             return_value={
                 "status": "degraded",
                 "explanation": "payment_attempt 与事件来源仍未绑定。",
-                "owner": "data_owner",
                 "repair_path": "绑定来源后补充归因。",
             },
         ):
@@ -1709,7 +2221,6 @@ class LLMWorkflowTest(unittest.TestCase):
             "final_explanation": {
                 "status": "degraded",
                 "explanation": "事件来源未绑定。",
-                "owner": "data_owner",
                 "repair_path": "绑定事件来源后补充。",
             },
         }
@@ -2480,9 +2991,7 @@ class LLMWorkflowTest(unittest.TestCase):
             {
                 "run_id": "live-missing-analysis-runtime",
                 "run_mode": "live",
-                "llm_client": FakeLLMClient(
-                    {"analysis_route": _provider_closed_analysis_route_output()}
-                ),
+                "llm_client": FakeLLMClient(),
             }
         )
 
@@ -2498,9 +3007,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 request = {
                     "run_id": f"{case}-missing-analysis-runtime",
                     "artifact_root": tmpdir,
-                    "llm_client": FakeLLMClient(
-                        {"analysis_route": _provider_closed_analysis_route_output()}
-                    ),
+                    "llm_client": FakeLLMClient(),
                 }
                 if run_mode is not None:
                     request["run_mode"] = run_mode
@@ -2605,21 +3112,21 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(list(_capability_rows(fixture))[0]["amount"], 999.0)
 
     def test_analysis_route_prompt_requires_typed_analysis_requirements(self):
-        text = "\n".join(
-            message["content"]
-            for message in build_prompt(
-                "analysis_route",
-                {
-                    "intent": {},
-                    "allowed_baseline_ids": [
-                        "previous_day",
-                        "same_weekday_last_week",
-                    ],
-                },
-            ).messages
+        spec = build_prompt(
+            "analysis_route_plan",
+            {
+                "intent": {},
+                "allowed_baseline_ids": [
+                    "previous_day",
+                    "same_weekday_last_week",
+                ],
+            },
         )
+        text = "\n".join(message["content"] for message in spec.messages)
 
         self.assertIn("analysis_requirements", text)
+        self.assertNotIn("expected_evidence", spec.required_keys)
+        self.assertNotIn("capability_sections", spec.required_keys)
         for key in (
             "target_metrics",
             "requested_components",
@@ -2632,16 +3139,16 @@ class LLMWorkflowTest(unittest.TestCase):
             self.assertIn(key, text)
         self.assertIn("allowed_claim_types", text)
         self.assertIn("allowed_baseline_ids", text)
-        self.assertIn("copied exactly", text)
+        self.assertIn("exact ids", text)
         self.assertIn("closed reviewed list", text)
-        self.assertIn("never objects, dates, or descriptions", text)
-        self.assertIn("Do not select compare_periods", text)
+        self.assertIn("never objects, dates, aliases, or descriptions", text)
+        self.assertIn("choose the direct pattern verifier first", text)
 
     def test_analysis_route_prompt_separates_context_from_metric_dataset_authority(self):
         text = "\n".join(
             message["content"]
             for message in build_prompt(
-                "analysis_route",
+                "analysis_route_plan",
                 {
                     "allowed_dataset_ids": ["paid_order_success", "gameplay"],
                     "allowed_context_source_ids": ["gameplay"],
@@ -2650,10 +3157,10 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertIn(
-            "context_sources must use only allowed_context_source_ids",
+            "context_sources may use only allowed_context_source_ids",
             text,
         )
-        self.assertIn("An empty context_sources array is valid", text)
+        self.assertIn("an empty array is valid", text)
         self.assertIn("dataset_requirements", text)
         self.assertIn("Metric-only datasets", text)
         self.assertNotIn(
@@ -2663,7 +3170,7 @@ class LLMWorkflowTest(unittest.TestCase):
 
     def test_fake_route_claims_follow_selected_capability_contract(self):
         prompt = build_prompt(
-            "analysis_route",
+            "analysis_route_plan",
             {
                 "intent": {
                     "question_family": "revenue_health_review",
@@ -2674,12 +3181,12 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         result = FakeLLMClient(
             {
-                "analysis_route": {
+                "analysis_route_plan": {
                     "requested_nodes": ["market_health_compare"],
                 }
             }
         ).invoke_json(
-            task="analysis_route",
+            task="analysis_route_plan",
             prompt_version=prompt.prompt_version,
             messages=prompt.messages,
             required_keys=prompt.required_keys,
@@ -2727,7 +3234,8 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertIn("exactly one question", text)
         self.assertIn("allowed_business_options", text)
-        self.assertIn("in the supplied order", text)
+        self.assertIn("do not author or repeat an options array", text)
+        self.assertIn("WAJE renders the reviewed business options", text)
         self.assertIn("questions must never be empty", text)
         self.assertIn("tell the agent to do differently", text)
         self.assertIn("cannot claim", text)
@@ -2766,10 +3274,16 @@ class LLMWorkflowTest(unittest.TestCase):
                     f'"{escape}"',
                     task_message["content"],
                 )
-                self.assertIn(
-                    "never translate or paraphrase the reviewed clarification escape option",
-                    task_message["content"],
-                )
+                if task == "query_gap_clarification":
+                    self.assertIn(
+                        "do not author or repeat an options array",
+                        task_message["content"],
+                    )
+                else:
+                    self.assertIn(
+                        "never translate or paraphrase the reviewed clarification escape option",
+                        task_message["content"],
+                    )
 
     def test_boundary_decision_needs_question_requires_one_exact_clarification(self):
         escape = "tell the agent to do differently"
@@ -2903,21 +3417,34 @@ class LLMWorkflowTest(unittest.TestCase):
             ):
                 _decide_question_boundary(state(status, [{"question": "不应出现"}]))
 
-    def test_final_llm_audit_hard_label_is_recorded_as_nonblocking_risk(self):
+    def test_final_llm_audit_material_finding_is_advisory(self):
         audit = normalize_final_answer_audit(
             {
-                "display_status": "hard_blocked",
-                "hard_blockers": ["unsupported_main_claim"],
-                "repairable_warnings": [],
-                "retry_instruction": "弱化措辞。",
-                "business_audit_summary": "存在措辞风险。",
+                "material_findings": [
+                    {
+                        "code": "unsupported_material_claim",
+                        "answer_excerpt": "活动直接导致上涨",
+                        "context_anchor": {
+                            "kind": "boundary",
+                            "key": "原因边界",
+                        },
+                        "edit_action": "weaken",
+                        "explanation": "现有证据不能确认该原因。",
+                    }
+                ],
+                "display_summary": "发现一处需要弱化的表达。",
             }
         )
 
         self.assertFalse(audit["blocks_display"])
         self.assertEqual(audit["hard_blockers"], [])
-        self.assertEqual(audit["risk_flags"], ["unsupported_main_claim"])
+        self.assertEqual(audit["risk_flags"], [])
+        self.assertEqual(
+            audit["repairable_warnings"],
+            ["unsupported_material_claim"],
+        )
         self.assertEqual(audit["display_status"], "ready_with_warnings")
+        self.assertIn("已定位表达", audit["retry_instruction"])
 
     def test_query_gap_clarification_contract_failure_has_no_node_retry(self):
         class InvalidThenValidLLM(FakeLLMClient):
@@ -3077,7 +3604,7 @@ class LLMWorkflowTest(unittest.TestCase):
         result = _generate_query_gap_clarification(state(fake))
         self.assertEqual(
             result["query_gap_clarification"]["recommended_assumption"],
-            {"option": "继续可验证的主指标分析，并明确缺少相关业务背景证据"},
+            {"option": "继续可验证的主指标分析，并明确缺少相关业务背景证据（推荐）"},
         )
         self.assertEqual(fake.calls, ["query_gap_clarification"])
         actions = result["query_gap_clarification"]["choice_actions"]
@@ -3119,9 +3646,9 @@ class LLMWorkflowTest(unittest.TestCase):
                             "repair_options": ("bind_source",),
                         }),
                         "bound_capability_inputs": {
-                            "market_health_compare": type(
-                                "Bound", (), {"status": "ready", "binding_manifest_ref": "binding:market"}
-                            )(),
+                            "market_health_compare": _claim_ready_bound(
+                                "binding:market"
+                            ),
                             "event_evidence": type("Bound", (), {"status": "blocked"})(),
                             "gameplay_context": type("Bound", (), {"status": "degraded"})(),
                         },
@@ -3156,9 +3683,7 @@ class LLMWorkflowTest(unittest.TestCase):
                     "affected_capabilities": ("event_evidence",),
                 },),
                 "bound_capability_inputs": {
-                    "market_health_compare": type(
-                        "Bound", (), {"status": "ready", "binding_manifest_ref": "binding:market"}
-                    )(),
+                    "market_health_compare": _claim_ready_bound("binding:market"),
                     "event_evidence": type("Bound", (), {"status": "blocked"})(),
                 },
             },
@@ -3192,9 +3717,7 @@ class LLMWorkflowTest(unittest.TestCase):
                     "affected_capabilities": (),
                 },),
                 "bound_capability_inputs": {
-                    "market_health_compare": type(
-                        "Bound", (), {"status": "ready", "binding_manifest_ref": "binding:market"}
-                    )(),
+                    "market_health_compare": _claim_ready_bound("binding:market"),
                 },
             },
         )()
@@ -3225,9 +3748,7 @@ class LLMWorkflowTest(unittest.TestCase):
                     "affected_capabilities": ("event_evidence",),
                 },),
                 "bound_capability_inputs": {
-                    "market_health_compare": type(
-                        "Bound", (), {"status": "ready", "binding_manifest_ref": "binding:market"}
-                    )(),
+                    "market_health_compare": _claim_ready_bound("binding:market"),
                 },
             },
         )()
@@ -3391,12 +3912,16 @@ class LLMWorkflowTest(unittest.TestCase):
             "affected_capabilities": ["outlier_scan", "event_evidence"],
         }
         state = resumed_state(
-            accepted_graph=("pattern_scan", "event_evidence", "outlier_scan"),
+            accepted_graph=(
+                "rolling_window_compare",
+                "event_evidence",
+                "outlier_scan",
+            ),
             selected=selected,
             effective=effective,
         )
         expected_active = (
-            "pattern_scan",
+            "rolling_window_compare",
             "metric_timeseries",
             "data_quality_profile",
             "evidence_reduce",
@@ -3408,34 +3933,14 @@ class LLMWorkflowTest(unittest.TestCase):
             "weekday_calendar_compare",
             "change_point_scan",
         )
-        finalized_requirements = {
-            **deepcopy(requirements),
-            "dataset_requirements": ["paid_order_success"],
-        }
-        resume_output = _provider_analysis_route_output(
-            requested_nodes=list(expected_active),
-            expected_evidence={
-                capability: "该业务路径对应的可验证证据与限制说明。"
-                for capability in expected_active
-            },
-            analysis_requirements=finalized_requirements,
-            route_summary="按已确认的降级范围保留可验证路径继续分析。",
+        stale_resume_output = _provider_final_route_narrative_output(
+            expected_active,
+            route_summary="继续核对事件机制证据，再完成其余业务路径分析。",
             decision_summary="已排除用户确认不可用的背景路径。",
             display_summary="已按确认范围更新分析路线。",
         )
-        stale_resume_output = {
-            **deepcopy(resume_output),
-            "route_summary": "继续核对事件机制证据，再完成其余业务路径分析。",
-            "narrative_capability_refs": {
-                **deepcopy(resume_output["narrative_capability_refs"]),
-                "route_summary_capability_ids": [
-                    *expected_active,
-                    "event_evidence",
-                ],
-            },
-        }
         client, completions = _provider_client_with_outputs(
-            (stale_resume_output, resume_output)
+            (stale_resume_output,)
         )
         state["llm_client"] = client
         state["llm_calls"] = []
@@ -3448,7 +3953,7 @@ class LLMWorkflowTest(unittest.TestCase):
             self.assertNotIn("event_evidence", active)
             self.assertNotIn("outlier_scan", active)
         with self.subTest(boundary="ready_sibling_is_preserved"):
-            self.assertIn("pattern_scan", active)
+            self.assertIn("rolling_window_compare", active)
         with self.subTest(boundary="effective_choice_is_attached"):
             self.assertEqual(
                 state["analysis_route"]["accepted_degradation_choice"],
@@ -3508,10 +4013,8 @@ class LLMWorkflowTest(unittest.TestCase):
             selected=all_omitted_selected,
             effective=all_omitted_effective,
         )
-        all_omitted_output = _provider_analysis_route_output(
-            requested_nodes=[],
-            expected_evidence={},
-            analysis_requirements=finalized_requirements,
+        all_omitted_output = _provider_final_route_narrative_output(
+            (),
             route_summary="当前确认范围内没有可继续执行的证据路径。",
             decision_summary="按用户选择保留证据缺口边界。",
             display_summary="已确认当前没有可执行路径。",
@@ -3751,7 +4254,12 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(second[1]["obligation_resolution"]["mutations"], [])
         self.assertNotIn("question_text", first[1]["obligation_resolution"])
         self.assertTrue(
-            {"segment_contribution", "joint_attribution", "answer_verify"}.issubset(
+            {
+                "candidate_dimension_screen",
+                "market_channel_context",
+                "gameplay_activity_context",
+                "answer_verify",
+            }.issubset(
                 first[0]
             )
         )
@@ -3933,6 +4441,143 @@ class LLMWorkflowTest(unittest.TestCase):
                 self.assertEqual(
                     route["obligation_resolution"]["status"], "resolved"
                 )
+
+    def test_provider_added_diagnostic_capabilities_remain_auxiliary(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        requested, route = workflow_module.reconcile_analysis_route(
+            (
+                "data_quality_profile",
+                "formula_decompose",
+                "driver_decomposition",
+                "answer_verify",
+            ),
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["paid_amount"],
+                    "requested_components": ["paid_users", "avg_order_amount"],
+                    "requested_dimensions": [],
+                    "baselines": ["previous_day"],
+                    "context_sources": [],
+                    "dataset_requirements": ["paid_order_success"],
+                    "diagnostic_tags": ["revenue_health"],
+                    "claim_intents": [
+                        "comparative_change",
+                        "formula_component_contribution",
+                    ],
+                    "scope": "full_sample",
+                }
+            },
+            {
+                "question_family": "paid_amount_change_explanation",
+                "question_families": ["paid_amount_change_explanation"],
+                "target_metric": "paid_amount",
+                "claim_intents": [
+                    "comparative_change",
+                    "formula_component_contribution",
+                ],
+            },
+            registry,
+        )
+
+        self.assertIn("user_mix_contribution", requested)
+        self.assertIn("high_value_user_contribution", requested)
+        roles = route["obligation_resolution"]["capability_roles"]
+        self.assertEqual(
+            roles["user_mix_contribution"],
+            {
+                "analysis_role": "auxiliary",
+                "sources": ["diagnostic_candidate:revenue_health"],
+            },
+        )
+        self.assertEqual(
+            roles["high_value_user_contribution"]["analysis_role"],
+            "auxiliary",
+        )
+        self.assertEqual(
+            roles["driver_decomposition"]["analysis_role"],
+            "required",
+        )
+        route["requested_nodes"] = requested
+        runtime_request = workflow_module._analysis_runtime_request(
+            {
+                "run_id": "run-diagnostic-role-projection",
+                "request": {
+                    "role": "analyst",
+                    "run_mode": "fixture",
+                    "analysis_context": {
+                        "as_of": "2026-07-16T00:00:00+00:00"
+                    },
+                },
+                "analysis_route": route,
+                "intent": {
+                    "question_family": "paid_amount_change_explanation",
+                    "question_families": ["paid_amount_change_explanation"],
+                    "target_metric": "paid_amount",
+                    "target_semantic": "2026-06-01",
+                    "claim_intents": [
+                        "comparative_change",
+                        "formula_component_contribution",
+                    ],
+                },
+            }
+        )
+        self.assertEqual(
+            runtime_request.proposal["capability_roles"]
+            ["user_mix_contribution"]["analysis_role"],
+            "auxiliary",
+        )
+
+    def test_explicit_route_selection_wins_over_diagnostic_auxiliary_role(self):
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        _, route = workflow_module.reconcile_analysis_route(
+            ("data_quality_profile", "user_mix_contribution"),
+            {
+                "analysis_requirements": {
+                    "target_metrics": ["paid_amount"],
+                    "requested_components": ["paid_users"],
+                    "requested_dimensions": [],
+                    "baselines": ["previous_day"],
+                    "context_sources": [],
+                    "dataset_requirements": ["paid_order_success"],
+                    "diagnostic_tags": ["revenue_health"],
+                    "claim_intents": [
+                        "contribution",
+                        "formula_component_contribution",
+                    ],
+                    "scope": "full_sample",
+                }
+            },
+            {
+                "question_family": "paid_amount_change_explanation",
+                "question_families": ["paid_amount_change_explanation"],
+                "target_metric": "paid_amount",
+                "claim_intents": [
+                    "contribution",
+                    "formula_component_contribution",
+                ],
+            },
+            registry,
+        )
+
+        self.assertEqual(
+            route["obligation_resolution"]["capability_roles"]
+            ["user_mix_contribution"],
+            {
+                "analysis_role": "required",
+                "sources": [
+                    "route_selected",
+                    "diagnostic_candidate:revenue_health",
+                ],
+            },
+        )
 
     def test_incompatible_diagnostic_is_rejected_without_executing_its_capability(self):
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
@@ -4586,16 +5231,10 @@ class LLMWorkflowTest(unittest.TestCase):
                     "decision_summary": "保留可执行的证据路径。",
                     "display_summary": "已修复分析路线。",
                 }
-            final_nodes = tuple(payload["final_route_machine"]["requested_nodes"])
-            candidate = _provider_analysis_route_output(
-                requested_nodes=list(final_nodes),
-                expected_evidence={
-                    capability: "修复后该路径对应的可验证业务证据。"
-                    for capability in final_nodes
-                },
-                analysis_requirements=deepcopy(
-                    payload["final_route_machine"]["analysis_requirements"]
-                ),
+            self.assertEqual(task, "final_route_narrative")
+            route_steps = payload["route_context"]["route_steps"]
+            candidate = _provider_final_route_narrative_output(
+                tuple(route_steps),
                 route_summary="按修复后的最终业务路径继续核验。",
                 decision_summary="最终路线已覆盖保留的证据义务。",
                 display_summary="已形成修复后的业务分析路线。",
@@ -4609,17 +5248,17 @@ class LLMWorkflowTest(unittest.TestCase):
         ):
             workflow_module._repair_analysis_route(state)
 
-        self.assertEqual([task for task, _ in calls], ["route_repair", "analysis_route"])
+        self.assertEqual(
+            [task for task, _ in calls],
+            ["route_repair", "final_route_narrative"],
+        )
         self.assertNotIn("prior_route_narrative", calls[1][1])
         self.assertNotIn("removed_capability_business_labels", calls[1][1])
         self.assertNotIn("rolling_window_compare", state["analysis_route"]["requested_nodes"])
-        self.assertNotIn(
-            "rolling_window_compare",
-            {
-                card["capability_id"]
-                for card in calls[1][1]["known_capabilities"]
-            },
+        serialized_narrative_input = json.dumps(
+            calls[1][1], ensure_ascii=False, sort_keys=True
         )
+        self.assertNotIn("rolling_window_compare", serialized_narrative_input)
         self.assertEqual(
             workflow_module._final_narrative_capability_refs(
                 state["analysis_route"]["requested_nodes"]
@@ -4677,48 +5316,37 @@ class LLMWorkflowTest(unittest.TestCase):
 
         requested = ("compare_periods",)
         requirements = _provider_analysis_route_output()["analysis_requirements"]
-        missing = _provider_analysis_route_output(
-            requested_nodes=list(requested),
-            expected_evidence={
-                "compare_periods": "目标周期与基准周期之间的变化证据。"
-            },
-            analysis_requirements=deepcopy(requirements),
-            capability_sections={},
+        missing = _provider_final_route_narrative_output(
+            requested,
+            sections=[],
         )
-        extra = _provider_analysis_route_output(
-            requested_nodes=list(requested),
-            expected_evidence={
-                "compare_periods": "目标周期与基准周期之间的变化证据。"
-            },
-            analysis_requirements=deepcopy(requirements),
-            capability_sections={
-                **_provider_capability_sections(requested),
-                "rolling_window_compare": {
-                    "route_step": "补充滚动窗口业务路径。",
-                    "expected_evidence": "补充滚动窗口业务证据。",
+        extra = _provider_final_route_narrative_output(
+            requested,
+            sections=[
+                {
+                    "step_ref": "step_1",
+                    "route_step": "核对目标周期与基准周期的变化。",
+                    "expected_evidence": "目标周期与基准周期之间的变化证据。",
                 },
-            },
+                {
+                    "step_ref": "step_2",
+                    "route_step": "补充未经安排的业务路径。",
+                    "expected_evidence": "补充未经安排的业务证据。",
+                },
+            ],
         )
-        valid = _provider_analysis_route_output(
-            requested_nodes=list(requested),
-            expected_evidence={
-                "compare_periods": "目标周期与基准周期之间的变化证据。"
-            },
-            analysis_requirements=deepcopy(requirements),
+        valid = _provider_final_route_narrative_output(
+            requested,
             route_summary="使用周期对比核对目标周期的业务变化。",
             decision_summary="保留周期对比证据路径。",
             display_summary="已形成周期对比路线。",
-            capability_sections={
-                "compare_periods": {
+            sections=[
+                {
+                    "step_ref": "step_1",
                     "route_step": "核对目标周期与基准周期的变化。",
                     "expected_evidence": "目标周期与基准周期之间的变化证据。",
                 }
-            },
-            narrative_capability_refs={
-                "route_summary_capability_ids": ["rolling_window_compare"],
-            },
-            narrative_authority={"authority_level": "hard"},
-            rogue_route_authority={"authority_level": "hard"},
+            ],
         )
         client, completions = _provider_client_with_outputs(
             (missing, extra, valid)
@@ -4742,7 +5370,7 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertIn(valid["route_summary"], finalized["route_summary"])
         self.assertIn(
-            valid["capability_sections"]["compare_periods"]["route_step"],
+            valid["sections"][0]["route_step"],
             finalized["route_summary"],
         )
         self.assertEqual(
@@ -4753,7 +5381,6 @@ class LLMWorkflowTest(unittest.TestCase):
             finalized["narrative_authority"],
             workflow_module._final_narrative_authority(),
         )
-        self.assertNotIn("rogue_route_authority", finalized)
 
     def test_cross_concept_route_section_cannot_expand_machine_authority(self):
         from bi_agent.runtime.runtime_contract_registry import (
@@ -4765,33 +5392,27 @@ class LLMWorkflowTest(unittest.TestCase):
             **deepcopy(_provider_analysis_route_output()["analysis_requirements"]),
             "claim_intents": ["baseline_stability"],
         }
-        cross_concept_candidate = _provider_analysis_route_output(
-            requested_nodes=list(requested),
-            expected_evidence={
-                "compare_periods": "过去七天均值对照的业务说明。"
-            },
-            analysis_requirements=deepcopy(requirements),
+        cross_concept_candidate = _provider_final_route_narrative_output(
+            requested,
             route_summary="核对当前周期变化。",
-            capability_sections={
-                "compare_periods": {
+            sections=[
+                {
+                    "step_ref": "step_1",
                     "route_step": "补充过去七天均值对照。",
                     "expected_evidence": "过去七天均值对照的业务说明。",
                 }
-            },
+            ],
         )
-        clean_candidate = _provider_analysis_route_output(
-            requested_nodes=list(requested),
-            expected_evidence={
-                "compare_periods": "目标周期与基准周期之间的变化证据。"
-            },
-            analysis_requirements=deepcopy(requirements),
+        clean_candidate = _provider_final_route_narrative_output(
+            requested,
             route_summary="核对当前周期变化。",
-            capability_sections={
-                "compare_periods": {
+            sections=[
+                {
+                    "step_ref": "step_1",
                     "route_step": "核对目标周期与基准周期的变化。",
                     "expected_evidence": "目标周期与基准周期之间的变化证据。",
                 }
-            },
+            ],
         )
         cross_client, cross_completions = _provider_client_with_outputs(
             (cross_concept_candidate,)
@@ -4871,18 +5492,15 @@ class LLMWorkflowTest(unittest.TestCase):
         requested = ("compare_periods",)
         provider_route = _provider_analysis_route_output(
             requested_nodes=list(requested),
-            expected_evidence={
-                "compare_periods": "目标周期与基准周期之间的变化证据。"
-            },
-            capability_sections=_provider_capability_sections(requested),
         )
+        provider_narrative = _provider_final_route_narrative_output(requested)
         route = workflow_module._project_final_analysis_route_narrative(
             {
                 "analysis_requirements": deepcopy(
                     provider_route["analysis_requirements"]
                 )
             },
-            provider_route,
+            provider_narrative,
             requested=requested,
         )
         route["requested_nodes"] = requested
@@ -4958,22 +5576,25 @@ class LLMWorkflowTest(unittest.TestCase):
                     workflow_module._accept_analysis_route(state)
 
     def test_initial_production_route_retries_missing_capability_sections(self):
-        invalid = _provider_closed_analysis_route_output(
-            capability_sections={},
+        invalid = _provider_analysis_route_output(
+            requested_nodes=["invented_revenue_oracle"],
         )
-        requested = tuple(invalid["requested_nodes"])
-        valid = _provider_closed_analysis_route_output()
+        valid = _provider_analysis_route_output()
         valid["permission_scope"] = "admin"
         valid["claim_contract"] = {"claim_type": "causal"}
         valid["accepted_degradation_choice"] = {
             "action_kind": "provider_forged"
         }
-        client, completions = _provider_client_with_outputs((invalid, valid))
+        final_nodes = _provider_closed_analysis_route_output()["requested_nodes"]
+        final = _provider_final_route_narrative_output(final_nodes)
+        client, completions = _provider_client_with_outputs(
+            (invalid, valid, final)
+        )
         state = _provider_analysis_route_state(client)
 
         workflow_module._design_analysis_route(state)
 
-        self.assertEqual(completions.attempt_count, 2)
+        self.assertEqual(completions.attempt_count, 3)
         self.assertEqual(
             set(state["analysis_route"]["capability_sections"]),
             set(state["analysis_route"]["requested_nodes"]),
@@ -4984,6 +5605,200 @@ class LLMWorkflowTest(unittest.TestCase):
             "accepted_degradation_choice",
             state["analysis_route"],
         )
+
+    def test_initial_route_only_supplies_required_ids_with_provider_visible_cards(self):
+        state = _provider_analysis_route_state(None)
+        calls = []
+
+        def invoke(_state, task, payload, **kwargs):
+            calls.append((task, deepcopy(payload)))
+            if task == "analysis_route_plan":
+                visible_ids = {
+                    str(card.get("capability_id") or "")
+                    for card in payload["known_capabilities"]
+                }
+                self.assertTrue(
+                    set(payload["required_capability_ids"]).issubset(
+                        visible_ids
+                    )
+                )
+                candidate = _provider_analysis_route_output()
+            else:
+                self.assertEqual(task, "final_route_narrative")
+                route_steps = payload["route_context"]["route_steps"]
+                candidate = _provider_final_route_narrative_output(
+                    tuple(route_steps),
+                )
+            kwargs["output_validator"](candidate)
+            return candidate
+
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._invoke_llm",
+            side_effect=invoke,
+        ):
+            workflow_module._design_analysis_route(state)
+
+        self.assertEqual(
+            [task for task, _ in calls],
+            ["analysis_route_plan", "final_route_narrative"],
+        )
+
+    def test_initial_and_graphless_resume_routes_finalize_local_obligation_closure(self):
+        for resume_context in (
+            {},
+            {
+                "analysis_route": _provider_analysis_route_output(),
+                "accepted_graph": [],
+            },
+        ):
+            with self.subTest(graphless_resume=bool(resume_context)):
+                state = _provider_analysis_route_state(None)
+                if resume_context:
+                    state["request"]["clarification_resume_context"] = resume_context
+                calls = []
+
+                def invoke(_state, task, payload, **kwargs):
+                    calls.append((task, deepcopy(payload)))
+                    if task == "analysis_route_plan":
+                        candidate = _provider_analysis_route_output()
+                    else:
+                        self.assertEqual(task, "final_route_narrative")
+                        route_steps = payload["route_context"]["route_steps"]
+                        self.assertTrue(
+                            any(
+                                step["business_name"] == "指标时间序列"
+                                for step in route_steps
+                            )
+                        )
+                        candidate = _provider_final_route_narrative_output(
+                            tuple(route_steps),
+                        )
+                    kwargs["output_validator"](candidate)
+                    return candidate
+
+                with patch(
+                    "bi_agent.runtime.langgraph_workflow._invoke_llm",
+                    side_effect=invoke,
+                ):
+                    workflow_module._design_analysis_route(state)
+
+                self.assertEqual(
+                    [task for task, _ in calls],
+                    ["analysis_route_plan", "final_route_narrative"],
+                )
+                self.assertEqual(
+                    set(state["analysis_route"]["capability_sections"]),
+                    set(state["analysis_route"]["requested_nodes"]),
+                )
+
+    def test_final_route_narrative_retries_unknown_and_unsupplied_nodes(self):
+        from bi_agent.runtime.runtime_contract_registry import (
+            RuntimeContractRegistry,
+        )
+
+        requested = ("metric_timeseries",)
+        requirements = _provider_analysis_route_output()["analysis_requirements"]
+        unknown = _provider_final_route_narrative_output(
+            requested,
+            sections=[
+                {
+                    "step_ref": "invented_step",
+                    "route_step": "核对未经供应的步骤。",
+                    "expected_evidence": "获得未经供应的证据。",
+                }
+            ],
+        )
+        unsupplied = _provider_final_route_narrative_output(
+            requested,
+            sections=[
+                {
+                    "step_ref": "step_2",
+                    "route_step": "核对错位步骤。",
+                    "expected_evidence": "获得错位步骤证据。",
+                }
+            ],
+        )
+        valid = _provider_final_route_narrative_output(requested)
+        client, completions = _provider_client_with_outputs(
+            (unknown, unsupplied, valid)
+        )
+        state = _provider_analysis_route_state(client)
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+
+        finalized = workflow_module._finalize_production_analysis_route_narrative(
+            state,
+            route={"analysis_requirements": deepcopy(requirements)},
+            requested=requested,
+            registry=registry,
+        )
+
+        self.assertEqual(completions.attempt_count, 3)
+        self.assertEqual(tuple(finalized["capability_sections"]), requested)
+
+    def test_final_route_narrative_exhaustion_keeps_machine_route_available(self):
+        from bi_agent.runtime.runtime_contract_registry import (
+            RuntimeContractRegistry,
+        )
+
+        requested = ("metric_timeseries",)
+        requirements = _provider_analysis_route_output()["analysis_requirements"]
+        invalid = _provider_final_route_narrative_output(
+            requested,
+            sections=[
+                {
+                    "step_ref": "invented_step",
+                    "route_step": "核对未经供应的步骤。",
+                    "expected_evidence": "获得未经供应的证据。",
+                }
+            ],
+        )
+        client, completions = _provider_client_with_outputs((invalid,))
+        state = _provider_analysis_route_state(client)
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+
+        finalized = workflow_module._finalize_production_analysis_route_narrative(
+            state,
+            route={"analysis_requirements": deepcopy(requirements)},
+            requested=requested,
+            registry=registry,
+        )
+
+        self.assertEqual(completions.attempt_count, 3)
+        self.assertEqual(len(state["llm_calls"]), 1)
+        self.assertEqual(finalized["route_narrative_status"], "unavailable")
+        self.assertIn(
+            "final_route_narrative_invalid:sections",
+            finalized["route_narrative_failure"],
+        )
+        self.assertEqual(finalized["analysis_requirements"], requirements)
+
+    def test_final_route_narrative_exhaustion_does_not_block_route_acceptance(self):
+        plan = _provider_analysis_route_output()
+        invalid_narrative = _provider_final_route_narrative_output(
+            ("metric_timeseries",),
+            sections=[
+                {
+                    "step_ref": "invented_step",
+                    "route_step": "核对未经供应的步骤。",
+                    "expected_evidence": "获得未经供应的证据。",
+                }
+            ],
+        )
+        client, _ = _provider_client_with_outputs((plan, invalid_narrative))
+        state = _provider_analysis_route_state(client)
+
+        workflow_module._design_analysis_route(state)
+        accepted = workflow_module._accept_analysis_route(state)
+
+        self.assertEqual(
+            state["analysis_route"]["route_narrative_status"],
+            "unavailable",
+        )
+        self.assertTrue(accepted["compiled_graph"].mutations.accepted_graph)
 
     def test_production_route_accept_rejects_stale_evidence_mapping(self):
         state = {
@@ -5425,7 +6240,7 @@ class LLMWorkflowTest(unittest.TestCase):
         ):
             _question_family_values({"unexpected_family_key": "anomaly"})
 
-    def test_delivery_reverify_repairs_with_exact_codes_and_fails_after_bound(self):
+    def test_delivery_reverify_authority_failure_does_not_call_llm_or_mutate_claims(self):
         failed = {
             "status": "failed",
             "admin_audit": {
@@ -5438,86 +6253,50 @@ class LLMWorkflowTest(unittest.TestCase):
                 }
             },
         }
-        passed = {
-            "status": "draft",
-            "admin_audit": {"verifier": {"status": "passed", "errors": []}},
+        original_claims = [
+            _claim_fixture(
+                text="目标窗口相对基线发生变化。",
+                evidence_refs=("compare_periods:ready",),
+                numbers={"relative_change": 0.2},
+                time_window="2026-06-02",
+                claim_type="comparative_change",
+            )
+        ]
+        state = {
+            "request": {},
+            "answer_text": "待交付答案",
+            "draft_claims": deepcopy(original_claims),
+            "evidence": [],
+            "evidence_brief": {},
+            "intent": {
+                "target_metric": "active_users",
+                "pattern_family": "custom_baseline",
+                "scope": "full_sample",
+                "time_window": "2026-06-02",
+            },
+            "llm_calls": [],
         }
-
-        def state():
-            return {
-                "request": {},
-                "answer_text": "待修复答案",
-                "draft_claims": [],
-                "evidence": [],
-                "evidence_brief": {},
-                "intent": {
-                    "target_metric": "active_users",
-                    "pattern_family": "custom_baseline",
-                    "scope": "full_sample",
-                    "time_window": "2026-06-02",
-                },
-                "llm_calls": [],
-            }
-
-        captured = []
-
-        def repair_llm(_state, task, payload, **_kwargs):
-            captured.append((task, dict(payload)))
-            return {"answer_text": "已修复答案", "claims": []}
-
-        authority_candidates = (
-            {"status": "draft", "internal_authority": "candidate-1"},
-            {"status": "draft", "internal_authority": "candidate-2"},
-        )
         with patch(
             "bi_agent.runtime.langgraph_workflow.reverify_answer_package_for_delivery",
-            side_effect=(failed, passed),
-        ), patch(
+            return_value=failed,
+        ) as reverify, patch(
             "bi_agent.runtime.langgraph_workflow._build_answer_package_from_state",
-            side_effect=authority_candidates,
-        ), patch(
+            return_value={"status": "draft", "internal_authority": "candidate"},
+        ) as build_package, patch(
             "bi_agent.runtime.langgraph_workflow._invoke_llm",
-            side_effect=repair_llm,
-        ), patch(
-            "bi_agent.runtime.langgraph_workflow._claims_from_llm_or_default",
-            return_value=[],
-        ):
-            repaired_state = state()
-            result = _delivery_reverify_with_answer_repair(repaired_state)
-
-        self.assertEqual(result["status"], "draft")
-        self.assertEqual(result["internal_authority"], "candidate-2")
-        self.assertEqual(len(captured), 1)
-        self.assertEqual(
-            captured[0][1]["delivery_verifier_error_codes"],
-            ["free_text_without_verified_claim", "reported_verifier_mismatch"],
-        )
-        self.assertIn("do not rerun queries", captured[0][1]["repair_scope"])
-
-        captured.clear()
-        with patch(
-            "bi_agent.runtime.langgraph_workflow.reverify_answer_package_for_delivery",
-            side_effect=(failed, failed),
-        ), patch(
-            "bi_agent.runtime.langgraph_workflow._build_answer_package_from_state",
-            return_value={},
-        ), patch(
-            "bi_agent.runtime.langgraph_workflow._invoke_llm",
-            side_effect=repair_llm,
-        ), patch(
-            "bi_agent.runtime.langgraph_workflow._claims_from_llm_or_default",
-            return_value=[],
-        ):
-            failed_state = state()
-            result = _delivery_reverify_with_answer_repair(failed_state)
+        ) as repair_llm:
+            result = _delivery_reverify_with_answer_repair(state)
 
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(failed_state["workflow_status"], "failed")
+        self.assertEqual(state["workflow_status"], "failed")
         self.assertEqual(
-            failed_state["workflow_failure_reason"],
+            state["workflow_failure_reason"],
             "delivery_reverify_failed:free_text_without_verified_claim,reported_verifier_mismatch",
         )
-        self.assertEqual(len(captured), 1)
+        self.assertEqual(state["draft_claims"], original_claims)
+        repair_llm.assert_not_called()
+        build_package.assert_called_once()
+        reverify.assert_called_once()
 
     def test_explicit_failed_graph_output_keeps_reason_and_package(self):
         class Graph:
@@ -5802,7 +6581,18 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(_route_after_query_gap_clarification(state), "block")
         self.assertNotIn("query_gap_action_render", fake.calls)
 
-    def test_query_gap_action_binding_rejects_cardinality_tampering_and_reordering(self):
+    def test_query_gap_grouping_rejects_unknown_local_action_kind(self):
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "query_gap_action_contract_invalid:unknown_action",
+        ):
+            _group_query_gap_actions(({
+                "action_kind": "unreviewed_action",
+                "business_semantics": "执行未审核处理方式",
+                "affected_capabilities": ["event_evidence"],
+            },))
+
+    def test_query_gap_action_binding_canonicalizes_provider_option_drift(self):
         business_gaps = [{
             "allowed_actions": [
                 {
@@ -5821,7 +6611,8 @@ class LLMWorkflowTest(unittest.TestCase):
         }]
 
         escape = "tell the agent to do differently"
-        invalid = (
+        provider_variants = (
+            None,
             ["继续主指标分析并说明限制", escape],
             ["继续主指标分析并说明限制", "继续主指标分析并说明限制", escape],
             ["继续主指标分析并说明限制", "其他", escape],
@@ -5832,24 +6623,47 @@ class LLMWorkflowTest(unittest.TestCase):
             ["继续主指标分析并说明限制", "等待相关业务数据", "按其他方式处理"],
             [escape, "继续主指标分析并说明限制", "等待相关业务数据"],
         )
-        for options in invalid:
-            with self.subTest(options=options), self.assertRaisesRegex(
-                WorkflowFailure,
-                "query_gap_action_binding_invalid:options",
-            ):
-                _render_query_gap_actions(
+        for options in provider_variants:
+            with self.subTest(options=options):
+                question = {"question": "如何继续？"}
+                if options is not None:
+                    question["options"] = options
+                output = {
+                    "questions": [question],
+                    "recommended_assumption": {
+                        "option": "继续主指标分析并说明限制"
+                    },
+                    "recommendation_reason": "符合当前业务证据边界。",
+                }
+
+                rendered, actions = _render_query_gap_actions(
                     {"llm_calls": []},
                     business_gaps,
-                    output={
-                        "questions": [{"question": "如何继续？", "options": options}],
-                        "recommended_assumption": {
-                            "option": "继续主指标分析并说明限制"
-                        },
-                        "recommendation_reason": "符合当前业务证据边界。",
-                    },
+                    output=output,
                 )
 
-    def test_query_gap_action_binding_rejects_non_exact_recommendation(self):
+                self.assertEqual(
+                    rendered,
+                    [
+                        "继续主指标分析并说明限制（推荐）",
+                        "等待相关业务数据",
+                        escape,
+                    ],
+                )
+                self.assertEqual(
+                    [item["action_kind"] for item in actions],
+                    ["omit_unavailable_context", "wait_for_source", "user_redirect"],
+                )
+                self.assertEqual(
+                    [item["business_label"] for item in actions],
+                    rendered,
+                )
+                self.assertIn(
+                    "provider_query_gap_options_ignored",
+                    output["advisory_risks"],
+                )
+
+    def test_query_gap_action_binding_defaults_drifted_recommendation(self):
         business_gaps = [{
             "allowed_actions": [{
                 "choice_id": "continue",
@@ -5861,26 +6675,121 @@ class LLMWorkflowTest(unittest.TestCase):
         for recommendation in (
             " 继续主指标分析并说明限制 ",
             {"label": "继续主指标分析并说明限制"},
+            "模型新增的处理方式",
+            None,
         ):
-            with self.subTest(recommendation=recommendation), self.assertRaisesRegex(
-                WorkflowFailure,
-                "query_gap_action_binding_invalid:recommended_option",
-            ):
-                _render_query_gap_actions(
+            with self.subTest(recommendation=recommendation):
+                output = {
+                    "questions": [{"question": "如何继续？"}],
+                    "recommended_assumption": {"option": recommendation},
+                    "recommendation_reason": "符合当前业务证据边界。",
+                }
+
+                _, actions = _render_query_gap_actions(
                     {"llm_calls": []},
                     business_gaps,
-                    output={
-                        "questions": [{
-                            "question": "如何继续？",
-                            "options": [
-                                "继续主指标分析并说明限制",
-                                "tell the agent to do differently",
-                            ],
-                        }],
-                        "recommended_assumption": {"option": recommendation},
-                        "recommendation_reason": "符合当前业务证据边界。",
-                    },
+                    output=output,
                 )
+
+                self.assertEqual(
+                    output["recommended_assumption"],
+                    {"option": "继续主指标分析并说明限制（推荐）"},
+                )
+                self.assertEqual(
+                    output["recommended_choice_id"],
+                    actions[0]["choice_id"],
+                )
+                self.assertTrue(actions[0]["business_reason"])
+                self.assertIn(
+                    "provider_query_gap_recommendation_overridden",
+                    output["advisory_risks"],
+                )
+
+    def test_query_gap_action_binding_forced_ready_option_has_priority(self):
+        business_gaps = [{
+            "allowed_actions": [
+                {
+                    "choice_id": "wait",
+                    "action_kind": "wait_for_source",
+                    "business_semantics": "等待相关业务数据",
+                    "affected_capabilities": ["event_evidence"],
+                },
+                {
+                    "choice_id": "continue",
+                    "action_kind": "omit_unavailable_context",
+                    "business_semantics": "继续主指标分析并说明限制",
+                    "affected_capabilities": ["event_evidence"],
+                },
+            ]
+        }]
+        output = {
+            "questions": [{"question": "如何继续？"}],
+            "recommended_assumption": {"option": "等待相关业务数据"},
+            "recommendation_reason": "符合当前业务证据边界。",
+        }
+
+        _, actions = _render_query_gap_actions(
+            {"llm_calls": []},
+            business_gaps,
+            output=output,
+            forced_recommended_option="继续主指标分析并说明限制",
+        )
+
+        self.assertEqual(
+            output["recommended_assumption"],
+            {"option": "继续主指标分析并说明限制（推荐）"},
+        )
+        self.assertEqual(actions[0]["action_kind"], "omit_unavailable_context")
+        self.assertTrue(actions[0]["business_reason"])
+        self.assertIn(
+            "provider_query_gap_recommendation_overridden",
+            output["advisory_risks"],
+        )
+
+    def test_query_gap_invalid_question_or_reason_retries_three_provider_attempts(self):
+        from types import SimpleNamespace
+
+        valid = {
+            "questions": [{"question": "如何继续？"}],
+            "recommended_assumption": {"option": "等待相关业务数据可用后再恢复本次分析"},
+            "recommendation_reason": "该选择符合当前业务证据边界。",
+            "decision_summary": "需要用户确认处理方式。",
+            "display_summary": "等待用户确认业务口径。",
+        }
+        for invalid in (
+            {**valid, "questions": []},
+            {**valid, "recommendation_reason": ""},
+        ):
+            with self.subTest(invalid=invalid):
+                client, completions = _provider_client_with_outputs((invalid,))
+                state = {
+                    "request": {},
+                    "analysis_route": {"requested_nodes": ["event_evidence"]},
+                    "analysis_runtime_result": SimpleNamespace(
+                        typed_gaps=({
+                            "gap_type": "source_unbound",
+                            "requires_clarification": True,
+                            "owner": "data_owner",
+                            "affected_capabilities": ("event_evidence",),
+                            "repair_options": ("bind_source",),
+                        },),
+                        bound_capability_inputs={},
+                    ),
+                    "query_repair_decisions": (),
+                    "intent": {
+                        "target_metric": "active_users",
+                        "time_window": "target_day",
+                    },
+                    "llm_client": client,
+                    "llm_calls": [],
+                    "checkpoint_events": [],
+                }
+
+                with self.assertRaises(WorkflowFailure):
+                    _generate_query_gap_clarification(state)
+
+                self.assertEqual(completions.attempt_count, 3)
+                self.assertEqual(state["llm_calls"][-1]["attempt_count"], 3)
 
     def test_query_gap_action_binding_rejects_missing_recommendation_reason(self):
         business_gaps = [{
@@ -5915,21 +6824,15 @@ class LLMWorkflowTest(unittest.TestCase):
                 output=output,
             )
 
-    def test_window_coverage_repair_recommends_terminal_degradation_and_allows_pause(self):
+    def test_window_coverage_terminal_does_not_open_query_gap_choices(self):
         gap = _business_query_repair_gap(({
-            "action": "clarify",
+            "action": "block",
             "reason": "window_coverage_failure",
-            "requires_clarification": True,
+            "requires_clarification": False,
             "failed_query_contract_ref": "query:internal",
         },))
 
-        self.assertEqual(len(gap["allowed_actions"]), 2)
-        continue_action, pause_action = gap["allowed_actions"]
-        self.assertEqual(continue_action["action_kind"], "omit_unavailable_context")
-        self.assertIn("固定目标窗口", continue_action["business_semantics"])
-        self.assertEqual(pause_action["action_kind"], "wait_for_source")
-        self.assertIn("不调整目标日期", pause_action["business_semantics"])
-        self.assertNotIn("query:internal", json.dumps(gap, ensure_ascii=False))
+        self.assertEqual(gap, {})
 
     def test_answer_package_canonicalizes_accepted_degradation_from_manifest(self):
         from bi_agent.runtime.langgraph_workflow import _build_answer_package_from_state
@@ -5993,7 +6896,6 @@ class LLMWorkflowTest(unittest.TestCase):
                 state["final_explanation"] = _sanitize_terminal_explanation(
                     {
                         "explanation": "当前边界下没有可发布的业务结论。",
-                        "owner": "业务分析负责人",
                         "repair_path": "补齐已确认缺口后重新分析。",
                     },
                     state,
@@ -6060,7 +6962,6 @@ class LLMWorkflowTest(unittest.TestCase):
         state["final_explanation"] = _sanitize_terminal_explanation(
             {
                 "explanation": "当前边界下没有可发布的业务结论。",
-                "owner": "业务分析负责人",
                 "repair_path": "补齐已确认缺口后重新分析。",
             },
             state,
@@ -6175,7 +7076,10 @@ class LLMWorkflowTest(unittest.TestCase):
         from bi_agent.conversation.store import InMemoryConversationStore
         from bi_agent.runtime.clickhouse_runtime import ClickHouseQueryResult
         from bi_agent.runtime.dataset_catalog import DatasetCatalog
-        from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            RuntimeEvidenceAuthority,
+        )
         from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
         from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
         from tests.phase4.test_analysis_contract_compiler import (
@@ -6300,23 +7204,21 @@ class LLMWorkflowTest(unittest.TestCase):
 
         binding = result.persistence_records["capability_binding_records"][0]
         evidence_ref = "evidence:runtime-complete"
+        verified_claim = {
+            "text": "目标日付费金额高于前一日。",
+            "claim_type": "comparative_change",
+            "claim_strength": "observed",
+            "evidence_refs": [evidence_ref],
+            "numbers": {},
+        }
         claim_answer_package = {
             "run_id": "run-runtime-complete",
             "status": "draft",
+            "admin_audit": {"verified_claims": [verified_claim]},
             "sections": [
                 {
                     "section_id": "summary",
-                    "payload": {
-                        "claims": [
-                            {
-                                "text": "目标日付费金额高于前一日。",
-                                "claim_type": "comparative_change",
-                                "claim_strength": "observed",
-                                "evidence_refs": [evidence_ref],
-                                "numbers": {},
-                            }
-                        ]
-                    },
+                    "payload": {"claims": [verified_claim]},
                 },
                 {
                     "section_id": "evidence",
@@ -6331,6 +7233,30 @@ class LLMWorkflowTest(unittest.TestCase):
                 },
             ],
         }
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "analysis_runtime_verified_claim_authority_missing",
+        ):
+            runtime.build_persistence_bundle(
+                result,
+                answer_package={
+                    **claim_answer_package,
+                    "admin_audit": {},
+                },
+                request={
+                    "run_id": "run-runtime-complete",
+                    "thread_id": "thread-runtime-complete",
+                    "topic_id": "topic-runtime-complete",
+                    "permission_context": {"role": "analyst"},
+                    "context_manifest": {
+                        "manifest_id": "context-runtime",
+                        "items": [],
+                    },
+                },
+                artifact_path=(
+                    "artifacts/task10-core/run-runtime-complete.json"
+                ),
+            )
         claim_bundle = runtime.build_persistence_bundle(
             result,
             answer_package=claim_answer_package,
@@ -6595,13 +7521,11 @@ class LLMWorkflowTest(unittest.TestCase):
     def test_typed_unbound_clarification_bypasses_only_legacy_precompile(self):
         from types import SimpleNamespace
 
-        gap = SimpleNamespace(
+        gap = ContractGap(
+            gap_type="missing_contract",
+            gap_id="gap:event-evidence-unbound",
             requires_clarification=True,
             affected_capabilities=("event_evidence",),
-            to_dict=lambda: {
-                "requires_clarification": True,
-                "affected_capabilities": ["event_evidence"],
-            },
         )
         analysis_contract = SimpleNamespace(
             contract_gaps=(gap,),
@@ -6616,15 +7540,13 @@ class LLMWorkflowTest(unittest.TestCase):
                 ),
             ),
             capability_plans=(
-                SimpleNamespace(
-                    capability_id="market_health_compare",
-                    required_input_slots=({"query_contract_refs": ("query:ready",)},),
-                    optional_input_slots=(),
+                _capability_plan_fixture(
+                    "market_health_compare",
+                    required_query_refs=(("query:ready",),),
                 ),
-                SimpleNamespace(
-                    capability_id="event_evidence",
-                    required_input_slots=({"query_contract_refs": ()},),
-                    optional_input_slots=(),
+                _capability_plan_fixture(
+                    "event_evidence",
+                    required_query_refs=((),),
                 ),
             ),
         )
@@ -6673,10 +7595,9 @@ class LLMWorkflowTest(unittest.TestCase):
             analysis_contract=analysis_contract,
             query_contracts=(),
             capability_plans=(
-                SimpleNamespace(
-                    capability_id="event_evidence",
-                    required_input_slots=({"query_contract_refs": ()},),
-                    optional_input_slots=(),
+                _capability_plan_fixture(
+                    "event_evidence",
+                    required_query_refs=((),),
                 ),
             ),
         )
@@ -6702,16 +7623,10 @@ class LLMWorkflowTest(unittest.TestCase):
             analysis_contract=analysis_contract,
             query_contracts=outcome.query_contracts,
             capability_plans=(
-                SimpleNamespace(
-                    capability_id="event_evidence",
-                    required_input_slots=({
-                        "required": True,
-                        "query_contract_refs": ("query:event-ready",),
-                    },),
-                    optional_input_slots=({
-                        "required": False,
-                        "query_contract_refs": (),
-                    },),
+                _capability_plan_fixture(
+                    "event_evidence",
+                    required_query_refs=(("query:event-ready",),),
+                    optional_query_refs=((),),
                 ),
             ),
         )
@@ -6722,13 +7637,11 @@ class LLMWorkflowTest(unittest.TestCase):
     def test_partially_bound_required_slots_are_not_executable_ready(self):
         from types import SimpleNamespace
 
-        gap = SimpleNamespace(
+        gap = ContractGap(
+            gap_type="missing_contract",
+            gap_id="gap:segment-contribution-partial",
             requires_clarification=True,
             affected_capabilities=("segment_contribution",),
-            to_dict=lambda: {
-                "requires_clarification": True,
-                "affected_capabilities": ["segment_contribution"],
-            },
         )
         outcome = SimpleNamespace(
             analysis_contract=SimpleNamespace(contract_gaps=(gap,)),
@@ -6736,19 +7649,12 @@ class LLMWorkflowTest(unittest.TestCase):
                 SimpleNamespace(query_contract_id="query:segment:bound"),
             ),
             capability_plans=(
-                SimpleNamespace(
-                    capability_id="segment_contribution",
-                    required_input_slots=(
-                        {
-                            "required": True,
-                            "query_contract_refs": ("query:segment:bound",),
-                        },
-                        {
-                            "required": True,
-                            "query_contract_refs": (),
-                        },
+                _capability_plan_fixture(
+                    "segment_contribution",
+                    required_query_refs=(
+                        ("query:segment:bound",),
+                        (),
                     ),
-                    optional_input_slots=(),
                 ),
             ),
         )
@@ -6776,7 +7682,7 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(result.query_results, ())
 
-    def test_nonclarification_outcome_does_not_swallow_legacy_compile_error(self):
+    def test_nonclarification_outcome_does_not_swallow_compile_error(self):
         from types import SimpleNamespace
 
         outcome = SimpleNamespace(
@@ -6809,10 +7715,10 @@ class LLMWorkflowTest(unittest.TestCase):
 
         with patch(
             "bi_agent.runtime.langgraph_workflow.compile_graph",
-            side_effect=ValueError("legacy_hard_error"),
+            side_effect=ValueError("canonical_compile_error"),
         ), patch(
             "bi_agent.runtime.langgraph_workflow._record_execution_material"
-        ), self.assertRaisesRegex(ValueError, "legacy_hard_error"):
+        ), self.assertRaisesRegex(ValueError, "canonical_compile_error"):
             _accept_analysis_route(state)
 
     def test_executed_rows_do_not_degrade_a_blocked_completeness_boundary(self):
@@ -6842,7 +7748,14 @@ class LLMWorkflowTest(unittest.TestCase):
                     "query_contracts": [{"query_contract_id": "query:typed"}],
                     "query_results": [{"result_ref": "result:typed"}],
                     "completeness_reports": [{"report_ref": "complete:typed"}],
-                    "capability_execution_plans": [{"capability_id": "compare_periods"}],
+                    "capability_execution_plans": [
+                        asdict(
+                            _capability_plan_fixture(
+                                "compare_periods",
+                                required_query_refs=(("query:typed",),),
+                            )
+                        )
+                    ],
                     "repair_decisions": [
                         {"failed_signature": "signature", "action": "degrade"}
                     ],
@@ -6853,9 +7766,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 "validator_results": [],
                 "final_explanation": {
                     "status": "blocked",
-                    "code": "typed_query_gap",
-                    "reason": "结果完整性不足。",
-                    "owner": "data_platform",
+                    "explanation": "结果完整性不足。",
                     "repair_path": "刷新后重试。",
                 },
             }
@@ -6870,6 +7781,38 @@ class LLMWorkflowTest(unittest.TestCase):
 
     def test_prompt_specs_are_consistent(self):
         self.assertEqual(validate_prompt_specs(), [])
+
+    def test_fake_llm_defaults_follow_current_task_contracts_without_padding(self):
+        fake = FakeLLMClient()
+
+        for task in TASK_REQUIRED_KEYS:
+            with self.subTest(task=task):
+                spec = build_prompt(task, {})
+                output = fake.invoke_json(
+                    task=task,
+                    prompt_version=spec.prompt_version,
+                    messages=spec.messages,
+                    required_keys=spec.required_keys,
+                ).output
+                self.assertEqual(
+                    [key for key in spec.required_keys if key not in output],
+                    [],
+                )
+                self.assertEqual(
+                    [key for key in spec.required_keys if output[key] is None],
+                    [],
+                )
+
+        self.assertNotIn("claims", next(
+            call["structured_output"]
+            for call in fake.audit_calls
+            if call["task"] == "answer_synthesis"
+        ))
+        self.assertNotIn("claims", next(
+            call["structured_output"]
+            for call in fake.audit_calls
+            if call["task"] == "answer_repair"
+        ))
 
     def test_conversation_orchestrator_prompt_keeps_llm_in_business_routing_role(self):
         messages = build_prompt("conversation_orchestrator", {"user_message": "check"}).messages
@@ -6968,6 +7911,25 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("non-null, non-empty value", text)
         self.assertIn("copy its exact canonical value", text)
         self.assertIn("explicitly replaces that axis", text)
+
+    def test_business_intent_prompt_separates_canonical_target_day_from_baseline(self):
+        payload = workflow_module._business_intent_payload(
+            {
+                "question": (
+                    "昨天付费金额为什么变化？主要是首充人数、付费频次、"
+                    "单笔付费金额，还是支付成功率等因素导致的？"
+                ),
+                "run_mode": "live",
+            }
+        )
+        spec = build_prompt("business_intent", payload)
+        text = "\n".join(message["content"] for message in spec.messages)
+
+        self.assertEqual(payload["allowed_relative_target_ids"], ["yesterday"])
+        self.assertIn("canonical target-window machine field", text)
+        self.assertIn("return exactly yesterday", text)
+        self.assertIn("previous_day belongs only in baseline_candidates", text)
+        self.assertIn("return []", text)
 
     def test_business_intent_prompt_scopes_null_rule_away_from_required_material(self):
         messages = build_prompt(
@@ -7216,186 +8178,8 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertIn("本地聚合结果", _local_coverage_answerable_reason(state))
 
-    def test_reused_dimension_scan_rows_feed_segment_capability(self):
-        compiled = compile_graph(
-            question_family="paid_amount_change_explanation",
-            target_metric="paid_amount",
-            pattern_family="custom_baseline",
-            requested_nodes=(
-                "data_quality_profile",
-                "driver_decomposition",
-                "segment_contribution",
-                "answer_verify",
-            ),
-        )
-        state = {
-            "request": {
-                "rows": [
-                    {"period": "fallback", "group": "target", "amount": 1.0},
-                ],
-                "compiler_runtime_plan": {"baselines": ("previous_day",)},
-                "required_fields": ("period", "group", "amount", "orders"),
-                "role": "analyst",
-            },
-            "run_id": "reuse-segment-capability",
-            "sql_hash": "sqlhash-reuse-segment",
-            "budget_state": default_budget("ordinary"),
-            "compiled_graph": compiled,
-            "intent": {
-                "question_family": "paid_amount_change_explanation",
-                "target_metric": "paid_amount",
-                "analysis_requirements": {
-                    "requested_dimensions": ["channel"],
-                    "diagnostic_tags": ["pattern_attribution"],
-                },
-                "pattern_family": "custom_baseline",
-                "pattern_params": {"group_key": "group", "target_group": "target"},
-                "scope": "full_sample",
-                "time_window": "yesterday",
-                "target_claim": "按渠道解释昨天付费金额变化",
-            },
-        }
-        _apply_reused_dimension_scan_input(
-            state,
-            {
-                "query_ref": "asset-dimension-ref",
-                "dimensions": ("channel",),
-                "rows": [
-                    {
-                        "period": "2026-07-07",
-                        "group": "previous_day",
-                        "channel": "ads",
-                        "amount": 60.0,
-                        "orders": 12,
-                    },
-                    {
-                        "period": "2026-07-08",
-                        "group": "target",
-                        "channel": "ads",
-                        "amount": 95.0,
-                        "orders": 18,
-                    },
-                ],
-            },
-        )
-
-        self.assertEqual(
-            _capability_result_refs_for(state, "segment_contribution"),
-            ("asset-dimension-ref",),
-        )
-        self.assertEqual(
-            _capability_rows_for(state, "segment_contribution")[0]["channel"],
-            "ads",
-        )
-
-        with patch.dict(
-            "os.environ",
-            {
-                "WAJE_ALLOW_LEGACY_FIXTURES": "1",
-                "WAJE_RUNTIME_ENV": "test",
-            },
-        ):
-            result = _execute_capabilities(state)
-        segment = next(
-            item for item in result["evidence"] if item.get("capability_id") == "segment_contribution"
-        )
-
-        self.assertEqual(segment["evidence_type"], "statistical_association")
-        self.assertEqual(segment["result_refs"], ["asset-dimension-ref"])
-        self.assertEqual(segment["typed_payload"]["segment_count"], 1)
-
-    def test_workflow_uses_clickhouse_provider_rows_instead_of_default_rows(self):
-        class Provider:
-            def __init__(self):
-                self.planned = False
-                self.fetched = False
-
-            def configured(self):
-                return True
-
-            def binding_reason(self):
-                return ""
-
-            def plan(self, request, intent, accepted_graph):
-                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowPlan
-
-                self.planned = True
-                return RevenueRowPlan(
-                    sql_text=(
-                        "SELECT period, group, sum(amount) AS amount "
-                        "FROM t GROUP BY period, group"
-                    ),
-                    query_id="query-real",
-                    required_fields=("period", "group", "amount"),
-                    dimension_keys=("channel", "payment_method"),
-                )
-
-            def fetch(self, plan):
-                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowsResult
-
-                self.fetched = True
-                return RevenueRowsResult(
-                    ok=True,
-                    rows=(
-                        {
-                            "period": "2026-07-07",
-                            "group": "baseline",
-                            "amount": 100,
-                            "channel": "A",
-                            "payment_method": "M",
-                        },
-                        {
-                            "period": "2026-07-08",
-                            "group": "target",
-                            "amount": 130,
-                            "channel": "A",
-                            "payment_method": "M",
-                        },
-                    ),
-                    query_hash="hash-real",
-                    query_id="query-real",
-                    result_refs=("hash-real",),
-                )
-
-        provider = Provider()
-        result = run_pattern_workflow(
-            {
-                "run_id": "clickhouse-provider-rows",
-                "llm_client": FakeLLMClient(
-                    {
-                        "analysis_route": {
-                            "requested_nodes": [
-                                "compare_periods",
-                                "joint_attribution",
-                                "answer_verify",
-                            ]
-                        }
-                    }
-                ),
-                "row_provider": provider,
-            }
-        )
-
-        evidence = result.answer_package["sections"][1]["payload"]["evidence"]
-        result_refs = {
-            ref for item in evidence for ref in item.get("result_refs", ())
-        }
-        self.assertEqual(result.status, "draft")
-        self.assertTrue(provider.planned)
-        self.assertTrue(provider.fetched)
-        self.assertIn("hash-real", result_refs)
-
     def test_workflow_compiler_uses_row_provider_schema_fields(self):
         class Provider:
-            def __init__(self):
-                self.compiler_plan = None
-
-            def configured(self):
-                return True
-
-            def binding_reason(self):
-                return ""
-
             def schema_fields(self):
                 return (
                     "business_date_lagos",
@@ -7409,64 +8193,20 @@ class LLMWorkflowTest(unittest.TestCase):
                     "order_id",
                 )
 
-            def plan(self, request, intent, accepted_graph):
-                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowPlan
-
-                self.compiler_plan = request["compiler_runtime_plan"]
-                return RevenueRowPlan(
-                    sql_text=(
-                        "SELECT period, group, sum(amount) AS amount "
-                        "FROM t GROUP BY period, group"
-                    ),
-                    query_id="query-schema-aware",
-                    required_fields=("period", "group", "amount"),
-                    dimension_keys=("package_name", "gameplay_id"),
-                )
-
-            def fetch(self, plan):
-                from bi_agent.runtime.clickhouse_revenue_rows import RevenueRowsResult
-
-                return RevenueRowsResult(
-                    ok=True,
-                    rows=(
-                        {
-                            "period": "2026-07-08",
-                            "group": "target",
-                            "amount": 130,
-                            "package_name": "pkg-a",
-                            "gameplay_id": "mode-a",
-                        },
-                    ),
-                    query_hash="hash-schema-aware",
-                    query_id="query-schema-aware",
-                    result_refs=("hash-schema-aware",),
-                )
-
-        provider = Provider()
-        run_pattern_workflow(
+        context = _compiler_bound_context(
             {
-                "run_id": "schema-aware-provider",
-                "question": "昨天收入变化最大的是哪个包或玩法？支付状态和重复订单会不会影响判断？",
-                "llm_client": FakeLLMClient(
-                    {
-                        "analysis_route": {
-                            "requested_nodes": [
-                                "data_quality_profile",
-                                "segment_contribution",
-                                "joint_attribution",
-                                "answer_verify",
-                            ]
-                        }
-                    }
-                ),
-                "row_provider": provider,
+                "request": {"row_provider": Provider()},
+                "intent": {
+                    "pattern_family": "custom_baseline",
+                    "target_metric": "paid_amount",
+                },
+                "analysis_route": {},
             }
         )
 
-        row_shape = provider.compiler_plan["row_shapes"][0]
-        self.assertIn("package_name", row_shape["dimension_keys"])
-        self.assertIn("gameplay_id", row_shape["dimension_keys"])
-        self.assertIsInstance(row_shape["optional_fields"], tuple)
+        self.assertIn("package_name", context["clickhouse_schema_fields"])
+        self.assertIn("gameplay_id", context["clickhouse_schema_fields"])
+        self.assertIsInstance(context["clickhouse_schema_fields"], tuple)
 
     def test_workflow_blocks_when_clickhouse_provider_is_unconfigured(self):
         class Provider:
@@ -7506,11 +8246,18 @@ class LLMWorkflowTest(unittest.TestCase):
                             "target_metric": "paid_amount",
                             "pattern_family": "custom_baseline",
                         },
-                        "analysis_route": {
+                        "analysis_route_plan": {
                             "requested_nodes": ["joint_attribution", "answer_verify"],
                             "analysis_requirements": {
+                                "target_metrics": ["paid_amount"],
+                                "requested_components": [],
                                 "requested_dimensions": ["channel", "payment_method"],
+                                "baselines": ["previous_day"],
+                                "context_sources": [],
+                                "dataset_requirements": ["paid_order_success"],
                                 "diagnostic_tags": ["factor_topk"],
+                                "claim_intents": ["candidate_driver"],
+                                "scope": "full_sample",
                             },
                         }
                     }
@@ -7593,6 +8340,134 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("Never return recommended_assumption as null", text)
         self.assertIn("Business options must not contain machine ids", text)
 
+    def test_boundary_decision_prompt_separates_scope_from_comparison_baseline(self):
+        messages = build_prompt("boundary_decision", {"intent": {}}).messages
+        text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("scope and baseline as separate business axes", text)
+        self.assertIn(
+            "full_sample must never be used as a comparison baseline",
+            text,
+        )
+        self.assertIn(
+            "baseline_binding.confirmed is false",
+            text,
+        )
+        self.assertIn("return needs_question", text)
+
+    def test_boundary_decision_payload_supplies_canonical_baseline_semantics(self):
+        valid = {
+            "boundary_status": "needs_question",
+            "recommended_assumption": {"option": "跟前一天比较"},
+            "clarification_questions": [
+                {
+                    "question": "你希望与哪个时间基准比较？",
+                    "options": [
+                        "跟前一天比较",
+                        "跟近7日均值比较",
+                        "跟上周同日比较",
+                        "tell the agent to do differently",
+                    ],
+                }
+            ],
+            "decision_summary": "比较基准会改变变化方向，需要先确认。",
+            "display_summary": "比较基准尚未确定，等待用户选择。",
+        }
+        client, _ = _provider_client_with_outputs([valid])
+        state = {
+            "request": {},
+            "intent": {
+                "question_family": "paid_amount_change_explanation",
+                "question_families": ["paid_amount_change_explanation"],
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "pattern_params": {},
+                "scope": "full_sample",
+                "time_window": "2026-06-01",
+                "target_claim": "解释付费金额变化及其驱动因素。",
+                "baseline_candidates": [],
+                "baseline_binding": {
+                    "confirmed": False,
+                    "source": "unbound",
+                    "candidates": [],
+                },
+                "claim_intents": ["comparative_change"],
+                "ambiguous_slots": [],
+            },
+            "llm_client": client,
+            "llm_calls": [],
+        }
+
+        _decide_question_boundary(state)
+
+        prompt_text = state["llm_calls"][0]["messages"][1]["content"]
+        self.assertIn('"allowed_baseline_ids"', prompt_text)
+        self.assertIn('"allowed_baseline_semantics"', prompt_text)
+        self.assertIn('"bound_business_context"', prompt_text)
+        self.assertNotIn('"available_defaults"', prompt_text)
+
+    def test_boundary_decision_retries_scope_as_baseline_for_unbound_comparison(self):
+        invalid = {
+            "boundary_status": "low_risk_assumption",
+            "recommended_assumption": {"option": "使用全样本作为基线"},
+            "clarification_questions": [],
+            "decision_summary": "基线未指定，默认使用全样本。",
+            "display_summary": "基线默认采用全样本。",
+        }
+        valid = {
+            "boundary_status": "needs_question",
+            "recommended_assumption": {"option": "跟前一天比较"},
+            "clarification_questions": [
+                {
+                    "question": "你希望与哪个时间基准比较？",
+                    "options": [
+                        "跟前一天比较",
+                        "跟近7日均值比较",
+                        "跟上周同日比较",
+                        "tell the agent to do differently",
+                    ],
+                }
+            ],
+            "decision_summary": "比较基准会改变变化方向，需要先确认。",
+            "display_summary": "比较基准尚未确定，等待用户选择。",
+        }
+        client, completions = _provider_client_with_outputs([invalid, valid])
+        state = {
+            "request": {},
+            "intent": {
+                "question_family": "paid_amount_change_explanation",
+                "question_families": ["paid_amount_change_explanation"],
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "pattern_params": {},
+                "scope": "full_sample",
+                "time_window": "2026-06-01",
+                "target_claim": "解释付费金额变化及其驱动因素。",
+                "baseline_candidates": [],
+                "baseline_binding": {
+                    "confirmed": False,
+                    "source": "unbound",
+                    "candidates": [],
+                },
+                "claim_intents": ["comparative_change"],
+                "ambiguous_slots": [],
+            },
+            "llm_client": client,
+            "llm_calls": [],
+        }
+
+        _decide_question_boundary(state)
+
+        self.assertEqual(completions.attempt_count, 2)
+        self.assertEqual(
+            state["boundary_decision"]["boundary_status"],
+            "needs_question",
+        )
+        self.assertEqual(
+            state["llm_calls"][0]["attempt_failures"][0]["failure_code"],
+            "boundary_decision_semantic_invalid:baseline_unbound",
+        )
+
     def test_boundary_decision_retries_cross_field_contract_failure_in_provider(self):
         invalid = {
             "boundary_status": "needs_question",
@@ -7633,6 +8508,12 @@ class LLMWorkflowTest(unittest.TestCase):
                 "pattern_family": "custom_baseline",
                 "scope": "full_sample",
                 "time_window": "2026-06-02",
+                "baseline_candidates": ["previous_day"],
+                "baseline_binding": {
+                    "confirmed": True,
+                    "source": "request_contract",
+                    "candidates": ["previous_day"],
+                },
             },
             "llm_client": client,
             "llm_calls": [],
@@ -7664,6 +8545,12 @@ class LLMWorkflowTest(unittest.TestCase):
                 "pattern_family": "custom_baseline",
                 "scope": "full_sample",
                 "time_window": "2026-06-02",
+                "baseline_candidates": ["previous_day"],
+                "baseline_binding": {
+                    "confirmed": True,
+                    "source": "request_contract",
+                    "candidates": ["previous_day"],
+                },
             },
             "llm_client": client,
             "llm_calls": [],
@@ -7688,6 +8575,7 @@ class LLMWorkflowTest(unittest.TestCase):
             "scope": "full_sample",
             "time_window": "2026-06-02",
             "target_claim": "检查付费金额经营表现",
+            "baseline_candidates": [],
         }
         invalid_assumptions = {
             **invalid,
@@ -7721,6 +8609,164 @@ class LLMWorkflowTest(unittest.TestCase):
             machine_intent,
         )
 
+    def test_confirm_understanding_copies_ordered_baseline_contract_and_omits_empty_singular_axes(self):
+        intent = {
+            "question_family": "revenue_health_review",
+            "target_metric": "paid_amount",
+            "pattern_family": "custom_baseline",
+            "scope": "full_sample",
+            "time_window": "2026-06-02",
+            "target_claim": "检查付费金额经营表现",
+            "pattern_params": {},
+            "baseline_candidates": [
+                "previous_day",
+                "rolling_7_day_baseline",
+            ],
+            "baseline": {},
+            "target": {},
+        }
+        machine_intent = {
+            key: deepcopy(value)
+            for key, value in intent.items()
+            if key not in {"baseline", "target"}
+        }
+        valid = {
+            "confirmed_intent": {
+                "business_summary": "确认按两个有序基准核对付费金额经营表现。",
+                "machine_intent": machine_intent,
+            },
+            "accepted_assumptions": [],
+            "status_message": "已确认业务理解。",
+            "display_summary": "已确认分析边界。",
+        }
+        client, completions = _provider_client_with_outputs((valid,))
+        state = {
+            "request": {"run_mode": "production"},
+            "intent": intent,
+            "boundary_decision": {
+                "boundary_status": "clear",
+                "recommended_assumption": {},
+                "clarification_questions": [],
+            },
+            "llm_client": client,
+            "llm_calls": [],
+        }
+
+        workflow_module._confirm_business_understanding(state)
+
+        self.assertEqual(completions.attempt_count, 1)
+        confirmed = state["confirmed_understanding"]["confirmed_intent"]
+        self.assertEqual(confirmed["machine_intent"], machine_intent)
+        user_message = next(
+            message
+            for message in state["llm_calls"][0]["messages"]
+            if message["role"] == "user"
+        )["content"]
+        payload = json.loads(
+            user_message.split("<input_json>", 1)[1]
+            .split("</input_json>", 1)[0]
+            .strip()
+        )
+        self.assertEqual(payload["required_machine_intent"], machine_intent)
+
+    def test_confirm_understanding_uses_local_machine_authority_when_provider_mirror_drifts(self):
+        intent = {
+            "question_family": "revenue_health_review",
+            "target_metric": "paid_amount",
+            "pattern_family": "custom_baseline",
+            "scope": "full_sample",
+            "time_window": "2026-06-02",
+            "target_claim": "检查付费金额经营表现",
+            "pattern_params": {},
+            "baseline_candidates": [
+                "previous_day",
+                "rolling_7_day_baseline",
+            ],
+            "baseline": {},
+            "target": {},
+        }
+        required = {
+            key: deepcopy(value)
+            for key, value in intent.items()
+            if key not in {"baseline", "target"}
+        }
+
+        for boundary, candidates in (
+            ("missing", None),
+            ("changed", ["same_weekday_baseline", "rolling_7_day_baseline"]),
+            ("reordered", ["rolling_7_day_baseline", "previous_day"]),
+        ):
+            with self.subTest(boundary=boundary):
+                machine_intent = deepcopy(required)
+                if candidates is None:
+                    machine_intent.pop("baseline_candidates")
+                else:
+                    machine_intent["baseline_candidates"] = candidates
+                output = {
+                    "confirmed_intent": {
+                        "business_summary": "确认按已选基准核对经营表现。",
+                        "machine_intent": machine_intent,
+                    },
+                    "accepted_assumptions": [],
+                    "status_message": "已确认业务理解。",
+                    "display_summary": "已确认分析边界。",
+                }
+                normalized = workflow_module._normalize_confirm_understanding_output(
+                    output,
+                    intent,
+                )
+                self.assertEqual(
+                    normalized["confirmed_intent"]["machine_intent"],
+                    required,
+                )
+
+    def test_confirm_understanding_requires_exact_nonempty_singular_axes(self):
+        intent = {
+            "question_family": "custom_baseline_comparison",
+            "target_metric": "paid_amount",
+            "pattern_family": "custom_baseline",
+            "scope": "full_sample",
+            "time_window": "2026-06-02",
+            "target_claim": "核对目标与基准差异",
+            "pattern_params": {},
+            "baseline_candidates": ["previous_day"],
+            "baseline": {"id": "previous_day"},
+            "target": {"id": "target_day"},
+        }
+        required = deepcopy(intent)
+        output = {
+            "confirmed_intent": {
+                "business_summary": "确认目标日与前一日的比较口径。",
+                "machine_intent": required,
+            },
+            "accepted_assumptions": [],
+            "status_message": "已确认业务理解。",
+            "display_summary": "已确认分析边界。",
+        }
+
+        normalized = workflow_module._normalize_confirm_understanding_output(
+            output,
+            intent,
+        )
+        self.assertEqual(
+            normalized["confirmed_intent"]["machine_intent"],
+            required,
+        )
+        for field in ("baseline", "target"):
+            with self.subTest(field=field):
+                drifted = deepcopy(output)
+                drifted["confirmed_intent"]["machine_intent"][field] = {
+                    "id": "drifted"
+                }
+                normalized = workflow_module._normalize_confirm_understanding_output(
+                    drifted,
+                    intent,
+                )
+                self.assertEqual(
+                    normalized["confirmed_intent"]["machine_intent"],
+                    required,
+                )
+
     def test_confirm_understanding_prompt_has_stable_business_and_machine_shape(self):
         messages = build_prompt("confirm_understanding", {"intent": {}}).messages
         text = "\n".join(message["content"] for message in messages)
@@ -7728,6 +8774,9 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("confirmed_intent must be a JSON object", text)
         self.assertIn("business_summary", text)
         self.assertIn("machine_intent", text)
+        self.assertIn("required_machine_intent", text)
+        self.assertIn("do not reinterpret it", text)
+        self.assertIn("runtime replaces it with the local contract", text)
         self.assertIn("never a string", text)
         self.assertIn("status_message and accepted_assumptions are shown", text)
         self.assertIn("do not expose internal field names", text)
@@ -7748,7 +8797,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("Machine ids belong only inside confirmed_intent.machine_intent", text)
 
     def test_analysis_route_prompt_filters_by_supported_question_family(self):
-        messages = build_prompt("analysis_route", {"intent": {}}).messages
+        messages = build_prompt("analysis_route_plan", {"intent": {}}).messages
         text = "\n".join(message["content"] for message in messages)
 
         self.assertIn("supported_question_families", text)
@@ -7758,25 +8807,38 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("weekday_calendar_compare", text)
         self.assertIn("compare_period_phases", text)
         self.assertIn("rolling_window_compare", text)
-        self.assertIn("Do not add formula", text)
-        self.assertIn("p-values", text)
+        self.assertIn("Add formula", text)
+        self.assertIn("machine-only", text)
 
     def test_analysis_route_prompt_separates_machine_ids_from_business_narratives(self):
-        messages = build_prompt("analysis_route", {"intent": {}}).messages
-        text = "\n".join(message["content"] for message in messages)
+        plan = build_prompt("analysis_route_plan", {"intent": {}})
+        narrative = build_prompt(
+            "final_route_narrative",
+            {"route_context": {"route_steps": []}},
+        )
+        plan_text = "\n".join(message["content"] for message in plan.messages)
+        narrative_text = "\n".join(
+            message["content"] for message in narrative.messages
+        )
 
-        self.assertIn("capability ids only in requested_nodes", text)
-        self.assertIn("typed machine fields", text)
-        self.assertIn("route_summary, decision_summary, and display_summary", text)
-        self.assertIn("supplied business_name", text)
-        self.assertIn("never repeat any capability id", text)
+        self.assertIn("capability ids only in requested_nodes", plan_text)
+        self.assertIn("machine-only", plan_text)
+        self.assertIn("step_ref", narrative_text)
+        self.assertIn("Do not copy or guess capability ids", narrative_text)
+        self.assertNotIn("requested_nodes", narrative.required_keys)
 
-    def test_causal_audit_prompt_assigns_implication_judgment_to_llm(self):
-        messages = build_prompt("causal_audit", {"causal_evidence_dossier": {}}).messages
-        text = "\n".join(message["content"] for message in messages)
+    def test_causal_audit_prompt_uses_business_projection_and_advisory_boundary(self):
+        spec = build_prompt(
+            "causal_audit",
+            {"businessContext": {}, "causalReview": {}},
+        )
+        text = "\n".join(message["content"] for message in spec.messages)
 
         self.assertIn("Causal Auditor", text)
-        self.assertIn("Analyst draft", text)
+        self.assertIn("businessContext", text)
+        self.assertIn("causalReview", text)
+        self.assertIn("accounting contribution", text)
+        self.assertIn("does not establish why those components changed", text)
         self.assertIn("causal_assessment", text)
         self.assertIn("plausible_mechanism", text)
         self.assertIn("candidate_hypothesis", text)
@@ -7786,6 +8848,45 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("Do not expose hidden chain-of-thought", text)
         self.assertIn("evidence refs", text)
         self.assertIn("provider metadata", text)
+        self.assertIn("do not brainstorm candidate mechanisms", text)
+        self.assertIn("alternative explanations", text)
+        self.assertIn("publishable_wording must explicitly identify", text)
+        self.assertIn("evidence classes already supplied in causalReview", text)
+        self.assertIn("must not propose a future experiment", text)
+        self.assertEqual(
+            spec.required_keys,
+            (
+                "causal_assessment",
+                "publishable_wording",
+                "supporting_reasons",
+                "evidence_limit",
+                "display_summary",
+            ),
+        )
+        self.assertNotIn("Analyst draft", text)
+
+    def test_causal_audit_provider_cannot_brainstorm_without_mechanism_evidence(self):
+        with self.assertRaisesRegex(
+            llm_client_module.LLMOutputError,
+            "causal_audit_ungrounded_mechanism",
+        ):
+            workflow_module._validate_causal_audit_provider_output(
+                {
+                    "causal_assessment": "not_supported",
+                    "publishable_wording": "会计贡献可保留，深层机制未验证。",
+                    "supporting_reasons": ["三项会计贡献已经对账。"],
+                    "evidence_limit": (
+                        "单笔付费金额上升可能受促销活动影响，但尚未验证。"
+                    ),
+                    "display_summary": "会计贡献可用，深层机制未验证。",
+                },
+                {
+                    "businessContext": {},
+                    "causalReview": {
+                        "mechanismEvidence": "当前没有独立的对照、时间先后或机制证据。"
+                    },
+                },
+            )
 
     def test_data_coverage_prompt_uses_result_summary_for_coverage_facts(self):
         messages = build_prompt("data_coverage_interpretation", {"intent": {}}).messages
@@ -7805,40 +8906,105 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertIn("weak_direction", text)
         self.assertIn("below_materiality_floor", text)
-        self.assertIn("choose degrade", text)
+        self.assertIn("claim_evidence", text)
+        self.assertIn("required claim", text)
+        self.assertIn("auxiliary", text)
+        self.assertIn("choose synthesize_answer", text)
         self.assertIn("Do not expose", text)
         self.assertIn("internal field names", text)
         self.assertIn("Simplified Chinese", text)
 
-    def test_revenue_health_boundary_defaults_to_low_risk_assumption(self):
+    def test_answer_text_only_clarification_choice_preserves_nonquestion_boundary(self):
+        for boundary_status in ("clear", "low_risk_assumption"):
+            with self.subTest(boundary_status=boundary_status):
+                state = {
+                    "request": {
+                        "allow_question_interrupt": True,
+                        "clarification_choice": {"answer_text": "与前一天比较"},
+                    },
+                    "checkpoint_events": [{"node": "clarification_policy_gate"}],
+                    "intent": {
+                        "question_family": "data_quality_or_evidence_review",
+                        "target_metric": "paid_amount",
+                        "pattern_family": "custom_baseline",
+                        "scope": "full_sample",
+                        "time_window": "2026-06-02",
+                        "ambiguous_slots": [],
+                    },
+                    "boundary_decision": {
+                        "boundary_status": boundary_status,
+                        "recommended_assumption": (
+                            {"option": "沿用已确认的业务口径继续"}
+                            if boundary_status == "low_risk_assumption"
+                            else {}
+                        ),
+                        "clarification_questions": [],
+                    },
+                }
+
+                _clarification_policy_gate(state)
+
+                self.assertEqual(
+                    state["clarification_outcome"]["boundary_status"],
+                    boundary_status,
+                )
+                self.assertEqual(
+                    workflow_module._route_after_clarification_policy(state),
+                    "confirm",
+                )
+
+    def test_needs_question_boundary_still_routes_to_validated_question(self):
         state = {
             "request": {"allow_question_interrupt": True},
             "checkpoint_events": [{"node": "clarification_policy_gate"}],
             "intent": {
-                "question_family": "revenue_health_review",
-                "primary_question_family": "revenue_health_review",
-                "ambiguous_slots": [],
+                "question_family": "data_quality_or_evidence_review",
                 "target_metric": "paid_amount",
-                "scope": "all_users",
-                "time_window": "2026-01-01..2026-06-30",
+                "pattern_family": "custom_baseline",
+                "scope": "full_sample",
+                "time_window": "2026-06-02",
+                "ambiguous_slots": [{"slot": "baseline"}],
             },
             "boundary_decision": {
                 "boundary_status": "needs_question",
-                "recommended_assumption": "采用产品默认业务假设继续。",
-                "clarification_questions": [
-                    {"question": "请选择同比或环比基准。"},
-                    {"question": "是否指定细分维度。"},
-                ],
+                "recommended_assumption": {"option": "与前一天比较"},
+                "clarification_questions": [{
+                    "question": "请选择对比基准。",
+                    "options": [
+                        "与前一天比较",
+                        "与上周同日比较",
+                        "tell the agent to do differently",
+                    ],
+                }],
             },
+            "llm_client": FakeLLMClient({
+                "clarification_question": {
+                    "questions": [{
+                        "question": "请选择对比基准。",
+                        "options": [
+                            "与前一天比较",
+                            "与上周同日比较",
+                            "tell the agent to do differently",
+                        ],
+                    }],
+                    "recommended_assumption": {"option": "与前一天比较"},
+                }
+            }),
+            "llm_calls": [],
         }
 
         _clarification_policy_gate(state)
+        self.assertEqual(
+            workflow_module._route_after_clarification_policy(state),
+            "ask",
+        )
+        workflow_module._generate_clarification(state)
 
         self.assertEqual(
-            state["clarification_outcome"]["boundary_status"],
-            "low_risk_assumption",
+            len(state["clarification_outcome"]["questions"]),
+            1,
         )
-        self.assertEqual(state["checkpoint_events"][-1]["route"], "low_risk_assumption")
+        self.assertEqual(state["llm_client"].calls, ["clarification_question"])
 
     def test_general_clarification_waits_with_validated_business_options(self):
         from bi_agent.runtime.langgraph_workflow import _generate_clarification
@@ -8326,7 +9492,7 @@ class LLMWorkflowTest(unittest.TestCase):
         )
         self.assertIn("观察性归因", state["clarification_outcome"]["recommended_assumption"])
 
-    def test_clarification_policy_gate_continues_after_user_choice(self):
+    def test_unregistered_clarification_choice_cannot_authorize_continue(self):
         state = {
             "request": {
                 "allow_question_interrupt": True,
@@ -8358,9 +9524,255 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertEqual(
             state["clarification_outcome"]["boundary_status"],
-            "low_risk_assumption",
+            "needs_question",
         )
-        self.assertIn("已按用户澄清继续", state["clarification_outcome"]["recommended_assumption"])
+        self.assertEqual(
+            workflow_module._route_after_clarification_policy(state),
+            "ask",
+        )
+        self.assertFalse(state["clarification_outcome"]["choice"])
+
+    def test_material_clarification_choice_rebinds_typed_axis_before_confirm(self):
+        state = {
+            "request": {
+                "allow_question_interrupt": True,
+                "clarification_choice": {
+                    "pattern_family": "weekly",
+                    "pattern_params": {"target_weekday": 2},
+                },
+            },
+            "checkpoint_events": [{"node": "clarification_policy_gate"}],
+            "intent": {
+                "question_family": "pattern_explanation",
+                "question_families": ["pattern_explanation"],
+                "target_metric": "paid_amount",
+                "pattern_family": "rolling",
+                "pattern_params": {},
+                "scope": "full_sample",
+                "time_window": "2026-05-26..2026-06-02",
+                "target_claim": "核对重复时间形态",
+                "baseline_candidates": [],
+                "ambiguous_slots": ["pattern_family", "scope"],
+            },
+            "boundary_decision": {
+                "boundary_status": "needs_question",
+                "recommended_assumption": {"option": "采用已选择的时间形态继续"},
+                "clarification_questions": [
+                    {"question": "请选择时间形态。"}
+                ],
+            },
+        }
+
+        _clarification_policy_gate(state)
+
+        self.assertEqual(
+            workflow_module._route_after_clarification_policy(state),
+            "rebind",
+        )
+        workflow_module._rebind_after_clarification(state)
+        self.assertEqual(state["intent"]["pattern_family"], "weekly")
+        self.assertEqual(
+            state["intent"]["pattern_params"],
+            {"target_weekday": 2},
+        )
+        self.assertEqual(state["intent"]["ambiguous_slots"], ["scope"])
+        state["boundary_decision"] = {
+            "boundary_status": "needs_question",
+            "recommended_assumption": {"option": "请选择剩余业务范围"},
+            "clarification_questions": [{"question": "请选择业务范围。"}],
+        }
+
+        _clarification_policy_gate(state)
+
+        self.assertEqual(
+            workflow_module._route_after_clarification_policy(state),
+            "ask",
+        )
+        self.assertFalse(state["clarification_outcome"]["choice"])
+
+    def test_untyped_or_signed_axis_drifting_clarification_choice_stays_in_clarification(self):
+        base_state = {
+            "request": {"allow_question_interrupt": True},
+            "checkpoint_events": [{"node": "clarification_policy_gate"}],
+            "intent": {
+                "question_family": "pattern_explanation",
+                "question_families": ["pattern_explanation"],
+                "target_metric": "paid_amount",
+                "pattern_family": "rolling",
+                "pattern_params": {},
+                "scope": "full_sample",
+                "time_window": "2026-05-26..2026-06-02",
+                "target_claim": "核对重复时间形态",
+                "baseline_candidates": [],
+                "ambiguous_slots": ["pattern_family"],
+            },
+            "boundary_decision": {
+                "boundary_status": "needs_question",
+                "recommended_assumption": {"option": "采用已选择的时间形态继续"},
+                "clarification_questions": [
+                    {"question": "请选择时间形态。"}
+                ],
+            },
+        }
+        choices = {
+            "untyped": {"answer_text": "采用用户选择的业务口径。"},
+            "signed_axis_drift": {"target_metric": "active_users"},
+            "unknown_typed_value": {"pattern_family": "invented_pattern"},
+            "noncanonical_alias": {"question_families": ["pattern_explanation"]},
+            "unknown_nonmaterial_bypass": {"unreviewed_choice": "continue"},
+        }
+
+        for boundary, choice in choices.items():
+            with self.subTest(boundary=boundary):
+                state = deepcopy(base_state)
+                state["request"]["clarification_choice"] = choice
+
+                _clarification_policy_gate(state)
+
+                self.assertEqual(
+                    state["clarification_outcome"]["boundary_status"],
+                    "needs_question",
+                )
+                self.assertEqual(
+                    workflow_module._route_after_clarification_policy(state),
+                    "ask",
+                )
+                self.assertFalse(state["clarification_outcome"]["choice"])
+
+    def test_clarification_choice_requires_valid_typed_authority_before_rebind(self):
+        clarification_output = {
+            "questions": [
+                {
+                    "question": "请选择对比基准。",
+                    "options": [
+                        "与前一天比较",
+                        "与上周同日比较",
+                        "tell the agent to do differently",
+                    ],
+                }
+            ],
+            "recommended_assumption": {"option": "与前一天比较"},
+        }
+        base_state = {
+            "request": {"allow_question_interrupt": True},
+            "checkpoint_events": [{"node": "clarification_policy_gate"}],
+            "intent": {
+                "question_family": "custom_baseline_comparison",
+                "question_families": ["custom_baseline_comparison"],
+                "target_metric": "paid_amount",
+                "pattern_family": "custom_baseline",
+                "pattern_params": {},
+                "scope": "full_sample",
+                "time_window": "2026-06-02",
+                "target_claim": "核对目标日相对基准的变化",
+                "baseline_candidates": [],
+                "ambiguous_slots": ["baseline"],
+            },
+            "boundary_decision": {
+                "boundary_status": "needs_question",
+                "recommended_assumption": {"option": "与前一天比较"},
+                "clarification_questions": clarification_output["questions"],
+            },
+            "llm_client": FakeLLMClient(
+                {"clarification_question": clarification_output}
+            ),
+            "llm_calls": [],
+        }
+        waiting_choices = (
+            {"answer_text": "与前一天比较"},
+            {
+                "answer_text": "与前一天比较",
+                "baseline_candidates": ["invented_baseline"],
+            },
+        )
+
+        for choice in waiting_choices:
+            with self.subTest(choice=choice):
+                state = deepcopy(base_state)
+                state["request"]["clarification_choice"] = choice
+
+                _clarification_policy_gate(state)
+                self.assertEqual(
+                    workflow_module._route_after_clarification_policy(state),
+                    "ask",
+                )
+                workflow_module._generate_clarification(state)
+
+                self.assertFalse(state["clarification_outcome"]["choice"])
+                self.assertEqual(
+                    state["clarification_outcome"]["display_answer_text"],
+                    "与前一天比较",
+                )
+                self.assertEqual(
+                    workflow_module._route_after_clarification(state),
+                    "wait",
+                )
+                self.assertEqual(state["intent"]["ambiguous_slots"], ["baseline"])
+
+        state = deepcopy(base_state)
+        state["request"]["clarification_choice"] = {
+            "answer_text": "与前一天比较",
+            "baseline_candidates": ["previous_day"],
+        }
+
+        _clarification_policy_gate(state)
+
+        self.assertEqual(
+            workflow_module._route_after_clarification_policy(state),
+            "rebind",
+        )
+        self.assertEqual(
+            state["clarification_outcome"]["choice"],
+            {"baseline_candidates": ["previous_day"]},
+        )
+        self.assertEqual(
+            state["clarification_outcome"]["display_answer_text"],
+            "与前一天比较",
+        )
+        workflow_module._rebind_after_clarification(state)
+        self.assertEqual(state["intent"]["baseline_candidates"], ["previous_day"])
+        self.assertEqual(state["intent"]["ambiguous_slots"], [])
+
+    def test_material_clarification_choice_atomically_rebinds_family_and_clears_sequences(self):
+        state = {
+            "request": {
+                "allow_question_interrupt": True,
+                "clarification_choice": {
+                    "question_family": "revenue_health_review",
+                    "context_sources": [],
+                },
+            },
+            "checkpoint_events": [{"node": "clarification_policy_gate"}],
+            "intent": {
+                "question_family": "pattern_explanation",
+                "question_families": ["pattern_explanation"],
+                "primary_question_family": "pattern_explanation",
+                "secondary_question_families": [],
+                "target_metric": "paid_amount",
+                "pattern_family": "rolling",
+                "pattern_params": {},
+                "scope": "full_sample",
+                "time_window": "2026-05-26..2026-06-02",
+                "target_claim": "核对经营表现",
+                "baseline_candidates": [],
+                "context_sources": ["market_dashboard"],
+                "ambiguous_slots": ["question_family", "context_sources"],
+            },
+            "boundary_decision": {
+                "boundary_status": "clear",
+                "recommended_assumption": {},
+                "clarification_questions": [],
+            },
+        }
+
+        _clarification_policy_gate(state)
+        workflow_module._rebind_after_clarification(state)
+
+        self.assertEqual(state["intent"]["question_family"], "revenue_health_review")
+        self.assertEqual(state["intent"]["primary_question_family"], "revenue_health_review")
+        self.assertEqual(state["intent"]["question_families"], ["revenue_health_review"])
+        self.assertEqual(state["intent"]["secondary_question_families"], [])
+        self.assertEqual(state["intent"]["context_sources"], [])
 
     def test_segment_followup_defaults_to_current_topic_boundary(self):
         state = {
@@ -8507,11 +9919,29 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("Do not return an object", text)
         self.assertIn("Do not expose capability ids", text)
         self.assertIn("do not call the result stable or reliable", text)
+        self.assertIn("write a separate sentence for each factor state", text)
+        self.assertIn("Never join factors with different states", text)
         self.assertIn("Simplified Chinese", text)
 
-    def test_semantic_audit_prompt_keeps_issue_descriptions_business_readable(self):
-        messages = build_prompt("semantic_audit", {"answer_text": "check"}).messages
+    def test_answer_synthesis_prompt_uses_business_projection_and_local_claim_authority(self):
+        messages = build_prompt(
+            "answer_synthesis",
+            {"businessContext": {}},
+        ).messages
         text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("read-only businessContext", text)
+        self.assertIn("claimSlots", text)
+        self.assertIn("factorStates", text)
+        self.assertIn("unavailableConclusions", text)
+        self.assertIn("must not erase the ranking", text)
+        self.assertIn("never return claims", text)
+        self.assertNotIn("auxiliary_limitation_scopes", text)
+        self.assertNotIn("missing_formula_dimension", text)
+
+    def test_semantic_audit_prompt_keeps_issue_descriptions_business_readable(self):
+        spec = build_prompt("semantic_audit", {"answer_text": "check"})
+        text = "\n".join(message["content"] for message in spec.messages)
 
         self.assertIn("Issue descriptions", text)
         self.assertIn("business-readable Chinese", text)
@@ -8519,20 +9949,46 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("draft_claims", text)
         self.assertIn("evidence_brief", text)
         self.assertIn("wording_limit", text)
+        self.assertNotIn("extracted_claims", spec.required_keys)
+        self.assertIn("Do not return extracted_claims", text)
+        self.assertIn("Chinese quotation marks", text)
 
-    def test_semantic_audit_receives_full_evidence_context(self):
+    def test_semantic_audit_receives_business_projection_only(self):
+        state = _required_claim_resolution_state()
         fake = FakeLLMClient()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {"artifact_root": tmpdir, "run_id": "semantic-audit-context", "llm_client": fake}
-            )
+        state.update(
+            {
+                "run_id": "semantic-audit-business-projection",
+                "llm_client": fake,
+                "llm_calls": [],
+                "answer_text": "已按业务证据说明付费金额变化和因素贡献。",
+                "validator_results": [],
+            }
+        )
+        _reduce_evidence(state)
+        state["draft_claims"] = workflow_module._authority_claims_from_evidence(state)
 
-        payload = _llm_input_payload(result.answer_package, "semantic_audit")
+        workflow_module._semantic_audit(state)
 
-        self.assertIn("evidence", payload)
-        self.assertIn("answer_context", payload)
-        self.assertIn("key_findings", payload["answer_context"])
-        self.assertIn("evidence_refs", payload)
+        payload = _llm_input_payload(
+            {"admin_audit": {"llm_calls": state["llm_calls"]}},
+            "semantic_audit",
+        )
+        self.assertEqual(
+            set(payload),
+            {"answerText", "businessContext", "displayReview"},
+        )
+        visible = json.dumps(payload, ensure_ascii=False)
+        self.assertIn("付费金额", visible)
+        for internal in (
+            "evidence_ref",
+            "capability_id",
+            "draft_claims",
+            "evidence_brief",
+            "driver_decomposition",
+            "formula_component_contribution",
+        ):
+            self.assertNotIn(internal, visible)
 
     def test_answer_package_drops_unverified_context_audit_from_request(self):
         fake = FakeLLMClient()
@@ -8630,27 +10086,26 @@ class LLMWorkflowTest(unittest.TestCase):
             text = "\n".join(message["content"] for message in messages)
 
             self.assertIn("unlisted claims", text)
-            self.assertIn("remove them from answer_text", text)
+            self.assertRegex(text, r"remove (?:it|them) from answer_text")
             self.assertIn("Do not add operational action recommendations", text)
 
-    def test_answer_repair_prompt_uses_retry_context(self):
-        messages = build_prompt("answer_repair", {"answer_context": {}}).messages
+    def test_answer_repair_prompt_uses_business_review_without_runtime_diagnostics(self):
+        messages = build_prompt(
+            "answer_repair",
+            {
+                "answerText": "待修正文案",
+                "businessContext": {},
+                "displayReview": {},
+            },
+        ).messages
         text = "\n".join(message["content"] for message in messages)
 
-        self.assertIn("retry_context", text)
-        self.assertIn("failure_reason", text)
-
-    def test_answer_prompts_require_complete_verifier_claim_shape(self):
-        for task in ("answer_synthesis", "answer_repair"):
-            messages = build_prompt(task, {"answer_context": {}}).messages
-            text = "\n".join(message["content"] for message in messages)
-
-            self.assertIn(
-                "text, evidence_refs, numbers, scope, time_window, claim_type, and claim_strength",
-                text,
-            )
-            self.assertIn("copy evidence_refs exactly", text.lower())
-            self.assertIn("Do not return a claim without text", text)
+        self.assertIn("answerText", text)
+        self.assertIn("businessContext", text)
+        self.assertIn("displayReview", text)
+        self.assertIn("read-only local authority", text)
+        self.assertNotIn("retry_context", text)
+        self.assertNotIn("failure_reason", text)
 
     def test_answer_prompts_block_business_reader_metadata_leaks(self):
         for task in ("answer_synthesis", "answer_repair"):
@@ -8699,13 +10154,12 @@ class LLMWorkflowTest(unittest.TestCase):
         }
         captured = {}
 
-        def explain(_state, task, payload):
+        def explain(_state, task, payload, **_kwargs):
             self.assertEqual(task, "degraded_explanation")
             captured.update(payload)
             return {
                 "status": "degraded",
                 "explanation": "固定目标日的数据源尚未绑定。",
-                "owner": "data_owner",
                 "repair_path": "注册数据集快照后重试。",
             }
 
@@ -8717,23 +10171,176 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertEqual(captured["analysis_contract"], contract)
 
-    def test_final_summary_prompt_uses_business_wording_for_simple_comparison(self):
-        messages = build_prompt("final_business_summary", {"intent": {}}).messages
-        text = "\n".join(message["content"] for message in messages)
+    def test_final_answer_audit_prompt_keeps_provider_review_advisory(self):
+        spec = build_prompt("final_answer_audit", {"final_answer": "check"})
+        text = "\n".join(message["content"] for message in spec.messages)
 
-        self.assertIn("observed increase/decrease", text)
-        self.assertIn("do not write statistical association", text)
-        self.assertIn("当前证据能把排查方向收敛到", text)
-
-    def test_final_answer_audit_prompt_requires_exact_audit_enums(self):
-        messages = build_prompt("final_answer_audit", {"final_answer": "check"}).messages
-        text = "\n".join(message["content"] for message in messages)
-
-        self.assertIn("ready, ready_with_warnings, or hard_blocked", text)
+        self.assertIn("cannot grant or revoke claim authority", text)
         self.assertIn("unsupported_material_claim", text)
-        self.assertIn("repairable_warnings must contain only", text)
-        self.assertIn("Do not put explanatory prose in hard_blockers or repairable_warnings", text)
-        self.assertIn("retry_instruction and business_audit_summary", text)
+        self.assertIn("exact non-empty substring of finalAnswer", text)
+        self.assertIn("businessContext.reviewAnchors", text)
+        self.assertIn("remove, weaken, or clarify", text)
+        self.assertIn("Do not invent or request hypothetical business causes", text)
+        self.assertIn("Return exactly one top-level field: material_findings", text)
+        self.assertIn("现有业务证据", text)
+        self.assertEqual(
+            spec.required_keys,
+            ("material_findings",),
+        )
+        self.assertNotIn("display_status", spec.required_keys)
+        self.assertNotIn("hard_blockers", spec.required_keys)
+        self.assertNotIn("retry_instruction", spec.required_keys)
+
+    def test_final_answer_audit_provider_finding_requires_exact_answer_excerpt(self):
+        final_answer = (
+            "最终结论：单笔付费金额是主要正向贡献项，"
+            "付费频次形成负向抵消，付费人数提供小幅正向贡献。"
+        )
+
+        with self.assertRaisesRegex(
+            llm_client_module.LLMOutputError,
+            "final_answer_audit_excerpt_not_found",
+        ):
+            workflow_module._validate_final_answer_audit_provider_output(
+                {
+                    "material_findings": [
+                        {
+                            "code": "claim_paraphrase_unclear",
+                            "answer_excerpt": "答案缺少主要贡献项",
+                            "context_anchor": {
+                                "kind": "claim_slot",
+                                "key": "结论1",
+                            },
+                            "edit_action": "clarify",
+                            "explanation": "这段表达没有突出主要贡献项。",
+                        }
+                    ],
+                },
+                final_answer=final_answer,
+                business_context={
+                    "reviewAnchors": [
+                        {
+                            "kind": "claim_slot",
+                            "key": "结论1",
+                            "summary": "单笔付费金额是主要贡献项。",
+                        }
+                    ],
+                },
+            )
+
+    def test_final_answer_audit_provider_cannot_add_hypothetical_causes(self):
+        with self.assertRaisesRegex(
+            llm_client_module.LLMOutputError,
+            "final_answer_audit_invents_business_cause",
+        ):
+            workflow_module._validate_final_answer_audit_provider_output(
+                {
+                    "material_findings": [
+                        {
+                            "code": "claim_paraphrase_unclear",
+                            "answer_excerpt": "单笔付费金额是主要贡献项",
+                            "context_anchor": {
+                                "kind": "boundary",
+                                "key": "原因边界",
+                            },
+                            "edit_action": "clarify",
+                            "explanation": "可能受高客单价商品或活动影响。",
+                        }
+                    ],
+                },
+                final_answer="最终结论：单笔付费金额是主要贡献项。",
+                business_context={
+                    "reviewAnchors": [
+                        {
+                            "kind": "boundary",
+                            "key": "原因边界",
+                            "summary": "深层业务机制需要独立证据。",
+                        }
+                    ],
+                },
+            )
+
+    def test_final_answer_audit_specific_cause_requires_boundary_anchor(self):
+        with self.assertRaisesRegex(
+            llm_client_module.LLMOutputError,
+            "final_answer_audit_cause_anchor_invalid",
+        ):
+            workflow_module._validate_final_answer_audit_provider_output(
+                {
+                    "material_findings": [
+                        {
+                            "code": "unsupported_material_claim",
+                            "answer_excerpt": "促销活动导致单笔付费金额上升",
+                            "context_anchor": {
+                                "kind": "factor_state",
+                                "key": "单笔付费金额",
+                            },
+                            "edit_action": "remove",
+                            "explanation": "现有业务证据没有验证该具体原因。",
+                        }
+                    ]
+                },
+                final_answer="最终结论：促销活动导致单笔付费金额上升。",
+                business_context={
+                    "reviewAnchors": [
+                        {
+                            "kind": "factor_state",
+                            "key": "单笔付费金额",
+                            "summary": "已量化贡献",
+                        },
+                        {
+                            "kind": "boundary",
+                            "key": "原因边界",
+                            "summary": "具体业务原因需要独立证据。",
+                        },
+                    ]
+                },
+            )
+
+    def test_final_answer_audit_cannot_reject_exact_verified_values(self):
+        final_answer = (
+            "2026年6月1日付费金额为308,240,309.0，"
+            "较2026年5月31日的304,142,630.0上涨1.35%，"
+            "增加4,097,679.0。"
+        )
+        with self.assertRaisesRegex(
+            llm_client_module.LLMOutputError,
+            "final_answer_audit_finding_contradicts_verified_value",
+        ):
+            workflow_module._validate_final_answer_audit_provider_output(
+                {
+                    "material_findings": [
+                        {
+                            "code": "unsupported_material_claim",
+                            "answer_excerpt": final_answer,
+                            "context_anchor": {
+                                "kind": "claim_slot",
+                                "key": "结论1",
+                            },
+                            "edit_action": "weaken",
+                            "explanation": (
+                                "现有业务证据只提供近似值，"
+                                "不支持答案中的精确数字。"
+                            ),
+                        }
+                    ]
+                },
+                final_answer=final_answer,
+                business_context={
+                    "reviewAnchors": [
+                        {
+                            "kind": "claim_slot",
+                            "key": "结论1",
+                            "summary": "付费金额从3.0414亿增至3.0824亿。",
+                        },
+                        {
+                            "kind": "verified_fact",
+                            "key": "精确对比值1",
+                            "summary": final_answer,
+                        },
+                    ]
+                },
+            )
 
     def test_degraded_explanation_sanitizes_unsupported_period_and_threshold_advice(self):
         with self.assertRaisesRegex(WorkflowFailure, "materiality_drift"):
@@ -8741,7 +10348,6 @@ class LLMWorkflowTest(unittest.TestCase):
                 {
                     "status": "degraded",
                     "explanation": "变化幅度低于重要性阈值，同时可比较期间数量不足，无法确认模式。",
-                    "owner": "业务分析师",
                     "repair_path": "建议调整重要性阈值，或扩大时间窗口。",
                 },
                 {
@@ -8758,7 +10364,6 @@ class LLMWorkflowTest(unittest.TestCase):
                 {
                     "status": "degraded",
                     "explanation": "方向不一致且变化幅度低于当前重要性阈值。",
-                    "owner": "分析团队",
                     "repair_path": "延长观察周期至12个月以上后重新评估。",
                 },
                 {
@@ -8775,7 +10380,6 @@ class LLMWorkflowTest(unittest.TestCase):
                 {
                     "status": "degraded",
                     "explanation": "未发现明确的事件或合同依据，因此模式无法确认。",
-                    "owner": "分析团队",
                     "repair_path": "建议收集更多数据并积累更多月度数据。",
                 },
                 {
@@ -9180,6 +10784,240 @@ class LLMWorkflowTest(unittest.TestCase):
                     state["llm_calls"][-1]["failure_code"],
                 )
 
+    def test_business_intent_provider_retries_noncanonical_target_day_before_writeback(self):
+        invalid = _provider_business_intent_output(
+            question_family="paid_amount_change_explanation",
+            pattern_family="custom_baseline",
+            time_window="前一天",
+            target_claim="解释目标日付费金额变化及其影响因素。",
+            baseline_candidates=[],
+            analysis_requirements={
+                "context_sources": [],
+                "claim_intents": [
+                    "comparative_change",
+                    "formula_component_contribution",
+                ],
+                "requested_dimensions": [],
+                "requested_components": [
+                    "first_paid_users",
+                    "paid_frequency",
+                    "avg_order_amount",
+                    "payment_success_rate",
+                ],
+            },
+        )
+        valid = {**invalid, "time_window": "yesterday"}
+        client, completions = _provider_client_with_outputs((invalid, valid))
+        state = {
+            "request": {
+                "question": (
+                    "昨天付费金额为什么变化？主要是首充人数、付费频次、"
+                    "单笔付费金额，还是支付成功率等因素导致的？"
+                ),
+                "run_mode": "live",
+                "analysis_context": {
+                    "as_of": "2026-07-14T12:00:00+01:00",
+                },
+            },
+            "llm_client": client,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        _understand_business_intent(state)
+
+        self.assertEqual(completions.attempt_count, 2)
+        self.assertEqual(state["intent"]["time_window"], "2026-07-13")
+        self.assertEqual(state["intent"]["target_semantic"], "2026-07-13")
+        self.assertEqual(state["intent"]["baseline_candidates"], [])
+        self.assertEqual(
+            state["request"]["analysis_context"],
+            {
+                "as_of": "2026-07-14T12:00:00+01:00",
+                "business_timezone": "Africa/Lagos",
+                "target_date": "2026-07-13",
+            },
+        )
+        rejected = state["llm_calls"][-1]["attempt_failures"]
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["structured_output"]["time_window"], "前一天")
+        self.assertIn('"time_window": "前一天"', rejected[0]["raw_response_content"])
+
+    def test_business_intent_noncanonical_target_exhaustion_stops_before_clarification(self):
+        invalid = _provider_business_intent_output(
+            question_family="paid_amount_change_explanation",
+            pattern_family="custom_baseline",
+            time_window="前一天",
+            target_claim="解释目标日付费金额变化及其影响因素。",
+            baseline_candidates=[],
+        )
+        client, completions = _provider_client_with_outputs((invalid,))
+        state = {
+            "request": {
+                "question": "昨天付费金额为什么变化？",
+                "run_mode": "live",
+                "analysis_context": {},
+            },
+            "llm_client": client,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "business_intent_contract_invalid:time_window",
+        ):
+            _retrying_node(
+                "understand_business_intent",
+                _understand_business_intent,
+            )(state)
+
+        self.assertEqual(completions.attempt_count, 3)
+        self.assertNotIn("intent", state)
+        self.assertNotIn("boundary_decision", state)
+        self.assertNotIn("clarification_outcome", state)
+        self.assertNotIn("query_results", state["request"])
+        self.assertEqual(state["request"]["analysis_context"], {})
+        self.assertEqual(state["llm_calls"][-1]["status"], "failed")
+        self.assertEqual(len(state["llm_calls"][-1]["attempt_failures"]), 3)
+
+    def test_business_intent_keeps_explicit_target_date_separate_from_previous_day_baseline(self):
+        invalid = _provider_business_intent_output(
+            question_family="paid_amount_change_explanation",
+            pattern_family="custom_baseline",
+            time_window="previous_day",
+            target_claim="解释目标日付费金额变化及其影响因素。",
+            baseline_candidates=["previous_day"],
+            analysis_requirements={
+                "context_sources": [],
+                "claim_intents": ["comparative_change"],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+        )
+        valid = {**invalid, "time_window": "2026-06-01"}
+        client, completions = _provider_client_with_outputs((invalid, valid))
+        state = {
+            "request": {
+                "question": "2026年6月1日付费金额相较前一天发生了什么变化？",
+                "run_mode": "live",
+                "analysis_context": {
+                    "as_of": "2026-07-14T12:00:00+01:00",
+                },
+            },
+            "llm_client": client,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        _understand_business_intent(state)
+
+        self.assertEqual(completions.attempt_count, 2)
+        self.assertEqual(state["intent"]["target_semantic"], "2026-06-01")
+        self.assertEqual(state["intent"]["time_window"], "2026-06-01")
+        self.assertEqual(state["intent"]["baseline_candidates"], ["previous_day"])
+        self.assertEqual(
+            state["intent"]["baseline_binding"],
+            {
+                "confirmed": True,
+                "source": "user_question",
+                "candidates": ["previous_day"],
+            },
+        )
+        self.assertEqual(
+            state["request"]["analysis_context"]["target_date"],
+            "2026-06-01",
+        )
+
+    def test_one_day_change_explanation_binds_primary_comparison_pattern(self):
+        output = _provider_business_intent_output(
+            question_family="paid_amount_change_explanation",
+            primary_question_family="paid_amount_change_explanation",
+            question_families=["paid_amount_change_explanation"],
+            pattern_family="rolling",
+            pattern_params={},
+            time_window="2026-06-01",
+            target_claim="解释目标日付费金额变化及其影响因素。",
+            baseline_candidates=["previous_day"],
+            analysis_requirements={
+                "context_sources": [],
+                "claim_intents": [
+                    "comparative_change",
+                    "formula_component_contribution",
+                ],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+        )
+        client, _ = _provider_client_with_outputs((output,))
+        state = {
+            "request": {
+                "question": "2026年6月1日付费金额为什么上涨？",
+                "run_mode": "live",
+                "analysis_context": {
+                    "as_of": "2026-07-14T12:00:00+01:00",
+                },
+            },
+            "llm_client": client,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        _understand_business_intent(state)
+
+        self.assertEqual(state["intent"]["pattern_family"], "custom_baseline")
+        self.assertEqual(
+            state["intent"]["baseline_binding"],
+            {
+                "confirmed": False,
+                "source": "provider_suggestion",
+                "candidates": ["previous_day"],
+            },
+        )
+
+    def test_one_day_comparison_drops_incompatible_period_pattern_params(self):
+        output = _provider_business_intent_output(
+            question_family="paid_amount_change_explanation",
+            primary_question_family="paid_amount_change_explanation",
+            question_families=["paid_amount_change_explanation"],
+            pattern_family="intra_period",
+            pattern_params={"target_phase": "2026-06-01"},
+            time_window="2026-06-01",
+            target_claim="解释目标日付费金额变化及其影响因素。",
+            baseline_candidates=["previous_day"],
+            analysis_requirements={
+                "context_sources": [],
+                "claim_intents": [
+                    "comparative_change",
+                    "formula_component_contribution",
+                ],
+                "requested_dimensions": [],
+                "requested_components": [],
+            },
+        )
+        client, _ = _provider_client_with_outputs((output,))
+        state = {
+            "request": {
+                "question": "2026年6月1日付费金额为什么上涨？",
+                "run_mode": "live",
+                "analysis_context": {
+                    "as_of": "2026-07-14T12:00:00+01:00",
+                },
+            },
+            "llm_client": client,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
+
+        _understand_business_intent(state)
+
+        self.assertEqual(state["intent"]["pattern_family"], "custom_baseline")
+        self.assertNotIn("target_phase", state["intent"]["pattern_params"])
+        self.assertEqual(
+            state["intent"]["pattern_params"]["target_group"],
+            "target",
+        )
+
     def test_business_intent_provider_requires_pattern_params_mapping(self):
         missing = object()
         for pattern_params in (missing, None, [], "rolling"):
@@ -9328,13 +11166,7 @@ class LLMWorkflowTest(unittest.TestCase):
             "compare_period_phases",
             "weekday_calendar_compare",
         )
-        valid = _provider_analysis_route_output(
-            requested_nodes=list(final_nodes),
-            expected_evidence={
-                capability: "该业务能力对应的可验证证据与限制说明。"
-                for capability in final_nodes
-            },
-        )
+        valid = _provider_final_route_narrative_output(final_nodes)
         invalid_outputs = {}
 
         missing = deepcopy(valid)
@@ -9342,45 +11174,45 @@ class LLMWorkflowTest(unittest.TestCase):
         invalid_outputs["missing"] = missing
         invalid_outputs["wrong_typed"] = {
             **deepcopy(valid),
-            "expected_evidence": ["滚动窗口对比证据"],
+            "sections": ["滚动窗口对比证据"],
         }
         invalid_outputs["inconsistent"] = {
             **deepcopy(valid),
-            "expected_evidence": {
-                "weekday_calendar_compare": "星期日历对比证据。",
-            },
+            "sections": [
+                {
+                    "step_ref": "step_1",
+                    "route_step": "核对滚动窗口变化。",
+                    "expected_evidence": "获得滚动窗口对比证据。",
+                }
+            ],
         }
 
         for label, invalid in invalid_outputs.items():
             with self.subTest(label=label):
                 client, completions = _provider_client_with_outputs(
-                    (invalid, valid)
+                    (_provider_analysis_route_output(), invalid, valid)
                 )
                 state = _provider_analysis_route_state(client)
 
                 _design_analysis_route(state)
 
-                self.assertEqual(completions.attempt_count, 2)
+                self.assertEqual(completions.attempt_count, 3)
                 self.assertEqual(state["llm_calls"][-1]["attempt_count"], 2)
 
     def test_production_analysis_route_retries_until_provider_maps_reconciled_obligations(self):
         initial = _provider_analysis_route_output()
         reconciled_nodes = (
             "rolling_window_compare",
+            "metric_timeseries",
             "data_quality_profile",
+            "evidence_reduce",
             "answer_verify",
             "compare_periods",
             "compare_period_phases",
             "weekday_calendar_compare",
-            "metric_timeseries",
-            "evidence_reduce",
         )
-        final = _provider_analysis_route_output(
-            requested_nodes=list(reconciled_nodes),
-            expected_evidence={
-                capability: "该业务能力对应的可验证证据与限制说明。"
-                for capability in reconciled_nodes
-            },
+        final = _provider_final_route_narrative_output(
+            reconciled_nodes,
             route_summary="先完成基础数据核验，再按完整能力路线形成业务判断。",
             decision_summary="已覆盖该问题要求的全部证据义务。",
             display_summary="已形成完整且可验证的分析路线。",
@@ -9396,8 +11228,8 @@ class LLMWorkflowTest(unittest.TestCase):
             reconciled_nodes,
         )
         self.assertEqual(
-            state["analysis_route"]["expected_evidence"],
-            final["expected_evidence"],
+            set(state["analysis_route"]["expected_evidence"]),
+            set(reconciled_nodes),
         )
         self.assertEqual(
             set(state["analysis_route"]["expected_evidence"]),
@@ -9415,16 +11247,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(state["analysis_route"]["decision_summary"], final["decision_summary"])
 
     def test_production_analysis_route_retries_registry_known_unsupplied_node(self):
-        required_nodes = (
-            "rolling_window_compare",
-            "data_quality_profile",
-            "answer_verify",
-            "compare_periods",
-            "compare_period_phases",
-            "weekday_calendar_compare",
-            "metric_timeseries",
-            "evidence_reduce",
-        )
+        required_nodes = ("rolling_window_compare",)
         invalid_nodes = (*required_nodes, "pattern_scan")
         invalid = _provider_analysis_route_output(
             requested_nodes=list(invalid_nodes),
@@ -9440,12 +11263,25 @@ class LLMWorkflowTest(unittest.TestCase):
                 for capability in required_nodes
             },
         )
-        client, completions = _provider_client_with_outputs((invalid, valid))
+        final_nodes = (
+            "rolling_window_compare",
+            "metric_timeseries",
+            "data_quality_profile",
+            "evidence_reduce",
+            "answer_verify",
+            "compare_periods",
+            "compare_period_phases",
+            "weekday_calendar_compare",
+        )
+        final = _provider_final_route_narrative_output(final_nodes)
+        client, completions = _provider_client_with_outputs(
+            (invalid, valid, final)
+        )
         state = _provider_analysis_route_state(client)
 
         _design_analysis_route(state)
 
-        self.assertEqual(completions.attempt_count, 2)
+        self.assertEqual(completions.attempt_count, 3)
         self.assertNotIn("pattern_scan", state["analysis_route"]["requested_nodes"])
 
     def test_pattern_output_contract_does_not_apply_to_other_tasks(self):
@@ -10118,7 +11954,6 @@ class LLMWorkflowTest(unittest.TestCase):
                     "（product default materiality and stability rules），"
                     "超过默认重要性阈值（例如5%）。"
                 ),
-                "claims": [{"text": "当前证据显示一个可观察模式。"}],
             }
         )
 
@@ -10146,8 +11981,6 @@ class LLMWorkflowTest(unittest.TestCase):
                 "超过默认重要性阈值。"
             ),
         )
-        self.assertEqual(output["claims"][0]["text"], "当前证据显示一个可观察模式。")
-
     def test_llm_narrative_rejects_scalar_accepted_assumptions(self):
         with self.assertRaisesRegex(
             LLMOutputError,
@@ -10431,11 +12264,21 @@ class LLMWorkflowTest(unittest.TestCase):
                     "capability_id": "compare_periods",
                     "strength": "high",
                     "wording_limit": "supported",
+                    "numeric_facts": {
+                        "target_value": 115.04,
+                        "baseline_value": 100.0,
+                        "absolute_change": 15.04,
+                        "relative_change": 0.1504,
+                    },
                     "typed_payload": {
                         "pattern_family": "custom_baseline",
-                        "median_uplift": 0.1504,
-                        "direction_ratio": 1.0,
-                        "comparable_periods": 1,
+                        "target_value": 115.04,
+                        "baseline_value": 100.0,
+                        "absolute_change": 15.04,
+                        "relative_change": 0.1504,
+                        "comparison_direction": "positive",
+                        "target": {"label": "Q2"},
+                        "baseline": {"label": "Q1"},
                     },
                 }
             ],
@@ -10443,12 +12286,14 @@ class LLMWorkflowTest(unittest.TestCase):
 
         claim = _default_claim_from_evidence(state)
 
-        self.assertIn("日均付费金额提升 15.0%", claim["text"])
+        self.assertIn("Q2的日均付费金额", claim["text"])
+        self.assertIn("较Q1", claim["text"])
+        self.assertIn("上涨 15.04%", claim["text"])
         self.assertNotIn("中位数", claim["text"])
         self.assertNotIn("方向命中率", claim["text"])
         self.assertNotIn("可比周期", claim["text"])
-        self.assertEqual(claim["numbers"]["direction_ratio"], 1.0)
-        self.assertEqual(claim["numbers"]["comparable_periods"], 1)
+        self.assertEqual(claim["numbers"]["target_value"], 115.04)
+        self.assertEqual(claim["numbers"]["baseline_value"], 100.0)
 
     def test_default_claim_explains_joint_attribution_business_result(self):
         state = {
@@ -10536,7 +12381,7 @@ class LLMWorkflowTest(unittest.TestCase):
             )
         )
 
-    def test_llm_claim_prefers_established_joint_ref_and_weakens_causal_wording(self):
+    def test_authority_claim_prefers_established_joint_ref_and_weakens_causal_wording(self):
         state = {
             "intent": {
                 "pattern_family": "custom_baseline",
@@ -10566,7 +12411,7 @@ class LLMWorkflowTest(unittest.TestCase):
             ],
         }
 
-        claims = _claims_from_llm_or_default(
+        claims = _normalize_authority_claim_candidates(
             [
                 {
                     "text": "组合贡献可以作为候选解释，但不能直接写成因果结论，也不能直接定因果。",
@@ -10625,7 +12470,7 @@ class LLMWorkflowTest(unittest.TestCase):
             ],
         }
 
-        claim = _claims_from_llm_or_default(
+        claim = _normalize_authority_claim_candidates(
             [
                 {
                     "claim_text": "昨天活跃用户低于前天。",
@@ -10649,7 +12494,6 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(claim["numbers"]["absolute_change"], "-91560")
 
         state["draft_claims"] = [claim]
-        self.assertEqual(_claims_from_llm_or_default([], state), [claim])
         self.assertEqual(_preserved_authority_claims(state), [claim])
         state["semantic_audit"] = {"audit_status": "needs_revision"}
         with patch(
@@ -10660,7 +12504,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(state["draft_claims"], [claim])
 
         state.pop("draft_claims")
-        structured_only = _claims_from_llm_or_default(
+        structured_only = _normalize_authority_claim_candidates(
             [
                 {
                     "evidence_refs": [evidence_ref],
@@ -10672,7 +12516,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(structured_only["claim_type"], "comparative_change")
         self.assertEqual(structured_only["numbers"], {"target_value": "125260"})
         self.assertIn("active_users", structured_only["text"])
-        text_only = _claims_from_llm_or_default(
+        text_only = _normalize_authority_claim_candidates(
             [{"claim_text": "活跃用户下降。", "evidence_refs": [evidence_ref]}],
             state,
         )[0]
@@ -10685,11 +12529,14 @@ class LLMWorkflowTest(unittest.TestCase):
             },
         )
         self.assertEqual(
-            _claims_from_llm_or_default([{"evidence_refs": [evidence_ref]}], state),
+            _normalize_authority_claim_candidates(
+                [{"evidence_refs": [evidence_ref]}],
+                state,
+            ),
             [],
         )
 
-    def test_production_empty_llm_claims_wait_for_repair_candidate(self):
+    def test_empty_authority_claim_candidates_do_not_create_claims(self):
         evidence_ref = "market_health_compare:run-resumed"
         state = {
             "request": {"run_mode": "production"},
@@ -10729,10 +12576,10 @@ class LLMWorkflowTest(unittest.TestCase):
             ],
         }
 
-        self.assertEqual(_claims_from_llm_or_default(None, state), [])
-        self.assertEqual(_claims_from_llm_or_default([], state), [])
+        self.assertEqual(_normalize_authority_claim_candidates(None, state), [])
+        self.assertEqual(_normalize_authority_claim_candidates([], state), [])
         self.assertEqual(
-            _claims_from_llm_or_default(
+            _normalize_authority_claim_candidates(
                 [
                     {
                         "evidence_refs": [evidence_ref],
@@ -10747,10 +12594,10 @@ class LLMWorkflowTest(unittest.TestCase):
             "text": "旧草稿没有合同绑定。",
             "evidence_refs": [evidence_ref],
         }]
-        self.assertEqual(_claims_from_llm_or_default([], state), [])
+        self.assertEqual(_normalize_authority_claim_candidates([], state), [])
         state.pop("draft_claims")
 
-        repaired = _claims_from_llm_or_default(
+        repaired = _normalize_authority_claim_candidates(
             [
                 {
                     "text": "昨天活跃用户低于前天。",
@@ -10769,90 +12616,8 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(repaired[0]["time_window"], "昨天与前天")
         self.assertEqual(repaired[0]["numbers"]["absolute_change"], -91560)
         state["draft_claims"] = repaired
-        self.assertEqual(_claims_from_llm_or_default([], state), [])
+        self.assertEqual(_normalize_authority_claim_candidates([], state), [])
         self.assertEqual(_preserved_authority_claims(state), repaired)
-
-    def test_answer_claim_nodes_retry_non_array_claim_shape_in_provider(self):
-        invalid = {
-            "answer_text": "当前证据支持形成有边界的业务结论。",
-            "claims": None,
-            "display_summary": "正在整理业务答案。",
-        }
-        malformed = {
-            **invalid,
-            "claims": [{"text": "当前证据支持形成有边界的业务结论。"}],
-        }
-        valid = {**invalid, "claims": []}
-        for node_name, node in (
-            ("answer_synthesis", workflow_module._synthesize_answer),
-            ("answer_repair", workflow_module._repair_answer),
-        ):
-            with self.subTest(node=node_name):
-                client, completions = _provider_client_with_outputs(
-                    [invalid, malformed, valid]
-                )
-                state = {
-                    "request": {"run_mode": "production"},
-                    "intent": {
-                        "question_family": "revenue_health_review",
-                        "target_metric": "paid_amount",
-                        "pattern_family": "custom_baseline",
-                        "scope": "full_sample",
-                        "time_window": "2026-06-02",
-                    },
-                    "evidence_interpretation": {},
-                    "evidence_brief": {},
-                    "evidence": [],
-                    "answer_text": "待修复答案。",
-                    "draft_claims": [],
-                    "semantic_audit": {},
-                    "verifier": {},
-                    "retry_context": {},
-                    "llm_client": client,
-                    "llm_calls": [],
-                }
-
-                node(state)
-
-                self.assertEqual(completions.attempt_count, 3)
-                self.assertEqual(state["draft_claims"], [])
-
-    def test_answer_claim_provider_contract_requires_exact_typed_item_shape(self):
-        valid_claim = {
-            "text": "当前证据支持形成有边界的业务结论。",
-            "evidence_refs": ["evidence:paid-amount:1"],
-            "numbers": {"absolute_change": -1200},
-            "scope": "full_sample",
-            "time_window": "2026-06-02",
-            "claim_type": "comparative_change",
-            "claim_strength": "observed",
-        }
-        workflow_module._validate_answer_claims_provider_output(
-            {"claims": []}
-        )
-        workflow_module._validate_answer_claims_provider_output(
-            {"claims": [valid_claim]}
-        )
-
-        invalid_claims = (
-            {key: value for key, value in valid_claim.items() if key != "scope"},
-            {**valid_claim, "unexpected": "provider-owned-extra"},
-            {**valid_claim, "text": " 当前证据支持结论。"},
-            {**valid_claim, "scope": ""},
-            {**valid_claim, "evidence_refs": []},
-            {**valid_claim, "evidence_refs": ["evidence:1", " "]},
-            {**valid_claim, "numbers": []},
-            {**valid_claim, "claim_strength": 1},
-        )
-        for claim in invalid_claims:
-            with self.subTest(claim=claim):
-                with self.assertRaisesRegex(
-                    LLMOutputError,
-                    "answer_claims_contract_invalid:claims",
-                ):
-                    workflow_module._validate_answer_claims_provider_output(
-                        {"claims": [claim]}
-                    )
 
     def test_production_short_answer_is_not_rewritten_by_local_narrative_template(self):
         state = {
@@ -10877,7 +12642,7 @@ class LLMWorkflowTest(unittest.TestCase):
                 "audit_status": "needs_revision",
                 "issues": ["weak_business_interpretation"],
             },
-            "answer_repair_attempts": 1,
+            "semantic_repair_attempts": 1,
             "answer_text": "昨日活跃用户下降。",
             "draft_claims": [],
         }
@@ -10941,8 +12706,16 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(state["final_business_summary"], "昨日活跃用户下降。")
         self.assertFalse(state["quality_gate"]["blocks_display"])
         self.assertIn("final_answer_audit_unavailable", state["quality_gate"]["risk_flags"])
+        self.assertEqual(
+            state["quality_gate"]["business_audit_summary"],
+            "最终表达审阅本轮暂不可用，不影响已验证结论的展示。",
+        )
+        self.assertNotIn(
+            "llm_response_timeout",
+            state["quality_gate"]["business_audit_summary"],
+        )
 
-    def test_ambiguous_authority_refs_do_not_guess_claim_contract_or_promote_unknown_fields(self):
+    def test_ambiguous_authority_refs_are_rejected_without_guessing_a_claim_contract(self):
         evidence = []
         for index, scope in enumerate(("market", "channel"), start=1):
             evidence.append(
@@ -10969,7 +12742,7 @@ class LLMWorkflowTest(unittest.TestCase):
             "evidence": evidence,
         }
 
-        claim = _claims_from_llm_or_default(
+        claims = _normalize_authority_claim_candidates(
             [
                 {
                     "claim_text": "存在变化。",
@@ -10980,12 +12753,9 @@ class LLMWorkflowTest(unittest.TestCase):
                 }
             ],
             state,
-        )[0]
+        )
 
-        self.assertEqual(claim["claim_type"], "")
-        self.assertEqual(claim["scope"], "用户表达")
-        self.assertEqual(claim["time_window"], "用户窗口")
-        self.assertNotIn("unknown_value", claim["numbers"])
+        self.assertEqual(claims, [])
 
     def test_final_summary_display_repair_preserves_complete_numeric_claim_slots(self):
         claim = {
@@ -11262,6 +13032,7 @@ class LLMWorkflowTest(unittest.TestCase):
             "evidence_brief": {"limitations": ["insufficient_comparable_periods"]},
             "evidence": [
                 {
+                    "evidence_ref": "compare_periods:terminal-boundary",
                     "capability_id": "compare_periods",
                     "typed_payload": {
                         "pattern_family": "custom_baseline",
@@ -11384,7 +13155,7 @@ class LLMWorkflowTest(unittest.TestCase):
             "business_intent",
             "boundary_decision",
             "confirm_understanding",
-            "analysis_route",
+            "analysis_route_plan",
             "next_action",
             "evidence_interpretation",
             "answer_synthesis",
@@ -11436,7 +13207,7 @@ class LLMWorkflowTest(unittest.TestCase):
     def test_analysis_route_llm_failure_fails_without_local_fallback(self):
         class TimeoutOnRouteLLM(FakeLLMClient):
             def invoke_json(self, *, task, prompt_version, messages, required_keys):
-                if task == "analysis_route":
+                if task == "analysis_route_plan":
                     self.calls.append(task)
                     raise TimeoutError("llm_response_timeout")
                 return super().invoke_json(
@@ -11458,7 +13229,7 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertEqual(result.status, "failed")
-        self.assertIn("analysis_route", fake.calls)
+        self.assertIn("analysis_route_plan", fake.calls)
         self.assertIsNone(result.answer_package)
 
     def test_business_question_uses_llm_for_next_action(self):
@@ -11510,9 +13281,8 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("next_action", fake.calls)
         self.assertIsNone(result.answer_package)
 
-    def test_business_question_answer_nodes_fail_without_local_fallback(self):
+    def test_answer_synthesis_and_semantic_audit_fail_without_local_fallback(self):
         for failing_task in (
-            "evidence_interpretation",
             "answer_synthesis",
             "semantic_audit",
         ):
@@ -11562,100 +13332,28 @@ class LLMWorkflowTest(unittest.TestCase):
                     required_keys=required_keys,
                 )
 
-        degraded_fake = TimeoutOnTerminalNodeLLM(
-            "degraded_explanation",
-            {
-                "business_intent": {
-                    "question_family": "custom_baseline_comparison",
-                    "pattern_family": "custom_baseline",
-                    "target_metric": "paid_amount",
-                    "scope": "full_sample",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "target_claim": "判断 Q2 相比 Q1 日均付费金额是否仍成立",
-                },
-                "analysis_route": {
-                    "requested_nodes": [
-                        "data_quality_profile",
-                        "compare_periods",
-                        "answer_verify",
-                    ],
-                },
-                "next_action": {"next_action": "degrade"},
-            },
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            degraded_result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "degraded-terminal-timeout",
-                    "llm_client": degraded_fake,
-                    "question": "换成日均再看一遍。",
-                    "rows": [{"period": "q1", "group": "baseline", "amount": 100}],
-                    "pattern_family": "custom_baseline",
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 2,
-                    },
-                }
-            )
-
-        self.assertEqual(degraded_result.status, "failed")
-        self.assertIn("degraded_explanation", degraded_fake.calls)
-        self.assertEqual(degraded_fake.calls.count("degraded_explanation"), 1)
-        self.assertIsNone(degraded_result.answer_package)
-
-        blocked_fake = TimeoutOnTerminalNodeLLM(
-            "blocked_explanation",
-            {
-                "data_coverage_interpretation": {
-                    "coverage_status": "blocked",
-                    "business_impact": "当前查询没有返回可分析数据。",
-                    "decision_summary": "不能发布付费金额变化结论。",
-                }
-            },
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            blocked_result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "blocked-terminal-timeout",
-                    "llm_client": blocked_fake,
-                    "question": "昨天付费金额为什么变了？",
-                    "rows": [],
-                }
-            )
-
-        self.assertEqual(blocked_result.status, "failed")
-        self.assertIn("blocked_explanation", blocked_fake.calls)
-        self.assertEqual(blocked_fake.calls.count("blocked_explanation"), 1)
-        self.assertIsNone(blocked_result.answer_package)
-
-    def test_final_business_summary_verification_failure_records_quality_issues_without_local_fallback(self):
-        fake = FakeLLMClient(
-            {
-                "final_business_summary": {
-                    "summary_text": "我已经完成检查，但这里没有保留通过校验的业务结论。"
-                }
-            }
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "final-summary-verification-failed",
+        for task, node in (
+            ("degraded_explanation", workflow_module._generate_degraded_explanation),
+            ("blocked_explanation", workflow_module._generate_blocked_explanation),
+        ):
+            with self.subTest(task=task):
+                fake = TimeoutOnTerminalNodeLLM(task)
+                state = {
+                    "request": {"run_mode": "production"},
+                    "run_id": f"{task}-timeout",
+                    "intent": {"target_metric": "paid_amount"},
+                    "evidence_brief": {},
+                    "verifier": {},
+                    "validator_results": [],
                     "llm_client": fake,
-                    "question": "Q2 相比 Q1 付费金额为什么变了？",
+                    "llm_calls": [],
                 }
-            )
 
-        self.assertEqual(result.status, "draft")
-        self.assertIn("final_business_summary", fake.calls)
-        self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
-        self.assertEqual(result.answer_package["quality_gate"]["code"], "evidence_verifier_failed")
+                with self.assertRaisesRegex(WorkflowFailure, "llm_response_timeout"):
+                    node(state)
+
+                self.assertEqual(fake.calls, [task])
+
 
     def test_empty_final_business_summary_fails_after_one_node_call(self):
         state = {
@@ -11665,12 +13363,20 @@ class LLMWorkflowTest(unittest.TestCase):
         }
         payloads = []
 
-        def summarize(_state, task, payload):
+        def summarize(_state, task, payload, **_kwargs):
             self.assertEqual(task, "final_business_summary")
             payloads.append(payload)
             if len(payloads) == 1:
-                return {"summary_text": ""}
-            return {"summary_text": "当前数据证据不足，需要检查支付状态数据。"}
+                return {
+                    "summary_text": "",
+                    "statement_bindings": [],
+                    "display_summary": "",
+                }
+            return {
+                "summary_text": "当前数据证据不足，需要检查支付状态数据。",
+                "statement_bindings": [],
+                "display_summary": "当前数据证据不足。",
+            }
 
         with patch(
             "bi_agent.runtime.langgraph_workflow._invoke_llm",
@@ -11694,7 +13400,11 @@ class LLMWorkflowTest(unittest.TestCase):
             }
             with self.subTest(summary_text=summary_text), patch(
                 "bi_agent.runtime.langgraph_workflow._invoke_llm",
-                return_value={"summary_text": summary_text},
+                return_value={
+                    "summary_text": summary_text,
+                    "statement_bindings": [],
+                    "display_summary": "摘要格式检查。",
+                },
             ), self.assertRaisesRegex(
                 WorkflowFailure,
                 "final_business_summary_contract_invalid:summary_text",
@@ -11702,429 +13412,104 @@ class LLMWorkflowTest(unittest.TestCase):
                 _final_business_summary(state)
 
     def test_final_answer_audit_warning_is_recorded_without_rewriting_summary(self):
-        class RetryAuditLLM(FakeLLMClient):
-            def __init__(self):
-                super().__init__()
-                self.summary_inputs = []
-                self.audit_count = 0
-
-            def invoke_json(self, *, task, prompt_version, messages, required_keys):
-                if task == "final_business_summary":
-                    self.calls.append(task)
-                    payload = _input_payload(messages)
-                    self.summary_inputs.append(payload)
-                    summary_text = (
-                        "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
-                        "分析脉络：我检查了目标窗口、基线窗口和贡献证据。\n"
-                        "关键发现：Q2 相比 Q1 的付费金额提升 20.0%。\n"
-                        "最终结论：已验证结论是：Q2 相比 Q1 的付费金额提升 20.0%。\n"
-                        "需要注意：还不能直接说这是唯一原因或已被因果证明。"
-                    )
-                    return FakeLLMResult(
-                        {"summary_text": summary_text, "display_summary": "已生成最终业务总结。"},
+        state = _required_claim_resolution_state()
+        summary = "已验证付费金额变化，因素贡献结论保留当前证据边界。"
+        fake = FakeLLMClient(
+            {
+                "final_answer_audit": {
+                    "material_findings": [
                         {
-                            "task": task,
-                            "provider": "fake",
-                            "model": "fake-model",
-                            "prompt_version": prompt_version,
-                            "response_id": f"fake-{task}-{len(self.summary_inputs)}",
-                            "messages": [dict(message) for message in messages],
-                            "required_keys": list(required_keys),
-                            "raw_response_content": "{}",
-                            "started_at": "2026-01-01T00:00:00+00:00",
-                            "finished_at": "2026-01-01T00:00:00+00:00",
-                            "duration_ms": 0.0,
-                            "input_hash": f"input-{task}-{len(self.summary_inputs)}",
-                            "output_hash": f"output-{task}-{len(self.summary_inputs)}",
-                            "usage": {},
-                            "structured_output": {"summary_text": summary_text},
-                        },
-                    )
-                if task == "final_answer_audit":
-                    self.calls.append(task)
-                    self.audit_count += 1
-                    output = {
-                        "display_status": "ready_with_warnings",
-                        "hard_blockers": [],
-                        "repairable_warnings": ["missing_business_interpretation"],
-                        "retry_instruction": "补一句业务排查方向。",
-                        "business_audit_summary": "答案可展示，但业务洞察还不够完整。",
-                        "display_summary": "答案可展示，但建议补强业务洞察。",
-                    }
-                    if self.audit_count > 1:
-                        output = {
-                            "display_status": "ready",
-                            "hard_blockers": [],
-                            "repairable_warnings": [],
-                            "retry_instruction": "",
-                            "business_audit_summary": "答案满足当前展示边界。",
-                            "display_summary": "答案满足当前展示边界。",
+                            "code": "claim_paraphrase_unclear",
+                            "answer_excerpt": "因素贡献结论",
+                            "context_anchor": {
+                                "kind": "claim_slot",
+                                "key": "结论1",
+                            },
+                            "edit_action": "clarify",
+                            "explanation": "这段表达没有说明已验证结论的具体含义。",
                         }
-                    return FakeLLMResult(
-                        output,
-                        {
-                            "task": task,
-                            "provider": "fake",
-                            "model": "fake-model",
-                            "prompt_version": prompt_version,
-                            "response_id": f"fake-{task}-{self.audit_count}",
-                            "messages": [dict(message) for message in messages],
-                            "required_keys": list(required_keys),
-                            "raw_response_content": "{}",
-                            "started_at": "2026-01-01T00:00:00+00:00",
-                            "finished_at": "2026-01-01T00:00:00+00:00",
-                            "duration_ms": 0.0,
-                            "input_hash": f"input-{task}-{self.audit_count}",
-                            "output_hash": f"output-{task}-{self.audit_count}",
-                            "usage": {},
-                            "structured_output": output,
-                        },
-                    )
-                return super().invoke_json(
-                    task=task,
-                    prompt_version=prompt_version,
-                    messages=messages,
-                    required_keys=required_keys,
-                )
-
-        def _input_payload(messages):
-            for message in messages:
-                content = message.get("content", "") if isinstance(message, dict) else ""
-                if "<input_json>" not in content:
-                    continue
-                start = content.index("<input_json>") + len("<input_json>")
-                end = content.index("</input_json>")
-                return json.loads(content[start:end].strip())
-            return {}
-
-        fake = RetryAuditLLM()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "final-answer-audit-retry",
-                    "llm_client": fake,
-                    "question": "Q2 相比 Q1 付费金额为什么变了？",
+                    ],
                 }
-            )
-
-        self.assertEqual(result.status, "draft")
-        self.assertEqual(fake.calls.count("final_business_summary"), 1)
-        self.assertEqual(fake.calls.count("final_answer_audit"), 1)
-        self.assertNotIn("final_answer_retry_instruction", fake.summary_inputs[0])
-        self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
-        self.assertEqual(result.answer_package["final_answer"], "")
-
-    def test_final_answer_audit_never_rewrites_summary_for_warnings(self):
-        class RetryTwiceLLM(FakeLLMClient):
-            def __init__(self):
-                super().__init__()
-                self.summary_inputs = []
-                self.audit_count = 0
-
-            def invoke_json(self, *, task, prompt_version, messages, required_keys):
-                if task == "final_business_summary":
-                    self.calls.append(task)
-                    payload = _input_payload(messages)
-                    self.summary_inputs.append(payload)
-                    summary_text = (
-                        "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
-                        "分析脉络：我检查了目标窗口、基线窗口和证据边界。\n"
-                        "关键发现：当前证据能把排查方向收敛到周期内付费金额模式。\n"
-                        "最终结论：活动是付费金额变化的因果原因，2024-01..2026-05 的周期内付费金额模式中位提升 20.0%，"
-                        "方向一致比例 100.0%，覆盖 29 个可比周期。\n"
-                        "需要注意：机制证据暂不可用，仍需补充独立对照证据。"
-                    )
-                    return FakeLLMResult(
-                        {"summary_text": summary_text},
-                        {
-                            "task": task,
-                            "provider": "fake",
-                            "model": "fake-model",
-                            "prompt_version": prompt_version,
-                            "response_id": f"fake-{task}-{len(self.summary_inputs)}",
-                            "messages": [dict(message) for message in messages],
-                            "required_keys": list(required_keys),
-                            "raw_response_content": "{}",
-                            "started_at": "2026-01-01T00:00:00+00:00",
-                            "finished_at": "2026-01-01T00:00:00+00:00",
-                            "duration_ms": 0.0,
-                            "input_hash": f"input-{task}-{len(self.summary_inputs)}",
-                            "output_hash": f"output-{task}-{len(self.summary_inputs)}",
-                            "usage": {},
-                            "structured_output": {"summary_text": summary_text},
-                        },
-                    )
-                if task == "final_answer_audit":
-                    self.calls.append(task)
-                    self.audit_count += 1
-                    output = {
-                        "display_status": "ready_with_warnings",
-                        "hard_blockers": [],
-                        "repairable_warnings": ["unsupported_material_claim"],
-                        "retry_instruction": "把无证据的确定性结论改成候选判断。",
-                        "business_audit_summary": "主结论里有一处证据边界过强。",
-                        "display_summary": "主结论里有一处证据边界过强。",
-                    }
-                    return FakeLLMResult(
-                        output,
-                        {
-                            "task": task,
-                            "provider": "fake",
-                            "model": "fake-model",
-                            "prompt_version": prompt_version,
-                            "response_id": f"fake-{task}-{self.audit_count}",
-                            "messages": [dict(message) for message in messages],
-                            "required_keys": list(required_keys),
-                            "raw_response_content": "{}",
-                            "started_at": "2026-01-01T00:00:00+00:00",
-                            "finished_at": "2026-01-01T00:00:00+00:00",
-                            "duration_ms": 0.0,
-                            "input_hash": f"input-{task}-{self.audit_count}",
-                            "output_hash": f"output-{task}-{self.audit_count}",
-                            "usage": {},
-                            "structured_output": output,
-                        },
-                    )
-                return super().invoke_json(
-                    task=task,
-                    prompt_version=prompt_version,
-                    messages=messages,
-                    required_keys=required_keys,
-                )
-
-        def _input_payload(messages):
-            for message in messages:
-                content = message.get("content", "") if isinstance(message, dict) else ""
-                if "<input_json>" not in content:
-                    continue
-                start = content.index("<input_json>") + len("<input_json>")
-                end = content.index("</input_json>")
-                return json.loads(content[start:end].strip())
-            return {}
-
-        fake = RetryTwiceLLM()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "final-answer-audit-retry-twice",
-                    "llm_client": fake,
-                    "question": "Q2 相比 Q1 付费金额为什么变了？",
-                }
-            )
-
-        self.assertEqual(result.status, "draft")
-        self.assertEqual(fake.calls.count("final_business_summary"), 1)
-        self.assertEqual(fake.calls.count("final_answer_audit"), 1)
-        self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
-        self.assertEqual(result.answer_package["final_answer"], "")
-        audit_outputs = [
-            call["structured_output"]
-            for call in result.answer_package["admin_audit"]["llm_calls"]
-            if call["task"] == "final_answer_audit"
-        ]
-        self.assertEqual(len(audit_outputs), 1)
-        self.assertEqual(
-            audit_outputs[-1]["repairable_warnings"],
-            ["unsupported_material_claim"],
+            }
         )
+        state.update(
+            {
+                "run_id": "final-answer-audit-warning",
+                "llm_client": fake,
+                "llm_calls": [],
+                "final_business_summary": summary,
+                "validator_results": [],
+                "verifier": {"status": "passed", "errors": []},
+            }
+        )
+        _reduce_evidence(state)
+        state["draft_claims"] = workflow_module._authority_claims_from_evidence(state)
+        state["authority_verified_claims"] = deepcopy(state["draft_claims"])
 
-    def test_local_final_summary_display_warning_does_not_trigger_rewrite(self):
-        class ReadyAuditBadFirstSummaryLLM(FakeLLMClient):
-            def __init__(self):
-                super().__init__()
-                self.summary_inputs = []
-                self.audit_inputs = []
+        audit = workflow_module._final_answer_audit(state)
 
-            def invoke_json(self, *, task, prompt_version, messages, required_keys):
-                if task == "final_business_summary":
-                    self.calls.append(task)
-                    payload = _input_payload(messages)
-                    self.summary_inputs.append(payload)
-                    if len(self.summary_inputs) == 1:
-                        summary_text = "已生成最终业务总结。"
-                    else:
-                        summary_text = (
-                            "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
-                            "分析脉络：我检查了目标窗口、基线窗口和证据边界。\n"
-                            "关键发现：当前证据能把排查方向收敛到周期内付费金额模式。\n"
-                            "最终结论：已验证结论是：2024-01..2026-05 的周期内付费金额模式中位提升 20.0%，"
-                            "方向一致比例 100.0%，覆盖 29 个可比周期。\n"
-                            "需要注意：机制证据暂不可用，还不能直接说这是唯一原因或已被因果证明。"
-                        )
-                    return FakeLLMResult(
-                        {"summary_text": summary_text},
-                        {
-                            "task": task,
-                            "provider": "fake",
-                            "model": "fake-model",
-                            "prompt_version": prompt_version,
-                            "response_id": f"fake-{task}-{len(self.summary_inputs)}",
-                            "messages": [dict(message) for message in messages],
-                            "required_keys": list(required_keys),
-                            "raw_response_content": "{}",
-                            "started_at": "2026-01-01T00:00:00+00:00",
-                            "finished_at": "2026-01-01T00:00:00+00:00",
-                            "duration_ms": 0.0,
-                            "input_hash": f"input-{task}-{len(self.summary_inputs)}",
-                            "output_hash": f"output-{task}-{len(self.summary_inputs)}",
-                            "usage": {},
-                            "structured_output": {"summary_text": summary_text},
-                        },
-                    )
-                if task == "final_answer_audit":
-                    self.calls.append(task)
-                    payload = _input_payload(messages)
-                    self.audit_inputs.append(payload)
-                    output = {
-                        "display_status": "ready",
-                        "hard_blockers": [],
-                        "repairable_warnings": [],
-                        "retry_instruction": "",
-                        "business_audit_summary": "答案满足展示边界。",
-                        "display_summary": "答案满足展示边界。",
-                    }
-                    return FakeLLMResult(
-                        output,
-                        {
-                            "task": task,
-                            "provider": "fake",
-                            "model": "fake-model",
-                            "prompt_version": prompt_version,
-                            "response_id": f"fake-{task}-{len(self.audit_inputs)}",
-                            "messages": [dict(message) for message in messages],
-                            "required_keys": list(required_keys),
-                            "raw_response_content": "{}",
-                            "started_at": "2026-01-01T00:00:00+00:00",
-                            "finished_at": "2026-01-01T00:00:00+00:00",
-                            "duration_ms": 0.0,
-                            "input_hash": f"input-{task}-{len(self.audit_inputs)}",
-                            "output_hash": f"output-{task}-{len(self.audit_inputs)}",
-                            "usage": {},
-                            "structured_output": output,
-                        },
-                    )
-                return super().invoke_json(
-                    task=task,
-                    prompt_version=prompt_version,
-                    messages=messages,
-                    required_keys=required_keys,
-                )
+        self.assertEqual(state["final_business_summary"], summary)
+        self.assertEqual(audit["display_status"], "ready_with_warnings")
+        self.assertEqual(
+            audit["repairable_warnings"],
+            ["claim_paraphrase_unclear"],
+        )
+        self.assertEqual(audit["hard_blockers"], [])
+        self.assertFalse(audit["blocks_display"])
+        payload = _llm_input_payload(
+            {"admin_audit": {"llm_calls": state["llm_calls"]}},
+            "final_answer_audit",
+        )
+        self.assertEqual(
+            set(payload),
+            {"finalAnswer", "businessContext", "displayReview"},
+        )
+        visible = json.dumps(payload, ensure_ascii=False)
+        for internal in (
+            "evidence_ref",
+            "capability_id",
+            "verifier",
+            "draft_claims",
+            "evidence_brief",
+        ):
+            self.assertNotIn(internal, visible)
 
-        def _input_payload(messages):
-            for message in messages:
-                content = message.get("content", "") if isinstance(message, dict) else ""
-                if "<input_json>" not in content:
-                    continue
-                start = content.index("<input_json>") + len("<input_json>")
-                end = content.index("</input_json>")
-                return json.loads(content[start:end].strip())
-            return {}
-
-        fake = ReadyAuditBadFirstSummaryLLM()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "local-final-summary-display-warning-retry",
-                    "llm_client": fake,
-                    "question": "Q2 相比 Q1 付费金额为什么变了？",
+    def test_final_answer_audit_provider_cannot_return_status_or_hard_blocker(self):
+        state = _required_claim_resolution_state()
+        summary = "已验证结论保持原样。"
+        fake = FakeLLMClient(
+            {
+                "final_answer_audit": {
+                    "display_status": "hard_blocked",
+                    "hard_blockers": ["unsupported_main_claim"],
+                    "repairable_warnings": [],
+                    "retry_instruction": "请降低原因表述强度。",
+                    "business_audit_summary": "文案存在一处证据边界风险。",
+                    "display_summary": "文案存在一处证据边界风险。",
                 }
-            )
+            }
+        )
+        state.update(
+            {
+                "run_id": "provider-final-audit-advisory",
+                "llm_client": fake,
+                "llm_calls": [],
+                "final_business_summary": summary,
+                "validator_results": [],
+                "verifier": {"status": "passed", "errors": []},
+            }
+        )
+        _reduce_evidence(state)
+        state["draft_claims"] = workflow_module._authority_claims_from_evidence(state)
+        state["authority_verified_claims"] = deepcopy(state["draft_claims"])
 
-        self.assertEqual(result.status, "draft")
-        self.assertEqual(fake.calls.count("final_business_summary"), 1)
-        self.assertEqual(fake.calls.count("final_answer_audit"), 1)
-        self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
-        self.assertEqual(result.answer_package["final_answer"], "")
+        with self.assertRaisesRegex(
+            WorkflowFailure,
+            "final_answer_audit_top_level_contract_invalid",
+        ):
+            workflow_module._final_answer_audit(state)
 
-    def test_final_business_summary_accepts_section_keys_from_structured_output(self):
-        class SectionKeySummaryLLM(FakeLLMClient):
-            def invoke_json(self, *, task, prompt_version, messages, required_keys):
-                if task == "final_business_summary":
-                    self.calls.append(task)
-                    output = {
-                        "summary_text": "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。",
-                        "分析脉络：": "我检查了目标窗口、基线窗口和证据边界。",
-                        "关键发现：": "当前证据能把排查方向收敛到周期内付费金额模式。",
-                        "最终结论：": (
-                            "已验证结论是：2024-01..2026-05 的周期内付费金额模式中位提升 20.0%，"
-                            "方向一致比例 100.0%，覆盖 29 个可比周期。"
-                        ),
-                        "需要注意：": "机制证据暂不可用，还不能直接说这是唯一原因或已被因果证明。",
-                    }
-                    return FakeLLMResult(
-                        output,
-                        {
-                            "task": task,
-                            "provider": "fake",
-                            "model": "fake-model",
-                            "prompt_version": prompt_version,
-                            "response_id": f"fake-{task}",
-                            "messages": [dict(message) for message in messages],
-                            "required_keys": list(required_keys),
-                            "raw_response_content": "{}",
-                            "started_at": "2026-01-01T00:00:00+00:00",
-                            "finished_at": "2026-01-01T00:00:00+00:00",
-                            "duration_ms": 0.0,
-                            "input_hash": f"input-{task}",
-                            "output_hash": f"output-{task}",
-                            "usage": {},
-                            "structured_output": output,
-                        },
-                    )
-                if task == "final_answer_audit":
-                    self.calls.append(task)
-                    output = {
-                        "display_status": "ready",
-                        "hard_blockers": [],
-                        "repairable_warnings": [],
-                        "retry_instruction": "",
-                        "business_audit_summary": "答案满足展示边界。",
-                        "display_summary": "答案满足展示边界。",
-                    }
-                    return FakeLLMResult(
-                        output,
-                        {
-                            "task": task,
-                            "provider": "fake",
-                            "model": "fake-model",
-                            "prompt_version": prompt_version,
-                            "response_id": f"fake-{task}",
-                            "messages": [dict(message) for message in messages],
-                            "required_keys": list(required_keys),
-                            "raw_response_content": "{}",
-                            "started_at": "2026-01-01T00:00:00+00:00",
-                            "finished_at": "2026-01-01T00:00:00+00:00",
-                            "duration_ms": 0.0,
-                            "input_hash": f"input-{task}",
-                            "output_hash": f"output-{task}",
-                            "usage": {},
-                            "structured_output": output,
-                        },
-                    )
-                return super().invoke_json(
-                    task=task,
-                    prompt_version=prompt_version,
-                    messages=messages,
-                    required_keys=required_keys,
-                )
-
-        fake = SectionKeySummaryLLM()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "section-key-summary",
-                    "llm_client": fake,
-                    "question": "Q2 相比 Q1 付费金额为什么变了？",
-                }
-            )
-
-        final_answer = result.answer_package["final_answer"]
-        self.assertEqual(final_answer, "")
-        self.assertEqual(result.answer_package["quality_gate"]["status"], "failed")
+        self.assertEqual(state["final_business_summary"], summary)
 
     def test_final_business_summary_timeout_fails_without_local_answer_fallback(self):
         class TimeoutOnFinalSummaryLLM(FakeLLMClient):
@@ -12155,6 +13540,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIsNone(result.answer_package)
         self.assertIn("final_business_summary", result.failure_reason)
 
+
     def test_terminal_explanation_rejected_output_fails_without_local_fallback(self):
         degraded_fake = FakeLLMClient(
             {
@@ -12162,7 +13548,6 @@ class LLMWorkflowTest(unittest.TestCase):
                 "degraded_explanation": {
                     "status": "degraded",
                     "explanation": "pattern_status: low; wording_limit: insufficient.",
-                    "owner": "pattern_scan:intra_period",
                     "repair_path": "Inspect evidence_ref.",
                 },
             }
@@ -12193,7 +13578,6 @@ class LLMWorkflowTest(unittest.TestCase):
                 "blocked_explanation": {
                     "status": "not_blocked",
                     "explanation": "所有检查已通过，无需阻塞。",
-                    "owner": "业务分析师",
                     "repair_path": "无需修复。",
                 },
             }
@@ -12265,50 +13649,108 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.failure_reason, "AssertionError")
 
-    def test_workflow_invokes_causal_audit_before_answer_synthesis(self):
-        fake = FakeLLMClient()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {"artifact_root": tmpdir, "run_id": "causal-audit-order", "llm_client": fake}
-            )
+    def test_causal_audit_failure_is_advisory_and_answer_synthesis_continues(self):
+        class CausalAuditFailureLLM(FakeLLMClient):
+            def invoke_json(self, *, task, prompt_version, messages, required_keys):
+                if task == "causal_audit":
+                    self.calls.append(task)
+                    raise WorkflowFailure("causal_provider_unavailable")
+                return super().invoke_json(
+                    task=task,
+                    prompt_version=prompt_version,
+                    messages=messages,
+                    required_keys=required_keys,
+                )
 
-        self.assertEqual(result.status, "draft")
-        self.assertIn("causal_audit", fake.calls)
+        state = _required_claim_resolution_state()
+        fake = CausalAuditFailureLLM()
+        state.update(
+            {
+                "run_id": "causal-audit-advisory-failure",
+                "llm_client": fake,
+                "llm_calls": [],
+            }
+        )
+        _reduce_evidence(state)
+
+        workflow_module._audit_causal_implications(state)
+        workflow_module._synthesize_answer(state)
+
+        self.assertEqual(state["causal_audit"]["status"], "unavailable")
+        self.assertIn("不影响已验证", state["causal_audit"]["business_boundary"])
         self.assertLess(fake.calls.index("causal_audit"), fake.calls.index("answer_synthesis"))
+        self.assertTrue(state["draft_claims"])
+        self.assertTrue(state["answer_text"])
 
-    def test_answer_synthesis_receives_causal_audit_context(self):
+    def test_answer_synthesis_receives_business_causal_boundary_only(self):
+        state = _required_claim_resolution_state()
         fake = FakeLLMClient()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {"artifact_root": tmpdir, "run_id": "causal-audit-context", "llm_client": fake}
-            )
-
-        payload = _llm_input_payload(result.answer_package, "answer_synthesis")
-
-        self.assertIn("causal_evidence_dossier", payload["answer_context"])
-        self.assertIn("causal_audit", payload["answer_context"])
-        self.assertEqual(
-            payload["answer_context"]["causal_evidence_dossier"]["observed_pattern"][
-                "direction"
-            ],
-            "target_higher",
+        state.update(
+            {
+                "run_id": "answer-business-causal-boundary",
+                "llm_client": fake,
+                "llm_calls": [],
+            }
         )
-        self.assertEqual(
-            payload["answer_context"]["causal_audit"]["causal_assessment"],
+        _reduce_evidence(state)
+        workflow_module._audit_causal_implications(state)
+
+        workflow_module._synthesize_answer(state)
+
+        payload = _llm_input_payload(
+            {"admin_audit": {"llm_calls": state["llm_calls"]}},
+            "answer_synthesis",
+        )
+        self.assertEqual(set(payload), {"businessContext"})
+        self.assertIn("causalBoundary", payload["businessContext"])
+        self.assertIn("业务机制", payload["businessContext"]["causalBoundary"])
+        visible = json.dumps(payload, ensure_ascii=False)
+        for internal in (
+            "causal_evidence_dossier",
+            "causal_audit",
+            "causal_assessment",
             "candidate_hypothesis",
-        )
+            "evidence_ref",
+        ):
+            self.assertNotIn(internal, visible)
 
-    def test_workflow_persists_causal_audit_in_answer_package(self):
+    def test_causal_audit_receives_business_projection_and_keeps_dossier_local(self):
+        state = _required_claim_resolution_state()
         fake = FakeLLMClient()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {"artifact_root": tmpdir, "run_id": "causal-audit-artifact", "llm_client": fake}
-            )
+        state.update(
+            {
+                "run_id": "causal-audit-business-projection",
+                "llm_client": fake,
+                "llm_calls": [],
+            }
+        )
+        _reduce_evidence(state)
 
-        admin = result.answer_package["admin_audit"]
+        workflow_module._audit_causal_implications(state)
 
-        self.assertEqual(admin["causal_audit"]["causal_assessment"], "candidate_hypothesis")
-        self.assertIn("observed_pattern", admin["causal_evidence_dossier"])
+        self.assertEqual(
+            state["causal_audit"]["causal_assessment"],
+            "not_supported",
+        )
+        self.assertNotIn(
+            "alternative_explanations",
+            state["causal_audit"],
+        )
+        self.assertIn("observed_pattern", state["causal_evidence_dossier"])
+        payload = _llm_input_payload(
+            {"admin_audit": {"llm_calls": state["llm_calls"]}},
+            "causal_audit",
+        )
+        self.assertEqual(set(payload), {"businessContext", "causalReview"})
+        visible = json.dumps(payload, ensure_ascii=False)
+        for internal in (
+            "causal_evidence_dossier",
+            "observed_pattern",
+            "evidence_ref",
+            "capability_id",
+            "wording_limit",
+        ):
+            self.assertNotIn(internal, visible)
 
     def test_analysis_route_prompt_includes_capability_cards_and_budget(self):
         fake = FakeLLMClient()
@@ -12317,8 +13759,11 @@ class LLMWorkflowTest(unittest.TestCase):
                 {"artifact_root": tmpdir, "run_id": "route-cards", "llm_client": fake}
             )
 
-        calls = result.answer_package["admin_audit"]["llm_calls"]
-        route_call = next(call for call in calls if call["task"] == "analysis_route")
+        route_call = next(
+            call
+            for call in fake.audit_calls
+            if call["task"] == "analysis_route_plan"
+        )
         route_messages = "\n".join(message["content"] for message in route_call["messages"])
 
         self.assertIn("compare_periods", route_messages)
@@ -12326,22 +13771,20 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("do_not_trade_answer_quality_for_cost_during_research", route_messages)
 
     def test_business_intent_prompt_does_not_prebind_question_family(self):
-        fake = FakeLLMClient()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "intent-autonomy",
-                    "llm_client": fake,
-                    "question": "2026年Q2相比Q1，付费金额有没有明显变化？",
-                    "question_family": "pattern_explanation",
-                    "pattern_family": "custom_baseline",
-                    "scope": "full_sample",
-                    "time_window": "2026-01-01..2026-06-30",
-                }
-            )
+        from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
-        payload = _llm_input_payload(result.answer_package, "business_intent")
+        payload = workflow_module._business_intent_payload(
+            {
+                "question": "2026年Q2相比Q1，付费金额有没有明显变化？",
+                "question_family": "pattern_explanation",
+                "pattern_family": "custom_baseline",
+                "scope": "full_sample",
+                "time_window": "2026-01-01..2026-06-30",
+            },
+            registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
 
         self.assertNotIn("question_family_hint", payload)
         self.assertNotIn("question_family", payload.get("bound_business_context", {}))
@@ -12350,27 +13793,38 @@ class LLMWorkflowTest(unittest.TestCase):
         fake = FakeLLMClient(
             {"business_intent": {"question_family": "custom_baseline_comparison"}}
         )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "intent-request-does-not-override",
-                    "llm_client": fake,
-                    "question": "2026年Q2相比Q1，付费金额有没有明显变化？",
-                    "question_family": "pattern_explanation",
-                    "pattern_family": "custom_baseline",
-                    "scope": "full_sample",
-                    "time_window": "2026-01-01..2026-06-30",
-                }
-            )
+        state = {
+            "request": {
+                "run_mode": "fixture",
+                "question": "2026年Q2相比Q1，付费金额有没有明显变化？",
+                "question_family": "pattern_explanation",
+                "pattern_family": "custom_baseline",
+                "scope": "full_sample",
+                "time_window": "2026-01-01..2026-06-30",
+            },
+            "llm_client": fake,
+            "llm_calls": [],
+            "checkpoint_events": [],
+        }
 
-        payload = _llm_input_payload(result.answer_package, "confirm_understanding")
+        _understand_business_intent(state)
 
-        self.assertEqual(payload["intent"]["question_family"], "custom_baseline_comparison")
+        self.assertEqual(
+            state["intent"]["question_family"],
+            "custom_baseline_comparison",
+        )
 
     def test_workflow_executes_harness_capability_when_accepted(self):
         fake = FakeLLMClient(
-            {"analysis_route": {"requested_nodes": ["compare_period_phases"]}}
+            {
+                "analysis_route_plan": {
+                    "requested_nodes": ["compare_period_phases"],
+                    "analysis_requirements": {
+                        "target_metrics": ["paid_amount"],
+                        "baselines": ["previous_day"],
+                    },
+                }
+            }
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             result = run_pattern_workflow(
@@ -12725,7 +14179,7 @@ class LLMWorkflowTest(unittest.TestCase):
             ["channel", "method"],
         )
 
-    def test_production_formula_decompose_uses_all_bound_components(self):
+    def test_production_formula_decompose_uses_declared_formula_candidates(self):
         from types import SimpleNamespace
         from bi_agent.runtime.capability_execution import BoundCapabilityInput
 
@@ -12788,6 +14242,12 @@ class LLMWorkflowTest(unittest.TestCase):
                 "scope": "full_sample",
                 "time_window": "昨天与前天",
                 "target_claim": "formula_component_contribution",
+                "requested_components": [
+                    "first_paid_users",
+                    "paid_frequency",
+                    "avg_order_amount",
+                    "payment_success_rate",
+                ],
             },
         }
 
@@ -12797,16 +14257,33 @@ class LLMWorkflowTest(unittest.TestCase):
         ):
             formula = _execute_capabilities(state)["evidence"][0]
 
-        path = formula["typed_payload"]["covered_paths"][0]
+        self.assertEqual(
+            formula["evidence_ref"],
+            "formula_decompose:bound-formula",
+        )
+        payload = formula["typed_payload"]
+        path = next(
+            item
+            for item in payload["covered_paths"]
+            if item["formula_id"] == "frequency_ticket_size"
+        )
         self.assertEqual(
             path["components"],
             [
                 "paid_users",
-                "paid_orders",
-                "first_paid_users",
                 "paid_frequency",
                 "avg_order_amount",
             ],
+        )
+        self.assertEqual(path["candidate_role"], "primary_candidate")
+        self.assertIsNone(payload["primary_formula"])
+        self.assertEqual(payload["selection_state"], "candidate_only")
+        self.assertIn(
+            "payment_success_chain",
+            {
+                item["formula_id"]
+                for item in (*payload["covered_paths"], *payload["gaps"])
+            },
         )
         self.assertEqual(formula["result_refs"], ("result:formula-bound",))
 
@@ -13002,147 +14479,6 @@ class LLMWorkflowTest(unittest.TestCase):
             with self.subTest(evidence=evidence):
                 self.assertFalse(_evidence_established(evidence))
 
-    def test_execute_capabilities_pairs_runtime_previous_day_baseline_for_attribution(self):
-        compiled = compile_graph(
-            question_family="custom_baseline_comparison",
-            question_families=(
-                "custom_baseline_comparison",
-                "segment_or_factor_attribution",
-            ),
-            target_metric="paid_amount",
-            pattern_family="custom_baseline",
-            requested_nodes=(
-                "compare_periods",
-                "driver_decomposition",
-                "segment_contribution",
-                "joint_attribution",
-                "answer_verify",
-            ),
-        )
-        state = {
-            "request": {
-                "rows": [
-                    {
-                        "period": "2026-07-08",
-                        "group": "target",
-                        "amount": 150.0,
-                        "paid_users": 12,
-                        "orders": 30,
-                        "first_paid_users": 5,
-                    }
-                ],
-                "runtime_rows_by_intent": {
-                    "daily_metric_baselines": [
-                        {
-                            "period": "2026-07-07",
-                            "group": "previous_day",
-                            "amount": 100.0,
-                            "paid_users": 10,
-                            "orders": 20,
-                            "first_paid_users": 3,
-                        },
-                        {
-                            "period": "2026-07-08",
-                            "group": "target",
-                            "amount": 150.0,
-                            "paid_users": 12,
-                            "orders": 30,
-                            "first_paid_users": 5,
-                        },
-                    ],
-                    "dimension_scan": [
-                        {
-                            "period": "2026-07-07",
-                            "group": "previous_day",
-                            "channel": "ads",
-                            "amount": 60.0,
-                            "orders": 12,
-                        },
-                        {
-                            "period": "2026-07-08",
-                            "group": "target",
-                            "channel": "ads",
-                            "amount": 95.0,
-                            "orders": 18,
-                        },
-                    ],
-                    "joint_candidate_scan": [
-                        {
-                            "period": "2026-07-07",
-                            "group": "previous_day",
-                            "channel": "ads",
-                            "payment_method": "card",
-                            "amount": 45.0,
-                            "orders": 12,
-                        },
-                        {
-                            "period": "2026-07-08",
-                            "group": "target",
-                            "channel": "ads",
-                            "payment_method": "card",
-                            "amount": 80.0,
-                            "orders": 18,
-                        },
-                    ],
-                },
-                "result_refs_by_intent": {
-                    "daily_metric_baselines": ("baseline-ref",),
-                    "dimension_scan": ("dimension-ref",),
-                    "joint_candidate_scan": ("joint-ref",),
-                },
-                "compiler_runtime_plan": {"baselines": ("previous_day",)},
-                "required_fields": ("period", "group", "amount", "paid_users", "orders"),
-                "role": "analyst",
-                "joint_dimension_keys": ("channel", "payment_method"),
-                "run_mode": "fixture",
-            },
-            "run_id": "execute-runtime-previous-day",
-            "sql_hash": "sqlhash-runtime-baseline",
-            "budget_state": default_budget("ordinary"),
-            "compiled_graph": compiled,
-            "intent": {
-                "question_family": "custom_baseline_comparison",
-                "target_metric": "paid_amount",
-                "pattern_family": "custom_baseline",
-                "pattern_params": {"group_key": "group", "target_group": "target"},
-                "scope": "full_sample",
-                "time_window": "yesterday",
-                "target_claim": "昨天付费金额变化原因",
-                "baseline": {"label": "前一天"},
-                "target": {"label": "昨天"},
-            },
-        }
-
-        with patch.dict(
-            "os.environ",
-            {
-                "WAJE_ALLOW_LEGACY_FIXTURES": "1",
-                "WAJE_RUNTIME_ENV": "test",
-            },
-        ):
-            result = _execute_capabilities(state)
-        by_capability = {
-            item.get("capability_id"): item for item in result["evidence"]
-        }
-
-        compare = by_capability["compare_periods"]
-        self.assertEqual(compare["evidence_type"], "statistical_association")
-        self.assertEqual(compare["typed_payload"]["comparable_periods"], 1)
-        self.assertNotIn("no_comparable_periods", compare["limitations"])
-
-        driver = by_capability["driver_decomposition"]
-        self.assertEqual(driver["evidence_type"], "accounting_contribution")
-        self.assertEqual(driver["result_refs"], ["baseline-ref"])
-        self.assertTrue(driver["typed_payload"]["decompositions"])
-
-        segment = by_capability["segment_contribution"]
-        self.assertEqual(segment["evidence_type"], "statistical_association")
-        self.assertEqual(segment["typed_payload"]["segment_count"], 1)
-
-        joint = by_capability["joint_attribution"]
-        self.assertEqual(joint["evidence_type"], "statistical_association")
-        self.assertEqual(joint["typed_payload"]["combination_count"], 1)
-
     def test_execute_capabilities_averages_runtime_rolling_baseline_for_driver(self):
         compiled = compile_graph(
             question_family="custom_baseline_comparison",
@@ -13253,10 +14589,160 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertTrue(state["evidence_brief"]["pattern_established"])
         self.assertEqual(claim["evidence_refs"], ["compare_periods:run-1"])
 
+    def test_reduce_evidence_selects_ready_evidence_per_required_claim(self):
+        state = _required_claim_resolution_state()
+
+        _reduce_evidence(state)
+
+        self.assertEqual(
+            state["evidence_brief"]["required_claim_evidence_refs"],
+            {
+                "comparative_change": "compare_periods:ready",
+                "formula_component_contribution": "driver_decomposition:ready",
+            },
+        )
+        self.assertEqual(
+            state["evidence_brief"]["primary_capability"],
+            "driver_decomposition",
+        )
+        self.assertEqual(
+            state["evidence_brief"]["unready_required_claim_intents"],
+            [],
+        )
+        self.assertEqual(state["evidence_brief"]["limitations"], [])
+        self.assertIn(
+            "missing_formula_component:payment_success_chain",
+            state["evidence_brief"]["auxiliary_limitations"],
+        )
+        formula_scope = next(
+            item
+            for item in state["evidence_brief"]["auxiliary_limitation_scopes"]
+            if item["evidence_ref"] == "formula_decompose:auxiliary-gaps"
+        )
+        self.assertEqual(
+            formula_scope,
+            {
+                "evidence_ref": "formula_decompose:auxiliary-gaps",
+                "capability_id": "formula_decompose",
+                "claim_type": "formula_component_contribution",
+                "claim_role": "superseded_required_evidence",
+                "limitations": [
+                    "missing_formula_component:payment_success_chain",
+                    "missing_formula_dimension:region_sum",
+                ],
+            },
+        )
+
+    def test_provider_degrade_keeps_publishable_required_claims_alive(self):
+        state = _required_claim_resolution_state()
+        _reduce_evidence(state)
+        state["next_action"] = {
+            "next_action": "degrade",
+            "decision_summary": "当前证据不足。",
+        }
+
+        route = _route_after_next_action(state)
+
+        self.assertEqual(route, "synthesize")
+        self.assertEqual(state["next_action"]["next_action"], "synthesize_answer")
+        self.assertEqual(
+            state["checkpoint_events"][-1]["route"],
+            "degrade_overridden_to_bounded_answer",
+        )
+
+    def test_one_unavailable_required_branch_does_not_block_ready_driver_claim(self):
+        state = _required_claim_resolution_state()
+        state["evidence"] = [
+            item
+            for item in state["evidence"]
+            if item["claim_type"] != "comparative_change"
+        ]
+        _reduce_evidence(state)
+        state["next_action"] = {
+            "next_action": "degrade",
+            "decision_summary": "部分证据不足。",
+        }
+
+        route = _route_after_next_action(state)
+
+        self.assertEqual(route, "synthesize")
+        self.assertEqual(
+            state["evidence_brief"]["unready_required_claim_intents"],
+            ["comparative_change"],
+        )
+        self.assertEqual(
+            state["evidence_brief"]["required_claim_evidence_refs"],
+            {"formula_component_contribution": "driver_decomposition:ready"},
+        )
+        self.assertEqual(
+            _default_claim_from_evidence(state)["evidence_refs"],
+            ["driver_decomposition:ready"],
+        )
+
+    def test_missing_payment_success_observation_keeps_core_driver_claim_publishable(self):
+        state = _required_claim_resolution_state()
+
+        _reduce_evidence(state)
+
+        driver = next(
+            item
+            for item in state["evidence"]
+            if item["capability_id"] == "driver_decomposition"
+        )
+        assumption = driver["typed_payload"]["decompositions"][0][
+            "payment_success_assumption"
+        ]
+        self.assertFalse(assumption["observed"])
+        self.assertEqual(assumption["status"], "assumed_neutral")
+        self.assertTrue(driver["claim_input_ready"])
+        self.assertEqual(driver["wording_limit"], "quantified")
+        self.assertEqual(driver["limitations"], [])
+        self.assertTrue(workflow_module._evidence_supports_bounded_answer(state))
+        self.assertNotIn(
+            "payment_success",
+            " ".join(state["evidence_brief"]["limitations"]),
+        )
+
+    def test_default_claim_renders_bound_target_vs_baseline_comparison(self):
+        state = _required_claim_resolution_state()
+        state["intent"]["required_claim_intents"] = ["comparative_change"]
+        state["intent"]["candidate_claim_intents"] = []
+        state["evidence"] = [state["evidence"][0]]
+        _reduce_evidence(state)
+
+        claim = _default_claim_from_evidence(state)
+
+        self.assertEqual(claim["evidence_refs"], ["compare_periods:ready"])
+        self.assertIn("2026-06-01", claim["text"])
+        self.assertIn("2026-05-31", claim["text"])
+        self.assertIn("上涨", claim["text"])
+        self.assertIn("1.35%", claim["text"])
+
+    def test_synthesis_context_uses_ready_required_claim_evidence(self):
+        state = _required_claim_resolution_state()
+        _reduce_evidence(state)
+
+        context = _answer_synthesis_context(state)
+        claim = _default_claim_from_evidence(state)
+
+        self.assertEqual(
+            context["key_findings"]["primary_capability"],
+            "driver_decomposition",
+        )
+        self.assertEqual(
+            context["key_findings"]["typed_payload"]["core_reconciliation_status"],
+            "reconciled",
+        )
+        self.assertEqual(
+            claim["evidence_refs"],
+            ["driver_decomposition:ready"],
+        )
+        self.assertIn("主要贡献项", claim["text"])
+
     def test_analysis_route_does_not_prebind_requested_nodes(self):
-        fake = FakeLLMClient({"analysis_route": {"requested_nodes": []}})
+        fake = FakeLLMClient({"analysis_route_plan": {"requested_nodes": []}})
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
+            run_pattern_workflow(
                 {
                     "artifact_root": tmpdir,
                     "run_id": "route-autonomy",
@@ -13265,10 +14751,21 @@ class LLMWorkflowTest(unittest.TestCase):
                 }
             )
 
-        payload = _llm_input_payload(result.answer_package, "analysis_route")
+        route_call = next(
+            call
+            for call in fake.audit_calls
+            if call["task"] == "analysis_route_plan"
+        )
+        payload = _llm_input_payload(
+            {"admin_audit": {"llm_calls": [route_call]}},
+            "analysis_route_plan",
+        )
 
         self.assertNotIn("requested_nodes_hint", payload)
-        self.assertNotIn("joint_attribution", result.answer_package["accepted_graph"])
+        self.assertNotIn(
+            "joint_attribution",
+            route_call["structured_output"]["requested_nodes"],
+        )
 
     def test_route_normalization_preserves_joint_attribution_for_combination_asks(self):
         normalized = _normalize_route_requested_nodes(
@@ -13283,70 +14780,6 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertIn("joint_attribution", normalized)
         self.assertIn("data_quality_profile", normalized)
-
-    def test_factor_attribution_route_runs_driver_decomposition(self):
-        fake = FakeLLMClient(
-            {
-                "business_intent": {
-                    "question_family": "segment_or_factor_attribution",
-                    "pattern_family": "custom_baseline",
-                    "target_metric": "paid_amount",
-                    "scope": "full_sample",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "target_claim": "判断增长来自用户数还是客单价",
-                },
-                "analysis_route": {
-                    "requested_nodes": ["joint_attribution", "answer_verify"],
-                    "analysis_requirements": {
-                        "claim_intents": ["formula_component_contribution"]
-                    },
-                },
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "driver-decomposition-route",
-                    "llm_client": fake,
-                    "question": "Q2比Q1是用户数还是客单价驱动？",
-                    "pattern_family": "custom_baseline",
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                    },
-                    "rows": [
-                        {
-                            "period": "h1",
-                            "group": "baseline",
-                            "amount": 100,
-                            "paid_users": 10,
-                        },
-                        {
-                            "period": "h1",
-                            "group": "target",
-                            "amount": 150,
-                            "paid_users": 12,
-                        },
-                    ],
-                    "required_fields": ["period", "group", "amount", "paid_users"],
-                    "time_window": "2026-01-01..2026-06-30",
-                }
-            )
-
-        evidence = result.answer_package["sections"][1]["payload"]["evidence"]
-
-        self.assertEqual(result.status, "draft")
-        self.assertIn("driver_decomposition", result.answer_package["accepted_graph"])
-        self.assertTrue(
-            any(item.get("capability") == "driver_decomposition" for item in evidence)
-        )
-        self.assertEqual(
-            result.answer_package["sections"][0]["payload"]["claims"],
-            [],
-        )
 
     def test_joint_attribution_promotion_node_uses_rows_and_joint_dimensions(self):
         state = {
@@ -13605,7 +15038,7 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("driver_decomposition", nodes)
         self.assertIn("segment_contribution", nodes)
 
-    def test_route_normalization_adds_segment_contribution_from_original_question(self):
+    def test_route_normalization_adds_candidate_dimension_screen_from_original_question(self):
         nodes = _normalize_route_requested_nodes(
             ("data_quality_profile", "driver_decomposition", "answer_verify"),
             {
@@ -13623,9 +15056,10 @@ class LLMWorkflowTest(unittest.TestCase):
             },
         )
 
-        self.assertIn("segment_contribution", nodes)
+        self.assertIn("candidate_dimension_screen", nodes)
+        self.assertNotIn("segment_contribution", nodes)
 
-    def test_route_normalization_adds_joint_attribution_for_major_channel_followups(self):
+    def test_route_normalization_uses_single_dimension_route_for_major_channel_followups(self):
         nodes = _normalize_route_requested_nodes(
             ("data_quality_profile", "segment_contribution", "answer_verify"),
             {
@@ -13643,26 +15077,8 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertIn("segment_contribution", nodes)
-        self.assertIn("joint_attribution", nodes)
-
-    def test_route_normalization_adds_joint_attribution_for_most_obvious_channel_change(self):
-        nodes = _normalize_route_requested_nodes(
-            ("data_quality_profile", "segment_contribution"),
-            {
-                "question": "这些变化在哪些渠道最明显？",
-                "question_family": "segment_or_factor_attribution",
-                "primary_question_family": "segment_or_factor_attribution",
-                "pattern_family": "custom_baseline",
-                "target_claim": "识别变化最明显的渠道",
-                "target_metric": "paid_amount",
-                "analysis_requirements": {
-                    "requested_dimensions": ["channel"],
-                    "diagnostic_tags": ["factor_topk"],
-                },
-            },
-        )
-
-        self.assertIn("joint_attribution", nodes)
+        self.assertIn("candidate_dimension_screen", nodes)
+        self.assertNotIn("joint_attribution", nodes)
 
     def test_route_normalization_adds_outlier_recalc_for_daily_removal_clarification(self):
         nodes = _normalize_route_requested_nodes(
@@ -13728,13 +15144,6 @@ class LLMWorkflowTest(unittest.TestCase):
                     "scope": "full_sample",
                     "time_window": "2024-01..2026-05",
                     "target_claim": "按周粒度复核付费金额方向是否一致",
-                },
-                "analysis_route": {
-                    "requested_nodes": [
-                        "data_quality_profile",
-                        "compare_periods",
-                        "answer_verify",
-                    ],
                 },
             }
         )
@@ -13977,85 +15386,82 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertIn("custom_baseline_comparison", intent["question_families"])
         self.assertIn("custom_baseline_comparison", intent["secondary_question_families"])
 
-    def test_analysis_route_accepts_llm_node_objects_but_filters_internal_reducer(self):
+    def test_analysis_route_plan_uses_string_ids_and_filters_internal_reducer(self):
         fake = FakeLLMClient(
             {
-                "analysis_route": {
+                "analysis_route_plan": {
                     "requested_nodes": [
-                        {"capability_id": "rolling_window_compare"},
-                        {"capability_id": "metric_timeseries"},
-                        {"capability": "answer_verify"},
-                        {"node_id": "data_quality_profile"},
-                        {"node": "evidence_reduce"},
-                        {"id": "compare_period_phases"},
-                    ]
-                }
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {"artifact_root": tmpdir, "run_id": "route-node-objects", "llm_client": fake}
-            )
-
-        self.assertEqual(result.status, "draft")
-        payload = _llm_input_payload(result.answer_package, "analysis_route")
-
-        self.assertNotIn("evidence_reduce", repr(payload["known_capabilities"]))
-        self.assertIn("rolling_window_compare", result.answer_package["accepted_graph"])
-        self.assertIn("data_quality_profile", result.answer_package["accepted_graph"])
-        self.assertIn("evidence_reduce", result.answer_package["accepted_graph"])
-        self.assertIn("metric_timeseries", result.answer_package["accepted_graph"])
-        self.assertIn("compare_period_phases", result.answer_package["accepted_graph"])
-
-    def test_custom_baseline_pattern_route_preserves_rolling_and_adds_period_compare(self):
-        fake = FakeLLMClient(
-            {
-                "business_intent": {
-                    "question_family": "pattern_explanation",
-                    "pattern_family": "custom_baseline",
-                    "target_metric": "paid_amount",
-                    "scope": "full_sample",
-                    "time_window": "2024-01-01..2026-06-30",
-                    "target_claim": "WajeSpecial渠道稳定高于其他渠道合计",
-                    "baseline_candidates": [],
-                    "status_message": "intent",
-                },
-                "analysis_route": {
-                    "requested_nodes": [
-                        "data_quality_profile",
-                        "metric_timeseries",
                         "rolling_window_compare",
                         "answer_verify",
+                        "data_quality_profile",
+                        "compare_period_phases",
                     ]
+                }
+            }
+        )
+        state = _provider_analysis_route_state(fake)
+        state["request"]["run_mode"] = "fixture"
+
+        _design_analysis_route(state)
+
+        route_call = next(
+            call
+            for call in fake.audit_calls
+            if call["task"] == "analysis_route_plan"
+        )
+        payload = _llm_input_payload(
+            {"admin_audit": {"llm_calls": [route_call]}},
+            "analysis_route_plan",
+        )
+
+        self.assertNotIn("evidence_reduce", repr(payload["known_capabilities"]))
+        self.assertIn("rolling_window_compare", state["analysis_route"]["requested_nodes"])
+        self.assertIn("data_quality_profile", state["analysis_route"]["requested_nodes"])
+        self.assertIn("evidence_reduce", state["analysis_route"]["requested_nodes"])
+        self.assertIn("metric_timeseries", state["analysis_route"]["requested_nodes"])
+        self.assertIn("compare_period_phases", state["analysis_route"]["requested_nodes"])
+
+    def test_custom_baseline_pattern_route_preserves_rolling_and_adds_period_compare(self):
+        route = _provider_analysis_route_output(
+            requested_nodes=[
+                "data_quality_profile",
+                "metric_timeseries",
+                "rolling_window_compare",
+                "answer_verify",
+            ],
+            analysis_requirements={
+                "target_metrics": ["paid_amount"],
+                "requested_components": [],
+                "requested_dimensions": [],
+                "baselines": ["rolling_7_day_baseline"],
+                "context_sources": [],
+                "dataset_requirements": ["paid_order_success"],
+                "diagnostic_tags": [],
+                "claim_intents": ["baseline_stability"],
+                "scope": "full_sample",
+            },
+        )
+        fake = FakeLLMClient({"analysis_route_plan": route})
+        state = _provider_analysis_route_state(fake)
+        state["request"]["run_mode"] = "fixture"
+        state["intent"].update(
+            {
+                "pattern_family": "custom_baseline",
+                "pattern_params": {
+                    "period_key": "period",
+                    "group_key": "group",
+                    "target_group": "target",
+                    "baseline_group": "baseline",
                 },
             }
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "custom-baseline-route-normalized",
-                    "llm_client": fake,
-                    "pattern_family": "custom_baseline",
-                    "time_window": "2024-01-01..2026-06-30",
-                    "rows": [
-                        {"period": "2024-01", "group": "baseline", "amount": 100},
-                        {"period": "2024-01", "group": "target", "amount": 120},
-                    ],
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 1,
-                    },
-                }
-            )
+        _design_analysis_route(state)
 
-        self.assertIn("compare_periods", result.answer_package["accepted_graph"])
-        self.assertIn("rolling_window_compare", result.answer_package["accepted_graph"])
-        self.assertIn("metric_timeseries", result.answer_package["accepted_graph"])
+        requested = state["analysis_route"]["requested_nodes"]
+        self.assertIn("compare_periods", requested)
+        self.assertIn("rolling_window_compare", requested)
+        self.assertIn("metric_timeseries", requested)
 
     def test_boundary_question_without_user_choice_waits_without_conclusion(self):
         fake = FakeLLMClient(
@@ -14156,55 +15562,6 @@ class LLMWorkflowTest(unittest.TestCase):
             "degrade_overridden_to_bounded_answer",
         )
 
-    def test_degraded_execution_emits_auditable_evidence_and_claim(self):
-        fake = FakeLLMClient(
-            {
-                "business_intent": {
-                    "question_family": "custom_baseline_comparison",
-                    "pattern_family": "custom_baseline",
-                    "target_metric": "paid_amount",
-                    "scope": "full_sample",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "target_claim": "判断 Q2 相比 Q1 日均付费金额是否仍成立",
-                },
-                "analysis_route": {
-                    "requested_nodes": [
-                        "data_quality_profile",
-                        "compare_periods",
-                        "answer_verify",
-                    ],
-                },
-                "next_action": {"next_action": "degrade"},
-            }
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "degraded-audit",
-                    "llm_client": fake,
-                    "question": "换成日均再看一遍。",
-                    "rows": [{"period": "q1", "group": "baseline", "amount": 100}],
-                    "pattern_family": "custom_baseline",
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 2,
-                    },
-                }
-            )
-
-        summary = result.answer_package["sections"][0]["payload"]
-        evidence = result.answer_package["sections"][1]["payload"]["evidence"]
-
-        self.assertEqual(result.status, "draft")
-        self.assertTrue(evidence)
-        self.assertEqual(summary["claims"], [])
-        self.assertFalse(result.answer_package["quality_gate"]["has_verified_claims"])
-
     def test_synthesize_next_action_conflict_text_is_repaired_for_audit(self):
         state = {
             "checkpoint_events": [{"node": "decide_next_action"}],
@@ -14277,7 +15634,7 @@ class LLMWorkflowTest(unittest.TestCase):
         ]
         self.assertIn("degrade_overridden_to_negative_answer", routes)
 
-    def test_degraded_explanation_hides_internal_tokens_from_business_output(self):
+    def test_degraded_explanation_with_internal_tokens_is_rejected_before_delivery(self):
         rows = [{"month": "2026-01", "phase": "start", "amount": 100}]
         fake = FakeLLMClient(
             {
@@ -14288,7 +15645,6 @@ class LLMWorkflowTest(unittest.TestCase):
                         "pattern_status: low; pattern_established=false; "
                         "wording_limit: insufficient."
                     ),
-                    "owner": "pattern_scan:intra_period",
                     "repair_path": "Inspect pattern_scan evidence_ref.",
                 },
             }
@@ -14307,7 +15663,7 @@ class LLMWorkflowTest(unittest.TestCase):
             )
 
         self.assertEqual(result.status, "failed")
-        self.assertIn("degraded_explanation_rejected:internal_tokens", result.failure_reason)
+        self.assertIn("llm_narrative_invalid:explanation", result.failure_reason)
         self.assertIsNone(result.answer_package)
 
     def test_degraded_explanation_rejects_data_volume_materiality_drift(self):
@@ -14320,7 +15676,6 @@ class LLMWorkflowTest(unittest.TestCase):
         output = {
             "status": "degraded",
             "explanation": "数据量低于重要性门槛，无法解释。",
-            "owner": "数据治理团队",
             "repair_path": "补充更多历史数据。",
         }
 
@@ -14336,7 +15691,6 @@ class LLMWorkflowTest(unittest.TestCase):
         output = {
             "status": "degraded",
             "explanation": "利润指标所需数据暂时不可用。",
-            "owner": "业务分析负责人",
             "repair_path": "补齐数据源后重跑。",
         }
 
@@ -14352,7 +15706,6 @@ class LLMWorkflowTest(unittest.TestCase):
         output = {
             "status": "degraded",
             "explanation": "利润指标所需数据暂时不可用。",
-            "owner": "数据工程团队",
             "repair_path": "补齐数据源后重跑。",
         }
 
@@ -14368,7 +15721,6 @@ class LLMWorkflowTest(unittest.TestCase):
         output = {
             "status": "degraded",
             "explanation": "支付成功率暂时不可核验，付费金额仅作为相关缺口背景。",
-            "owner": "业务分析负责人",
             "repair_path": "补齐数据源后重跑。",
         }
 
@@ -14395,18 +15747,16 @@ class LLMWorkflowTest(unittest.TestCase):
         }
         payloads = []
 
-        def explain(_state, task, payload):
+        def explain(_state, task, payload, **_kwargs):
             self.assertEqual(task, "degraded_explanation")
             payloads.append(payload)
             if len(payloads) == 1:
                 return {
                     "explanation": "利润指标所需数据暂时不可用。",
-                    "owner": "数据工程团队",
                     "repair_path": "补齐数据源后重跑。",
                 }
             return {
                 "explanation": "付费金额所需数据暂时不可用。",
-                "owner": "数据工程团队",
                 "repair_path": "补齐数据源后重跑。",
             }
 
@@ -14419,24 +15769,7 @@ class LLMWorkflowTest(unittest.TestCase):
 
         self.assertEqual(len(payloads), 1)
 
-    def test_degraded_explanation_rejects_quality_owner_drift_when_limits_are_business(self):
-        state = {
-            "evidence_brief": {
-                "limitations": ["below_materiality_floor", "weak_direction"]
-            },
-            "validator_results": [],
-        }
-        output = {
-            "status": "degraded",
-            "explanation": "变化幅度低于重要性阈值，方向一致性不足。",
-            "owner": "数据质量团队",
-            "repair_path": "继续观察新周期。",
-        }
-
-        with self.assertRaisesRegex(WorkflowFailure, "owner_drift"):
-            _sanitize_terminal_explanation(output, state, "degraded")
-
-    def test_degraded_explanation_rejects_missing_owner_and_repair_path(self):
+    def test_degraded_explanation_rejects_missing_business_fields(self):
         state = {
             "evidence_brief": {"limitations": ["source_unbound"]},
             "validator_results": [],
@@ -14444,11 +15777,10 @@ class LLMWorkflowTest(unittest.TestCase):
         base = {
             "status": "degraded",
             "explanation": "付费金额所需业务证据暂时不可用。",
-            "owner": "业务分析负责人",
             "repair_path": "补齐业务证据后重跑。",
         }
         for field, reason in (
-            ("owner", "owner_missing"),
+            ("explanation", "explanation_missing"),
             ("repair_path", "repair_path_missing"),
         ):
             with self.subTest(field=field), self.assertRaisesRegex(
@@ -14465,14 +15797,12 @@ class LLMWorkflowTest(unittest.TestCase):
         base = {
             "status": "degraded",
             "explanation": "付费金额所需业务证据暂时不可用。",
-            "owner": "业务分析负责人",
             "repair_path": "补齐业务证据后重跑。",
         }
         invalid = (
             ("explanation", {"text": "说明"}),
-            ("owner", 42),
             ("repair_path", ["重跑"]),
-            ("owner", " 业务分析负责人 "),
+            ("explanation", " 付费金额所需业务证据暂时不可用。 "),
         )
         for field, value in invalid:
             with self.subTest(field=field, value=value), self.assertRaisesRegex(
@@ -14495,7 +15825,6 @@ class LLMWorkflowTest(unittest.TestCase):
         output = {
             "status": "degraded",
             "explanation": "变化幅度低于重要性阈值，方向一致性不足。",
-            "owner": "数据工程团队",
             "repair_path": "检查数据源完整性和提取逻辑。",
         }
 
@@ -14512,12 +15841,151 @@ class LLMWorkflowTest(unittest.TestCase):
         output = {
             "status": "degraded",
             "explanation": "现有数据质量不足以支持该模式判定。",
-            "owner": "业务分析师",
             "repair_path": "延长观察周期。",
         }
 
         with self.assertRaisesRegex(WorkflowFailure, "materiality_drift"):
             _sanitize_terminal_explanation(output, state, "degraded")
+
+    def test_degraded_explanation_keeps_status_local_and_omits_provider_extras(self):
+        provider_output = {
+            "status": "provider_selected_status",
+            "explanation": "付费金额的已验证因素可以继续分析，支付成功率当前缺少独立观测。",
+            "repair_path": "后续补充支付发起数据，可进一步下钻支付成功率。",
+            "display_summary": "已保留可验证因素的分析结论。",
+            "claims": [{"text": "支付成功率没有影响。"}],
+        }
+        client, completions = _provider_client_with_outputs((provider_output,))
+        state = {
+            "request": {},
+            "intent": {"target_metric": "paid_amount"},
+            "analysis_runtime_result": type(
+                "DegradedResult",
+                (),
+                {
+                    "typed_gaps": ({
+                        "gap_type": "source_unbound",
+                        "owner": "data_owner",
+                        "requires_clarification": False,
+                    },),
+                },
+            )(),
+            "contract_gap_diagnostics": (),
+            "evidence_brief": {"limitations": ["source_unbound"]},
+            "validator_results": [],
+            "llm_client": client,
+            "llm_calls": [],
+        }
+
+        explanation = workflow_module._invoke_terminal_explanation(
+            state,
+            task="degraded_explanation",
+            payload={},
+            status="degraded",
+        )
+
+        self.assertEqual(explanation["status"], "degraded")
+        self.assertNotIn("owner", explanation)
+        self.assertNotIn("claims", explanation)
+        self.assertEqual(completions.attempt_count, 1)
+
+    def test_degraded_explanation_prompt_keeps_owner_out_of_business_output(self):
+        spec = build_prompt("degraded_explanation", {"intent": {}})
+        prompt = "\n".join(message["content"] for message in spec.messages)
+
+        self.assertNotIn("status", spec.required_keys)
+        self.assertNotIn("owner", spec.required_keys)
+        self.assertIn("accountability remains in the internal gap audit", prompt)
+
+    def test_unknown_typed_gap_owner_does_not_block_business_explanation(self):
+        output = {
+            "status": "blocked",
+            "explanation": "当前数据在分析时点尚不可用，暂时不能发布业务结论。",
+            "repair_path": "等待数据可用后重新运行本次分析。",
+            "display_summary": "当前仅提供证据边界说明。",
+        }
+        client, completions = _provider_client_with_outputs((output,))
+        state = {
+            "request": {},
+            "intent": {"target_metric": "paid_amount"},
+            "analysis_runtime_result": type(
+                "BlockedResult",
+                (),
+                {
+                    "typed_gaps": ({
+                        "gap_type": "source_unbound",
+                        "owner": "unreviewed_owner",
+                        "requires_clarification": True,
+                    },),
+                },
+            )(),
+            "contract_gap_diagnostics": (),
+            "evidence_brief": {},
+            "validator_results": [],
+            "llm_client": client,
+            "llm_calls": [],
+        }
+
+        explanation = workflow_module._invoke_terminal_explanation(
+            state,
+            task="blocked_explanation",
+            payload={},
+            status="blocked",
+        )
+
+        self.assertEqual(explanation["status"], "blocked")
+        self.assertNotIn("owner", explanation)
+        self.assertEqual(completions.attempt_count, 1)
+
+
+    def test_blocked_explanation_invalid_provider_narrative_retries_three_times(self):
+        for field, invalid_value in (
+            ("explanation", "paid_amount evidence_ref"),
+            ("repair_path", "Inspect evidence_ref before rerun."),
+        ):
+            with self.subTest(field=field):
+                output = {
+                    "status": "blocked",
+                    "explanation": "当前数据在分析时点尚不可用，暂时不能发布业务结论。",
+                    "repair_path": "等待数据可用后重新运行本次分析。",
+                    "display_summary": "当前仅提供证据边界说明。",
+                    field: invalid_value,
+                }
+                client, completions = _provider_client_with_outputs((output,))
+                state = {
+                    "request": {},
+                    "intent": {"target_metric": "paid_amount"},
+                    "analysis_runtime_result": type(
+                        "BlockedResult",
+                        (),
+                        {
+                            "typed_gaps": ({
+                                "gap_type": "source_unbound",
+                                "owner": "data_owner",
+                                "requires_clarification": True,
+                            },),
+                        },
+                    )(),
+                    "contract_gap_diagnostics": (),
+                    "evidence_brief": {},
+                    "validator_results": [],
+                    "llm_client": client,
+                    "llm_calls": [],
+                }
+
+                with self.assertRaisesRegex(
+                    WorkflowFailure,
+                    f"llm_narrative_invalid:{field}",
+                ):
+                    workflow_module._invoke_terminal_explanation(
+                        state,
+                        task="blocked_explanation",
+                        payload={},
+                        status="blocked",
+                    )
+
+                self.assertEqual(completions.attempt_count, 3)
+                self.assertEqual(state["llm_calls"][-1]["attempt_count"], 3)
 
     def test_noninteractive_coverage_question_continues_when_validators_pass(self):
         fake = FakeLLMClient(
@@ -14555,34 +16023,11 @@ class LLMWorkflowTest(unittest.TestCase):
             }
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "coverage-question-answerable",
-                    "llm_client": fake,
-                    "rows": [
-                        {"period": "h1", "group": "baseline", "amount": 100},
-                        {"period": "h1", "group": "target", "amount": 120},
-                    ],
-                    "required_fields": ("period", "group", "amount"),
-                    "pattern_family": "custom_baseline",
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 1,
-                    },
-                    "baseline": {"label": "Q1"},
-                    "target": {"label": "Q2"},
-                }
-            )
+        state = _answerable_custom_baseline_coverage_state(fake)
 
-        self.assertEqual(result.status, "draft")
-        self.assertIn("answer_synthesis", fake.calls)
-        self.assertNotIn("blocked_explanation", fake.calls)
-        coverage = result.answer_package["admin_audit"]["coverage_interpretation"]
+        workflow_module._interpret_data_coverage(state)
+
+        coverage = state["coverage_interpretation"]
         self.assertEqual(coverage["coverage_status"], "coverage_gap_but_answerable")
         self.assertEqual(coverage["local_override"], "needs_question_without_local_gap")
 
@@ -14597,31 +16042,11 @@ class LLMWorkflowTest(unittest.TestCase):
             }
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "coverage-gap-confirmation-cleaned",
-                    "llm_client": fake,
-                    "rows": [
-                        {"period": "h1", "group": "baseline", "amount": 100},
-                        {"period": "h1", "group": "target", "amount": 120},
-                    ],
-                    "required_fields": ("period", "group", "amount"),
-                    "pattern_family": "custom_baseline",
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 1,
-                    },
-                    "baseline": {"label": "Q1"},
-                    "target": {"label": "Q2"},
-                }
-            )
+        state = _answerable_custom_baseline_coverage_state(fake)
 
-        coverage = result.answer_package["admin_audit"]["coverage_interpretation"]
+        workflow_module._interpret_data_coverage(state)
+
+        coverage = state["coverage_interpretation"]
         visible = coverage["business_impact"] + coverage["decision_summary"]
         self.assertEqual(coverage["coverage_status"], "coverage_gap_but_answerable")
         self.assertNotIn("确认", visible)
@@ -14638,34 +16063,11 @@ class LLMWorkflowTest(unittest.TestCase):
             }
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "coverage-block-overridden",
-                    "llm_client": fake,
-                    "rows": [
-                        {"period": "h1", "group": "baseline", "amount": 100},
-                        {"period": "h1", "group": "target", "amount": 120},
-                    ],
-                    "required_fields": ("period", "group", "amount"),
-                    "pattern_family": "custom_baseline",
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 1,
-                    },
-                    "baseline": {"label": "Q1"},
-                    "target": {"label": "Q2"},
-                }
-            )
+        state = _answerable_custom_baseline_coverage_state(fake)
 
-        self.assertEqual(result.status, "draft")
-        self.assertIn("answer_synthesis", fake.calls)
-        self.assertNotIn("blocked_explanation", fake.calls)
-        coverage = result.answer_package["admin_audit"]["coverage_interpretation"]
+        workflow_module._interpret_data_coverage(state)
+
+        coverage = state["coverage_interpretation"]
         self.assertEqual(
             coverage["coverage_status"],
             "coverage_gap_but_answerable",
@@ -14686,7 +16088,6 @@ class LLMWorkflowTest(unittest.TestCase):
                 "blocked_explanation": {
                     "status": "blocked",
                     "explanation": "当前查询没有返回可分析数据，不能发布付费金额变化结论。",
-                    "owner": "业务分析师",
                     "repair_path": "先恢复支付金额聚合数据后重跑。",
                 },
             }
@@ -14871,341 +16272,142 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertEqual(plan_routes.count("plan"), 1)
         self.assertIn("synthesize_after_loop_cap", plan_routes)
 
-    def test_llm_claim_time_window_is_normalized_to_evidence_window(self):
+    def test_semantic_audit_revision_routes_to_prose_repair_and_preserves_local_claims(self):
         fake = FakeLLMClient(
             {
-                "answer_synthesis": {
-                    "answer_text": "Draft answer with exception period.",
-                    "claims": [
-                        _provider_claim(
-                            text="The main pattern is supported.",
-                            evidence_refs=("pattern_scan:intra_period",),
-                            numbers={"median_uplift": 0.2},
-                            time_window="2026-05",
-                        )
+                "semantic_audit": {
+                    "audit_status": "needs_revision",
+                    "extracted_claims": [],
+                    "issues": [
+                        {
+                            "code": "unsupported_main_claim",
+                            "severity": "error",
+                            "description": "主要结论的原因表述过强。",
+                        }
+                    ],
+                },
+                "answer_repair": {
+                    "answer_text": "已降低原因表述强度，并保留本地核验通过的事实。",
+                }
+            }
+        )
+        state = _required_claim_resolution_state()
+        state.update(
+            {
+                "run_id": "semantic-repair-node",
+                "llm_client": fake,
+                "llm_calls": [],
+                "answer_text": "当前因素已经证明了业务机制。",
+                "validator_results": [],
+            }
+        )
+        _reduce_evidence(state)
+        state["draft_claims"] = workflow_module._authority_claims_from_evidence(state)
+        original_claims = deepcopy(state["draft_claims"])
+
+        workflow_module._semantic_audit(state)
+
+        self.assertEqual(_route_after_semantic_audit(state), "repair")
+        workflow_module._repair_answer(state)
+        self.assertEqual(state["draft_claims"], original_claims)
+        self.assertIn("降低原因表述强度", state["answer_text"])
+        self.assertNotIn("degraded_explanation", fake.calls)
+
+    def test_answer_repair_receives_business_semantic_review_without_runtime_reason(self):
+        fake = FakeLLMClient(
+            {
+                "semantic_audit": {
+                    "audit_status": "needs_revision",
+                    "extracted_claims": [],
+                    "issues": [
+                        {
+                            "code": "unsupported_main_claim",
+                            "severity": "error",
+                            "description": "答案声明超出证据。",
+                        }
                     ],
                 }
             }
         )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "claim-window-normalized",
-                    "llm_client": fake,
-                }
-            )
-
-        claims = result.answer_package["sections"][0]["payload"]["claims"]
-        self.assertEqual(claims, [])
-        self.assertEqual(result.answer_package["admin_audit"]["verifier"]["status"], "failed")
-
-    def test_duplicate_llm_claims_are_deduped(self):
-        duplicate = _provider_claim(
-            text="The same pattern claim.",
-            evidence_refs=("pattern_scan:intra_period",),
-            numbers={"median_uplift": 0.2},
-        )
-        fake = FakeLLMClient(
-            {"answer_synthesis": {"answer_text": "Draft.", "claims": [duplicate, duplicate]}}
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {"artifact_root": tmpdir, "run_id": "dedupe-claims", "llm_client": fake}
-            )
-
-        claims = result.answer_package["sections"][0]["payload"]["claims"]
-        self.assertEqual(claims, [])
-
-    def test_llm_side_claims_do_not_enter_verified_claim_list(self):
-        fake = FakeLLMClient(
+        state = _required_claim_resolution_state()
+        state.update(
             {
-                "answer_synthesis": {
-                    "answer_text": "Pattern answer with side diagnostics.",
-                    "claims": [
-                        _provider_claim(
-                            text="Data quality is high.",
-                            evidence_refs=("data_quality_check:inline",),
-                            numbers={"row_count": 100},
-                        ),
-                        _provider_claim(
-                            text="No outliers were detected.",
-                            evidence_refs=("outlier_scan:inline",),
-                            numbers={"outliers": []},
-                        ),
-                    ],
-                }
+                "run_id": "semantic-review-projection",
+                "llm_client": fake,
+                "llm_calls": [],
+                "answer_text": "当前因素已经证明了业务机制。",
+                "validator_results": [],
             }
         )
+        _reduce_evidence(state)
+        state["draft_claims"] = workflow_module._authority_claims_from_evidence(state)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {"artifact_root": tmpdir, "run_id": "side-claims", "llm_client": fake}
-            )
+        workflow_module._semantic_audit(state)
+        workflow_module._repair_answer(state)
 
-        claims = result.answer_package["sections"][0]["payload"]["claims"]
-        self.assertEqual(claims, [])
-
-    def test_single_period_answer_text_uses_bounded_wording(self):
-        fake = FakeLLMClient(
-            {
-                "business_intent": {
-                    "pattern_family": "custom_baseline",
-                    "question_family": "pattern_explanation",
-                    "target_metric": "paid_amount",
-                    "scope": "full_sample",
-                    "time_window": "2026-01..2026-06",
-                    "target_claim": "custom baseline pattern",
-                    "baseline_candidates": ["custom"],
-                    "status_message": "intent",
-                },
-                "answer_synthesis": {
-                    "answer_text": "This is a high-confidence pattern and non-random.",
-                    "claims": [],
-                },
-            }
+        payload = _llm_input_payload(
+            {"admin_audit": {"llm_calls": state["llm_calls"]}},
+            "answer_repair",
         )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "single-period-wording",
-                    "llm_client": fake,
-                    "pattern_family": "custom_baseline",
-                    "time_window": "2026-01..2026-06",
-                    "rows": [
-                        {"period": "h1", "group": "baseline", "amount": 100},
-                        {"period": "h1", "group": "target", "amount": 120},
-                    ],
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 1,
-                    },
-                }
-            )
-
-        answer_text = result.answer_package["sections"][0]["payload"]["answer_text"]
-        self.assertNotIn("high-confidence", answer_text)
-        self.assertNotIn("non-random", answer_text)
-        self.assertNotIn("方向命中率", answer_text)
-        self.assertNotIn("1 个可比周期", answer_text)
-        self.assertNotIn("custom_baseline", answer_text)
-
-    def test_business_narrative_answer_is_not_overwritten_by_single_period_claim(self):
-        fake = FakeLLMClient(
-            {
-                "business_intent": {
-                    "pattern_family": "custom_baseline",
-                    "question_family": "pattern_explanation",
-                    "target_metric": "paid_amount",
-                    "scope": "full_sample",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "target_claim": "custom baseline pattern",
-                    "baseline_candidates": ["custom"],
-                    "status_message": "intent",
-                },
-                "answer_synthesis": {
-                    "answer_text": (
-                        "我对问题的理解是：你想比较 Q2 相比 Q1 的付费金额表现。\n"
-                        "分析思路：我先把 Q1 作为基线、Q2 作为目标窗口，"
-                        "再用已验收的付费金额口径做聚合对比。\n"
-                        "关键发现：Q2 相比 Q1 的付费金额提升 20.0%，当前只有 1 个可比周期。\n"
-                        "结论：Q2 高于 Q1，但这只支持窗口对比。\n"
-                        "需要注意：后续要继续观察更多季度和异常日。"
-                    ),
-                    "claims": [],
-                },
-            }
+        self.assertEqual(
+            set(payload),
+            {"answerText", "businessContext", "displayReview"},
         )
+        self.assertIn("主要结论超出", " ".join(payload["displayReview"]["findings"]))
+        visible = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("retry_context", visible)
+        self.assertNotIn("failure_reason", visible)
+        self.assertNotIn("unsupported_main_claim", visible)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "business-narrative-kept",
-                    "llm_client": fake,
-                    "pattern_family": "custom_baseline",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "baseline": {"label": "Q1"},
-                    "target": {"label": "Q2"},
-                    "rows": [
-                        {"period": "h1", "group": "baseline", "amount": 100},
-                        {"period": "h1", "group": "target", "amount": 120},
-                    ],
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 1,
-                    },
-                }
-            )
-
-        answer_text = result.answer_package["sections"][0]["payload"]["answer_text"]
-        self.assertEqual(answer_text, "")
-
-    def test_custom_baseline_default_answer_uses_business_labels(self):
+    def test_answer_repair_receives_business_verifier_review_without_internal_errors(self):
         fake = FakeLLMClient()
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "custom-labels",
-                    "llm_client": fake,
-                    "pattern_family": "custom_baseline",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "baseline": {"label": "Q1"},
-                    "target": {"label": "Q2"},
-                    "rows": [
-                        {"period": "h1", "group": "baseline", "amount": 100},
-                        {"period": "h1", "group": "target", "amount": 120},
-                    ],
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 1,
-                    },
-                }
-            )
-
-        answer_text = result.answer_package["sections"][0]["payload"]["answer_text"]
-
-        self.assertEqual(answer_text, "")
-
-    def test_business_summary_localizes_llm_scope_and_metric_aliases(self):
-        fake = FakeLLMClient(
-            {"business_intent": {"scope": "all", "target_metric": "daily_paid_amount"}}
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "scope-alias",
-                    "llm_client": fake,
-                    "pattern_family": "custom_baseline",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "baseline": {"label": "Q1"},
-                    "target": {"label": "Q2"},
-                    "rows": [
-                        {"period": "h1", "group": "baseline", "amount": 100},
-                        {"period": "h1", "group": "target", "amount": 120},
-                    ],
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "min_periods": 1,
-                    },
-                }
-            )
-
-        summary = result.answer_package["sections"][0]["payload"][
-            "final_business_summary"
-        ]
-        self.assertEqual(summary, "")
-
-    def test_semantic_audit_revision_routes_to_repair_then_bounded_claim(self):
-        fake = FakeLLMClient(
+        state = _required_claim_resolution_state()
+        state.update(
             {
-                "semantic_audit": {
-                    "audit_status": "needs_revision",
-                    "extracted_claims": [],
-                    "issues": [{"type": "duplicate_claims"}],
-                }
+                "run_id": "verifier-review-projection",
+                "llm_client": fake,
+                "llm_calls": [],
+                "answer_text": "当前答案含有一个待修正数字。",
+                "validator_results": [],
             }
         )
+        _reduce_evidence(state)
+        state["draft_claims"] = workflow_module._authority_claims_from_evidence(state)
+        state["authority_verified_claims"] = deepcopy(state["draft_claims"])
+        original_claims = deepcopy(state["draft_claims"])
+        state["verifier"] = {
+            "status": "failed",
+            "errors": [{"code": "number_mismatch", "claim_index": 0}],
+        }
+        state["retry_context"] = {
+            "failed_node": "hard_verify_answer",
+            "failure_type": "verifier",
+            "failure_reason": "number_mismatch:claim_index=0",
+        }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {"artifact_root": tmpdir, "run_id": "semantic-repair", "llm_client": fake}
-            )
+        workflow_module._repair_answer(state)
 
-        self.assertIn("answer_repair", fake.calls)
-        self.assertIn("degraded_explanation", fake.calls)
-        summary = result.answer_package["sections"][0]["payload"]
-        self.assertEqual(summary["claims"], [])
-        self.assertEqual(result.answer_package["admin_audit"]["verifier"]["status"], "failed")
-
-    def test_answer_repair_receives_semantic_audit_failure_reason(self):
-        fake = FakeLLMClient(
-            {
-                "semantic_audit": {
-                    "audit_status": "needs_revision",
-                    "extracted_claims": [],
-                    "issues": [{"type": "unsupported_claim", "message": "答案声明超出证据"}],
-                }
-            }
+        self.assertEqual(state["draft_claims"], original_claims)
+        payload = _llm_input_payload(
+            {"admin_audit": {"llm_calls": state["llm_calls"]}},
+            "answer_repair",
         )
+        findings = " ".join(payload["displayReview"]["findings"])
+        self.assertIn("已验证证据存在矛盾", findings)
+        self.assertIn("主要结论超出", findings)
+        visible = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("number_mismatch", visible)
+        self.assertNotIn("hard_verify_answer", visible)
+        self.assertNotIn("retry_context", visible)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {"artifact_root": tmpdir, "run_id": "semantic-retry-reason", "llm_client": fake}
-            )
-
-        payload = _llm_input_payload(result.answer_package, "answer_repair")
-        retry = payload["retry_context"]
-        self.assertEqual(retry["failed_node"], "semantic_audit")
-        self.assertEqual(retry["failure_type"], "semantic_audit")
-        self.assertIn("答案声明超出证据", retry["failure_reason"])
-
-    def test_answer_repair_receives_verifier_failure_reason(self):
-        fake = FakeLLMClient(
-            {
-                "answer_synthesis": {
-                    "answer_text": "这里引用了不存在的证据。",
-                    "claims": [
-                        _provider_claim(
-                            text="这里保留了错误数字。",
-                            evidence_refs=("pattern_scan:intra_period",),
-                            numbers={"median_uplift": 9.9},
-                        )
-                    ],
-                }
-            }
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "verifier-retry-reason",
-                    "llm_client": fake,
-                }
-            )
-
-        payload = _llm_input_payload(result.answer_package, "answer_repair")
-        retry = payload["retry_context"]
-        self.assertEqual(retry["failed_node"], "hard_verify_answer")
-        self.assertEqual(retry["failure_type"], "verifier")
-        self.assertIn("number_mismatch", retry["failure_reason"])
-
-    def test_degraded_answer_replaces_claim_rejected_after_repair(self):
-        rejected_claim = _provider_claim(
-            text="这里保留了错误数字 990.0%。",
-            evidence_refs=("pattern_scan:intra_period",),
-            numbers={"median_uplift": 9.9},
-        )
+    def test_degraded_answer_removes_rejected_text_after_repair_exhaustion(self):
         fake = FakeLLMClient(
             {
                 "answer_synthesis": {
                     "answer_text": "这里保留了错误数字 990.0%。",
-                    "claims": [rejected_claim],
                 },
                 "answer_repair": {
                     "answer_text": "修复后仍保留错误数字 990.0%。",
-                    "claims": [rejected_claim],
                 },
             }
         )
@@ -15225,8 +16427,12 @@ class LLMWorkflowTest(unittest.TestCase):
         claims = result.answer_package["sections"][0]["payload"]["claims"]
         self.assertEqual(claims, [])
         audit_input = _llm_input_payload(result.answer_package, "final_answer_audit")
-        self.assertEqual(audit_input["verified_claims"][0]["claim_strength"], "insufficient")
-        self.assertNotIn("median_uplift", audit_input["verified_claims"][0]["numbers"])
+        visible = json.dumps(audit_input, ensure_ascii=False)
+        self.assertNotIn("990.0%", visible)
+        self.assertNotIn("median_uplift", visible)
+        self.assertTrue(
+            audit_input["businessContext"]["evidence"]["claimSlots"]
+        )
 
     def test_causal_gap_wording_is_weakened_before_verifier(self):
         fake = FakeLLMClient(
@@ -15236,16 +16442,6 @@ class LLMWorkflowTest(unittest.TestCase):
                         "No event-based causes were identified to explain the pattern. "
                         "No event-based explanations are available due to insufficient evidence."
                     ),
-                    "claims": [
-                        _provider_claim(
-                            text=(
-                                "No event-based causes were identified to explain the pattern. "
-                                "No event-based explanations are available due to insufficient evidence."
-                            ),
-                            evidence_refs=("pattern_scan:intra_period",),
-                            numbers={"median_uplift": 0.2},
-                        )
-                    ],
                 }
             }
         )
@@ -15275,127 +16471,6 @@ class LLMWorkflowTest(unittest.TestCase):
         )
 
         self.assertFalse(_final_summary_needs_display_repair(summary, state))
-
-    def _run_q2_q1_joint_attribution_workflow(self):
-        fake = FakeLLMClient(
-            {
-                "business_intent": {
-                    "question_family": "segment_or_factor_attribution",
-                    "pattern_family": "custom_baseline",
-                    "target_metric": "paid_amount",
-                    "scope": "full_sample",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "target_claim": "判断渠道和月内阶段组合是否解释主要变化",
-                },
-                "analysis_route": {
-                    "requested_nodes": ["joint_attribution", "answer_verify"],
-                },
-                "answer_synthesis": {
-                    "answer_text": "草稿结论：WajeSpecial 月初组合贡献最大。",
-                    "claims": [
-                        {
-                            "text": "WajeSpecial 月初组合是当前 Q2 相比 Q1 付费金额变化里贡献最大的候选组合。",
-                            "evidence_refs": ["joint_attribution:inline"],
-                            "numbers": {"top_combination_share": 0.8974},
-                            "scope": "full_sample",
-                            "time_window": "2026-01-01..2026-06-30",
-                        }
-                    ],
-                },
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            return run_pattern_workflow(
-                {
-                    "artifact_root": tmpdir,
-                    "run_id": "q2-q1-joint-quality",
-                    "llm_client": fake,
-                    "question": "Q2 相比 Q1 付费金额为什么变了？哪些渠道和月内阶段组合贡献最大？",
-                    "pattern_family": "custom_baseline",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "baseline": {"label": "Q1"},
-                    "target": {"label": "Q2"},
-                    "rows": [
-                        {
-                            "period": "q1",
-                            "group": "baseline",
-                            "channel": "WajeSpecial",
-                            "phase": "start",
-                            "amount": 100,
-                        },
-                        {
-                            "period": "q2",
-                            "group": "target",
-                            "channel": "WajeSpecial",
-                            "phase": "start",
-                            "amount": 170,
-                        },
-                        {
-                            "period": "q1",
-                            "group": "baseline",
-                            "channel": "Organic",
-                            "phase": "mid",
-                            "amount": 80,
-                        },
-                        {
-                            "period": "q2",
-                            "group": "target",
-                            "channel": "Organic",
-                            "phase": "mid",
-                            "amount": 88,
-                        },
-                    ],
-                    "required_fields": ["period", "group", "channel", "phase", "amount"],
-                    "pattern_params": {
-                        "period_key": "period",
-                        "group_key": "group",
-                        "target_group": "target",
-                        "baseline_group": "baseline",
-                        "joint_dimension_keys": ("channel", "phase"),
-                    },
-                }
-            )
-
-    def test_final_answer_contains_business_insight_and_verified_claim(self):
-        result = self._run_q2_q1_joint_attribution_workflow()
-        answer = result.answer_package["final_answer"]
-        self.assertEqual(answer, "")
-        self.assertFalse(result.answer_package["quality_gate"]["has_verified_claims"])
-
-    def test_followup_questions_are_single_intent(self):
-        result = self._run_q2_q1_joint_attribution_workflow()
-        questions = result.answer_package["follow_up_questions"]
-        self.assertEqual(questions, [])
-
-    def test_quality_gate_repair_preserves_verified_claim_text(self):
-        claim_text = "Q2 相比 Q1 的付费金额提升 20.0%，当前只支持窗口对比结论。"
-        repaired = repair_final_answer_with_verified_claim(
-            {
-                "request": {"question": "Q2 相比 Q1 付费金额为什么变了？"},
-                "intent": {
-                    "target_metric": "paid_amount",
-                    "scope": "full_sample",
-                    "time_window": "2026-01-01..2026-06-30",
-                    "pattern_family": "custom_baseline",
-                    "target": {"label": "Q2"},
-                    "baseline": {"label": "Q1"},
-                },
-                "final_business_summary": (
-                    "我对问题的理解是：你想看 Q2 相比 Q1 的付费金额变化。\n"
-                    "分析脉络：我检查了目标窗口和基线窗口的聚合证据。\n"
-                    "关键发现：当前有可发布证据。\n"
-                    "最终结论：通过了校验。\n"
-                    "需要注意：不能写成因果证明。"
-                ),
-                "draft_claims": [{"text": claim_text}],
-                "verifier": {"errors": []},
-            },
-            {},
-        )
-
-        self.assertIn(claim_text, repaired)
-        self.assertIn("当前证据能把排查方向收敛到", repaired)
-        self.assertIn("还不能直接说", repaired)
 
     def test_quality_gate_rejects_answers_without_verified_claims(self):
         quality = evaluate_answer_quality(
@@ -15510,72 +16585,43 @@ class LLMWorkflowTest(unittest.TestCase):
         self.assertTrue(quality["verified_claim_preserved"])
         self.assertNotIn("missing_verified_claim", quality["issues"])
 
-    def test_llm_final_audit_can_clear_local_missing_business_insight_warning(self):
-        quality = _legacy_quality_with_final_answer_audit(
-            {
-                "direct_answer": True,
-                "has_verified_claims": True,
-                "verified_claim_preserved": False,
-                "business_insight_present": False,
-                "followups_one_intent": True,
-                "issues": ["missing_verified_claim", "missing_business_insight"],
+    def test_final_audit_cannot_grant_missing_claim_preservation(self):
+        state = {
+            "request": {
+                "run_mode": "production",
+                "question": "Q2 相比 Q1 付费金额发生了什么变化？",
             },
-            {
-                "display_status": "ready",
-                "hard_blockers": [],
-                "repairable_warnings": [],
-                "blocks_display": False,
-            },
-        )
+            "answer_text": "最终结论：当前答案没有复述已验证数值。",
+            "final_business_summary": "最终结论：当前答案没有复述已验证数值。",
+            "authority_verified_claims": [
+                {
+                    "text": "Q2 相比 Q1 的付费金额提升 20.0%。",
+                    "numbers": {"change_pct": 0.2},
+                    "claim_strength": "observed",
+                }
+            ],
+            "draft_claims": [],
+            "verifier": {"errors": []},
+            "evidence": [],
+        }
+        ready_audit = {
+            "display_status": "ready",
+            "hard_blockers": [],
+            "repairable_warnings": [],
+            "risk_flags": [],
+            "retry_instruction": "",
+            "business_audit_summary": "表达审阅通过。",
+            "blocks_display": False,
+        }
 
-        self.assertTrue(quality["business_insight_present"])
-        self.assertTrue(quality["verified_claim_preserved"])
-        self.assertNotIn("missing_verified_claim", quality["issues"])
-        self.assertNotIn("missing_business_insight", quality["issues"])
+        with patch(
+            "bi_agent.runtime.langgraph_workflow._final_answer_audit",
+            return_value=ready_audit,
+        ):
+            _answer_quality_gate(state)
 
-    def test_llm_final_audit_can_clear_local_missing_verified_claim_warning(self):
-        quality = _legacy_quality_with_final_answer_audit(
-            {
-                "direct_answer": True,
-                "has_verified_claims": True,
-                "verified_claim_preserved": False,
-                "business_insight_present": True,
-                "followups_one_intent": True,
-                "issues": ["missing_verified_claim"],
-            },
-            {
-                "display_status": "ready",
-                "hard_blockers": [],
-                "repairable_warnings": [],
-                "blocks_display": False,
-            },
-        )
-
-        self.assertTrue(quality["verified_claim_preserved"])
-        self.assertNotIn("missing_verified_claim", quality["issues"])
-
-    def test_llm_final_audit_keeps_business_insight_warning_when_audit_flags_it(self):
-        quality = _legacy_quality_with_final_answer_audit(
-            {
-                "direct_answer": True,
-                "has_verified_claims": True,
-                "verified_claim_preserved": False,
-                "business_insight_present": False,
-                "followups_one_intent": True,
-                "issues": ["missing_verified_claim", "missing_business_insight"],
-            },
-            {
-                "display_status": "ready_with_warnings",
-                "hard_blockers": [],
-                "repairable_warnings": ["weak_business_interpretation"],
-                "blocks_display": False,
-            },
-        )
-
-        self.assertFalse(quality["business_insight_present"])
-        self.assertFalse(quality["verified_claim_preserved"])
-        self.assertIn("missing_verified_claim", quality["issues"])
-        self.assertIn("missing_business_insight", quality["issues"])
+        self.assertFalse(state["quality_gate"]["verified_claim_preserved"])
+        self.assertIn("missing_verified_claim", state["quality_gate"]["issues"])
 
 
 if __name__ == "__main__":

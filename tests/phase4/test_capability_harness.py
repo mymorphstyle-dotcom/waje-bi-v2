@@ -1,4 +1,5 @@
 from dataclasses import replace
+from decimal import Decimal
 import unittest
 from unittest.mock import patch
 
@@ -36,7 +37,164 @@ def run_capability(capability_id, params):
     raise KeyError(capability_id)
 
 
+def bound_window_compare_request(
+    *,
+    capability_id: str,
+    target_value: int,
+    baseline_value: int,
+) -> CapabilityRequest:
+    query_ref = f"query:{capability_id}:1"
+    rows = (
+        {
+            "window_id": "target_day",
+            "window_role": "target",
+            "observation_key": "2026-06-01",
+            "paid_amount": target_value,
+        },
+        {
+            "window_id": "previous_day",
+            "window_role": "baseline",
+            "observation_key": "2026-05-31",
+            "paid_amount": baseline_value,
+        },
+    )
+    result = QueryResultEnvelope(
+        query_contract_ref=query_ref,
+        query_id=f"provider:{capability_id}:1",
+        query_hash=f"hash:{capability_id}:1",
+        result_ref=f"result:{capability_id}:1",
+        execution_status="succeeded",
+        rows_ref=f"rows:{capability_id}:1",
+        row_count=2,
+        completeness_report_ref=f"complete:{capability_id}:1",
+        rows=rows,
+        observed_windows=("target_day", "previous_day"),
+        source_snapshot_refs=("snapshot:paid-order:1",),
+    )
+    report = CompletenessReport(
+        report_ref=f"complete:{capability_id}:1",
+        query_contract_ref=query_ref,
+        result_ref=result.result_ref,
+        completeness_status="complete",
+        analysis_readiness="ready",
+        assertion_results=({"assertion": "execution_succeeded", "passed": True},),
+        failure_reasons=(),
+        coverage_summary={
+            "row_count": 2,
+            "required_windows": ("target_day", "previous_day"),
+            "observed_windows": ("target_day", "previous_day"),
+            "snapshot_ref": "snapshot:paid-order:1",
+        },
+    )
+    with patch.dict(
+        "os.environ",
+        {"WAJE_ALLOW_LEGACY_FIXTURES": "1", "WAJE_RUNTIME_ENV": "test"},
+    ):
+        bound = bind_capability_inputs(
+            CapabilityExecutionPlan(
+                capability_id=capability_id,
+                capability_contract_ref=f"capability:{capability_id}@1",
+                required_input_slots=(
+                    CapabilityInputSlot(
+                        "daily_metric_baselines",
+                        (query_ref,),
+                        True,
+                        ("complete",),
+                        tuple(rows[0]),
+                        ("target_day", "previous_day"),
+                    ),
+                ),
+                optional_input_slots=(),
+                merge_strategy="by_query_family",
+                minimum_readiness={
+                    "required_slots": "all",
+                    "accepted_completeness": ("complete",),
+                },
+                degradation_policy={"missing_required_input": "block_claim"},
+                supported_evidence_types=("statistical_association",),
+                maximum_claim_strength="directional",
+                analysis_contract_ref="analysis:paid-amount:1",
+                supported_claim_types=("comparative_change",),
+                capability_contract_version="1",
+                capability_contract_signature=f"sha256:{capability_id}",
+            ),
+            results={query_ref: result},
+            reports={query_ref: report},
+            run_mode="fixture",
+        )
+    return CapabilityRequest(
+        run_id=f"run-{capability_id}",
+        accepted_graph_id=f"graph-{capability_id}",
+        graph_version=1,
+        capability_id=capability_id,
+        question_family="paid_amount_change_explanation",
+        target_claim="comparative_change",
+        claim_type="comparative_change",
+        metric="paid_amount",
+        scope="full_sample",
+        time_window="2026-06-01",
+        baseline={"label": "2026-05-31"},
+        target={"label": "2026-06-01"},
+        grain="window",
+        filters={},
+        dimensions=(),
+        contract_versions={},
+        role="analyst",
+        budget_state=BudgetState("research", 0, 50, 100),
+        llm_business_reason="对比已绑定的目标日和基准日。",
+        params={},
+        bound_input=bound,
+        run_mode="fixture",
+        fixture_input_mode="legacy_unbound_fixture",
+    )
+
+
 class CapabilityHarnessTest(unittest.TestCase):
+    def test_compare_periods_uses_bound_window_values_without_pattern_thresholds(self):
+        request = bound_window_compare_request(
+            capability_id="compare_periods",
+            target_value=308_240_309,
+            baseline_value=304_142_630,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"WAJE_ALLOW_LEGACY_FIXTURES": "1", "WAJE_RUNTIME_ENV": "test"},
+        ):
+            envelope = execute_capability(request)
+
+        self.assertEqual(envelope.numeric_facts["target_value"], 308_240_309)
+        self.assertEqual(envelope.numeric_facts["baseline_value"], 304_142_630)
+        self.assertEqual(envelope.numeric_facts["absolute_change"], 4_097_679)
+        self.assertEqual(
+            envelope.numeric_facts["relative_change"],
+            Decimal(4_097_679) / Decimal(304_142_630),
+        )
+        self.assertEqual(envelope.wording_limit, "quantified")
+        self.assertNotIn("weak_direction", envelope.limitations)
+        self.assertNotIn("below_materiality_floor", envelope.limitations)
+
+    def test_compare_periods_preserves_negative_direction_symmetrically(self):
+        request = bound_window_compare_request(
+            capability_id="compare_periods",
+            target_value=95,
+            baseline_value=100,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"WAJE_ALLOW_LEGACY_FIXTURES": "1", "WAJE_RUNTIME_ENV": "test"},
+        ):
+            envelope = execute_capability(request)
+
+        self.assertEqual(envelope.numeric_facts["absolute_change"], -5)
+        self.assertEqual(envelope.numeric_facts["relative_change"], Decimal("-0.05"))
+        self.assertEqual(envelope.strength, "directional")
+        self.assertEqual(envelope.wording_limit, "quantified")
+        self.assertEqual(envelope.limitations, ("legacy_fixture_non_authoritative",))
+        self.assertNotIn("weak_direction", envelope.limitations)
+        self.assertNotIn("below_materiality_floor", envelope.limitations)
+
     def test_market_window_compare_uses_only_bound_rows_and_emits_comparative_facts(self):
         query_ref = "query:market:1"
         rows = (

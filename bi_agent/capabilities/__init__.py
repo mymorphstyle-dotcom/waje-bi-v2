@@ -9,6 +9,7 @@ class EvidenceEnvelope:
     evidence_type: str
     strength: str
     wording_limit: str
+    numeric_facts: dict[str, Any] = field(default_factory=dict)
     typed_payload: dict[str, Any] = field(default_factory=dict)
     limitations: tuple[str, ...] = ()
     result_refs: tuple[str, ...] = ()
@@ -20,6 +21,7 @@ def make_evidence_envelope(
     evidence_type: str,
     strength: str = "low",
     wording_limit: str = "insufficient",
+    numeric_facts: Optional[dict[str, Any]] = None,
     typed_payload: Optional[dict[str, Any]] = None,
     limitations: tuple[str, ...] = (),
     result_refs: tuple[str, ...] = (),
@@ -31,7 +33,18 @@ def make_evidence_envelope(
         evidence_type=evidence_type,
         strength=strength,
         wording_limit=wording_limit,
+        numeric_facts=numeric_facts or {},
         typed_payload=typed_payload or {},
         limitations=limitations,
         result_refs=result_refs,
     )
+
+
+from bi_agent.capabilities.candidate_dimension_screen import candidate_dimension_screen
+
+
+__all__ = (
+    "EvidenceEnvelope",
+    "candidate_dimension_screen",
+    "make_evidence_envelope",
+)

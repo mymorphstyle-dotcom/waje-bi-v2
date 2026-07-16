@@ -27,6 +27,9 @@ from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.conversation.clarification_authority import (
     build_prior_topic_material_context,
 )
+from bi_agent.conversation.clarification_options import (
+    clarification_labels_match,
+)
 from bi_agent.runtime.analysis_assets import merge_analysis_assets
 from bi_agent.runtime.compiler import suggest_revenue_diagnostic_nodes
 from bi_agent.runtime.evidence_authority import (
@@ -148,6 +151,7 @@ class ConversationRuntime:
         prior_request: dict[str, Any] = {}
         clarification_source: dict[str, Any] = {}
         selected_query_gap_action: dict[str, Any] = {}
+        selected_material_action: dict[str, Any] = {}
         accepted_degradation_choice: dict[str, Any] = {}
         if open_clarification and matches_open_clarification:
             get_run_request = getattr(self.store, "get_run_request", None)
@@ -169,10 +173,25 @@ class ConversationRuntime:
             selected_query_gap_action = _selected_query_gap_action(
                 prior_clarification,
                 user_message,
+                selected_option_id=str(
+                    (clarification_resume_claim or {}).get(
+                        "selected_option_id"
+                    )
+                    or ""
+                ),
+                clarification_state=open_clarification,
             )
+            if str(
+                selected_query_gap_action.get("action_kind") or ""
+            ) == "bind_material_choice":
+                selected_material_action = dict(selected_query_gap_action)
             if selected_query_gap_action and str(
                 selected_query_gap_action.get("action_kind") or ""
-            ) not in {"wait_for_source", "user_redirect"}:
+            ) not in {
+                "bind_material_choice",
+                "wait_for_source",
+                "user_redirect",
+            }:
                 accepted_degradation_choice = {
                     **selected_query_gap_action,
                     "source_run_id": open_clarification.run_id,
@@ -351,6 +370,7 @@ class ConversationRuntime:
                         ),
                         "clarification": prior_clarification,
                         "selected_query_gap_action": selected_query_gap_action,
+                        "selected_material_action": selected_material_action,
                         "accepted_degradation_choice": accepted_degradation_choice,
                     }
             request_analysis_context = dict(analysis_context or {})
@@ -2285,6 +2305,9 @@ def _clarification_source_from_request(
 def _selected_query_gap_action(
     clarification: Mapping[str, Any],
     user_message: str,
+    *,
+    selected_option_id: str = "",
+    clarification_state: ClarificationState | None = None,
 ) -> dict[str, Any]:
     actions = tuple(
         dict(action)
@@ -2292,9 +2315,61 @@ def _selected_query_gap_action(
         if isinstance(action, Mapping)
     )
     normalized = user_message.strip().rstrip("。")
-    for action in actions:
-        if str(action.get("business_label") or "").strip().rstrip("。") == normalized:
-            return action
+
+    def actions_for_label(label: str) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            action
+            for action in actions
+            if clarification_labels_match(
+                action.get("business_label")
+                or action.get("business_semantics"),
+                label,
+            )
+        )
+
+    if selected_option_id:
+        state_options = tuple(
+            clarification_state.options if clarification_state else ()
+        )
+        selected_option = next(
+            (
+                option
+                for option in state_options
+                if option.option_id == selected_option_id
+            ),
+            None,
+        )
+        if selected_option is None:
+            raise ConversationOrchestrationError(
+                "clarification_selected_option_invalid"
+            )
+        direct = tuple(
+            action
+            for action in actions
+            if str(action.get("choice_id") or "") == selected_option_id
+        )
+        if len(direct) == 1:
+            return direct[0]
+        if len(direct) > 1:
+            raise ConversationOrchestrationError(
+                "clarification_selected_option_conflict"
+            )
+        legacy = actions_for_label(selected_option.label)
+        if len(legacy) == 1:
+            return legacy[0]
+        if len(legacy) > 1:
+            raise ConversationOrchestrationError(
+                "clarification_selected_option_conflict"
+            )
+        return {}
+
+    exact = actions_for_label(normalized)
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        raise ConversationOrchestrationError(
+            "clarification_selected_option_conflict"
+        )
     if normalized not in {"按推荐继续", "推荐"}:
         return {}
     recommended_id = str(clarification.get("recommended_choice_id") or "")
@@ -2304,20 +2379,23 @@ def _selected_query_gap_action(
             recommended.get("option") if isinstance(recommended, Mapping) else recommended
         ).strip().rstrip("。")
         for action in actions:
-            if (
-                str(action.get("business_label") or "").strip().rstrip("。")
-                == recommended_label
+            if clarification_labels_match(
+                action.get("business_label")
+                or action.get("business_semantics"),
+                recommended_label,
             ):
                 recommended_id = str(action.get("choice_id") or "")
                 break
-    return next(
-        (
-            action
-            for action in actions
-            if str(action.get("choice_id") or "") == recommended_id
-        ),
-        {},
+    recommended_actions = tuple(
+        action
+        for action in actions
+        if str(action.get("choice_id") or "") == recommended_id
     )
+    if len(recommended_actions) > 1:
+        raise ConversationOrchestrationError(
+            "clarification_recommended_option_conflict"
+        )
+    return recommended_actions[0] if recommended_actions else {}
 
 
 def _looks_like_outlier_clarification_answer(text: str) -> bool:

@@ -362,12 +362,18 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
         )
         self.assertEqual(errors, [])
         self.assertEqual(len(projected), 1)
-        self.assertIn("holiday_context", projected[0]["text"])
-        self.assertIn(
-            "authority=reviewed_workbook_pending_owner_review",
-            projected[0]["text"],
+        self.assertIn("已登记业务活动", projected[0]["text"])
+        self.assertIn("仅作为候选机制背景", projected[0]["text"])
+        self.assertEqual(
+            projected[0]["context_fact_selectors"][0]["event_id"],
+            "event:holiday:reviewed",
         )
-        self.assertIn("evidence_level=context", projected[0]["text"])
+        for internal_token in (
+            "holiday_context",
+            "reviewed_workbook_pending_owner_review",
+            "target_day",
+        ):
+            self.assertNotIn(internal_token, projected[0]["text"])
         self.assertNotIn("reviewed event", projected[0]["text"])
         self.assertNotIn("Forged", projected[0]["text"])
         self.assertTrue(projected[0]["fact_refs"])
@@ -1268,6 +1274,7 @@ def _evidence_from_bound_dashboard_input(bound):
         "strength": "observed",
         "wording_limit": "supported",
         "limitations": (),
+        "numeric_facts": {"paid_amount": 100.0},
         "typed_payload": {"paid_amount": 100.0},
         "capability_id": bound.capability_id,
         "analysis_contract_ref": bound.analysis_contract_ref,

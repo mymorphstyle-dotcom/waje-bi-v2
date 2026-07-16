@@ -384,6 +384,47 @@ class MarketWindowEvidenceTest(unittest.TestCase):
             "previous_day",
         )
 
+    def test_compare_periods_answer_projection_uses_evidence_selected_baseline(self):
+        context = _market_context()
+        envelope = execute_capability(_market_request(context))
+        evidence = envelope.to_dict()
+        evidence["capability_id"] = "compare_periods"
+        evidence["capability"] = "compare_periods"
+        evidence["typed_payload"] = {
+            **dict(evidence["typed_payload"]),
+            "baseline_window_id": "previous_day",
+        }
+        claim = {
+            "text": "Primary comparison from the supplied answer draft.",
+            "claim_type": "comparative_change",
+            "claim_strength": "observed",
+            "evidence_refs": (envelope.evidence_ref,),
+            "numbers": {
+                "target_value": 120,
+                "baseline_value": 100,
+                "absolute_change": 20,
+                "relative_change": 0.2,
+            },
+        }
+
+        projected, errors = _authority_bound_claim_projections(
+            claims=(claim,),
+            accepted_indexes=(0,),
+            evidence=(evidence,),
+            evidence_resolver=context["authority"],
+            rows_loader=context["authority"].rows_loader,
+            runtime_registry=context["registry"],
+            release_resolver=context["release_resolver"],
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(projected), 1)
+        self.assertEqual(projected[0]["baseline"]["window_id"], "previous_day")
+        self.assertEqual(
+            projected[0]["fact_selectors"]["baseline_value"]["window_id"],
+            "previous_day",
+        )
+
     def test_multi_metric_contract_projects_generic_numbers_for_evidence_metric(self):
         context = _market_context(target_metrics=("active_users", "paid_amount"))
         self.assertEqual(
@@ -659,7 +700,7 @@ class MarketWindowEvidenceTest(unittest.TestCase):
                 self.assertEqual(delivered["status"], "failed")
                 self.assertEqual(delivered["final_answer"], "")
 
-    def test_pre_aggregate_market_daily_total_package_still_reverifies(self):
+    def test_pre_aggregate_market_daily_total_package_is_rejected(self):
         context = _market_context()
         envelope = execute_capability(_market_request(context))
         current = _market_answer_package(context, envelope)
@@ -680,7 +721,14 @@ class MarketWindowEvidenceTest(unittest.TestCase):
             "aggregation",
             claim["fact_selectors"]["target_value"],
         )
-        self.assertEqual(delivered["status"], "draft", delivered)
+        self.assertEqual(delivered["status"], "failed", delivered)
+        self.assertIn(
+            "verified_claim_provenance_invalid",
+            {
+                item.get("code")
+                for item in delivered["admin_audit"]["verifier"]["errors"]
+            },
+        )
 
     def test_authority_record_digest_and_signed_contract_tampering_is_rejected(self):
         context = _market_context()

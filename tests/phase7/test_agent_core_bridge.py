@@ -26,6 +26,7 @@ from bi_agent.runtime.analysis_runtime import AnalysisRuntimeRequest
 from bi_agent.runtime.answer_package import (
     AuthorityFact,
     _claim_authority_facts,
+    _project_claim_from_authority,
     _render_authority_facts,
     build_answer_package,
     collect_visible_limitations,
@@ -367,7 +368,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
             final_explanation={
                 "status": "degraded",
                 "explanation": "当前证据不足以支持业务结论。",
-                "owner": "业务数据负责人",
                 "repair_path": "补齐背景证据后继续。",
             },
             context_manifest={
@@ -402,7 +402,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
             "final_explanation": {
                 "status": "degraded",
                 "explanation": "当前证据不足以支持业务结论。",
-                "owner": "业务数据负责人",
                 "repair_path": "补齐背景证据后继续。",
                 "boundary_only": True,
                 "used_contract_gap_ids": ["gap:event"],
@@ -698,7 +697,12 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["failure_reason"], "analysis_runtime_persistence_failed")
+        self.assertEqual(
+            result["failure_reason"],
+            "analysis_runtime_store_commit_failed",
+        )
+        self.assertEqual(result["failure_stage"], "store_commit")
+        self.assertEqual(result["failure_subreason"], "RuntimeError")
         self.assertEqual(
             result["llm_calls"],
             [_failed_llm_audit("runtime-persistence")],
@@ -711,7 +715,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         failure_audit = next(
             item
             for item in reversed(store.audit_events)
-            if item["event_type"] == "analysis_runtime_persistence_failed"
+            if item["event_type"] == "analysis_runtime_store_commit_failed"
         )
         self.assertEqual(failure_audit["payload"]["reason"], "postgres unavailable")
         self.assertTrue(
@@ -936,7 +940,11 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(
             result["failure_reason"],
-            "analysis_runtime_persistence_failed",
+            "material_authority_projection_failed",
+        )
+        self.assertEqual(
+            result["failure_stage"],
+            "material_authority_projection",
         )
         self.assertEqual(
             store.runs["run-missing-completed-material"]["status"],
@@ -1530,8 +1538,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(
             result["failure_reason"],
-            "analysis_runtime_persistence_failed",
+            "analysis_runtime_bundle_validation_failed",
         )
+        self.assertEqual(result["failure_stage"], "runtime_bundle_validation")
         self.assertNotIn("run-missing-runtime-bundle", store.answer_packages)
         self.assertNotIn(
             "run-missing-runtime-bundle",
@@ -1541,7 +1550,8 @@ class AgentCoreBridgeTest(unittest.TestCase):
         failure = next(
             event
             for event in store.audit_events
-            if event["event_type"] == "analysis_runtime_persistence_failed"
+            if event["event_type"]
+            == "analysis_runtime_bundle_validation_failed"
         )
         self.assertEqual(
             failure["payload"]["reason"],
@@ -1780,9 +1790,50 @@ class AgentCoreBridgeTest(unittest.TestCase):
             ),
             admin,
         )
+        artifact_package = json.loads(
+            artifact_path.read_text(encoding="utf-8")
+        )
+        artifact_summary = next(
+            section["payload"]
+            for section in artifact_package["sections"]
+            if section["section_id"] == "summary"
+        )
+        self.assertEqual(artifact_summary["claims"], summary["claims"])
+        for field in (
+            "status",
+            "final_answer",
+            "verified_claims",
+            "context_manifest_ref",
+            "reuse_decisions",
+        ):
+            self.assertEqual(artifact_package[field], package[field])
+
+        artifact_admin = artifact_package["admin_audit"]
+        for field in (
+            "context_manifest",
+            "verified_claims",
+            "trusted_claim_provenance_records",
+            "reuse_decisions",
+        ):
+            self.assertEqual(artifact_admin[field], admin[field])
+        for replay_field in (
+            "analysis_contract",
+            "query_contracts",
+            "query_results",
+            "completeness_reports",
+            "llm_calls",
+            "semantic_audit",
+            "validator_results",
+        ):
+            self.assertIn(replay_field, artifact_admin)
+            self.assertNotIn(replay_field, admin)
         self.assertEqual(
-            json.loads(artifact_path.read_text(encoding="utf-8")),
-            package,
+            next(
+                section["payload"]
+                for section in artifact_package["sections"]
+                if section["section_id"] == "admin_audit"
+            ),
+            artifact_admin,
         )
 
     def test_completed_verified_runtime_indexes_claim_linked_ready_results(self):
@@ -1890,8 +1941,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(
             result["failure_reason"],
-            "analysis_runtime_persistence_failed",
+            "analysis_runtime_artifact_sync_failed",
         )
+        self.assertEqual(result["failure_stage"], "artifact_synchronization")
         self.assertEqual(result["artifact_path"], str(missing_path))
         self.assertEqual(
             result["failure_subreason"],
@@ -1910,7 +1962,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         failure = next(
             event
             for event in store.audit_events
-            if event["event_type"] == "analysis_runtime_persistence_failed"
+            if event["event_type"] == "analysis_runtime_artifact_sync_failed"
         )
         self.assertEqual(
             failure["payload"]["reason"],
@@ -1965,8 +2017,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(
             result["failure_reason"],
-            "analysis_runtime_persistence_failed",
+            "analysis_runtime_artifact_sync_failed",
         )
+        self.assertEqual(result["failure_stage"], "artifact_synchronization")
         self.assertEqual(result["artifact_path"], str(artifact_path))
         self.assertEqual(result["failure_subreason"], "OSError")
         self.assertNotIn("run-artifact-sync-failure", store.analysis_runtime_records)
@@ -1978,7 +2031,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         failure = next(
             event
             for event in store.audit_events
-            if event["event_type"] == "analysis_runtime_persistence_failed"
+            if event["event_type"] == "analysis_runtime_artifact_sync_failed"
         )
         self.assertEqual(failure["payload"]["reason"], "artifact storage unavailable")
         self.assertEqual(failure["payload"]["failure_subreason"], "OSError")
@@ -2005,8 +2058,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(
             result["failure_reason"],
-            "analysis_runtime_persistence_failed",
+            "analysis_runtime_bundle_validation_failed",
         )
+        self.assertEqual(result["failure_stage"], "runtime_bundle_validation")
         self.assertEqual(
             result["failure_subreason"],
             "runtime_persistence_answer_package_artifact_missing",
@@ -2065,6 +2119,115 @@ class AgentCoreBridgeTest(unittest.TestCase):
             [artifact],
         )
 
+    def test_completed_core_preserves_full_authority_artifact_for_replay(self):
+        from tempfile import TemporaryDirectory
+
+        run_id = "run-full-authority-artifact"
+        artifact_path = (
+            Path(self.enterContext(TemporaryDirectory())) / "answer_package.json"
+        )
+        package = deepcopy(fake_workflow({"run_id": run_id}).answer_package)
+        package["sections"].append(
+            {
+                "id": "admin_audit",
+                "visibility": "admin_audit",
+                "payload": deepcopy(package["admin_audit"]),
+            }
+        )
+        raw_llm_call = {
+            "task": "answer_synthesis",
+            "raw_response_content": "provider raw response",
+            "structured_output": {"final_business_summary": "数据暂不可用。"},
+        }
+        checkpoint = {"node": "answer_synthesis", "status": "completed"}
+        analysis_contract = {
+            "analysis_contract_id": f"analysis:{run_id}:1",
+            "target_metric_refs": [
+                "contracts/metrics/paid-amount.metric.yaml@0.1"
+            ],
+        }
+        query_contract = {"query_contract_id": f"query:{run_id}:1"}
+        query_result = {"result_ref": f"result:{run_id}:1", "row_count": 0}
+        completeness_report = {
+            "completeness_report_ref": f"completeness:{run_id}:1",
+            "status": "empty",
+        }
+        final_audit = {"status": "ready_with_warnings"}
+        package.update(
+            {
+                "llm_calls": [raw_llm_call],
+                "checkpoint_events": [checkpoint],
+                "analysis_contract": analysis_contract,
+                "query_contracts": [query_contract],
+                "query_results": [query_result],
+                "completeness_reports": [completeness_report],
+                "final_audit": final_audit,
+            }
+        )
+        artifact_path.write_text(
+            json.dumps(package, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        def workflow(request):
+            return _completed_runtime_workflow_result(
+                request,
+                answer_package=package,
+                records=_queryless_runtime_records_for_request(request),
+                artifact_path=str(artifact_path),
+                checkpoint_events=(checkpoint,),
+                llm_calls=(raw_llm_call,),
+            )
+
+        store = InMemoryConversationStore()
+        result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
+            thread_id="thread-full-authority-artifact",
+            run_id=run_id,
+            user_message="当前付费金额的数据边界是什么？",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        delivered = result["answer_package"]
+        self.assertEqual(delivered["llm_calls"], [])
+        self.assertEqual(delivered["checkpoint_events"], [])
+        self.assertNotIn("analysis_contract", delivered)
+        self.assertNotIn("query_contracts", delivered)
+        self.assertNotIn("query_results", delivered)
+        self.assertNotIn("completeness_reports", delivered)
+
+        persisted = json.loads(artifact_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["llm_calls"], [raw_llm_call])
+        self.assertEqual(persisted["checkpoint_events"], [checkpoint])
+        self.assertEqual(persisted["analysis_contract"], analysis_contract)
+        self.assertEqual(persisted["query_contracts"], [query_contract])
+        self.assertEqual(persisted["query_results"], [query_result])
+        self.assertEqual(
+            persisted["completeness_reports"],
+            [completeness_report],
+        )
+        self.assertEqual(persisted["final_audit"], final_audit)
+        persisted_verifier = persisted["admin_audit"]["verifier"]
+        delivered_verifier = delivered["admin_audit"]["verifier"]
+        for field in (
+            "status",
+            "errors",
+            "warnings",
+            "accepted_claim_indexes",
+            "rejected_claim_indexes",
+        ):
+            self.assertEqual(persisted_verifier[field], delivered_verifier[field])
+        self.assertIn("accepted_assumptions", persisted_verifier)
+        self.assertNotIn("accepted_assumptions", delivered_verifier)
+
+        artifact_ref = f"answer-package:{run_id}"
+        authority_record = store.analysis_runtime_authority[
+            "answer_package_artifact"
+        ][artifact_ref]
+        self.assertEqual(
+            authority_record["payload_digest"],
+            canonical_digest(persisted),
+        )
+
     def test_analysis_asset_projection_failure_blocks_all_publication(self):
         from tempfile import TemporaryDirectory
 
@@ -2103,8 +2266,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(
             result["failure_reason"],
-            "analysis_runtime_persistence_failed",
+            "analysis_runtime_bundle_validation_failed",
         )
+        self.assertEqual(result["failure_stage"], "runtime_bundle_validation")
         self.assertEqual(result["failure_subreason"], "RuntimeError")
         self.assertEqual(result["artifact_path"], str(artifact_path))
         self.assertNotIn(
@@ -2157,8 +2321,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(
             result["failure_reason"],
-            "analysis_runtime_persistence_failed",
+            "analysis_runtime_bundle_validation_failed",
         )
+        self.assertEqual(result["failure_stage"], "runtime_bundle_validation")
         self.assertEqual(
             result["failure_subreason"],
             "persisted_answer_package_claim_facts_mismatch",
@@ -2177,7 +2342,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         failure = next(
             event
             for event in store.audit_events
-            if event["event_type"] == "analysis_runtime_persistence_failed"
+            if event["event_type"] == "analysis_runtime_bundle_validation_failed"
         )
         self.assertEqual(
             failure["payload"]["failure_subreason"],
@@ -2272,7 +2437,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(store.results_for_topic(result["topic_id"]), ())
 
-    def test_completed_runtime_does_not_index_incomplete_claim_results(self):
+    def test_incomplete_claim_runtime_fails_closed_without_indexing(self):
         package, context, _ = _verified_delivery_package(
             run_id="run-incomplete-result-candidate",
         )
@@ -2316,10 +2481,15 @@ class AgentCoreBridgeTest(unittest.TestCase):
             user_message="Q2 比 Q1 付费金额为什么变了？",
         )
 
-        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["failure_reason"],
+            "analysis_runtime_bundle_validation_failed",
+        )
+        self.assertEqual(result["failure_stage"], "runtime_bundle_validation")
         self.assertEqual(store.results_for_topic(result["topic_id"]), ())
 
-    def test_completed_runtime_requires_succeeded_query_and_ready_binding(self):
+    def test_failed_query_or_unready_binding_blocks_runtime_publication(self):
         for boundary in ("query_failed", "binding_not_ready"):
             with self.subTest(boundary=boundary):
                 package, context, _ = _verified_delivery_package(
@@ -2364,7 +2534,15 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     user_message="Q2 比 Q1 付费金额为什么变了？",
                 )
 
-                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(
+                    result["failure_reason"],
+                    "analysis_runtime_bundle_validation_failed",
+                )
+                self.assertEqual(
+                    result["failure_stage"],
+                    "runtime_bundle_validation",
+                )
                 self.assertEqual(store.results_for_topic(result["topic_id"]), ())
 
     def test_final_persisted_answer_package_replaces_existing_artifact(self):
@@ -2595,6 +2773,13 @@ class AgentCoreBridgeTest(unittest.TestCase):
         def workflow(request):
             captured.append(dict(request))
             if len(captured) == 1:
+                waiting_records = _queryless_runtime_records_for_request(request)
+                waiting_records["analysis_contract"] = {
+                    **source_contract,
+                    "contract_signature": analysis_contract_signature(
+                        source_contract
+                    ),
+                }
                 return WorkflowRunResult(
                     status="waiting_for_clarification",
                     run_id=request["run_id"],
@@ -2663,7 +2848,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                             ],
                         },
                     },
-                    analysis_runtime_records={},
+                    analysis_runtime_records=waiting_records,
                 )
             from bi_agent.runtime import langgraph_workflow as workflow
 
@@ -2820,13 +3005,14 @@ class AgentCoreBridgeTest(unittest.TestCase):
         def workflow(request):
             calls.append(dict(request))
             if len(calls) == 1:
+                waiting_records = _queryless_runtime_records_for_request(request)
                 return WorkflowRunResult(
                     status="waiting_for_clarification",
                     run_id=request["run_id"],
                     answer_package={
                         "status": "waiting_for_clarification",
                         "accepted_graph": ["compare_periods", "event_evidence"],
-                        "analysis_contract": {"analysis_contract_id": "analysis:wait:1"},
+                        "analysis_contract": waiting_records["analysis_contract"],
                         "analysis_route": {"requested_nodes": ["compare_periods", "event_evidence"]},
                         **_workflow_clarification_material(
                             context_sources=("external_event",),
@@ -2857,7 +3043,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                             ],
                         },
                     },
-                    analysis_runtime_records={},
+                    analysis_runtime_records=waiting_records,
                 )
             records = _verified_runtime_records_for_request(
                 request,
@@ -2925,6 +3111,20 @@ class AgentCoreBridgeTest(unittest.TestCase):
             first["clarification"]["recommended_choice_id"],
             "omit-context",
         )
+        self.assertEqual(
+            sum(
+                str(option).endswith("（推荐）")
+                for option in first["clarification"]["questions"][0]["options"][:-1]
+            ),
+            1,
+        )
+        self.assertTrue(
+            next(
+                action
+                for action in first["clarification"]["choice_actions"]
+                if action["choice_id"] == "omit-context"
+            )["business_label"].endswith("（推荐）")
+        )
         self.assertEqual(resumed["status"], "completed", resumed)
         self.assertEqual(resumed["topic_id"], first["topic_id"])
         self.assertNotIn("clarification", resumed)
@@ -2948,13 +3148,14 @@ class AgentCoreBridgeTest(unittest.TestCase):
         def workflow(request):
             calls.append(dict(request))
             if len(calls) == 1:
+                waiting_records = _queryless_runtime_records_for_request(request)
                 return WorkflowRunResult(
                     status="waiting_for_clarification",
                     run_id=request["run_id"],
                     answer_package={
                         "status": "waiting_for_clarification",
                         "accepted_graph": ["event_evidence"],
-                        "analysis_contract": {"analysis_contract_id": "analysis:no-ready:1"},
+                        "analysis_contract": waiting_records["analysis_contract"],
                         "analysis_route": {"requested_nodes": ["event_evidence"]},
                         **_workflow_clarification_material(
                             question_family="data_quality_or_evidence_review",
@@ -2986,7 +3187,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
                             ],
                         },
                     },
-                    analysis_runtime_records={},
+                    analysis_runtime_records=waiting_records,
                 )
             return fake_workflow(request)
 
@@ -3021,6 +3222,13 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         self.assertEqual(first["status"], "waiting_for_clarification")
         self.assertEqual(first["clarification"]["recommended_choice_id"], "boundary-only")
+        self.assertEqual(
+            sum(
+                str(option).endswith("（推荐）")
+                for option in first["clarification"]["questions"][0]["options"][:-1]
+            ),
+            1,
+        )
         self.assertEqual(resumed["status"], "completed", resumed)
         self.assertEqual(len(calls), 2)
         self.assertEqual(
@@ -3034,23 +3242,8 @@ class AgentCoreBridgeTest(unittest.TestCase):
                 self.saved_runtime_bundle = kwargs
                 return "inserted"
 
-        records = {
-            "analysis_contract": {"analysis_contract_id": "analysis:waiting:1"},
-            "query_contracts": (),
-            "query_execution_records": (),
-            "rows_records": (),
-            "snapshot_records": (),
-            "completeness_records": (),
-            "capability_binding_records": (),
-            "evidence_manifests": (),
-            "context_manifests": (),
-            "trusted_provenance_records": (),
-            "verified_claims": (),
-            "claim_links": (),
-            "repair_attempts": (),
-        }
-
         def workflow(request):
+            records = _queryless_runtime_records_for_request(request)
             return WorkflowRunResult(
                 status="waiting_for_clarification",
                 run_id=request["run_id"],
@@ -3086,7 +3279,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "waiting_for_clarification")
         self.assertEqual(
             store.saved_runtime_bundle["analysis_contract"]["analysis_contract_id"],
-            "analysis:waiting:1",
+            "analysis:run-waiting-runtime-persistence:1",
         )
         self.assertEqual(store.saved_runtime_bundle["run_id"], result["run_id"])
 
@@ -3137,8 +3330,9 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(
             result["failure_reason"],
-            "analysis_runtime_persistence_failed",
+            "analysis_runtime_bundle_validation_failed",
         )
+        self.assertEqual(result["failure_stage"], "runtime_bundle_validation")
         self.assertEqual(
             result["llm_calls"],
             [_failed_llm_audit("waiting-persistence")],
@@ -3359,73 +3553,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         self.assertEqual(delivered["status"], "failed")
 
-    def test_factual_language_is_canonically_rendered_without_caller_commentary(self):
-        for case_id, text, forbidden in (
-            ("less_than", "paid_amount 少于 10。", "少于"),
-            ("over", "paid_amount 超过 999。", "999"),
-            ("halved", "paid_amount 减半到 10。", "减半"),
-        ):
-            with self.subTest(case_id=case_id):
-                package, context, _ = _verified_delivery_package(
-                    run_id=f"run-agent-core-render-{case_id}",
-                    claim_text=text,
-                )
-                delivered = _run_verified_package_through_core(
-                    package,
-                    context,
-                    thread_id=f"thread-agent-core-render-{case_id}",
-                    run_id=f"run-agent-core-render-{case_id}",
-                )[0]["answer_package"]
-                self.assertEqual(delivered["status"], "draft")
-                self.assertNotIn(forbidden, delivered["final_answer"])
-                self.assertIn("paid_amount", delivered["final_answer"])
-
-        package, context, commentary = _verified_delivery_package(
-            run_id="run-agent-core-commentary",
-            claim_text="建议提升体验并持续观察。",
-        )
-        delivered = _run_verified_package_through_core(
-            package,
-            context,
-            thread_id="thread-agent-core-commentary",
-            run_id="run-agent-core-commentary",
-        )[0]["answer_package"]
-        self.assertNotIn(commentary, delivered["final_answer"])
-        self.assertNotIn(commentary, json.dumps(delivered, ensure_ascii=False))
-        self.assertEqual(
-            delivered["final_answer"],
-            delivered["sections"][0]["payload"]["claims"][0]["text"],
-        )
-
-    def test_raw_scalar_display_cannot_be_changed_by_caller_percent_text(self):
-        raw_decimal, raw_decimal_context, _ = _verified_delivery_package(
-            run_id="run-agent-core-raw-decimal",
-            paid_amount=0.123,
-            claim_text="paid_amount 为 12.3%。",
-        )
-        raw_decimal_delivery = _run_verified_package_through_core(
-            raw_decimal,
-            raw_decimal_context,
-            thread_id="thread-agent-core-raw-decimal",
-            run_id="run-agent-core-raw-decimal",
-        )[0]["answer_package"]
-        self.assertIn("=0.123", raw_decimal_delivery["final_answer"])
-        self.assertNotIn("%", raw_decimal_delivery["final_answer"])
-
-        raw_ten, raw_ten_context, _ = _verified_delivery_package(
-            run_id="run-agent-core-raw-ten",
-            paid_amount=10,
-            claim_text="paid_amount 为 1000%。",
-        )
-        raw_ten_delivery = _run_verified_package_through_core(
-            raw_ten,
-            raw_ten_context,
-            thread_id="thread-agent-core-raw-ten",
-            run_id="run-agent-core-raw-ten",
-        )[0]["answer_package"]
-        self.assertIn("=10", raw_ten_delivery["final_answer"])
-        self.assertNotIn("%", raw_ten_delivery["final_answer"])
-
     def test_ratio_display_policy_renders_canonical_percent(self):
         fact = AuthorityFact.create(
             query_contract_ref="query:ratio",
@@ -3454,12 +3581,15 @@ class AgentCoreBridgeTest(unittest.TestCase):
                     "value_semantics": fact.value_semantics,
                     "display_format": fact.display_format,
                 },
-            )
+            ),
+            runtime_registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
         )
 
         self.assertEqual(
             rendered,
-            ("目标期（target_day，2026-06-02）payment_success_rate=12.3%。",),
+            ("2026-06-02的支付成功率为12.3%。",),
         )
 
     def test_factless_caller_prose_never_enters_client_projection(self):
@@ -3544,7 +3674,120 @@ class AgentCoreBridgeTest(unittest.TestCase):
             summary["claims"][0]["text"],
             summary["visualization_plan"]["blocks"][0]["claim_text"],
         )
-        self.assertEqual(delivered["final_answer"], summary["claims"][0]["text"])
+
+    def test_verified_business_narrative_survives_core_and_artifact_sync_verbatim(self):
+        narrative = (
+            "我对问题的理解是：核对渠道A的目标期付费金额。\n"
+            "分析脉络：先确认数据权威，再核对目标窗口。\n"
+            "关键发现：渠道A的目标期付费金额为10。\n"
+            "最终结论：当前可以发布这一已观测结果。\n"
+            "需要注意：该结论只覆盖当前目标窗口。"
+        )
+        package, context, _ = _verified_delivery_package(
+            run_id="run-agent-core-bound-business-narrative",
+            claim_selector_mode="target",
+            final_business_summary=narrative,
+            narrative_statement_bindings=(
+                {
+                    "excerpt": "关键发现：渠道A的目标期付费金额为10",
+                    "statement_class": "verified_claim",
+                    "authority_keys": ["结论1"],
+                },
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            artifact_path = Path(directory) / "answer-package.json"
+            artifact_path.write_text(
+                json.dumps(package, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            result, store = _run_verified_package_through_core(
+                package,
+                context,
+                thread_id="thread-agent-core-bound-business-narrative",
+                run_id="run-agent-core-bound-business-narrative",
+                artifact_path=str(artifact_path),
+            )
+
+            self.assertEqual(result.get("status"), "completed", result)
+            delivered = result["answer_package"]
+            persisted = json.loads(artifact_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(delivered["final_answer"], narrative)
+        self.assertEqual(
+            delivered["sections"][0]["payload"]["answer_text"],
+            narrative,
+        )
+        self.assertEqual(
+            delivered["sections"][0]["payload"]["final_business_summary"],
+            narrative,
+        )
+        self.assertEqual(
+            store.answer_packages[
+                "run-agent-core-bound-business-narrative"
+            ]["final_answer"],
+            narrative,
+        )
+        self.assertEqual(persisted["final_answer"], narrative)
+        self.assertEqual(
+            persisted["sections"][0]["payload"]["answer_text"],
+            narrative,
+        )
+        self.assertEqual(
+            persisted["sections"][0]["payload"]["final_business_summary"],
+            narrative,
+        )
+        self.assertNotEqual(
+            narrative,
+            delivered["sections"][0]["payload"]["claims"][0]["text"],
+        )
+        self.assertEqual(
+            delivered["sections"][0]["payload"]["claims"][0]["numbers"],
+            {"paid_amount": "10.0"},
+        )
+
+    def test_unsupported_material_narrative_is_not_publication_bound(self):
+        narrative = (
+            "我对问题的理解是：核对渠道A的目标期付费金额。\n"
+            "分析脉络：先确认数据权威，再核对目标窗口。\n"
+            "关键发现：渠道A的目标期付费金额为10。\n"
+            "最终结论：促销活动导致付费金额增加9,999。\n"
+            "需要注意：该结论只覆盖当前目标窗口。"
+        )
+        package, _, _ = _verified_delivery_package(
+            run_id="run-agent-core-unbound-material-narrative",
+            claim_selector_mode="target",
+            final_business_summary=narrative,
+            narrative_statement_bindings=(
+                {
+                    "excerpt": "关键发现：渠道A的目标期付费金额为10",
+                    "statement_class": "verified_claim",
+                    "authority_keys": ["结论1"],
+                },
+                {
+                    "excerpt": "最终结论：促销活动导致付费金额增加9,999",
+                    "statement_class": "verified_claim",
+                    "authority_keys": ["结论1"],
+                },
+            ),
+        )
+
+        self.assertEqual(package["status"], "failed")
+        self.assertEqual(package["final_answer"], "")
+        self.assertEqual(
+            package["admin_audit"]["verifier"]["status"],
+            "passed",
+        )
+        self.assertIn(
+            "final_narrative_publication_binding_invalid",
+            {
+                error["code"]
+                for error in package["admin_audit"][
+                    "narrative_publication"
+                ]["errors"]
+            },
+        )
 
     def test_wrong_explicit_fact_selector_is_rejected(self):
         package, context, _ = _verified_delivery_package(
@@ -3723,7 +3966,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
         cases = (
             ("zero", 0, "integer", 0),
             ("false", False, "boolean", False),
-            ("null", None, "null", "Unknown"),
+            ("null", None, "null", "Blank"),
             ("empty", "", "string", ""),
         )
         for case_id, value, value_type, projected_value in cases:
@@ -4000,28 +4243,12 @@ class AgentCoreBridgeTest(unittest.TestCase):
             run_id="run-agent-core-dimension-selected",
         )[0]["answer_package"]
         self.assertEqual(selected_delivery["status"], "draft")
-        self.assertIn("channel=A", selected_delivery["final_answer"])
-
-    def test_verified_numbers_do_not_authorize_unbound_text_facts(self):
-        package, context, _ = _verified_delivery_package(
-            run_id="run-agent-core-factual-injection",
+        self.assertEqual(
+            selected_delivery["sections"][0]["payload"]["claims"][0][
+                "dimensions"
+            ],
+            {"channel": "A"},
         )
-        claim = package["sections"][0]["payload"]["claims"][0]
-        claim["text"] = "paid_amount=999999，ROI=123。"
-        package["final_answer"] = claim["text"]
-
-        delivered = _run_verified_package_through_core(
-            package,
-            context,
-            thread_id="thread-agent-core-factual-injection",
-            run_id="run-agent-core-factual-injection",
-        )[0]["answer_package"]
-
-        self.assertEqual(delivered["status"], "draft")
-        self.assertNotIn("999999", delivered["final_answer"])
-        self.assertNotIn("ROI", delivered["final_answer"])
-        self.assertNotIn("123", delivered["final_answer"])
-        self.assertIn("=10", delivered["final_answer"])
 
     def test_target_context_and_evidence_strength_come_from_authority(self):
         package, context, _ = _verified_delivery_package(
@@ -4052,50 +4279,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
         self.assertEqual(projected_evidence["strength"], "observed")
         self.assertNotIn("forged", str(delivered))
 
-    def test_authority_bound_fact_formats_ignore_caller_wording_and_scale(self):
-        cases = (
-            (
-                "negative_thousands_date",
-                -1234.5,
-                "2026-06-02 的 paid_amount 为 -1,234.50。",
-            ),
-            (
-                "percentage_date",
-                0.123,
-                "2026-06-02 的 paid_amount 为 12.3%。",
-            ),
-            (
-                "pure_wording",
-                10.0,
-                "渠道表现值得关注，建议持续观察。",
-            ),
-        )
-        for case_id, paid_amount, claim_text in cases:
-            with self.subTest(case_id=case_id):
-                package, context, _ = _verified_delivery_package(
-                    run_id=f"run-agent-core-{case_id}",
-                    paid_amount=paid_amount,
-                    claim_text=claim_text,
-                )
-                delivered = _run_verified_package_through_core(
-                    package,
-                    context,
-                    thread_id=f"thread-agent-core-{case_id}",
-                    run_id=f"run-agent-core-{case_id}",
-                )[0]["answer_package"]
-
-                self.assertEqual(delivered["status"], "draft")
-                if case_id == "negative_thousands_date":
-                    self.assertIn("2026-06-02", delivered["final_answer"])
-                    self.assertIn("-1,234.5", delivered["final_answer"])
-                elif case_id == "percentage_date":
-                    self.assertIn("2026-06-02", delivered["final_answer"])
-                    self.assertIn("=0.123", delivered["final_answer"])
-                    self.assertNotIn("%", delivered["final_answer"])
-                else:
-                    self.assertNotIn(claim_text, delivered["final_answer"])
-                    self.assertIn("paid_amount", delivered["final_answer"])
-
     def test_comparison_direction_must_match_authoritative_windows(self):
         package, context, claim_text = _verified_delivery_package(
             run_id="run-agent-core-direction",
@@ -4116,27 +4299,99 @@ class AgentCoreBridgeTest(unittest.TestCase):
         )[0]["answer_package"]
 
         projected = delivered["sections"][0]["payload"]["claims"][0]
-        self.assertIn("paid_amount", delivered["final_answer"])
-        self.assertNotEqual(delivered["final_answer"], claim_text)
         self.assertEqual(projected["comparison_direction"], "positive")
         self.assertEqual(projected["baseline"]["window_id"], "previous_day")
 
-        package["sections"][0]["payload"]["claims"][0]["text"] = (
-            "目标期 paid_amount 为 20，低于基线的 10。"
+    def test_passed_comparison_uses_business_text_without_metric_or_window_ids(self):
+        authority_facts = tuple(
+            AuthorityFact.create(
+                query_contract_ref="query:business-text",
+                result_ref="result:business-text",
+                metric_id="paid_amount",
+                value=value,
+                window_id=window_id,
+                window_role=role,
+                observation_key=observation_key,
+                dimensions=(),
+                grain=("window_id", "observation_key"),
+                value_semantics="raw_scalar",
+                display_format="decimal",
+            )
+            for role, window_id, observation_key, value in (
+                ("target", "target_day", "2026-06-02", Decimal("20")),
+                ("baseline", "previous_day", "2026-06-01", Decimal("10")),
+            )
         )
-        rejected = _run_verified_package_through_core(
-            package,
-            context,
-            thread_id="thread-agent-core-wrong-direction",
-            run_id="run-agent-core-direction",
-        )[0]["answer_package"]
-        self.assertEqual(rejected["status"], "draft")
-        self.assertNotIn("低于", rejected["final_answer"])
-        self.assertIn("增加10", rejected["final_answer"])
+        projected = _project_claim_from_authority(
+            {
+                "text": "目标期 paid_amount 为 20，高于基线的 10。",
+                "claim_type": "comparative_change",
+                "claim_strength": "observed",
+                "evidence_refs": ("compare:business-text",),
+                "numbers": {
+                    "target_paid_amount": 20.0,
+                    "baseline_paid_amount": 10.0,
+                    "delta": 10.0,
+                },
+            },
+            {
+                "metric_ids": ("paid_amount",),
+                "authority_facts": authority_facts,
+                "authority_context_facts": (),
+                "grains": (("window_id", "observation_key"),),
+                "target_windows": (
+                    {
+                        "window_id": "target_day",
+                        "role": "target",
+                        "label": "target_day",
+                        "start_inclusive": "2026-06-02",
+                        "end_exclusive": "2026-06-03",
+                        "timezone": "Africa/Lagos",
+                    },
+                ),
+                "baseline_windows": (
+                    {
+                        "window_id": "previous_day",
+                        "role": "baseline",
+                        "label": "previous_day",
+                        "start_inclusive": "2026-06-01",
+                        "end_exclusive": "2026-06-02",
+                        "timezone": "Africa/Lagos",
+                    },
+                ),
+            },
+            runtime_registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+        )
 
-    def test_valid_claim_cannot_carry_unbound_client_content(self):
+        self.assertIn("付费金额", projected["text"])
+        self.assertIn("2026-06-02", projected["text"])
+        self.assertIn("2026-06-01", projected["text"])
+        for internal_token in ("paid_amount", "target_day", "previous_day"):
+            self.assertNotIn(internal_token, projected["text"])
+        self.assertEqual(projected["target_metric"], "paid_amount")
+        self.assertEqual(projected["target"]["window_id"], "target_day")
+        self.assertEqual(projected["baseline"]["window_id"], "previous_day")
+
+    def test_bound_narrative_tampering_fails_closed_at_client_projection(self):
+        narrative = (
+            "我对问题的理解是：核对渠道A的目标期付费金额。\n"
+            "分析脉络：先确认数据权威，再核对目标窗口。\n"
+            "关键发现：渠道A的目标期付费金额为10。\n"
+            "最终结论：当前可以发布这一已观测结果。\n"
+            "需要注意：该结论只覆盖当前目标窗口。"
+        )
         package, context, claim_text = _verified_delivery_package(
             run_id="run-agent-core-closed-projection",
+            final_business_summary=narrative,
+            narrative_statement_bindings=(
+                {
+                    "excerpt": "关键发现：渠道A的目标期付费金额为10",
+                    "statement_class": "verified_claim",
+                    "authority_keys": ["结论1"],
+                },
+            ),
         )
         package["final_answer"] = "INJECTED FINAL"
         package["sections"][0]["payload"]["answer_text"] = "INJECTED SUMMARY"
@@ -4158,12 +4413,83 @@ class AgentCoreBridgeTest(unittest.TestCase):
 
         delivered = result["answer_package"]
         summary = delivered["sections"][0]["payload"]
-        self.assertIn("paid_amount", delivered["final_answer"])
-        self.assertEqual(summary["answer_text"], delivered["final_answer"])
-        self.assertEqual(len(summary["claim_groups"]), 1)
-        self.assertEqual(len(summary["visualization_plan"]["blocks"]), 1)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(delivered["final_answer"], "")
+        self.assertEqual(summary["answer_text"], "")
+        self.assertEqual(summary["claims"], [])
         self.assertEqual(delivered["llm_calls"], [])
         self.assertNotIn("INJECTED", str(delivered))
+
+    def test_self_signed_narrative_digest_cannot_bypass_authority_revalidation(self):
+        from bi_agent.runtime.evidence_authority import canonical_digest
+
+        narrative = (
+            "我对问题的理解是：核对渠道A的目标期付费金额。\n"
+            "分析脉络：先确认数据权威，再核对目标窗口。\n"
+            "关键发现：渠道A的目标期付费金额为10。\n"
+            "最终结论：当前可以发布这一已观测结果。\n"
+            "需要注意：该结论只覆盖当前目标窗口。"
+        )
+        package, context, _ = _verified_delivery_package(
+            run_id="run-agent-core-self-signed-narrative",
+            final_business_summary=narrative,
+            narrative_statement_bindings=(
+                {
+                    "excerpt": "关键发现：渠道A的目标期付费金额为10",
+                    "statement_class": "verified_claim",
+                    "authority_keys": ["结论1"],
+                },
+            ),
+        )
+        forged = (
+            "我对问题的理解是：核对渠道A的目标期付费金额。\n"
+            "分析脉络：先确认数据权威，再核对目标窗口。\n"
+            "关键发现：渠道A的目标期付费金额为9,999。\n"
+            "最终结论：促销活动导致付费金额上涨。\n"
+            "需要注意：该结论只覆盖当前目标窗口。"
+        )
+        forged_bindings = [
+            {
+                "excerpt": "关键发现：渠道A的目标期付费金额为9,999",
+                "statement_class": "verified_claim",
+                "authority_keys": ["结论1"],
+            },
+            {
+                "excerpt": "最终结论：促销活动导致付费金额上涨",
+                "statement_class": "verified_claim",
+                "authority_keys": ["结论1"],
+            },
+        ]
+        package["final_answer"] = forged
+        package["sections"][0]["payload"]["answer_text"] = forged
+        package["sections"][0]["payload"]["final_business_summary"] = forged
+        package["admin_audit"]["narrative_statement_bindings"] = forged_bindings
+        binding = package["admin_audit"][
+            "final_narrative_publication_binding"
+        ]
+        binding["status"] = "bound"
+        binding["validation_errors"] = []
+        binding["narrative_digest"] = canonical_digest(
+            {"final_business_summary": forged}
+        )
+        binding["statement_bindings_digest"] = canonical_digest(
+            forged_bindings
+        )
+
+        result, _ = _run_verified_package_through_core(
+            package,
+            context,
+            thread_id="thread-agent-core-self-signed-narrative",
+            run_id="run-agent-core-self-signed-narrative",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_reason"], "narrative_publication_failed")
+        self.assertEqual(
+            result["answer_package"]["admin_audit"]["verifier"]["status"],
+            "passed",
+        )
+        self.assertEqual(result["answer_package"]["final_answer"], "")
 
     def test_warnings_only_verified_claim_remains_deliverable(self):
         package, context, claim_text = _verified_delivery_package(
@@ -4183,8 +4509,6 @@ class AgentCoreBridgeTest(unittest.TestCase):
             delivered["admin_audit"]["verifier"]["status"],
             "passed_with_warnings",
         )
-        self.assertIn("paid_amount", delivered["final_answer"])
-        self.assertNotEqual(delivered["final_answer"], claim_text)
         self.assertNotIn("message", str(delivered["admin_audit"]))
         internal = next(
             event["payload"]
@@ -8152,6 +8476,7 @@ def _claim_scoped_package_projection_scenario(*, run_id):
                 current_binding,
                 evidence_ref=evidence_refs[0],
             ),
+            "numeric_facts": {"paid_amount": 120.0},
             "typed_payload": {"paid_amount": 120.0},
         },
         {
@@ -8159,6 +8484,7 @@ def _claim_scoped_package_projection_scenario(*, run_id):
                 fresh_binding,
                 evidence_ref=evidence_refs[1],
             ),
+            "numeric_facts": {"paid_amount": 21.0},
             "typed_payload": {"paid_amount": 21.0},
         },
     )
@@ -8240,8 +8566,8 @@ def _claim_scoped_package_projection_scenario(*, run_id):
             sql_hash="sha256:claim-scoped",
             artifact_audit={"artifact_ref": "artifact:claim-scoped"},
             analysis_contract=analysis_contract,
-            answer_text="目标期总付费金额为 120；渠道 B 历史窗口为 21。",
-            final_business_summary="目标期总付费金额为 120；渠道 B 历史窗口为 21。",
+            answer_text="",
+            final_business_summary="",
             trusted_claim_provenance_record=leaked_provenance,
             reuse_decisions=(physical_decision,),
         )
@@ -8273,6 +8599,8 @@ def _verified_delivery_package(
     claim_selector_mode="",
     accepted_assumptions=(),
     reuse_decisions=(),
+    final_business_summary=None,
+    narrative_statement_bindings=None,
 ):
     from bi_agent.runtime.analysis_contracts import AnalysisContract
     from bi_agent.runtime.claim_provenance import (
@@ -8442,6 +8770,7 @@ def _verified_delivery_package(
         "evidence_type": "statistical_association",
         "strength": "medium",
         "wording_limit": "supported",
+        "numeric_facts": dict(verified_numbers),
         "typed_payload": dict(verified_numbers),
         "limitations": (),
     }
@@ -8516,7 +8845,12 @@ def _verified_delivery_package(
         artifact_audit={"artifact_ref": "artifact:test"},
         analysis_contract=analysis_contract.to_dict(),
         answer_text=claim_text,
-        final_business_summary=claim_text,
+        final_business_summary=(
+            ""
+            if final_business_summary is None
+            else final_business_summary
+        ),
+        narrative_statement_bindings=narrative_statement_bindings,
         trusted_claim_provenance_record=build_trusted_claim_provenance_record(
             run_id=run_id,
             artifact_refs=("artifact:test",),
@@ -8750,17 +9084,10 @@ def _verified_runtime_records_for_request(
         repair_decisions=(),
         reuse_decisions=(),
     )
-    verified_package = reverify_answer_package_for_delivery(
-        answer_package,
-        evidence_resolver=context["evidence_resolver"],
-        rows_loader=context["rows_loader"],
-        runtime_registry=context["runtime_registry"],
-        release_resolver=context["release_resolver"],
-    )
     return AnalysisRuntime.build_persistence_bundle(
         object.__new__(AnalysisRuntime),
         runtime_result,
-        answer_package=verified_package,
+        answer_package=answer_package,
         request=request,
         artifact_path=artifact_path,
     )

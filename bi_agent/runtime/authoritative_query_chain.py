@@ -34,6 +34,9 @@ from bi_agent.runtime.runtime_contract_registry import (
     RuntimeContractRegistry,
     runtime_registry_integrity_error,
 )
+from bi_agent.runtime.degradation_policy import (
+    degraded_binding_projection_is_authorized,
+)
 
 
 class AuthoritativeQueryChainError(EvidenceIntegrityError):
@@ -394,17 +397,14 @@ def _validate_report_links(
 
 
 def _binding_query_order(binding: CapabilityBindingRecord) -> tuple[str, ...]:
-    refs = []
-    for field in ("required_input_slots", "optional_input_slots"):
-        for slot in binding.plan_payload.get(field) or ():
-            if not isinstance(slot, Mapping):
-                continue
-            refs.extend(str(ref) for ref in slot.get("query_contract_refs") or ())
-            refs.extend(
-                str(ref)
-                for ref in slot.get("validation_query_contract_refs") or ()
+    return tuple(
+        dict.fromkeys(
+            (
+                *binding.query_contract_refs,
+                *binding.validation_query_contract_refs,
             )
-    return tuple(dict.fromkeys(refs))
+        )
+    )
 
 
 def validate_capability_binding_plan_semantics(
@@ -420,7 +420,25 @@ def validate_capability_binding_plan_semantics(
         raise AuthoritativeQueryChainError("capability_binding_record_type_invalid")
     _require_clean_record(binding, "capability_binding_record_integrity")
     plan = binding.plan_payload
-    validate_capability_plan_semantics(plan, registry, query_contracts_by_ref)
+    if binding.status == "degraded":
+        if not degraded_binding_projection_is_authorized(
+            plan,
+            binding.binding_payload,
+        ):
+            raise AuthoritativeQueryChainError(
+                "capability_binding_degradation_unauthorized"
+            )
+        allow_unbound_query_refs = True
+    elif binding.status == "ready":
+        allow_unbound_query_refs = False
+    else:
+        raise AuthoritativeQueryChainError("capability_binding_status_invalid")
+    validate_capability_plan_semantics(
+        plan,
+        registry,
+        query_contracts_by_ref,
+        allow_unbound_query_refs=allow_unbound_query_refs,
+    )
     if (
         str(plan.get("capability_id") or "") != binding.capability_id
         or str(plan.get("analysis_contract_ref") or "")
@@ -453,6 +471,8 @@ def validate_capability_plan_semantics(
     plan: CapabilityExecutionPlan | Mapping[str, Any],
     registry: RuntimeContractRegistry,
     query_contracts_by_ref: Mapping[str, QueryContract] | None = None,
+    *,
+    allow_unbound_query_refs: bool = False,
 ) -> None:
     registry_error = runtime_registry_integrity_error(registry)
     if registry_error:
@@ -499,6 +519,7 @@ def validate_capability_plan_semantics(
         payload,
         registry,
         query_contracts_by_ref,
+        allow_unbound_query_refs=allow_unbound_query_refs,
     )
 
 
@@ -506,6 +527,8 @@ def _validate_capability_slots(
     plan: Mapping[str, Any],
     registry: RuntimeContractRegistry,
     by_query_ref: Mapping[str, QueryContract] | None,
+    *,
+    allow_unbound_query_refs: bool = False,
 ) -> None:
     capability = registry.capability_inputs(str(plan.get("capability_id") or ""))
     query_families = tuple(capability.get("query_families") or ())
@@ -577,6 +600,8 @@ def _validate_capability_slots(
             continue
         primaries = tuple(by_query_ref.get(ref) for ref in primary_refs)
         if any(item is None for item in primaries):
+            if allow_unbound_query_refs and all(item is None for item in primaries):
+                continue
             raise AuthoritativeQueryChainError(
                 f"capability_contract_slot_query_missing:{family}"
             )
@@ -652,7 +677,12 @@ def _capability_metrics_match(
     expected_metrics: tuple[str, ...],
 ) -> bool:
     if str(capability.get("metric_mode") or "") != "requested":
-        return actual_metrics == expected_metrics
+        return bool(
+            len(actual_metrics) == len(expected_metrics)
+            and len(set(actual_metrics)) == len(actual_metrics)
+            and len(set(expected_metrics)) == len(expected_metrics)
+            and set(actual_metrics) == set(expected_metrics)
+        )
     allowed_metrics = tuple(
         str(metric_id)
         for metric_id in capability.get("allowed_metrics") or ()

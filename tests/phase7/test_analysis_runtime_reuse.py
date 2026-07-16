@@ -369,21 +369,19 @@ def _resign(candidate, **changes):
 def _physical_claim_package(result, text="复用后的新结论"):
     binding = result.persistence_records["capability_binding_records"][0]
     evidence_ref = f"evidence:{binding.record_ref}"
+    verified_claim = {
+        "text": text,
+        "claim_type": "comparative_change",
+        "claim_strength": "observed",
+        "evidence_refs": [evidence_ref],
+    }
     return {
         "status": "complete",
+        "admin_audit": {"verified_claims": [verified_claim]},
         "sections": [
             {
                 "section_id": "summary",
-                "payload": {
-                    "claims": [
-                        {
-                            "text": text,
-                            "claim_type": "comparative_change",
-                            "claim_strength": "observed",
-                            "evidence_refs": [evidence_ref],
-                        }
-                    ]
-                },
+                "payload": {"claims": [verified_claim]},
             },
             {
                 "section_id": "evidence",
@@ -1164,22 +1162,22 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
             }
             for binding in bindings
         )
+        verified_claims = [
+            {
+                "text": f"{binding.capability_id} 形成可验证结论。",
+                "claim_type": binding.supported_claim_types[0],
+                "claim_strength": "observed",
+                "evidence_refs": [item["evidence_ref"]],
+            }
+            for binding, item in zip(bindings, evidence)
+        ]
         answer_package = {
             "status": "complete",
+            "admin_audit": {"verified_claims": verified_claims},
             "sections": [
                 {
                     "section_id": "summary",
-                    "payload": {
-                        "claims": [
-                            {
-                                "text": f"{binding.capability_id} 形成可验证结论。",
-                                "claim_type": binding.supported_claim_types[0],
-                                "claim_strength": "observed",
-                                "evidence_refs": [item["evidence_ref"]],
-                            }
-                            for binding, item in zip(bindings, evidence)
-                        ]
-                    },
+                    "payload": {"claims": verified_claims},
                 },
                 {
                     "section_id": "evidence",
@@ -1426,21 +1424,19 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 "capability_binding_records"
             ][0]
             evidence_ref = f"evidence:{binding.record_ref}"
+            verified_claim = {
+                "text": text,
+                "claim_type": "comparative_change",
+                "claim_strength": "observed",
+                "evidence_refs": [evidence_ref],
+            }
             return {
                 "status": "complete",
+                "admin_audit": {"verified_claims": [verified_claim]},
                 "sections": [
                     {
                         "section_id": "summary",
-                        "payload": {
-                            "claims": [
-                                {
-                                    "text": text,
-                                    "claim_type": "comparative_change",
-                                    "claim_strength": "observed",
-                                    "evidence_refs": [evidence_ref],
-                                }
-                            ]
-                        },
+                        "payload": {"claims": [verified_claim]},
                     },
                     {
                         "section_id": "evidence",
@@ -1510,26 +1506,12 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
             [dict(current.reuse_decisions[0])],
         )
 
-    def test_waiting_claim_filter_keeps_final_physical_reuse_decision_provenance(self):
+    def test_waiting_zero_claim_keeps_final_physical_reuse_decision_provenance(self):
         _, current, request, bundle = _physical_reuse_bundle_fixture(
             current_run_id="run-filtered-claim-reuse",
             answer_package={
                 "status": "waiting_for_clarification",
-                "sections": [
-                    {
-                        "section_id": "summary",
-                        "payload": {
-                            "claims": [
-                                {
-                                    "text": "等待澄清后再发布。",
-                                    "claim_type": "comparative_change",
-                                    "claim_strength": "observed",
-                                    "evidence_refs": [],
-                                }
-                            ]
-                        },
-                    }
-                ],
+                "sections": [],
             },
             publication_mode="waiting_for_clarification",
         )
@@ -2413,24 +2395,10 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 "complete",
             ),
             (
-                "filtered_claim",
+                "waiting_zero_claim",
                 {
                     "status": "waiting_for_clarification",
-                    "sections": [
-                        {
-                            "section_id": "summary",
-                            "payload": {
-                                "claims": [
-                                    {
-                                        "text": "等待澄清后再发布。",
-                                        "claim_type": "comparative_change",
-                                        "claim_strength": "observed",
-                                        "evidence_refs": [],
-                                    }
-                                ]
-                            },
-                        }
-                    ],
+                    "sections": [],
                 },
                 "waiting_for_clarification",
             ),

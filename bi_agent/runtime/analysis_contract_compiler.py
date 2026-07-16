@@ -34,8 +34,12 @@ from bi_agent.runtime.contract_gaps import (
     canonical_source_ambiguity_source_ids,
     canonical_source_ambiguity_subset,
     is_canonical_direct_analysis_source_ambiguity,
+    is_canonical_unsupported_required_claim_gap,
     is_unscoped_direct_analysis_source_ambiguity,
     reviewed_queryless_gap_claim_types,
+)
+from bi_agent.runtime.capability_execution import (
+    degradation_action_is_non_blocking,
 )
 from bi_agent.runtime.evidence_authority import canonical_value
 from bi_agent.runtime.dataset_catalog import (
@@ -90,6 +94,53 @@ class AnalysisCompileOutcome:
     analysis_contract: AnalysisContract
     query_contracts: tuple[QueryContract, ...]
     capability_plans: tuple[CapabilityExecutionPlan, ...]
+
+
+def _validated_capability_roles(
+    proposal: Mapping[str, Any],
+    accepted_capabilities: tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
+    raw_roles = proposal.get("capability_roles")
+    if raw_roles is None:
+        return {
+            capability_id: {
+                "analysis_role": "required",
+                "sources": ("compiler_fail_closed",),
+            }
+            for capability_id in accepted_capabilities
+        }
+    if not isinstance(raw_roles, Mapping) or set(raw_roles) != set(
+        accepted_capabilities
+    ):
+        raise ValueError("analysis_capability_roles_invalid:coverage")
+    roles: dict[str, dict[str, Any]] = {}
+    for capability_id in accepted_capabilities:
+        raw = raw_roles.get(capability_id)
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "analysis_role",
+            "sources",
+        }:
+            raise ValueError("analysis_capability_roles_invalid:shape")
+        analysis_role = raw.get("analysis_role")
+        sources = raw.get("sources")
+        if (
+            analysis_role not in {"required", "auxiliary"}
+            or not isinstance(sources, (list, tuple))
+            or not sources
+            or any(
+                not isinstance(source, str)
+                or not source
+                or source != source.strip()
+                for source in sources
+            )
+            or len(sources) != len(set(sources))
+        ):
+            raise ValueError("analysis_capability_roles_invalid:value")
+        roles[capability_id] = {
+            "analysis_role": str(analysis_role),
+            "sources": tuple(sources),
+        }
+    return roles
 
 
 @dataclass(frozen=True)
@@ -173,6 +224,7 @@ def compile_analysis_contract(
     release_resolver: DatasetReleaseResolver | None = None,
 ) -> AnalysisCompileOutcome:
     capabilities = _dedupe(accepted_capabilities)
+    capability_roles = _validated_capability_roles(proposal, capabilities)
     proposal = _bind_terminal_execution_material(
         proposal,
         accepted_capabilities=capabilities,
@@ -268,7 +320,12 @@ def compile_analysis_contract(
     )
     resolution = _resolve_advisory_windows(
         target_semantic=str(proposal.get("target_semantic") or "yesterday"),
-        baselines=_ordered_values(proposal, "baselines"),
+        baselines=_dedupe(
+            (
+                *_ordered_values(proposal, "baselines"),
+                *_ordered_values(proposal, "auxiliary_baselines"),
+            )
+        ),
         as_of=as_of,
         timezone_name=registry.business_timezone,
         dataset_watermarks={
@@ -310,6 +367,7 @@ def compile_analysis_contract(
         resolution.windows,
         dimension_bindings,
         capability_plans,
+        capability_roles,
         registry,
     )
     scoped_gaps = _scope_gaps(
@@ -1297,6 +1355,21 @@ def _bind_claim_intents(
 
     capability_ceiling = reviewed_claims(accepted_capabilities)
     if explicit:
+        required_claim_intents = set(
+            _values(proposal, "required_claim_intents")
+        )
+        candidate_claim_intents = set(
+            _values(proposal, "candidate_claim_intents")
+        )
+        if (
+            "required_claim_intents" in proposal
+            or "candidate_claim_intents" in proposal
+        ) and (
+            required_claim_intents.intersection(candidate_claim_intents)
+            or required_claim_intents.union(candidate_claim_intents)
+            != set(explicit)
+        ):
+            raise ValueError("claim_intent_role_partition_invalid")
         supported = tuple(
             claim_intent
             for claim_intent in explicit
@@ -1307,24 +1380,61 @@ def _bind_claim_intents(
             for claim_intent in explicit
             if claim_intent not in capability_ceiling
         )
-        gaps = tuple(
+        auxiliary_unsupported = tuple(
+            claim_intent
+            for claim_intent in unsupported
+            if claim_intent in candidate_claim_intents
+        )
+        material_unsupported = tuple(
+            claim_intent
+            for claim_intent in unsupported
+            if claim_intent not in candidate_claim_intents
+        )
+        material_gaps = tuple(
             ContractGap(
                 gap_type="contract_partial",
                 gap_id=f"claim_intent:{claim_intent}:unsupported",
-                affected_capabilities=(
-                    accepted_capabilities or ("analysis_contract",)
-                ),
+                affected_capabilities=("analysis_contract",),
                 affected_claim_types=(claim_intent,),
                 owner="contract_owner",
                 repair_options=(
-                    "choose_supported_claim_intent",
-                    "clarify_claim_intent",
+                    "add_supporting_capability",
+                    "report_unavailable_claim",
                 ),
-                requires_clarification=True,
+                requires_clarification=False,
+                diagnostic_context={
+                    "claim_origin": "user_required",
+                    "publication_status": "unavailable",
+                },
             )
-            for claim_intent in unsupported
+            for claim_intent in material_unsupported
         )
-        return supported or ("unbound_claim_intent",), gaps
+        auxiliary_gaps = tuple(
+            ContractGap(
+                gap_type="contract_partial",
+                gap_id=f"claim_candidate:{claim_intent}:unsupported",
+                affected_capabilities=("analysis_contract",),
+                affected_claim_types=(claim_intent,),
+                owner="contract_owner",
+                repair_options=(
+                    "add_safe_supporting_capability",
+                    "omit_auxiliary_claim",
+                ),
+                requires_clarification=False,
+                diagnostic_context={
+                    "claim_origin": "llm_auxiliary",
+                    "publication_status": "omitted",
+                },
+            )
+            for claim_intent in auxiliary_unsupported
+        )
+        if supported:
+            accepted = supported
+        elif material_unsupported:
+            accepted = ("unbound_claim_intent",)
+        else:
+            accepted = ()
+        return accepted, (*material_gaps, *auxiliary_gaps)
 
     if accepted_terminal_gaps:
         terminal_gap_claims = {
@@ -1340,7 +1450,7 @@ def _bind_claim_intents(
         if (
             "unbound_claim_intent" in authority_claim_intents
             and any(
-                _is_canonical_unsupported_claim_gap(gap)
+                is_canonical_unsupported_required_claim_gap(gap)
                 for gap in accepted_terminal_gaps
             )
         ):
@@ -1380,25 +1490,6 @@ def _bind_claim_intents(
             requires_clarification=True,
         ),
     )
-
-
-def _is_canonical_unsupported_claim_gap(gap: ContractGap) -> bool:
-    if len(gap.affected_claim_types) != 1:
-        return False
-    claim_type = gap.affected_claim_types[0]
-    return (
-        claim_type != "unbound_claim_intent"
-        and gap.gap_type == "contract_partial"
-        and gap.gap_id == f"claim_intent:{claim_type}:unsupported"
-        and gap.dataset_id == ""
-        and bool(gap.affected_capabilities)
-        and gap.owner == "contract_owner"
-        and gap.repair_options
-        == ("choose_supported_claim_intent", "clarify_claim_intent")
-        and gap.requires_clarification is True
-        and canonical_value(gap.diagnostic_context) == {}
-    )
-
 
 def _resolve_advisory_windows(
     *,
@@ -1909,6 +2000,7 @@ def _reconcile_capability_inputs(
     windows: tuple[ResolvedWindow, ...],
     dimension_bindings: tuple[DimensionBinding, ...],
     capability_plans: tuple[CapabilityExecutionPlan, ...],
+    capability_roles: Mapping[str, Mapping[str, Any]],
     registry: RuntimeContractRegistry,
 ) -> tuple[ContractGap, ...]:
     available_windows = {window.window_id for window in windows}
@@ -1920,6 +2012,26 @@ def _reconcile_capability_inputs(
         contract = _registry_entry(registry.capability_inputs, capability_id)
         if contract is None:
             continue
+        plan = plan_by_capability.get(capability_id)
+        role = capability_roles.get(capability_id) or {
+            "analysis_role": "required",
+            "sources": ("compiler_fail_closed",),
+        }
+        degradation_action = str(
+            (plan.degradation_policy if plan is not None else {}).get(
+                "missing_required_input"
+            )
+            or ""
+        )
+        gap_context = {
+            "analysis_role": str(role.get("analysis_role") or "required"),
+            "degradation_action": degradation_action,
+            "role_sources": list(role.get("sources") or ()),
+        }
+        requires_input_clarification = not (
+            gap_context["analysis_role"] == "auxiliary"
+            and degradation_action_is_non_blocking(degradation_action)
+        )
         for window_id in _mapping_values(contract, "required_windows"):
             if window_id not in available_windows:
                 gap = _contract_gap(
@@ -1934,7 +2046,8 @@ def _reconcile_capability_inputs(
                         "remove_capability_path",
                         "clarify_window_contract",
                     ),
-                    requires_clarification=True,
+                    requires_clarification=requires_input_clarification,
+                    diagnostic_context=gap_context,
                 )
                 gaps[gap.gap_id] = gap
         if (
@@ -1951,7 +2064,8 @@ def _reconcile_capability_inputs(
                     "remove_capability_path",
                     "clarify_context_source",
                 ),
-                requires_clarification=True,
+                requires_clarification=requires_input_clarification,
+                diagnostic_context=gap_context,
             )
             gaps[gap.gap_id] = gap
         if (
@@ -1967,11 +2081,11 @@ def _reconcile_capability_inputs(
                     "remove_capability_path",
                     "clarify_dimension",
                 ),
-                requires_clarification=True,
+                requires_clarification=requires_input_clarification,
+                diagnostic_context=gap_context,
             )
             gaps[gap.gap_id] = gap
 
-        plan = plan_by_capability.get(capability_id)
         if plan is None:
             continue
         for slot in plan.required_input_slots:
@@ -1989,6 +2103,7 @@ def _reconcile_capability_inputs(
                     "repair_source_or_contract_inputs",
                     "remove_capability_path",
                 ),
+                diagnostic_context=gap_context,
             )
             gaps[gap.gap_id] = gap
     return tuple(gaps.values())

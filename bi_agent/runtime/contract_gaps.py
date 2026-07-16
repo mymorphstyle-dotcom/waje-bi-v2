@@ -16,6 +16,60 @@ class SourceContractRegistry(Protocol):
     def capability_inputs(self, capability_id: str) -> Mapping[str, Any]: ...
 
 
+def is_canonical_unsupported_required_claim_gap(gap: ContractGap) -> bool:
+    """Recognize the compiler-owned terminal gap for a required claim."""
+    if len(gap.affected_claim_types) != 1:
+        return False
+    claim_type = gap.affected_claim_types[0]
+    diagnostic = gap.diagnostic_context
+    return bool(
+        claim_type != "unbound_claim_intent"
+        and gap.gap_type == "contract_partial"
+        and gap.gap_id == f"claim_intent:{claim_type}:unsupported"
+        and gap.dataset_id == ""
+        and gap.affected_capabilities == ("analysis_contract",)
+        and gap.owner == "contract_owner"
+        and gap.repair_options
+        == ("add_supporting_capability", "report_unavailable_claim")
+        and gap.requires_clarification is False
+        and isinstance(diagnostic, Mapping)
+        and dict(diagnostic)
+        == {
+            "claim_origin": "user_required",
+            "publication_status": "unavailable",
+        }
+    )
+
+
+def is_canonical_unbound_claim_intent_gap(
+    gap: ContractGap,
+    *,
+    expected_capabilities: Sequence[str],
+) -> bool:
+    """Recognize the compiler-owned blocking gap for an unbound claim intent."""
+    expected = tuple(expected_capabilities)
+    affected = tuple(gap.affected_capabilities)
+    return bool(
+        gap.gap_type == "contract_partial"
+        and gap.gap_id == "claim_intents:unbound"
+        and gap.dataset_id == ""
+        and affected
+        and len(affected) == len(set(affected))
+        and set(affected).issubset(expected)
+        and gap.affected_claim_types == ("unbound_claim_intent",)
+        and gap.owner == "contract_owner"
+        and gap.repair_options
+        == (
+            "bind_capability_claim_types",
+            "bind_metric_claim_types",
+            "clarify_claim_intent",
+        )
+        and gap.requires_clarification is True
+        and isinstance(gap.diagnostic_context, Mapping)
+        and not gap.diagnostic_context
+    )
+
+
 def canonical_source_ambiguity_subset(
     registered_source_ids: Sequence[str],
     selected_source_ids: Sequence[str],

@@ -270,7 +270,11 @@ _CATALOG: dict[str, CapabilityCard] = {
             "candidate_dimension_screen",
             "候选维度筛选",
             "Rank eligible dimensions before deeper attribution.",
-            ("segment_or_factor_attribution", "pattern_explanation"),
+            (
+                "paid_amount_change_explanation",
+                "segment_or_factor_attribution",
+                "pattern_explanation",
+            ),
             ("segment_contribution_or_mix_shift",),
             "statistical_association",
             "high",

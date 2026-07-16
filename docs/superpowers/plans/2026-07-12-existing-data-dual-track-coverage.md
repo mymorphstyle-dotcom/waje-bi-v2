@@ -1602,6 +1602,42 @@ provider response.
 Implement these general lanes from the real fixed/platform artifacts before the
 formal final rerun:
 
+- treat the initial production `analysis_route` response as a provider-authored
+  proposal over the provider-visible capability vocabulary. Local obligation
+  reconciliation is the sole authority that expands, removes, or reorders the
+  final machine route. Whenever that final closure differs from the proposal,
+  call the existing provider final-narrative boundary with cards from the
+  complete reviewed `llm_capability_cards()` registry and require exact
+  `capability_sections` for the final ordered node set. Unknown, unsupplied, or
+  tampered machine ids and a failed finalizer remain typed failures; local code
+  never synthesizes route narrative or capability prose. Initial route,
+  repair, and graph-less clarification resume use the same
+  proposal -> local closure -> provider final narrative contract;
+- define one `_confirm_machine_intent_contract(intent)` projection as the SSOT
+  for the confirm-understanding provider payload and validator. It contains
+  every mandatory confirmed axis plus the exact ordered
+  `baseline_candidates`; singular `baseline` and `target` appear only when
+  their canonical values are non-empty. The prompt exposes this projection as
+  `required_machine_intent`, and the provider must copy it exactly while still
+  authoring the business summary and accepted assumptions. Missing, changed,
+  duplicated, or reordered baseline candidates and any drift in a non-empty
+  singular axis fail within the shared provider retry contract;
+- preserve multi-metric backlog contract refs when they are the reviewed source
+  authority, then resolve each unresolved target ref against both the signed
+  AnalysisContract `scope.requested_metric_ids` and the signed source-material
+  target sequence. A ref is accepted only when that intersection identifies one
+  exact metric and all resolved refs reproduce the signed material target order.
+  Zero or multiple candidates, a bound metric outside the signed material
+  targets, owner/ref/signature drift, and scope/material disagreement remain
+  hard authority failures. Do not add metric-id or evaluation-case branches;
+- route a clarification choice that changes a material axis through one typed
+  rebind projection before confirm-understanding. The projection accepts only
+  reviewed registry vocabulary and only axes opened by the current ambiguity;
+  unchanged signed axes remain exact. A free-text answer or conflicting choice
+  that cannot identify one typed material value keeps the run in clarification
+  and must not call confirm-understanding. Reuse the workflow's existing rebind
+  node for accepted projections and do not infer machine intent from option
+  wording in local code;
 - item-scoped metric or dimension gaps with only the control marker
   `analysis_contract` must resolve their concrete dependencies before runtime
   publication. They block a verified claim only when the item intersects that

@@ -12,6 +12,7 @@ from bi_agent.runtime.authoritative_query_chain import (
     AuthoritativeQueryChainError,
     validate_authoritative_query_chain,
 )
+from bi_agent.runtime.capability_execution import capability_binding_claim_ready
 from bi_agent.runtime.clickhouse_query_compiler import (
     validate_clickhouse_query_contract,
 )
@@ -22,6 +23,17 @@ from bi_agent.runtime.evidence_authority import (
     canonical_digest,
     canonical_value,
     runtime_evidence_record_integrity_errors,
+)
+from bi_agent.runtime.formula_claim_numbers import (
+    THREE_FACTOR_COMPONENT_IDS,
+    formula_component_number_semantics,
+)
+from bi_agent.runtime.final_narrative_binding import (
+    build_final_narrative_publication_binding,
+    build_narrative_authority_record,
+    build_narrative_publication_review_record,
+    build_narrative_question_scope,
+    final_narrative_binding_errors,
 )
 from bi_agent.runtime.runtime_contract_registry import (
     RuntimeContractRegistry,
@@ -122,8 +134,12 @@ def build_answer_package(
     trusted_claim_provenance_records: Sequence[Mapping[str, Any]] = (),
     trusted_claim_provenance_record: Optional[Mapping[str, Any]] = None,
     available_evidence_brief: Optional[Mapping[str, Any]] = None,
+    claim_intent_resolution: Optional[Mapping[str, Any]] = None,
     accepted_degradation_choice: Optional[Mapping[str, Any]] = None,
     context_assumptions: Sequence[Mapping[str, Any]] = (),
+    narrative_statement_bindings: Optional[
+        Sequence[Mapping[str, Any]]
+    ] = None,
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
     accepted_assumptions = tuple(
@@ -153,6 +169,12 @@ def build_answer_package(
         () if contract_gap_diagnostics is None else contract_gap_diagnostics
     )
     row_query_plan = {} if row_query_plan is None else row_query_plan
+    claim_intent_resolution = dict(claim_intent_resolution or {})
+    required_claim_intents = tuple(
+        str(value)
+        for value in claim_intent_resolution.get("required_claim_intents") or ()
+        if str(value)
+    )
     visible_limitations = collect_visible_limitations(evidence)
     verifier = verify_answer_package(
         draft_claims=draft_claims,
@@ -173,7 +195,9 @@ def build_answer_package(
             "accepted_degradation_choice": accepted_degradation_choice,
         },
         accepted_assumptions=accepted_assumptions,
+        required_claim_intents=required_claim_intents,
     )
+    draft_verifier = dict(to_jsonable(verifier))
     source_verifier_warnings = tuple(verifier.get("warnings") or ())
     accepted_claim_indexes = tuple(verifier.get("accepted_claim_indexes") or ())
     evidence_by_ref = {
@@ -183,8 +207,10 @@ def build_answer_package(
     }
     factual_claims: tuple[dict[str, Any], ...] = ()
     projection_errors: list[dict[str, Any]] = []
+    claim_projection_errors: list[dict[str, Any]] = []
+    projected_claim_indexes: tuple[int, ...] = ()
     if accepted_claim_indexes:
-        factual_claims, projection_errors = _authority_bound_claim_projections(
+        factual_claims, raw_projection_errors = _authority_bound_claim_projections(
             claims=draft_claims,
             accepted_indexes=accepted_claim_indexes,
             evidence=evidence,
@@ -193,7 +219,25 @@ def build_answer_package(
             runtime_registry=runtime_registry,
             release_resolver=release_resolver,
         )
-        if len(factual_claims) != len(accepted_claim_indexes):
+        accepted_index_set = set(accepted_claim_indexes)
+        claim_projection_errors = [
+            item
+            for item in raw_projection_errors
+            if type(item.get("claim_index")) is int
+            and item["claim_index"] in accepted_index_set
+        ]
+        projection_errors = [
+            item for item in raw_projection_errors if item not in claim_projection_errors
+        ]
+        failed_projection_indexes = {
+            int(item["claim_index"]) for item in claim_projection_errors
+        }
+        projected_claim_indexes = tuple(
+            index
+            for index in accepted_claim_indexes
+            if index not in failed_projection_indexes
+        )
+        if len(factual_claims) != len(projected_claim_indexes):
             projection_errors.append(
                 {
                     "code": "verified_claim_projection_cardinality_mismatch",
@@ -279,15 +323,19 @@ def build_answer_package(
                     "quality_gate": quality_gate,
                 },
                 accepted_assumptions=accepted_assumptions,
+                required_claim_intents=required_claim_intents,
             )
             if (
                 projected_verifier.get("status")
-                not in {"passed", "passed_with_warnings"}
+                not in {"passed", "passed_with_warnings", "degraded"}
                 or len(projected_verifier.get("accepted_claim_indexes") or ())
                 != len(published_claims)
             ):
                 raise ValueError("verified_claim_reverification_failed")
-            if source_verifier_warnings:
+            if source_verifier_warnings and projected_verifier.get("status") in {
+                "passed",
+                "passed_with_warnings",
+            }:
                 projected_verifier = {
                     **projected_verifier,
                     "status": "passed_with_warnings",
@@ -337,7 +385,89 @@ def build_answer_package(
         verified_manifest = {}
         trusted_records = ()
     quality_gate = dict(to_jsonable(quality_gate))
+    if verifier.get("status") == "degraded" and published_claims:
+        answer_text = _partial_claim_delivery_text(
+            published_claims,
+            verifier,
+            runtime_registry=runtime_registry,
+        )
+        final_business_summary = ""
+        narrative_statement_bindings = None
+    final_narrative_publication_binding: dict[str, Any] = {}
+    narrative_authority_record: dict[str, Any] = {}
+    narrative_publication: dict[str, Any] = {
+        "status": "not_applicable",
+        "errors": [],
+    }
+    narrative_publication_review = build_narrative_publication_review_record(
+        quality_gate
+    )
+    normalized_narrative_statement_bindings = tuple(
+        dict(item)
+        for item in (narrative_statement_bindings or ())
+        if isinstance(item, Mapping)
+    )
+    narrative_candidate = str(final_business_summary or "")
+    if (
+        verifier.get("status") in {"passed", "passed_with_warnings"}
+        and published_claims
+        and narrative_candidate.strip()
+        and narrative_statement_bindings is not None
+    ):
+        narrative_authority_record = build_narrative_authority_record(
+            verified_claims=published_claims,
+            evidence=evidence,
+            visible_limitations=visible_limitations,
+            accepted_assumptions=accepted_assumptions,
+            question_scope=build_narrative_question_scope(analysis_contract),
+        )
+        (
+            final_narrative_publication_binding,
+            narrative_binding_errors,
+        ) = build_final_narrative_publication_binding(
+            narrative=narrative_candidate,
+            statement_bindings=normalized_narrative_statement_bindings,
+            authority_record=narrative_authority_record,
+            quality_gate=quality_gate,
+        )
+        if narrative_binding_errors:
+            narrative_publication = {
+                "status": "failed",
+                "errors": [
+                    {
+                        "code": "final_narrative_publication_binding_invalid",
+                        "reasons": list(narrative_binding_errors),
+                    }
+                ],
+            }
+        else:
+            narrative_publication = {"status": "passed", "errors": []}
+    elif (
+        verifier.get("status") in {"passed", "passed_with_warnings"}
+        and published_claims
+        and narrative_candidate.strip()
+    ):
+        narrative_publication = {
+            "status": "failed",
+            "errors": [
+                {
+                    "code": "final_narrative_publication_binding_invalid",
+                    "reasons": ["binding_missing"],
+                }
+            ],
+        }
     quality_gate["has_verified_claims"] = bool(published_claims)
+    if verifier.get("status") == "degraded" and published_claims:
+        quality_gate.update(
+            {
+                "status": "degraded",
+                "truth_status": "verified",
+                "coverage_status": "partial",
+                "business_insight_present": True,
+                "direct_answer": True,
+                "blocks_display": False,
+            }
+        )
     claim_groups = build_claim_groups(
         draft_claims=published_claims,
         evidence=evidence,
@@ -371,6 +501,26 @@ def build_answer_package(
         "verified_claims": canonical_value(published_claims),
         "trusted_claim_provenance_records": canonical_value(trusted_records),
         "accepted_degradation_choice": canonical_value(accepted_degradation_choice),
+        "claim_intent_resolution": canonical_value(claim_intent_resolution),
+        "draft_claim_rejections": canonical_value(
+            (
+                *(draft_verifier.get("claim_rejections") or ()),
+                *claim_projection_errors,
+            )
+        ),
+        "final_narrative_publication_binding": canonical_value(
+            final_narrative_publication_binding
+        ),
+        "narrative_authority_record": canonical_value(
+            narrative_authority_record
+        ),
+        "narrative_statement_bindings": canonical_value(
+            normalized_narrative_statement_bindings
+        ),
+        "narrative_publication_review": canonical_value(
+            narrative_publication_review
+        ),
+        "narrative_publication": canonical_value(narrative_publication),
     }
 
     evidence_brief = dict(available_evidence_brief or {})
@@ -387,6 +537,7 @@ def build_answer_package(
             trusted_records[0].get("reuse_decisions") if trusted_records else ()
         ),
         "available_evidence_brief": evidence_brief,
+        "claim_intent_resolution": canonical_value(claim_intent_resolution),
         "accepted_degradation_choice": accepted_degradation_choice,
         "accepted_graph_metadata": canonical_value(
             compiler_runtime_plan.get("graph_metadata") or {}
@@ -445,6 +596,144 @@ def build_answer_package(
     )
 
 
+def _partial_claim_delivery_text(
+    claims: Sequence[Mapping[str, Any]],
+    verifier: Mapping[str, Any],
+    *,
+    runtime_registry: RuntimeContractRegistry | None = None,
+) -> str:
+    lines = [
+        _partial_claim_business_text(
+            claim,
+            runtime_registry=runtime_registry,
+        )
+        for claim in claims
+        if str(claim.get("text") or "").strip()
+    ]
+    missing_types = {
+        str(item.get("claim_type") or "")
+        for item in verifier.get("required_claim_gaps") or ()
+        if isinstance(item, Mapping)
+    }
+    if "formula_component_contribution" in missing_types:
+        lines.append("因素贡献结论本轮未发布；已验证的付费金额变化方向仍然成立。")
+    elif missing_types:
+        lines.append("部分必需结论本轮未发布；以上仅保留已通过验证的结论。")
+    return "\n".join(dict.fromkeys(line for line in lines if line))
+
+
+def _partial_claim_business_text(
+    claim: Mapping[str, Any],
+    *,
+    runtime_registry: RuntimeContractRegistry | None,
+) -> str:
+    if str(claim.get("claim_type") or "") != "comparative_change":
+        return str(claim.get("text") or "").strip()
+
+    metric_id = str(claim.get("target_metric") or "")
+    metric_label = "目标指标"
+    if runtime_registry is not None and metric_id:
+        try:
+            labels = runtime_registry.metric_business_labels(metric_id)
+        except KeyError:
+            labels = ()
+        if labels:
+            metric_label = labels[0]
+
+    target = claim.get("target") or {}
+    baseline = claim.get("baseline") or {}
+    target_label = (
+        str(target.get("label") or "目标期")
+        if isinstance(target, Mapping)
+        else "目标期"
+    )
+    baseline_label = (
+        str(baseline.get("label") or "基线期")
+        if isinstance(baseline, Mapping)
+        else "基线期"
+    )
+    numbers = claim.get("numbers") or {}
+    numbers = numbers if isinstance(numbers, Mapping) else {}
+    target_value = _decimal_value(numbers.get("target_value"))
+    baseline_value = _decimal_value(numbers.get("baseline_value"))
+    absolute_change = _decimal_value(numbers.get("absolute_change"))
+    relative_change = _decimal_value(numbers.get("relative_change"))
+    if (
+        absolute_change is None
+        and target_value is not None
+        and baseline_value is not None
+    ):
+        absolute_change = target_value - baseline_value
+    direction = str(claim.get("comparison_direction") or "")
+    if absolute_change is not None:
+        if absolute_change > 0:
+            direction = "positive"
+        elif absolute_change < 0:
+            direction = "negative"
+        else:
+            direction = "equal"
+    direction_label = {
+        "positive": "增加",
+        "negative": "减少",
+        "equal": "持平",
+    }.get(direction, "发生变化")
+
+    sentence = f"{target_label} 的{metric_label}"
+    if target_value is not None:
+        sentence += f"为 {_format_business_decimal(target_value)}"
+    sentence += f"，较{baseline_label}"
+    if baseline_value is not None:
+        sentence += f"的 {_format_business_decimal(baseline_value)}"
+    sentence += direction_label
+    if absolute_change is not None and absolute_change != 0:
+        sentence += _format_business_decimal(abs(absolute_change))
+    if relative_change is not None:
+        sentence += f"（{_format_business_decimal(relative_change * 100)}%）"
+    return sentence + "。"
+
+
+def _format_business_decimal(value: Decimal) -> str:
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered or "0"
+
+
+def _verifier_allows_delivery(verifier: Mapping[str, Any]) -> bool:
+    status = str(verifier.get("status") or "")
+    if status in {"passed", "passed_with_warnings"}:
+        return not tuple(verifier.get("rejected_claim_indexes") or ())
+    return (
+        status == "degraded"
+        and not tuple(verifier.get("global_errors") or ())
+        and (
+            bool(tuple(verifier.get("accepted_claim_indexes") or ()))
+            or verifier.get("terminal_boundary_accepted") is True
+        )
+    )
+
+
+def _narrative_publication_allows_delivery(
+    package: Mapping[str, Any],
+) -> bool:
+    if _is_terminal_explanation_delivery(package):
+        return True
+    summary = _section_payload(package, "summary")
+    narrative = str(summary.get("final_business_summary") or "")
+    if not narrative:
+        return True
+    admin = package.get("admin_audit")
+    admin = admin if isinstance(admin, Mapping) else {}
+    publication = admin.get("narrative_publication")
+    binding = admin.get("final_narrative_publication_binding")
+    return (
+        isinstance(publication, Mapping)
+        and publication.get("status") == "passed"
+        and isinstance(binding, Mapping)
+        and binding.get("status") == "bound"
+    )
+
+
 def scrub_answer_package_for_delivery(
     package: Mapping[str, Any],
     *,
@@ -454,24 +743,49 @@ def scrub_answer_package_for_delivery(
     admin = scrubbed.get("admin_audit")
     verifier = admin.get("verifier") if isinstance(admin, Mapping) else None
     verifier = verifier if isinstance(verifier, Mapping) else {}
-    rejected = tuple(verifier.get("rejected_claim_indexes") or ())
-    if verifier.get("status") in {"passed", "passed_with_warnings"} and not rejected:
+    verifier_allows = _verifier_allows_delivery(verifier)
+    narrative_allows = _narrative_publication_allows_delivery(scrubbed)
+    if verifier_allows and narrative_allows:
         return scrubbed
 
-    reasons = [
-        {
-            key: item[key]
-            for key in ("code", "claim_index")
-            if key in item
-        }
-        for item in (verifier.get("errors") or ())
-        if isinstance(item, Mapping)
-    ]
+    admin = scrubbed.get("admin_audit")
+    admin = admin if isinstance(admin, Mapping) else {}
+    publication = admin.get("narrative_publication")
+    reasons = (
+        [
+            dict(item)
+            for item in publication.get("errors") or ()
+            if isinstance(item, Mapping)
+        ]
+        if verifier_allows
+        and isinstance(publication, Mapping)
+        and not narrative_allows
+        else [
+            {
+                key: item[key]
+                for key in ("code", "claim_index")
+                if key in item
+            }
+            for item in (verifier.get("errors") or ())
+            if isinstance(item, Mapping)
+        ]
+    )
     if not reasons:
-        reasons = [{"code": "evidence_verifier_not_passed"}]
+        reasons = [{
+            "code": (
+                "final_narrative_publication_binding_invalid"
+                if verifier_allows and not narrative_allows
+                else "evidence_verifier_not_passed"
+            )
+        }]
+    block_code = (
+        "narrative_publication_failed"
+        if verifier_allows and not narrative_allows
+        else "evidence_verifier_failed"
+    )
     block = {
         "status": "blocked",
-        "code": "evidence_verifier_failed",
+        "code": block_code,
         "reasons": reasons,
     }
     scrubbed["status"] = "failed"
@@ -483,13 +797,17 @@ def scrub_answer_package_for_delivery(
         scrubbed.get("semantic_audit")
     )
     scrubbed["final_explanation"] = block
-    scrubbed["evidence_verifier_block"] = block
+    scrubbed[
+        "narrative_publication_block"
+        if block_code == "narrative_publication_failed"
+        else "evidence_verifier_block"
+    ] = block
     quality_gate = scrubbed.get("quality_gate")
     safe_quality = _machine_audit_fields(quality_gate)
     safe_quality.update(
         {
             "status": "failed",
-            "code": "evidence_verifier_failed",
+            "code": block_code,
             "has_verified_claims": False,
             "business_insight_present": False,
             "direct_answer": False,
@@ -530,7 +848,7 @@ def scrub_answer_package_for_delivery(
         ]
         payload["visualization_plan"] = {
             "status": "blocked",
-            "code": "evidence_verifier_failed",
+            "code": block_code,
             "blocks": [],
         }
         payload["final_explanation"] = block
@@ -617,6 +935,14 @@ def reverify_answer_package_for_delivery(
         for item in evidence_section.get("evidence") or ()
         if isinstance(item, Mapping)
     )
+    claim_intent_resolution = candidate.get("claim_intent_resolution") or reported_admin.get(
+        "claim_intent_resolution"
+    ) or {}
+    required_claim_intents = tuple(
+        str(value)
+        for value in claim_intent_resolution.get("required_claim_intents") or ()
+        if str(value)
+    ) if isinstance(claim_intent_resolution, Mapping) else ()
     recomputed = verify_answer_package(
         draft_claims=claims,
         evidence=evidence,
@@ -641,6 +967,7 @@ def reverify_answer_package_for_delivery(
             ) or {},
         },
         accepted_assumptions=authority_assumptions,
+        required_claim_intents=required_claim_intents,
     )
     reported = (
         reported_admin.get("verifier")
@@ -672,7 +999,7 @@ def reverify_answer_package_for_delivery(
             "warnings": to_jsonable(reported.get("warnings") or ()),
         }
     projected_claims: tuple[dict[str, Any], ...] = ()
-    if recomputed.get("status") in {"passed", "passed_with_warnings"}:
+    if _verifier_allows_delivery(recomputed):
         projected_claims, projection_errors = _authority_bound_claim_projections(
             claims=claims,
             accepted_indexes=tuple(recomputed.get("accepted_claim_indexes") or ()),
@@ -723,10 +1050,8 @@ def reverify_answer_package_for_delivery(
                         trusted_provenance=provenance,
                     )
                     source_claim = claims[len(rebuilt_claims)]
-                    if any(
-                        str(source_claim.get(field) or "")
-                        != str(rebuilt.get(field) or "")
-                        for field in ("claim_ref", "claim_digest")
+                    if str(source_claim.get("claim_ref") or "") != str(
+                        rebuilt.get("claim_ref") or ""
                     ):
                         raise ValueError("verified_claim_identity_mismatch")
                     rebuilt_claims.append(rebuilt)
@@ -765,11 +1090,92 @@ def reverify_answer_package_for_delivery(
                     )
                 ),
             }
+    reported_narrative_binding = reported_admin.get(
+        "final_narrative_publication_binding"
+    )
+    reported_narrative_authority = reported_admin.get(
+        "narrative_authority_record"
+    )
+    reported_statement_bindings = reported_admin.get(
+        "narrative_statement_bindings"
+    )
+    reported_narrative_review = reported_admin.get(
+        "narrative_publication_review"
+    )
+    narrative_publication = {"status": "not_applicable", "errors": []}
+    if _verifier_allows_delivery(recomputed) and projected_claims:
+        bound_narrative = str(summary.get("final_business_summary") or "")
+        binding_errors: list[str] = []
+        if bound_narrative and reported_narrative_binding:
+            current_narrative_review = build_narrative_publication_review_record(
+                candidate.get("quality_gate")
+                if isinstance(candidate.get("quality_gate"), Mapping)
+                else {}
+            )
+            rebuilt_narrative_authority = build_narrative_authority_record(
+                verified_claims=projected_claims,
+                evidence=evidence,
+                visible_limitations=collect_visible_limitations(evidence),
+                accepted_assumptions=authority_assumptions,
+                question_scope=build_narrative_question_scope(
+                    reported_admin.get("analysis_contract")
+                    if isinstance(reported_admin, Mapping)
+                    else {}
+                ),
+            )
+            binding_errors.extend(
+                final_narrative_binding_errors(
+                    binding=(
+                        reported_narrative_binding
+                        if isinstance(reported_narrative_binding, Mapping)
+                        else None
+                    ),
+                    narrative=bound_narrative,
+                    statement_bindings=(
+                        reported_statement_bindings
+                        if isinstance(reported_statement_bindings, Sequence)
+                        and not isinstance(
+                            reported_statement_bindings,
+                            (str, bytes, bytearray),
+                        )
+                        else ()
+                    ),
+                    authority_record=rebuilt_narrative_authority,
+                    quality_gate=current_narrative_review,
+                )
+            )
+            if canonical_value(reported_narrative_review or {}) != canonical_value(
+                current_narrative_review
+            ):
+                binding_errors.append("publication_review_record_mismatch")
+            if canonical_value(reported_narrative_authority or {}) != canonical_value(
+                rebuilt_narrative_authority
+            ):
+                binding_errors.append("authority_record_mismatch")
+            if str(candidate.get("final_answer") or "") != bound_narrative:
+                binding_errors.append("top_level_narrative_mismatch")
+        elif bound_narrative:
+            binding_errors.append("binding_missing")
+        elif reported_narrative_binding:
+            binding_errors.append("bound_narrative_missing")
+        if binding_errors:
+            narrative_publication = {
+                "status": "failed",
+                "errors": [
+                    {
+                        "code": "final_narrative_publication_binding_invalid",
+                        "reasons": list(dict.fromkeys(binding_errors)),
+                    }
+                ],
+            }
+        elif bound_narrative:
+            narrative_publication = {"status": "passed", "errors": []}
     if internal_verifier_audit is not None:
         internal_verifier_audit.clear()
         internal_verifier_audit.update(to_jsonable(recomputed))
     admin = dict(reported_admin) if isinstance(reported_admin, Mapping) else {}
     admin["verifier"] = recomputed
+    admin["narrative_publication"] = narrative_publication
     candidate["admin_audit"] = admin
     for section in candidate.get("sections") or ():
         if not isinstance(section, dict):
@@ -779,6 +1185,7 @@ def reverify_answer_package_for_delivery(
         ) == "admin_audit":
             payload = dict(section.get("payload") or {})
             payload["verifier"] = recomputed
+            payload["narrative_publication"] = narrative_publication
             section["payload"] = payload
     return _project_client_answer_package(
         candidate,
@@ -802,8 +1209,7 @@ def reproject_answer_package_from_persisted_authority(
     verifier = final.get("admin_audit", {}).get("verifier") or {}
     if (
         final.get("status") == "failed"
-        or verifier.get("status") not in {"passed", "passed_with_warnings"}
-        or verifier.get("errors")
+        or not _verifier_allows_delivery(verifier)
     ):
         raise EvidenceIntegrityError(
             "persisted_answer_package_verifier_not_passed"
@@ -890,7 +1296,7 @@ def reproject_answer_package_from_persisted_authority(
         "trusted_claim_provenance_records": provenance,
         "reuse_decisions": reuse_decisions,
         "analysis_runtime_persistence": {
-            "status": "persisted",
+            "status": "bundle_validated",
             "analysis_contract_ref": str(
                 (persistence_records.get("analysis_contract") or {}).get(
                     "analysis_contract_id"
@@ -900,6 +1306,109 @@ def reproject_answer_package_from_persisted_authority(
             "verified_claim_refs": [claim.get("claim_ref", "") for claim in claims],
         },
     }
+    narrative_binding = admin.get("final_narrative_publication_binding")
+    if isinstance(narrative_binding, Mapping) and narrative_binding:
+        authority_record = admin.get("narrative_authority_record")
+        statement_bindings = admin.get("narrative_statement_bindings")
+        authority_claim_refs = tuple(
+            str(item.get("claim_ref") or "")
+            for item in (
+                authority_record.get("claims") or ()
+                if isinstance(authority_record, Mapping)
+                else ()
+            )
+            if isinstance(item, Mapping)
+        )
+        persisted_claim_refs = tuple(
+            str(item.get("claim_ref") or "") for item in claims
+        )
+        if (
+            authority_claim_refs != persisted_claim_refs
+            and isinstance(authority_record, Mapping)
+            and len(authority_claim_refs) == len(persisted_claim_refs)
+        ):
+            rebound_claims = []
+            for authority_claim, persisted_claim in zip(
+                authority_record.get("claims") or (),
+                claims,
+            ):
+                rebound_claims.append(
+                    {
+                        **dict(authority_claim),
+                        "claim_ref": str(persisted_claim.get("claim_ref") or ""),
+                    }
+                )
+            authority_record = canonical_value(
+                {
+                    **dict(authority_record),
+                    "claims": rebound_claims,
+                }
+            )
+            narrative_binding, rebound_errors = (
+                build_final_narrative_publication_binding(
+                    narrative=str(summary.get("final_business_summary") or ""),
+                    statement_bindings=(
+                        statement_bindings
+                        if isinstance(statement_bindings, Sequence)
+                        and not isinstance(
+                            statement_bindings,
+                            (str, bytes, bytearray),
+                        )
+                        else ()
+                    ),
+                    authority_record=authority_record,
+                    quality_gate=(
+                        admin.get("narrative_publication_review")
+                        if isinstance(
+                            admin.get("narrative_publication_review"),
+                            Mapping,
+                        )
+                        else {}
+                    ),
+                )
+            )
+            if rebound_errors:
+                raise EvidenceIntegrityError(
+                    "persisted_answer_package_narrative_rebind_failed"
+                )
+            admin["narrative_authority_record"] = authority_record
+            admin["final_narrative_publication_binding"] = narrative_binding
+            authority_claim_refs = persisted_claim_refs
+        binding_errors = list(
+            final_narrative_binding_errors(
+                binding=narrative_binding,
+                narrative=str(summary.get("final_business_summary") or ""),
+                statement_bindings=(
+                    statement_bindings
+                    if isinstance(statement_bindings, Sequence)
+                    and not isinstance(
+                        statement_bindings,
+                        (str, bytes, bytearray),
+                    )
+                    else ()
+                ),
+                authority_record=(
+                    authority_record
+                    if isinstance(authority_record, Mapping)
+                    else {}
+                ),
+                quality_gate=(
+                    admin.get("narrative_publication_review")
+                    if isinstance(
+                        admin.get("narrative_publication_review"),
+                        Mapping,
+                    )
+                    else {}
+                ),
+            )
+        )
+        if authority_claim_refs != persisted_claim_refs:
+            binding_errors.append("claim_authority_refs_mismatch")
+        if binding_errors:
+            raise EvidenceIntegrityError(
+                "persisted_answer_package_narrative_authority_mismatch:"
+                + ",".join(dict.fromkeys(binding_errors))
+            )
     final["admin_audit"] = admin
     _replace_section_payload(final, "admin_audit", admin)
     return final
@@ -967,12 +1476,20 @@ def _verifier_hard_partition(value: Any) -> Any:
     if not isinstance(value, Mapping):
         return None
     status = str(value.get("status") or "")
+    client = _client_verifier_projection(value)
     return to_jsonable(
         {
             "passed": status in {"passed", "passed_with_warnings"},
-            "errors": value.get("errors"),
-            "accepted_claim_indexes": value.get("accepted_claim_indexes"),
-            "rejected_claim_indexes": value.get("rejected_claim_indexes"),
+            "errors": client["errors"],
+            "accepted_claim_indexes": client["accepted_claim_indexes"],
+            "rejected_claim_indexes": client["rejected_claim_indexes"],
+            "required_claim_obligations": client[
+                "required_claim_obligations"
+            ],
+            "required_claim_gaps": client["required_claim_gaps"],
+            "terminal_boundary_accepted": client[
+                "terminal_boundary_accepted"
+            ],
             "accepted_assumptions": _material_assumption_projection(
                 _normalize_single_assumption(value.get("accepted_assumptions") or ())
             ),
@@ -1046,7 +1563,11 @@ def _authority_bound_claim_projections(
                 runtime_registry=runtime_registry,
                 release_resolver=release_resolver,
             )
-            claim_projection = _project_claim_from_authority(claim, facts)
+            claim_projection = _project_claim_from_authority(
+                claim,
+                facts,
+                runtime_registry=runtime_registry,
+            )
             if claim_projection.get("fact_refs"):
                 signature = canonical_digest(
                     {
@@ -1196,6 +1717,144 @@ class AuthorityFact:
         )
 
 
+def _driver_window_authority_facts(
+    *,
+    contract: Any,
+    rows: Sequence[Mapping[str, Any]],
+    result_ref: str,
+    target_window_id: str,
+    baseline_window_id: str,
+) -> tuple[AuthorityFact, ...]:
+    if not target_window_id or not baseline_window_id:
+        raise ValueError("driver_comparison_basis_missing")
+    metric_bindings = {
+        metric.metric_id: metric for metric in contract.metric_bindings
+    }
+    primitive_metrics = tuple(
+        metric_id
+        for metric_id in (
+            "paid_amount",
+            "paid_users",
+            "paid_orders",
+            "first_paid_users",
+        )
+        if metric_id in metric_bindings
+    )
+    if not {"paid_amount", "paid_users", "paid_orders"} <= set(
+        primitive_metrics
+    ):
+        raise ValueError("driver_authority_primitives_missing")
+
+    aggregates: dict[tuple[str, str], Any] = {}
+    facts: list[AuthorityFact] = []
+    for metric_id in primitive_metrics:
+        comparison = aggregate_window_metric_comparison(
+            contract,
+            rows,
+            metric_id=metric_id,
+            primary_baseline_window_id=baseline_window_id,
+            allowed_query_intents=(
+                "component_driver_scan",
+                "daily_metric_baselines",
+            ),
+        )
+        if comparison.target.window_id != target_window_id:
+            raise ValueError("driver_target_window_mismatch")
+        for aggregate, ordinal in (
+            (comparison.target, -1),
+            (comparison.primary_baseline, 0),
+        ):
+            binding = metric_bindings[metric_id]
+            raw_facts = tuple(
+                AuthorityFact.create(
+                    query_contract_ref=contract.query_contract_id,
+                    result_ref=result_ref,
+                    metric_id=metric_id,
+                    value=observation.value,
+                    window_id=aggregate.window_id,
+                    window_role=aggregate.role,
+                    observation_key=observation.observation_key,
+                    dimensions=(),
+                    grain=tuple(contract.result_shape.grain),
+                    value_semantics=binding.value_semantics,
+                    display_format=binding.display_format,
+                )
+                for observation in aggregate.observations
+            )
+            fact = AuthorityFact.create(
+                query_contract_ref=contract.query_contract_id,
+                result_ref=result_ref,
+                metric_id=metric_id,
+                value=aggregate.value,
+                window_id=aggregate.window_id,
+                window_role=aggregate.role,
+                observation_key=_aggregate_observation_key(
+                    aggregate.observation_keys
+                ),
+                dimensions=(),
+                grain=tuple(contract.result_shape.grain),
+                value_semantics=binding.value_semantics,
+                display_format=binding.display_format,
+                aggregation=aggregate.aggregation,
+                required_complete_days=aggregate.required_complete_days,
+                observation_keys=aggregate.observation_keys,
+                source_fact_refs=tuple(fact.fact_ref for fact in raw_facts),
+                comparison_ordinal=ordinal,
+            )
+            aggregates[(metric_id, aggregate.role)] = fact
+            facts.append(fact)
+
+    derived = {
+        "paid_frequency": ("paid_orders", "paid_users"),
+        "avg_order_amount": ("paid_amount", "paid_orders"),
+    }
+    for metric_id, (numerator_id, denominator_id) in derived.items():
+        binding = metric_bindings.get(metric_id)
+        if binding is None:
+            raise ValueError(f"driver_authority_metric_missing:{metric_id}")
+        for role, ordinal in (("target", -1), ("baseline", 0)):
+            numerator = aggregates[(numerator_id, role)]
+            denominator = aggregates[(denominator_id, role)]
+            if denominator.value == 0:
+                raise ValueError(f"driver_authority_denominator_zero:{metric_id}")
+            facts.append(
+                AuthorityFact.create(
+                    query_contract_ref=contract.query_contract_id,
+                    result_ref=result_ref,
+                    metric_id=metric_id,
+                    value=numerator.value / denominator.value,
+                    window_id=numerator.window_id,
+                    window_role=role,
+                    observation_key=numerator.observation_key,
+                    dimensions=(),
+                    grain=tuple(contract.result_shape.grain),
+                    value_semantics=binding.value_semantics,
+                    display_format=binding.display_format,
+                    aggregation=numerator.aggregation,
+                    required_complete_days=numerator.required_complete_days,
+                    observation_keys=numerator.observation_keys,
+                    source_fact_refs=tuple(
+                        dict.fromkeys(
+                            (
+                                *(numerator.source_fact_refs or (numerator.fact_ref,)),
+                                *(denominator.source_fact_refs or (denominator.fact_ref,)),
+                            )
+                        )
+                    ),
+                    comparison_ordinal=ordinal,
+                )
+            )
+    return tuple(facts)
+
+
+def _aggregate_observation_key(observation_keys: Sequence[str]) -> str:
+    if not observation_keys:
+        raise ValueError("authority_observation_keys_missing")
+    if len(observation_keys) == 1:
+        return str(observation_keys[0])
+    return f"{observation_keys[0]}..{observation_keys[-1]}"
+
+
 def _claim_authority_facts(
     claim: Mapping[str, Any],
     *,
@@ -1255,9 +1914,33 @@ def _claim_authority_facts(
                     target_windows[window.window_id] = window_projection
                 elif window.role == "baseline":
                     baseline_windows[window.window_id] = window_projection
+            capability_id = str(evidence_item.get("capability_id") or "")
             if (
-                str(evidence_item.get("capability_id") or "")
-                == "market_health_compare"
+                capability_id == "driver_decomposition"
+                and contract.query_intent
+                in {"component_driver_scan", "daily_metric_baselines"}
+            ):
+                payload = evidence_item.get("typed_payload") or {}
+                if not isinstance(payload, Mapping):
+                    raise ValueError("driver_comparison_basis_invalid")
+                metric_ids.update(contract_metrics)
+                authority_facts.extend(
+                    _driver_window_authority_facts(
+                        contract=contract,
+                        rows=result.rows,
+                        result_ref=result.result_ref,
+                        target_window_id=str(
+                            payload.get("target_window_id") or ""
+                        ),
+                        baseline_window_id=str(
+                            payload.get("baseline_window_id") or ""
+                        ),
+                    )
+                )
+                continue
+            if (
+                capability_id
+                in {"market_health_compare", "compare_periods"}
                 and any(window.role == "baseline" for window in contract.resolved_windows)
             ):
                 metric_id = str(
@@ -1269,6 +1952,12 @@ def _claim_authority_facts(
                     contract,
                     result.rows,
                     metric_id=metric_id,
+                    primary_baseline_window_id=str(
+                        (evidence_item.get("typed_payload") or {}).get(
+                            "baseline_window_id"
+                        )
+                        or ""
+                    ),
                 )
                 metric_binding = metric_bindings[metric_id]
                 metric_ids.add(metric_id)
@@ -1463,12 +2152,20 @@ def _claim_authority_facts(
 def _project_claim_from_authority(
     claim: Mapping[str, Any],
     facts: Mapping[str, Any],
+    *,
+    runtime_registry: RuntimeContractRegistry | None = None,
 ) -> dict[str, Any]:
     mappings = _map_claim_numbers_to_authority(claim, facts)
     context_facts = tuple(facts.get("authority_context_facts") or ())
     if not mappings and context_facts:
         return _project_context_claim_from_authority(claim, context_facts, facts)
-    text = "".join(_render_authority_facts(mappings))
+    text = "".join(
+        _render_authority_facts(
+            mappings,
+            facts=facts,
+            runtime_registry=runtime_registry,
+        )
+    )
     projected = {
         "text": text,
         "claim_strength": str(claim.get("claim_strength") or ""),
@@ -1477,11 +2174,13 @@ def _project_claim_from_authority(
         "numbers": to_jsonable(
             {mapping["field"]: mapping["value"] for mapping in mappings}
         ),
-        "fact_refs": [
-            fact_ref
-            for mapping in mappings
-            for fact_ref in mapping["fact_refs"]
-        ],
+        "fact_refs": list(
+            dict.fromkeys(
+                fact_ref
+                for mapping in mappings
+                for fact_ref in mapping["fact_refs"]
+            )
+        ),
         "fact_selectors": {
             mapping["field"]: to_jsonable(mapping["fact_selector"])
             for mapping in mappings
@@ -1556,11 +2255,15 @@ def _project_context_claim_from_authority(
 ) -> dict[str, Any]:
     lines = []
     for fact in context_facts:
+        window_label = _window_business_label(
+            str(fact.get("window_id") or ""),
+            role="target",
+            facts=facts,
+        )
         lines.append(
-            "Window {window_id} overlaps event {event_type} "
-            "({event_start_date}..{event_end_date}, {affected_scope}); "
-            "authority={authority}, evidence_level={evidence_level}; "
-            "this is candidate-mechanism context only.".format(**fact)
+            f"{window_label}与已登记业务活动的时间范围重叠"
+            f"（{fact.get('event_start_date')}至{fact.get('event_end_date')}）；"
+            "当前仅作为候选机制背景。"
         )
     projected = {
         "text": " ".join(lines),
@@ -1635,6 +2338,27 @@ def _map_claim_numbers_to_authority(
         raw_selector = fact_selectors.get(str(field), claim_selector)
         if not isinstance(raw_selector, Mapping):
             raise ValueError(f"claim_fact_selector_invalid:{field}")
+        if kind in {
+            "three_factor_contribution",
+            "three_factor_contribution_share",
+            "three_factor_effect_total",
+        }:
+            mappings.append(
+                _map_three_factor_claim_number(
+                    field=str(field),
+                    value=value,
+                    kind=kind,
+                    component_id=(
+                        metric_id
+                        if kind != "three_factor_effect_total"
+                        else ""
+                    ),
+                    authority_facts=authority_facts,
+                    dimensions=dimensions,
+                    selector=raw_selector,
+                )
+            )
+            continue
         candidates = tuple(
             fact
             for fact in authority_facts
@@ -1722,6 +2446,19 @@ def _number_field_semantics(
     metric_ids: Sequence[str],
 ) -> tuple[str, str, str] | None:
     lowered = field.lower()
+    formula_semantics = formula_component_number_semantics(lowered)
+    if formula_semantics and "paid_amount" in metric_ids:
+        kind, metric_id = formula_semantics
+        if metric_id == "paid_amount" or metric_id in metric_ids:
+            return kind, metric_id, ""
+    if lowered == "amount_delta" and "paid_amount" in metric_ids:
+        return "delta", "paid_amount", ""
+    if lowered == "amount_delta_ratio" and "paid_amount" in metric_ids:
+        return "ratio", "paid_amount", ""
+    if lowered == "target_value" and "paid_amount" in metric_ids:
+        return "fact", "paid_amount", "target"
+    if lowered == "baseline_value" and "paid_amount" in metric_ids:
+        return "fact", "paid_amount", "baseline"
     if len(metric_ids) == 1:
         generic = {
             "target_value": ("fact", metric_ids[0], "target"),
@@ -1739,10 +2476,19 @@ def _number_field_semantics(
             break
     for metric_id in sorted(metric_ids, key=len, reverse=True):
         metric = metric_id.lower()
+        if lowered == f"{metric}_target_value":
+            return "fact", metric_id, "target"
+        if lowered == f"{metric}_baseline_value":
+            return "fact", metric_id, "baseline"
         if lowered in {metric, f"{metric}_value"}:
             return "fact", metric_id, role
         if lowered in {f"{metric}_delta", f"{metric}_change"}:
             return "delta", metric_id, ""
+        if lowered in {
+            f"{metric}_delta_ratio",
+            f"{metric}_relative_change",
+        }:
+            return "ratio", metric_id, ""
     if lowered in {"delta", "change", "difference", "uplift", "growth"} and len(
         metric_ids
     ) == 1:
@@ -2124,6 +2870,222 @@ def _dedupe_fact_refs(*facts: AuthorityFact) -> tuple[str, ...]:
     )
 
 
+_THREE_FACTOR_METRICS = THREE_FACTOR_COMPONENT_IDS
+
+
+def _map_three_factor_claim_number(
+    *,
+    field: str,
+    value: Decimal,
+    kind: str,
+    component_id: str,
+    authority_facts: Sequence[AuthorityFact],
+    dimensions: Mapping[str, Any],
+    selector: Mapping[str, Any],
+) -> dict[str, Any]:
+    if kind not in {
+        "three_factor_contribution",
+        "three_factor_contribution_share",
+        "three_factor_effect_total",
+    }:
+        raise ValueError(f"claim_derived_kind_invalid:{field}")
+    if kind != "three_factor_effect_total" and component_id not in _THREE_FACTOR_METRICS:
+        raise ValueError(f"claim_derived_component_invalid:{field}")
+
+    source_selectors = selector.get("source_facts") or {}
+    if not isinstance(source_selectors, Mapping):
+        raise ValueError(f"claim_derived_selector_invalid:{field}")
+    shared_selector = {
+        key: item
+        for key, item in selector.items()
+        if key
+        not in {
+            "target",
+            "baseline",
+            "derivation",
+            "component_id",
+            "source_facts",
+        }
+    }
+    role_selectors = {
+        role: selector.get(role) or {}
+        for role in ("target", "baseline")
+    }
+    if any(not isinstance(item, Mapping) for item in role_selectors.values()):
+        raise ValueError(f"claim_derived_selector_invalid:{field}")
+
+    selected: dict[tuple[str, str], AuthorityFact] = {}
+    for metric_id in ("paid_amount", *_THREE_FACTOR_METRICS):
+        metric_selectors = source_selectors.get(metric_id) or {}
+        if not isinstance(metric_selectors, Mapping):
+            raise ValueError(f"claim_derived_selector_invalid:{field}")
+        for role in ("target", "baseline"):
+            source_selector = metric_selectors.get(role) or {}
+            if not isinstance(source_selector, Mapping):
+                raise ValueError(f"claim_derived_selector_invalid:{field}")
+            combined_selector = {
+                **shared_selector,
+                **role_selectors[role],
+                **source_selector,
+            }
+            candidates = tuple(
+                fact
+                for fact in authority_facts
+                if fact.metric_id == metric_id
+                and fact.window_role == role
+                and fact.comparison_ordinal in {-1, 0}
+                and _fact_dimensions_match(fact, dimensions)
+                and _fact_matches_selector(fact, combined_selector)
+            )
+            if len(candidates) != 1:
+                raise ValueError(
+                    f"claim_derived_fact_not_unique:{field}:"
+                    f"{metric_id}:{role}={len(candidates)}"
+                )
+            selected[(metric_id, role)] = candidates[0]
+
+    target_facts = tuple(
+        selected[(metric_id, "target")]
+        for metric_id in ("paid_amount", *_THREE_FACTOR_METRICS)
+    )
+    baseline_facts = tuple(
+        selected[(metric_id, "baseline")]
+        for metric_id in ("paid_amount", *_THREE_FACTOR_METRICS)
+    )
+    for role, role_facts in (
+        ("target", target_facts),
+        ("baseline", baseline_facts),
+    ):
+        anchor = role_facts[0]
+        if any(
+            fact.window_id != anchor.window_id
+            or fact.observation_key != anchor.observation_key
+            or fact.dimensions != anchor.dimensions
+            or fact.grain != anchor.grain
+            for fact in role_facts[1:]
+        ):
+            raise ValueError(f"claim_derived_fact_incompatible:{field}:{role}")
+    if (
+        target_facts[0].dimensions != baseline_facts[0].dimensions
+        or target_facts[0].grain != baseline_facts[0].grain
+        or not target_facts[0].observation_key
+        or not baseline_facts[0].observation_key
+    ):
+        raise ValueError(f"claim_derived_fact_incompatible:{field}:comparison")
+
+    baseline_values = tuple(
+        selected[(metric_id, "baseline")].value
+        for metric_id in _THREE_FACTOR_METRICS
+    )
+    target_values = tuple(
+        selected[(metric_id, "target")].value
+        for metric_id in _THREE_FACTOR_METRICS
+    )
+    baseline_amount = selected[("paid_amount", "baseline")].value
+    target_amount = selected[("paid_amount", "target")].value
+    if not _decimal_matches(
+        baseline_amount,
+        {baseline_values[0] * baseline_values[1] * baseline_values[2]},
+    ) or not _decimal_matches(
+        target_amount,
+        {target_values[0] * target_values[1] * target_values[2]},
+    ):
+        raise ValueError(f"claim_derived_source_reconciliation_failed:{field}")
+
+    effects = tuple(
+        _three_factor_decimal_effect(
+            factor_index=index,
+            baseline_values=baseline_values,
+            target_values=target_values,
+        )
+        for index in range(3)
+    )
+    total_effect = sum(effects, Decimal(0))
+    amount_delta = target_amount - baseline_amount
+    if not _decimal_matches(amount_delta, {total_effect}):
+        raise ValueError(f"claim_derived_source_reconciliation_failed:{field}")
+    if kind == "three_factor_contribution_share" and total_effect == 0:
+        raise ValueError(f"claim_derived_share_undefined:{field}")
+    if kind == "three_factor_effect_total":
+        derived_value = total_effect
+    else:
+        component_effect = effects[_THREE_FACTOR_METRICS.index(component_id)]
+        derived_value = (
+            component_effect / total_effect
+            if kind == "three_factor_contribution_share"
+            else component_effect
+        )
+    if not _decimal_matches(value, {derived_value}):
+        raise ValueError(f"claim_derived_value_mismatch:{field}")
+
+    ordered_facts = tuple(
+        selected[(metric_id, role)]
+        for role in ("baseline", "target")
+        for metric_id in ("paid_amount", *_THREE_FACTOR_METRICS)
+    )
+    target_anchor = selected[("paid_amount", "target")]
+    baseline_anchor = selected[("paid_amount", "baseline")]
+    mapping_kind = {
+        "three_factor_contribution": "contribution",
+        "three_factor_contribution_share": "contribution_share",
+        "three_factor_effect_total": "effect_total",
+    }[kind]
+    return {
+        "field": field,
+        "kind": mapping_kind,
+        "metric_id": "paid_amount",
+        **({"component_id": component_id} if component_id else {}),
+        "value": derived_value,
+        "fact_refs": _dedupe_fact_refs(*ordered_facts),
+        "window_id": target_anchor.window_id,
+        "window_role": "comparison",
+        "target_window_id": target_anchor.window_id,
+        "baseline_window_id": baseline_anchor.window_id,
+        "observation_key": target_anchor.observation_key,
+        "dimensions": target_anchor.dimensions,
+        "grain": target_anchor.grain,
+        "value_semantics": (
+            "scalar_ratio"
+            if kind == "three_factor_contribution_share"
+            else "raw_scalar"
+        ),
+        "display_format": (
+            "percent"
+            if kind == "three_factor_contribution_share"
+            else "number"
+        ),
+        "fact_selector": {
+            "derivation": "three_factor_shapley_v1",
+            **({"component_id": component_id} if component_id else {}),
+            "source_facts": {
+                metric_id: {
+                    role: _authority_fact_selector(selected[(metric_id, role)])
+                    for role in ("target", "baseline")
+                }
+                for metric_id in ("paid_amount", *_THREE_FACTOR_METRICS)
+            },
+        },
+    }
+
+
+def _three_factor_decimal_effect(
+    *,
+    factor_index: int,
+    baseline_values: Sequence[Decimal],
+    target_values: Sequence[Decimal],
+) -> Decimal:
+    other_indexes = tuple(index for index in range(3) if index != factor_index)
+    first, second = other_indexes
+    marginal = target_values[factor_index] - baseline_values[factor_index]
+    context = (
+        baseline_values[first] * baseline_values[second] / Decimal(3)
+        + target_values[first] * baseline_values[second] / Decimal(6)
+        + baseline_values[first] * target_values[second] / Decimal(6)
+        + target_values[first] * target_values[second] / Decimal(3)
+    )
+    return marginal * context
+
+
 def _map_ratio_number(
     *,
     field: str,
@@ -2196,43 +3158,124 @@ def _map_ratio_number(
 
 def _render_authority_facts(
     mappings: Sequence[Mapping[str, Any]],
+    *,
+    facts: Mapping[str, Any] | None = None,
+    runtime_registry: RuntimeContractRegistry | None = None,
 ) -> tuple[str, ...]:
+    facts = facts or {}
     clauses = []
     for mapping in mappings:
         dimensions = "".join(
-            f"，{key}={value.display_value}"
-            for key, value in mapping.get("dimensions") or ()
+            f"，分组{value.display_value}"
+            for _, value in mapping.get("dimensions") or ()
         )
         metric_id = mapping["metric_id"]
-        if mapping["kind"] == "ratio":
+        metric_label = _metric_business_label(metric_id, runtime_registry)
+        if mapping["kind"] in {"contribution", "contribution_share"}:
+            component_label = {
+                "paid_users": "付费人数",
+                "paid_frequency": "付费频次",
+                "avg_order_amount": "单笔付费金额",
+            }.get(mapping.get("component_id"), str(mapping.get("component_id") or ""))
+            suffix = "占比" if mapping["kind"] == "contribution_share" else ""
             clauses.append(
-                f"目标期（{mapping['target_window_id']}）相较基线"
-                f"（{mapping['baseline_window_id']}）{metric_id}{dimensions}"
+                f"{component_label}对付费金额变化的核算贡献{suffix}为"
+                f"{_format_fact_value(Decimal(mapping['value']), mapping)}。"
+            )
+            continue
+        if mapping["kind"] == "effect_total":
+            clauses.append(
+                "三因素核算贡献合计为"
+                f"{_format_fact_value(Decimal(mapping['value']), mapping)}。"
+            )
+            continue
+        if mapping["kind"] == "ratio":
+            target_label = _window_business_label(
+                str(mapping.get("target_window_id") or ""),
+                role="target",
+                observation_key=str(mapping.get("observation_key") or ""),
+                facts=facts,
+            )
+            baseline_label = _window_business_label(
+                str(mapping.get("baseline_window_id") or ""),
+                role="baseline",
+                facts=facts,
+            )
+            clauses.append(
+                f"{target_label}的{metric_label}{dimensions}较{baseline_label}"
                 f"相对变化{_format_fact_value(Decimal(mapping['value']), mapping)}。"
             )
             continue
         if mapping["kind"] == "delta":
             value = Decimal(mapping["value"])
             direction = "增加" if value > 0 else "减少" if value < 0 else "持平"
+            target_label = _window_business_label(
+                str(mapping.get("target_window_id") or ""),
+                role="target",
+                observation_key=str(mapping.get("observation_key") or ""),
+                facts=facts,
+            )
+            baseline_label = _window_business_label(
+                str(mapping.get("baseline_window_id") or ""),
+                role="baseline",
+                facts=facts,
+            )
             clauses.append(
-                f"目标期（{mapping['target_window_id']}）相较基线"
-                f"（{mapping['baseline_window_id']}）{metric_id}{dimensions}"
+                f"{target_label}的{metric_label}{dimensions}较{baseline_label}"
                 f"{direction}{_format_fact_value(abs(value), mapping)}。"
             )
             continue
-        role_label = {
-            "target": "目标期",
-            "baseline": "基线期",
-        }.get(mapping.get("window_role"), "分析窗口")
-        observation = (
-            f"，{mapping['observation_key']}" if mapping.get("observation_key") else ""
+        window_label = _window_business_label(
+            str(mapping.get("window_id") or ""),
+            role=str(mapping.get("window_role") or ""),
+            observation_key=str(mapping.get("observation_key") or ""),
+            facts=facts,
         )
         clauses.append(
-            f"{role_label}（{mapping['window_id']}{observation}）"
-            f"{metric_id}{dimensions}="
+            f"{window_label}的{metric_label}{dimensions}为"
             f"{_format_fact_value(Decimal(mapping['value']), mapping)}。"
         )
     return tuple(dict.fromkeys(clauses))
+
+
+def _metric_business_label(
+    metric_id: str,
+    runtime_registry: RuntimeContractRegistry | None,
+) -> str:
+    if runtime_registry is not None and metric_id:
+        try:
+            labels = runtime_registry.metric_business_labels(metric_id)
+        except KeyError:
+            labels = ()
+        if labels:
+            return str(labels[0])
+    return "目标指标"
+
+
+def _window_business_label(
+    window_id: str,
+    *,
+    role: str,
+    facts: Mapping[str, Any],
+    observation_key: str = "",
+) -> str:
+    windows = tuple(facts.get("target_windows") or ()) + tuple(
+        facts.get("baseline_windows") or ()
+    )
+    for window in windows:
+        if not isinstance(window, Mapping) or str(window.get("window_id") or "") != window_id:
+            continue
+        label = str(window.get("label") or "").strip()
+        if label and label != window_id:
+            return label
+        if observation_key:
+            return observation_key
+        start = str(window.get("start_inclusive") or "").strip()
+        if start:
+            return start
+    if observation_key:
+        return observation_key
+    return {"target": "目标期", "baseline": "基线期"}.get(role, "分析期")
 
 
 def _format_fact_value(value: Decimal, policy: Mapping[str, Any]) -> str:
@@ -2296,13 +3339,18 @@ def _project_client_answer_package(
     runtime_registry: RuntimeContractRegistry | None,
     release_resolver: DatasetReleaseResolver | None,
 ) -> dict[str, Any]:
-    passed = verifier.get("status") in {"passed", "passed_with_warnings"} and not (
-        verifier.get("errors") or verifier.get("rejected_claim_indexes")
+    candidate_admin = candidate.get("admin_audit")
+    candidate_admin = (
+        candidate_admin if isinstance(candidate_admin, Mapping) else {}
+    )
+    deliverable = (
+        _verifier_allows_delivery(verifier)
+        and _narrative_publication_allows_delivery(candidate)
     )
     accepted_raw_claims = tuple(
         claim
         for claim in claims
-    ) if passed else ()
+    ) if deliverable else ()
     raw_accepted_refs = tuple(
         dict.fromkeys(
             ref
@@ -2342,6 +3390,40 @@ def _project_client_answer_package(
         for claim in accepted_claims
         if str(claim.get("text") or "").strip()
     )
+    candidate_summary = _section_payload(candidate, "summary")
+    narrative_binding = candidate_admin.get(
+        "final_narrative_publication_binding"
+    )
+    narrative_authority_record = candidate_admin.get(
+        "narrative_authority_record"
+    )
+    narrative_statement_bindings = candidate_admin.get(
+        "narrative_statement_bindings"
+    )
+    narrative_publication_review = candidate_admin.get(
+        "narrative_publication_review"
+    )
+    narrative_publication = candidate_admin.get("narrative_publication")
+    bound_narrative = str(
+        candidate_summary.get("final_business_summary") or ""
+    )
+    published_narrative = ""
+    if (
+        deliverable
+        and accepted_claims
+        and verifier.get("status") in {"passed", "passed_with_warnings"}
+        and bound_narrative
+        and isinstance(narrative_binding, Mapping)
+        and narrative_binding.get("status") == "bound"
+    ):
+        final_answer = bound_narrative
+        published_narrative = bound_narrative
+    if verifier.get("status") == "degraded" and accepted_claims:
+        final_answer = _partial_claim_delivery_text(
+            accepted_claims,
+            verifier,
+            runtime_registry=runtime_registry,
+        )
     terminal_explanation = (
         _terminal_explanation_projection(
             candidate,
@@ -2351,7 +3433,7 @@ def _project_client_answer_package(
             runtime_registry=runtime_registry,
             release_resolver=release_resolver,
         )
-        if passed and not accepted_claims
+        if deliverable and not accepted_claims
         else {}
     )
     if terminal_explanation:
@@ -2369,13 +3451,63 @@ def _project_client_answer_package(
     limitations = collect_visible_limitations(accepted_evidence)
     sql_hash = _safe_machine_string(_section_payload(candidate, "summary").get("sql_hash"))
     admin = {"verifier": client_verifier}
-    status = "draft" if passed else "failed"
+    if isinstance(narrative_publication, Mapping) and (
+        narrative_publication.get("status") != "not_applicable"
+    ):
+        admin["narrative_publication"] = to_jsonable(
+            narrative_publication
+        )
+    if isinstance(narrative_binding, Mapping) and narrative_binding:
+        admin.update(
+            {
+                "final_narrative_publication_binding": to_jsonable(
+                    narrative_binding
+                ),
+                "narrative_authority_record": to_jsonable(
+                    narrative_authority_record
+                    if isinstance(narrative_authority_record, Mapping)
+                    else {}
+                ),
+                "narrative_statement_bindings": to_jsonable(
+                    narrative_statement_bindings
+                    if isinstance(narrative_statement_bindings, Sequence)
+                    and not isinstance(
+                        narrative_statement_bindings,
+                        (str, bytes, bytearray),
+                    )
+                    else ()
+                ),
+                "narrative_publication_review": to_jsonable(
+                    narrative_publication_review
+                    if isinstance(narrative_publication_review, Mapping)
+                    else {}
+                ),
+            }
+        )
+    status = "draft" if deliverable else "failed"
     quality_gate = {
-        "status": verifier.get("status") if passed else "failed",
+        "status": verifier.get("status") if deliverable else "failed",
         "has_verified_claims": bool(accepted_claims),
         "business_insight_present": bool(accepted_claims),
-        "blocks_display": not passed,
+        "blocks_display": not deliverable,
     }
+    candidate_quality_gate = candidate.get("quality_gate")
+    if isinstance(candidate_quality_gate, Mapping):
+        for field in (
+            "display_status",
+            "hard_blockers",
+            "repairable_warnings",
+            "risk_flags",
+        ):
+            if field in candidate_quality_gate:
+                quality_gate[field] = to_jsonable(candidate_quality_gate[field])
+    if verifier.get("status") == "degraded" and accepted_claims:
+        quality_gate.update(
+            {
+                "truth_status": "verified",
+                "coverage_status": "partial",
+            }
+        )
     package = {
         "run_id": _safe_ref(candidate.get("run_id")),
         "status": status,
@@ -2393,6 +3525,9 @@ def _project_client_answer_package(
         ),
         "accepted_graph_metadata": to_jsonable(
             candidate.get("accepted_graph_metadata") or {}
+        ),
+        "claim_intent_resolution": to_jsonable(
+            candidate.get("claim_intent_resolution") or {}
         ),
         "final_answer": final_answer,
         "follow_up_questions": [],
@@ -2415,7 +3550,7 @@ def _project_client_answer_package(
                 "visibility": "business_summary",
                 "payload": {
                     "answer_text": final_answer,
-                    "final_business_summary": final_answer,
+                    "final_business_summary": published_narrative,
                     "claims": list(accepted_claims),
                     "claim_groups": claim_groups,
                     "visualization_plan": visualization,
@@ -2449,11 +3584,26 @@ def _project_client_answer_package(
         ],
         "admin_audit": admin,
     }
-    if not passed:
-        package["evidence_verifier_block"] = {
+    if not deliverable:
+        verifier_allows = _verifier_allows_delivery(verifier)
+        block_field = (
+            "narrative_publication_block"
+            if verifier_allows
+            else "evidence_verifier_block"
+        )
+        block_errors = (
+            narrative_publication.get("errors") or ()
+            if verifier_allows and isinstance(narrative_publication, Mapping)
+            else client_verifier.get("errors") or ()
+        )
+        package[block_field] = {
             "status": "blocked",
-            "code": "evidence_verifier_failed",
-            "reasons": list(client_verifier.get("errors") or ()),
+            "code": (
+                "narrative_publication_failed"
+                if verifier_allows
+                else "evidence_verifier_failed"
+            ),
+            "reasons": list(block_errors),
         }
     return package
 
@@ -2590,10 +3740,47 @@ def _client_verifier_projection(verifier: Mapping[str, Any]) -> dict[str, Any]:
             output.append(issue)
         return output
 
+    def obligations(field: str, *, include_code: bool) -> list[dict[str, Any]]:
+        output = []
+        for item in verifier.get(field) or ():
+            if not isinstance(item, Mapping):
+                continue
+            claim_type = _safe_machine_string(item.get("claim_type"))
+            status = _safe_machine_string(item.get("status"))
+            if not claim_type or not status:
+                continue
+            obligation = {
+                "claim_type": claim_type,
+                "status": status,
+                "evidence_refs": [
+                    _safe_ref(ref) for ref in item.get("evidence_refs") or ()
+                ],
+                "publishable_evidence_refs": [
+                    _safe_ref(ref)
+                    for ref in item.get("publishable_evidence_refs") or ()
+                ],
+                "limitations": _safe_machine_strings(item.get("limitations")),
+            }
+            if include_code:
+                obligation = {"code": "missing_required_claim", **obligation}
+            output.append(obligation)
+        return output
+
     return {
         "status": _safe_machine_string(verifier.get("status")) or "failed",
         "errors": issues("errors"),
         "warnings": issues("warnings"),
+        "required_claim_obligations": obligations(
+            "required_claim_obligations",
+            include_code=False,
+        ),
+        "required_claim_gaps": obligations(
+            "required_claim_gaps",
+            include_code=True,
+        ),
+        "terminal_boundary_accepted": verifier.get(
+            "terminal_boundary_accepted"
+        ) is True,
         "accepted_claim_indexes": [
             value
             for value in verifier.get("accepted_claim_indexes") or ()
@@ -2720,6 +3907,112 @@ def _visual_title(evidence_refs: Sequence[str]) -> str:
     }[_visual_block_type(evidence_refs)]
 
 
+def _publishable_required_evidence_refs(
+    evidence: Sequence[Mapping[str, Any]],
+    required_claim_intents: Sequence[str],
+) -> dict[str, list[str]]:
+    required = tuple(dict.fromkeys(str(value) for value in required_claim_intents if str(value)))
+    resolved: dict[str, list[str]] = {}
+    for claim_type in required:
+        refs = []
+        for item in evidence:
+            if str(item.get("claim_type") or "") != claim_type:
+                continue
+            if not item.get("binding_manifest_ref") or item.get("claim_input_ready") is not True:
+                continue
+            evidence_type = str(item.get("evidence_type") or "")
+            supported_evidence_types = tuple(item.get("supported_evidence_types") or ())
+            supported_claim_types = tuple(item.get("supported_claim_types") or ())
+            if (
+                evidence_type in {"", "insufficient", "blocked", "context_only"}
+                or evidence_type not in supported_evidence_types
+                or claim_type not in supported_claim_types
+            ):
+                continue
+            strength = str(item.get("strength") or "")
+            wording_limit = str(item.get("wording_limit") or "")
+            established = item.get("established")
+            publishable = bool(established) if established is not None else (
+                (
+                    strength == "directional"
+                    and wording_limit == "quantified"
+                    and not tuple(item.get("limitations") or ())
+                )
+                or (
+                    strength in {"high", "medium"}
+                    and wording_limit
+                    in {
+                        "supported",
+                        "quantified",
+                        "contextual",
+                        "candidate",
+                        "candidate_mechanism_only",
+                    }
+                )
+            )
+            evidence_ref = str(item.get("evidence_ref") or "")
+            if publishable and evidence_ref:
+                refs.append(evidence_ref)
+        if refs:
+            resolved[claim_type] = list(dict.fromkeys(refs))
+    return resolved
+
+
+def _required_claim_obligations(
+    *,
+    evidence: Sequence[Mapping[str, Any]],
+    required_claim_intents: Sequence[str],
+    accepted_claim_types: set[str],
+) -> list[dict[str, Any]]:
+    required = tuple(
+        dict.fromkeys(
+            str(value) for value in required_claim_intents if str(value)
+        )
+    )
+    publishable_by_type = _publishable_required_evidence_refs(evidence, required)
+    obligations = []
+    for claim_type in required:
+        matching = tuple(
+            item
+            for item in evidence
+            if str(item.get("claim_type") or "") == claim_type
+        )
+        evidence_refs = list(
+            dict.fromkeys(
+                str(item.get("evidence_ref") or "")
+                for item in matching
+                if str(item.get("evidence_ref") or "")
+            )
+        )
+        publishable_refs = list(publishable_by_type.get(claim_type) or ())
+        limitations = list(
+            dict.fromkeys(
+                str(limitation)
+                for item in matching
+                for limitation in item.get("limitations") or ()
+                if str(limitation)
+            )
+        )
+        if claim_type in accepted_claim_types:
+            status = "satisfied"
+        elif publishable_refs:
+            status = "draft_missing"
+        elif matching:
+            status = "evidence_degraded"
+        else:
+            status = "evidence_absent"
+        obligations.append(
+            {
+                "claim_type": claim_type,
+                "status": status,
+                "evidence_refs": evidence_refs,
+                "publishable_evidence_refs": publishable_refs,
+                "limitations": limitations,
+            }
+        )
+    return obligations
+
+
 def verify_answer_package(
     *,
     draft_claims: Sequence[Mapping[str, Any]],
@@ -2731,6 +4024,7 @@ def verify_answer_package(
     release_resolver: DatasetReleaseResolver | None = None,
     delivery_text: Any = None,
     accepted_assumptions: Sequence[Mapping[str, Any]] = (),
+    required_claim_intents: Sequence[str] = (),
 ) -> dict[str, Any]:
     evidence_by_ref = {item.get("evidence_ref"): item for item in evidence}
     errors = []
@@ -2850,7 +4144,7 @@ def verify_answer_package(
         for key, expected in (() if authority_projected else claim.get("numbers", {}).items()):
             if not any(
                 _numbers_match(
-                    evidence_by_ref[ref].get("typed_payload", {}).get(key), expected
+                    evidence_by_ref[ref].get("numeric_facts", {}).get(key), expected
                 )
                 for ref in authority_backed_refs
             ):
@@ -2883,6 +4177,19 @@ def verify_answer_package(
                     }
                 )
 
+        comparison_basis_error = _claim_comparison_basis_error(
+            claim,
+            evidence_by_ref,
+        )
+        if comparison_basis_error:
+            errors.append(
+                {
+                    "code": "comparison_basis_mismatch",
+                    "claim_index": index,
+                    **comparison_basis_error,
+                }
+            )
+
     missing_visibility = [
         limitation
         for item in evidence
@@ -2911,6 +4218,19 @@ def verify_answer_package(
         for index in range(len(draft_claims))
         if index not in rejected_claim_indexes
     )
+    accepted_claim_types = {
+        str(draft_claims[index].get("claim_type") or "")
+        for index in accepted_claim_indexes
+    }
+    required_claim_obligations = _required_claim_obligations(
+        evidence=evidence,
+        required_claim_intents=required_claim_intents,
+        accepted_claim_types=accepted_claim_types,
+    )
+    for obligation in required_claim_obligations:
+        if obligation["status"] == "satisfied":
+            continue
+        errors.append({"code": "missing_required_claim", **obligation})
     if (
         not accepted_claim_indexes
         and _contains_nonempty_text(delivery_text)
@@ -2933,15 +4253,159 @@ def verify_answer_package(
         for index in range(len(draft_claims))
         if index not in rejected_claim_indexes
     )
-    status = "failed" if errors else ("passed_with_warnings" if warnings else "passed")
+    claim_rejections = [
+        item
+        for item in errors
+        if type(item.get("claim_index")) is int and item["claim_index"] >= 0
+    ]
+    required_claim_gaps = [
+        item for item in errors if item.get("code") == "missing_required_claim"
+    ]
+    global_errors = [
+        item
+        for item in errors
+        if item not in claim_rejections and item not in required_claim_gaps
+    ]
+    terminal_boundary_accepted = bool(
+        required_claim_gaps
+        and not accepted_claim_indexes
+        and _is_terminal_explanation_delivery(delivery_text)
+    )
+    if global_errors:
+        status = "failed"
+    elif required_claim_gaps and not (
+        accepted_claim_indexes or terminal_boundary_accepted
+    ):
+        status = "failed"
+    elif claim_rejections and not accepted_claim_indexes:
+        status = "failed"
+    elif claim_rejections or required_claim_gaps:
+        status = "degraded"
+    else:
+        status = "passed_with_warnings" if warnings else "passed"
     return {
         "status": status,
         "errors": errors,
+        "global_errors": global_errors,
+        "claim_rejections": claim_rejections,
+        "required_claim_obligations": required_claim_obligations,
+        "required_claim_gaps": required_claim_gaps,
+        "terminal_boundary_accepted": terminal_boundary_accepted,
         "warnings": warnings,
         "accepted_claim_indexes": accepted_claim_indexes,
         "rejected_claim_indexes": rejected_claim_indexes,
         "accepted_assumptions": to_jsonable(accepted_assumptions),
     }
+
+
+def _claim_comparison_basis_error(
+    claim: Mapping[str, Any],
+    evidence_by_ref: Mapping[Any, Mapping[str, Any]],
+) -> dict[str, Any]:
+    driver_evidence = tuple(
+        evidence_by_ref[ref]
+        for ref in claim.get("evidence_refs") or ()
+        if ref in evidence_by_ref
+        and str(evidence_by_ref[ref].get("capability_id") or "")
+        == "driver_decomposition"
+    )
+    if not driver_evidence:
+        return {}
+
+    comparisons = tuple(
+        item
+        for item in evidence_by_ref.values()
+        if str(item.get("capability_id") or "")
+        in {"compare_periods", "market_health_compare"}
+    )
+    preferred = tuple(
+        item
+        for item in comparisons
+        if str(item.get("capability_id") or "") == "compare_periods"
+    )
+    comparisons = preferred or comparisons
+    for driver_item in driver_evidence:
+        driver = _evidence_comparison_basis(driver_item, delta_field="amount_delta")
+        if not driver:
+            continue
+        candidates = tuple(
+            basis
+            for item in comparisons
+            if (
+                basis := _evidence_comparison_basis(
+                    item,
+                    delta_field="absolute_change",
+                )
+            )
+            and _comparison_context_matches(driver, basis)
+        )
+        if not candidates:
+            continue
+        matching = tuple(
+            basis
+            for basis in candidates
+            if basis["target_window_id"] == driver["target_window_id"]
+            and basis["baseline_window_id"] == driver["baseline_window_id"]
+            and _numbers_match(basis["delta"], driver["delta"])
+        )
+        if matching:
+            continue
+        return {
+            "driver_evidence_ref": str(driver_item.get("evidence_ref") or ""),
+            "driver_target_window_id": driver["target_window_id"],
+            "driver_baseline_window_id": driver["baseline_window_id"],
+            "comparison_evidence_refs": tuple(
+                str(item.get("evidence_ref") or "")
+                for item in comparisons
+                if _comparison_context_matches(
+                    driver,
+                    _evidence_comparison_basis(
+                        item,
+                        delta_field="absolute_change",
+                    ),
+                )
+            ),
+        }
+    return {}
+
+
+def _evidence_comparison_basis(
+    evidence: Mapping[str, Any],
+    *,
+    delta_field: str,
+) -> dict[str, Any]:
+    payload = evidence.get("typed_payload") or {}
+    if not isinstance(payload, Mapping):
+        return {}
+    target_window_id = str(payload.get("target_window_id") or "")
+    baseline_window_id = str(payload.get("baseline_window_id") or "")
+    delta = payload.get(delta_field)
+    if not target_window_id or not baseline_window_id or _decimal_value(delta) is None:
+        return {}
+    return {
+        "metric": str(payload.get("metric") or evidence.get("metric") or ""),
+        "scope": str(payload.get("scope") or evidence.get("scope") or ""),
+        "time_window": str(
+            payload.get("time_window") or evidence.get("time_window") or ""
+        ),
+        "target_window_id": target_window_id,
+        "baseline_window_id": baseline_window_id,
+        "delta": delta,
+    }
+
+
+def _comparison_context_matches(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> bool:
+    if not right:
+        return False
+    for field in ("metric", "scope", "time_window"):
+        left_value = str(left.get(field) or "")
+        right_value = str(right.get(field) or "")
+        if left_value and right_value and left_value != right_value:
+            return False
+    return True
 
 
 def collect_visible_limitations(evidence: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -2998,7 +4462,7 @@ def _claim_authority_errors(
         missing.extend(
             field for field in required_refs if not evidence.get(field)
         )
-        if evidence.get("input_status") != "ready":
+        if evidence.get("input_status") not in {"ready", "degraded"}:
             missing.append("input_status")
         completeness = tuple(evidence.get("input_completeness_statuses") or ())
         if not completeness or any(status != "complete" for status in completeness):
@@ -3089,9 +4553,7 @@ def _resolved_authority_record_errors(
     )
     if any(expected != actual for expected, actual in scalar_fields):
         errors.append("capability_binding_payload")
-    if binding.status != "ready" or any(
-        status != "complete" for status in binding.input_completeness_statuses
-    ):
+    if not capability_binding_claim_ready(binding):
         errors.append("capability_binding_not_ready")
     evidence_type = str(evidence.get("evidence_type") or "")
     if tuple(evidence.get("supported_claim_types") or ()) != binding.supported_claim_types:
@@ -3371,13 +4833,12 @@ def _is_terminal_explanation_delivery(value: Any) -> bool:
         return False
     status = str(raw.get("status") or "")
     explanation = str(raw.get("explanation") or "").strip()
-    owner = str(raw.get("owner") or "").strip()
     repair_path = str(raw.get("repair_path") or "").strip()
     if status not in {"blocked", "degraded"} or not all(
-        (explanation, owner, repair_path)
+        (explanation, repair_path)
     ):
         return False
-    visible = " ".join((explanation, owner, repair_path))
+    visible = " ".join((explanation, repair_path))
     if any(token in visible.lower() for token in ("select ", "sql", "provider", "traceback")):
         return False
     if re.search(r"\d+(?:\.\d+)?\s*(?:%|ngn|奈拉|元|万|亿)", visible, re.IGNORECASE):
@@ -3461,7 +4922,6 @@ def _terminal_explanation_projection(
     return {
         "status": str(raw.get("status") or ""),
         "explanation": str(raw.get("explanation") or "").strip(),
-        "owner": str(raw.get("owner") or "").strip(),
         "repair_path": str(raw.get("repair_path") or "").strip(),
     }
 
@@ -3525,7 +4985,6 @@ def _render_terminal_explanation(value: Mapping[str, Any]) -> str:
     return "\n".join(
         (
             str(value.get("explanation") or "").strip(),
-            f"负责方：{str(value.get('owner') or '').strip()}",
             f"下一步：{str(value.get('repair_path') or '').strip()}",
         )
     )
