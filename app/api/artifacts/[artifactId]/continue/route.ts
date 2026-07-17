@@ -1,17 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { runAgentCore } from "../../../_agentCore";
+import { resolveCustomerActor } from "../../../_customerActor";
 import {
   acquireRunDispatchLease,
   claimRunDispatchRequest,
   completeOwnedRunDispatch,
   failOwnedRunDispatch,
-  filterAgentCoreForRole,
   gatewayError,
   jsonError,
+  projectAgentCoreForCustomer,
   requireArtifactForContinue,
   requireThread,
-  resolveGatewayRole,
   runDispatchRequestIdentity,
 } from "../../../_conversationStore";
 
@@ -23,10 +23,6 @@ type RouteContext = { params: Promise<{ artifactId: string }> };
 export async function POST(request: NextRequest, context: RouteContext) {
   const { artifactId } = await context.params;
   const body = await request.json().catch(() => ({})) as Record<string, unknown>;
-  const roleDecision = resolveGatewayRole(
-    process.env.WAJE_GATEWAY_ROLE,
-    process.env.NODE_ENV,
-  );
   let ownedDispatch: {
     runId: string;
     ownerId: string;
@@ -34,15 +30,13 @@ export async function POST(request: NextRequest, context: RouteContext) {
   } | null = null;
   const message = typeof body.message === "string" ? body.message : "基于这个结果继续分析";
   try {
-    const artifact = await requireArtifactForContinue(
-      artifactId,
-      roleDecision.displayRole,
-    );
+    const actorId = resolveCustomerActor(request);
+    const artifact = await requireArtifactForContinue(artifactId, actorId);
     const threadId = typeof body.threadId === "string" ? body.threadId : artifact.threadId;
     if (threadId !== artifact.threadId) {
       throw gatewayError("artifact_thread_mismatch");
     }
-    await requireThread(threadId);
+    await requireThread(threadId, actorId);
     const requestIdentity = runDispatchRequestIdentity(request, body);
     const claim = await claimRunDispatchRequest({
       producerKind: "artifact_continue",
@@ -50,10 +44,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
       requestIdentity,
       threadId,
       text: message,
+      actorId,
       requestPayload: {
         artifactId,
         message: message.trim(),
-        runtimePermissionScope: roleDecision.runtimePermissionScope,
       },
     });
     const dispatch = await acquireRunDispatchLease({
@@ -87,9 +81,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
       threadId,
       claim.run.id,
       message,
-      roleDecision.displayRole,
+      actorId,
       {
-        runtimePermissionScope: roleDecision.runtimePermissionScope,
         runDispatch: {
           ownerId: dispatchOwnerId,
           leaseEpoch: dispatch.leaseEpoch,
@@ -102,9 +95,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
         }).then(() => undefined),
       },
     );
-    const visibleAgentCore = filterAgentCoreForRole(
+    const visibleAgentCore = projectAgentCoreForCustomer(
       agentCore as unknown as Record<string, unknown>,
-      roleDecision.displayRole,
     );
     let effectiveRun = claim.run;
     const agentResult = agentCore?.result && typeof agentCore.result === "object"

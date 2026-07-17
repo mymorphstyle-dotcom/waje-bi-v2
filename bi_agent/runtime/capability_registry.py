@@ -24,7 +24,7 @@ _CATALOG: dict[str, CapabilityCard] = {
         default_evidence_type=evidence_type,
         cost_tier=cost_tier,
         runtime_tier=runtime_tier,
-        preconditions=("metric_contract_active", "aggregate_permission_allowed"),
+        preconditions=("metric_contract_active", "restricted_output_policy_satisfied"),
         failure_modes=("coverage_gap", "unsupported_grain", "missing_contract"),
     )
     for (
@@ -88,14 +88,39 @@ _CATALOG: dict[str, CapabilityCard] = {
             "short",
         ),
         (
-            "gameplay_activity_context",
-            "玩法活动上下文",
-            "Inspect reviewed gameplay activity aggregates without treating them as payment facts.",
-            ("business_object_impact_review", "segment_or_factor_attribution"),
-            ("observed_activity", "comparative_change"),
-            "observed",
-            "low",
-            "short",
+            "cross_source_association",
+            "跨来源关联分析",
+            (
+                "Test aligned aggregate time series across reviewed data sources, "
+                "including stability and lag checks, without treating correlation "
+                "as contribution or causal impact."
+            ),
+            (
+                "paid_amount_change_explanation",
+                "segment_or_factor_attribution",
+                "business_object_impact_review",
+            ),
+            ("cross_source_statistical_association",),
+            "statistical_association",
+            "high",
+            "long",
+        ),
+        (
+            "cross_source_panel_association",
+            "跨来源面板关联分析",
+            (
+                "Test whether an aggregate cross-source association is replicated "
+                "across reviewed panel dimensions such as channel."
+            ),
+            (
+                "paid_amount_change_explanation",
+                "segment_or_factor_attribution",
+                "business_object_impact_review",
+            ),
+            ("cross_source_statistical_association",),
+            "statistical_association",
+            "high",
+            "long",
         ),
         (
             "event_evidence",

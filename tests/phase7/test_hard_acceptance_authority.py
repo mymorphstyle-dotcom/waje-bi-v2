@@ -34,7 +34,6 @@ def _analysis_contract(*gaps: ContractGap) -> dict[str, object]:
         dimension_bindings=(),
         dataset_requirements=("paid_order_success",),
         capability_requirements=("answer_verify",),
-        permission_scope="analyst",
         contract_gaps=tuple(gaps),
     ).to_dict()
 
@@ -125,7 +124,6 @@ def _persisted_plan_authority() -> tuple[dict[str, object], RuntimeContractRegis
             "dimension_presence_policy": "paired_required",
         },
         "completeness_assertions": ["execution_succeeded"],
-        "permission_scope": "analyst",
         "workload_class": "interactive_aggregate",
         "query_parameters": {},
         "query_role_ref": "query-role:test",
@@ -321,12 +319,13 @@ def test_obligation_review_fails_closed_without_one_valid_persisted_family(
                 "paid_amount_change_explanation",
                 "data_quality_or_evidence_review",
             ],
-            [
-                "metric_coverage_profile",
-                "data_quality_profile",
-                "driver_decomposition",
-                "answer_verify",
-                "metric_timeseries",
+                [
+                    "metric_coverage_profile",
+                    "data_quality_profile",
+                    "formula_decompose",
+                    "driver_decomposition",
+                    "answer_verify",
+                    "metric_timeseries",
             ],
             "data_quality_profile",
         ),
@@ -1206,7 +1205,6 @@ def test_queryless_block_requires_compiler_persisted_exact_gap():
         catalog=DatasetCatalog(()),
         registry=registry,
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        permission_scope="analyst",
     )
     authority = {
         "analysis_contract": outcome.analysis_contract.to_dict(),

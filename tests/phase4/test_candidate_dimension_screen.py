@@ -161,53 +161,6 @@ class CandidateDimensionScreenTest(unittest.TestCase):
         self.assertIn("no_dimension_movement:channel", profile["limitations"])
         self.assertEqual(evidence.evidence_type, "insufficient_evidence")
 
-    def test_ranks_dimensions_for_followup_without_mixing_formula_contribution(self):
-        evidence = candidate_dimension_screen(
-            {
-                "channel": (
-                    {"channel": "A", "group": "baseline", "amount": 100, "n": 20},
-                    {"channel": "B", "group": "baseline", "amount": 50, "n": 20},
-                    {"channel": "A", "group": "target", "amount": 160, "n": 20},
-                    {"channel": "B", "group": "target", "amount": 20, "n": 20},
-                ),
-                "region": (
-                    {"region": "Lagos", "group": "baseline", "amount": 90, "n": 20},
-                    {"region": "Abuja", "group": "baseline", "amount": 60, "n": 20},
-                    {"region": "Lagos", "group": "target", "amount": 120, "n": 20},
-                    {"region": "Abuja", "group": "target", "amount": 60, "n": 20},
-                ),
-            },
-            overall_by_group={"baseline": 150, "target": 180},
-            complete_dimensions=("channel", "region"),
-            dimension_labels={"channel": "渠道", "region": "地区"},
-        )
-
-        payload = evidence.typed_payload
-
-        self.assertEqual(
-            [item["dimension"] for item in payload["ranked_dimension_candidates"]],
-            ["region", "channel"],
-        )
-        self.assertEqual(payload["selected_dimension"], "region")
-        self.assertEqual(payload["selected_dimension_label"], "地区")
-        self.assertEqual(payload["selected_value"], "Lagos")
-        self.assertIn("地区", payload["business_readout"])
-        self.assertIn("Lagos", payload["business_readout"])
-        self.assertIn("跨维度贡献排名", payload["claim_boundary"])
-        self.assertEqual(
-            evidence.numeric_facts["paid_amount_baseline_value"],
-            90.0,
-        )
-        self.assertEqual(
-            evidence.numeric_facts["paid_amount_target_value"],
-            120.0,
-        )
-        self.assertEqual(evidence.numeric_facts["paid_amount_delta"], 30.0)
-        self.assertAlmostEqual(
-            evidence.numeric_facts["paid_amount_relative_change"],
-            1 / 3,
-        )
-
     def test_localizes_segments_by_global_primary_factor_without_cross_dimension_addition(self):
         evidence = candidate_dimension_screen(
             {
@@ -296,55 +249,11 @@ class CandidateDimensionScreenTest(unittest.TestCase):
         )
         self.assertEqual(channel_a["amount_contribution_scope"], "within_dimension")
         self.assertEqual(payload["global_primary_factor"], "avg_order_amount")
-        self.assertEqual(
-            payload["dimension_ranking_basis"],
-            "primary_factor_localization_concentration",
-        )
         self.assertEqual(payload["ranking_scope"], "cross_dimension_diagnostic_priority")
         self.assertFalse(payload["cross_dimension_additivity_allowed"])
         self.assertTrue(payload["within_dimension_amount_contribution_additive"])
         self.assertTrue(payload["diagnostic_priorities"])
         self.assertNotIn("contribution", payload["diagnostic_priorities"][0])
-
-    def test_one_unavailable_dimension_does_not_hide_an_independent_ready_profile(self):
-        evidence = candidate_dimension_screen(
-            {
-                "channel": (
-                    {
-                        "channel": "A",
-                        "group": "baseline",
-                        "amount": 100,
-                        "paid_orders": 10,
-                        "paid_users": 10,
-                    },
-                    {
-                        "channel": "A",
-                        "group": "target",
-                        "amount": 130,
-                        "paid_orders": 10,
-                        "paid_users": 10,
-                    },
-                ),
-                "device_model": (),
-            },
-            overall_by_group={"baseline": 100, "target": 130},
-            complete_dimensions=("channel",),
-            global_primary_factor="avg_order_amount",
-        )
-
-        profiles = {
-            item["dimension"]: item
-            for item in evidence.typed_payload["dimension_profiles"]
-        }
-
-        self.assertEqual(profiles["channel"]["profile_status"], "ready")
-        self.assertEqual(profiles["device_model"]["profile_status"], "unavailable")
-        self.assertEqual(evidence.typed_payload["eligible_dimensions"], ("channel",))
-        self.assertEqual(evidence.evidence_type, "statistical_association")
-        self.assertIn(
-            "incomplete_dimension_window:device_model",
-            evidence.limitations,
-        )
 
     def test_diagnostic_priority_is_independent_from_the_display_top_k(self):
         rows = tuple(

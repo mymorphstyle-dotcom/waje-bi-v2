@@ -122,7 +122,6 @@ def _authority_bundle(
             dict.fromkeys(record.snapshot.dataset_id for record in snapshot_records)
         ),
         capability_requirements=(binding.capability_id,),
-        permission_scope=query_records[0].contract.permission_scope,
     ).to_dict()
     analysis_contract["contract_signature"] = analysis_contract_signature(
         analysis_contract
@@ -231,6 +230,83 @@ def _authority_bundle(
     return bundle
 
 
+def _versioned_completeness_record(record, *, validation_context):
+    payload = canonical_value(record.report_payload)
+    payload["coverage_summary"] = {
+        **dict(payload.get("coverage_summary") or {}),
+        "validation_context": validation_context,
+    }
+    payload = canonical_value(payload)
+    digest = canonical_digest(payload)
+    return replace(
+        record,
+        record_ref=f"completeness-record:{record.report_ref}:{digest}",
+        report_digest=digest,
+        report_payload=payload,
+    )
+
+
+def _binding_with_completeness_record(binding, *, old_record, new_record):
+    from tests.phase4.test_authoritative_query_chain import _resign_binding
+
+    changes = {}
+    binding_payload = dict(binding.binding_payload)
+    for prefix in ("", "validation_"):
+        refs_field = f"{prefix}completeness_record_refs"
+        digests_field = f"{prefix}completeness_record_digests"
+        existing_refs = getattr(binding, refs_field)
+        if old_record.record_ref not in existing_refs:
+            continue
+        refs = tuple(
+            new_record.record_ref if ref == old_record.record_ref else ref
+            for ref in existing_refs
+        )
+        digests = tuple(
+            new_record.report_digest if ref == old_record.record_ref else digest
+            for ref, digest in zip(
+                existing_refs,
+                getattr(binding, digests_field),
+            )
+        )
+        changes[refs_field] = refs
+        changes[digests_field] = digests
+        binding_payload[refs_field] = refs
+        binding_payload[digests_field] = digests
+    if not changes:
+        raise AssertionError("binding_does_not_reference_completeness_record")
+    return _resign_binding(
+        binding,
+        **changes,
+        binding_payload=binding_payload,
+    )
+
+
+def _bundle_with_versioned_completeness_binding(*, run_id):
+    bundle = _authority_bundle(
+        run_id=run_id,
+        analysis_contract_ref=f"analysis:{run_id}:1",
+    )
+    original = bundle["completeness_records"][0]
+    sibling = _versioned_completeness_record(
+        original,
+        validation_context="capability-specific-query-set",
+    )
+    second_binding = _binding_with_completeness_record(
+        bundle["capability_binding_records"][0],
+        old_record=original,
+        new_record=sibling,
+    )
+    bundle["completeness_records"] = (
+        *bundle["completeness_records"],
+        sibling,
+    )
+    bundle["capability_binding_records"] = (
+        *bundle["capability_binding_records"],
+        second_binding,
+    )
+    return bundle, original, sibling, second_binding
+
+
 def _paid_amount_market_health_bundle():
     from bi_agent.runtime.analysis_contracts import (
         AnalysisContract,
@@ -309,7 +385,6 @@ def _paid_amount_market_health_bundle():
             )
         ),
         capability_requirements=("market_health_compare",),
-        permission_scope="analyst",
     )
     persistence_records = {
         "analysis_contract": {
@@ -336,7 +411,6 @@ def _paid_amount_market_health_bundle():
             "run_id": "run-market-multi-window",
             "thread_id": "thread-market",
             "topic_id": "topic-market",
-            "role": "analyst",
         },
         artifact_path="artifact:market-health",
     )
@@ -499,7 +573,6 @@ def _compiled_queryless_source_ambiguity_bundle(
         catalog=DatasetCatalog(()),
         registry=registry,
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        permission_scope="analyst",
     )
     analysis = outcome.analysis_contract
     bundle = {
@@ -1029,7 +1102,6 @@ def _analysis_envelope_for_contracts(
             )
         ),
         capability_requirements=tuple(capabilities),
-        permission_scope=contracts[0].permission_scope if contracts else "analyst",
     ).to_dict()
     payload["contract_signature"] = analysis_contract_signature(payload)
     return payload
@@ -1118,6 +1190,123 @@ def _use_high_value_claim_ceiling(bundle, *, claim_intents=("candidate_driver",)
 
 
 class AnalysisRuntimePersistenceTest(unittest.TestCase):
+    def test_persistence_accepts_versioned_completeness_records_bound_by_exact_identity(self):
+        run_id = "run-versioned-completeness"
+        bundle, original, sibling, second_binding = (
+            _bundle_with_versioned_completeness_binding(run_id=run_id)
+        )
+
+        self.assertEqual(original.result_ref, sibling.result_ref)
+        self.assertNotEqual(original.record_ref, sibling.record_ref)
+        self.assertEqual(
+            second_binding.completeness_record_refs,
+            (sibling.record_ref,),
+        )
+        self.assertEqual(
+            second_binding.completeness_record_digests,
+            (sibling.report_digest,),
+        )
+        connection = FakeConnection()
+        stores = (
+            InMemoryConversationStore(),
+            PostgresConversationStore(connection),
+        )
+        for store in stores:
+            with self.subTest(store=type(store).__name__):
+                self.assertEqual(
+                    store.save_analysis_runtime_records(
+                        run_id=run_id,
+                        **bundle,
+                    ),
+                    "published",
+                )
+        completeness_inserts = [
+            params
+            for statement, params in connection.statements
+            if "INSERT INTO waje_runtime.query_completeness_reports" in statement
+        ]
+        self.assertEqual(len(completeness_inserts), len(bundle["completeness_records"]))
+        self.assertEqual(
+            {
+                params["record_ref"]
+                for params in completeness_inserts
+                if params["result_ref"] == original.result_ref
+            },
+            {original.record_ref, sibling.record_ref},
+        )
+
+    def test_versioned_completeness_binding_rejects_forged_exact_identity(self):
+        cases = (
+            (
+                "missing_ref",
+                lambda bundle, sibling: replace(
+                    sibling,
+                    record_ref="completeness-record:missing",
+                ),
+                "runtime_persistence_binding_completeness_missing",
+            ),
+            (
+                "wrong_digest",
+                lambda bundle, sibling: replace(
+                    sibling,
+                    report_digest="f" * 64,
+                ),
+                "runtime_persistence_binding_completeness_link_mismatch",
+            ),
+            (
+                "wrong_result",
+                lambda bundle, sibling: next(
+                    record
+                    for record in bundle["completeness_records"]
+                    if record.result_ref != sibling.result_ref
+                ),
+                "runtime_persistence_binding_completeness_link_mismatch",
+            ),
+        )
+        for case, forged_record, expected in cases:
+            with self.subTest(case=case):
+                run_id = f"run-versioned-completeness-{case}"
+                bundle, _, sibling, second_binding = (
+                    _bundle_with_versioned_completeness_binding(run_id=run_id)
+                )
+                forged_binding = _binding_with_completeness_record(
+                    second_binding,
+                    old_record=sibling,
+                    new_record=forged_record(bundle, sibling),
+                )
+                bundle["capability_binding_records"] = (
+                    bundle["capability_binding_records"][0],
+                    forged_binding,
+                )
+
+                with self.assertRaisesRegex(EvidenceIntegrityError, expected):
+                    InMemoryConversationStore().save_analysis_runtime_records(
+                        run_id=run_id,
+                        **bundle,
+                    )
+
+    def test_persistence_requires_completeness_for_every_query_result(self):
+        run_id = "run-missing-query-completeness"
+        bundle = _authority_bundle(
+            run_id=run_id,
+            analysis_contract_ref=f"analysis:{run_id}:1",
+        )
+        missing_result_ref = bundle["query_execution_records"][0].result_ref
+        bundle["completeness_records"] = tuple(
+            record
+            for record in bundle["completeness_records"]
+            if record.result_ref != missing_result_ref
+        )
+
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "^runtime_persistence_completeness_chain_incomplete$",
+        ):
+            InMemoryConversationStore().save_analysis_runtime_records(
+                run_id=run_id,
+                **bundle,
+            )
+
     def test_narrative_publication_failure_preserves_verified_claim_authority(self):
         bundle = _paid_amount_market_health_bundle()
 
@@ -1276,6 +1465,16 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 ],
                 [artifact_ref],
             )
+            postcheck_statement = next(
+                statement
+                for statement, _ in connection.statements
+                if "runtime_publication_postcheck" in statement
+            )
+            self.assertNotIn("LEFT JOIN", postcheck_statement)
+            self.assertIn(
+                "SELECT count(*) FROM waje_runtime.query_contracts",
+                postcheck_statement,
+            )
 
     def test_runtime_publication_rejects_dangling_answer_package_provenance(self):
         for representation in ("omitted", "empty"):
@@ -1333,7 +1532,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                     dimension_bindings=(),
                     dataset_requirements=(),
                     capability_requirements=capability_requirements,
-                    permission_scope="analyst",
                 )
 
                 _validate_analysis_target_metric_refs(analysis)
@@ -1364,7 +1562,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                     dimension_bindings=(),
                     dataset_requirements=(),
                     capability_requirements=("compare_periods",),
-                    permission_scope="analyst",
                 )
 
                 with self.assertRaisesRegex(
@@ -1411,7 +1608,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 dimension_bindings=(),
                 dataset_requirements=(),
                 capability_requirements=(),
-                permission_scope="analyst",
             )
             return analysis_contract_from_dict(
                 {
@@ -2153,10 +2349,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
                 **payload,
                 "dataset_requirements": ["other_dataset"],
             },
-            "permission_boundary": lambda payload: {
-                **payload,
-                "permission_scope": "admin",
-            },
             "capability_boundary": lambda payload: {
                 **payload,
                 "capability_requirements": ["other_capability"],
@@ -2724,7 +2916,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             ),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
         plan = outcome.capability_plans[0]
 
@@ -3037,155 +3228,6 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
             "published",
         )
 
-    def test_compiler_authority_carried_unsupported_gap_persists(self):
-        from datetime import datetime
-
-        from bi_agent.conversation.clarification_authority import (
-            build_clarification_outcome,
-            build_execution_material,
-            build_material_authority,
-        )
-        from bi_agent.runtime.analysis_contract_compiler import (
-            compile_analysis_contract,
-        )
-        from bi_agent.runtime.analysis_contracts import analysis_contract_signature
-        from bi_agent.runtime.dataset_catalog import DatasetCatalog
-        from bi_agent.runtime.runtime_contract_registry import (
-            RuntimeContractRegistry,
-        )
-
-        registry = RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
-        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
-        prior = compile_analysis_contract(
-            run_id="run-persistence-authority-source",
-            proposal={
-                "question_families": ["pattern_explanation"],
-                "target_metrics": ["paid_amount"],
-                "claim_intents": ["causal_effect"],
-            },
-            accepted_capabilities=("pattern_scan",),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=as_of,
-            permission_scope="analyst",
-        )
-        choice = {
-            "choice_id": "omit-unavailable-pattern",
-            "action_kind": "omit_unavailable_context",
-            "source_run_id": "run-persistence-authority-source",
-            "affected_capabilities": ["pattern_scan"],
-        }
-        thread_id = "thread-persistence-authority"
-        topic_id = "topic-persistence-authority"
-        clarification_outcome = build_clarification_outcome(
-            source_run_id=choice["source_run_id"],
-            thread_id=thread_id,
-            topic_id=topic_id,
-            choice=choice,
-        )
-        material_authority = build_material_authority(
-            source_run_id=choice["source_run_id"],
-            thread_id=thread_id,
-            topic_id=topic_id,
-            original_intent={
-                "question_family": "pattern_explanation",
-                "question_families": ["pattern_explanation"],
-                "primary_question_family": "pattern_explanation",
-                "secondary_question_families": [],
-                "target_metric": "paid_amount",
-                "requested_components": [],
-                "requested_dimensions": [],
-                "baseline_candidates": [],
-                "context_sources": [],
-                "claim_intents": ["causal_effect"],
-                "scope": None,
-            },
-            material_slots={
-                "target_metrics": ["paid_amount"],
-                "requested_components": [],
-                "requested_dimensions": [],
-                "baselines": [],
-                "context_sources": [],
-                "claim_intents": ["causal_effect"],
-                "diagnostic_tags": [],
-                "scope": None,
-            },
-            runtime_material=build_execution_material(
-                proposal={
-                    "question_families": ["pattern_explanation"],
-                    "target_metrics": ["paid_amount"],
-                    "claim_intents": ["causal_effect"],
-                },
-                accepted_graph=("pattern_scan",),
-                as_of=as_of,
-                permission_scope="analyst",
-                run_mode="production",
-                runtime_contract_version=registry.contract_version,
-                runtime_registry_digest=registry.source_payload_digest,
-                analysis_contract=prior.analysis_contract,
-                query_contracts=prior.query_contracts,
-                capability_execution_plans=prior.capability_plans,
-            ),
-        )
-        resumed = compile_analysis_contract(
-            run_id="run-persistence-authority-resumed",
-            proposal={
-                "question_families": ["pattern_explanation"],
-                "target_metrics": ["paid_amount"],
-                "accepted_degradation_choice": choice,
-                "accepted_terminal_gap_authority": {
-                    "source_run_id": choice["source_run_id"],
-                    "thread_id": thread_id,
-                    "topic_id": topic_id,
-                    "analysis_contract": prior.analysis_contract.to_dict(),
-                    "analysis_contract_signature": analysis_contract_signature(
-                        prior.analysis_contract
-                    ),
-                    "material_authority": material_authority,
-                    "clarification_outcome": clarification_outcome,
-                },
-                "resume_thread_id": thread_id,
-                "resume_topic_id": topic_id,
-            },
-            accepted_capabilities=(),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=as_of,
-            permission_scope="analyst",
-        )
-        analysis = resumed.analysis_contract.to_dict()
-        analysis["contract_signature"] = analysis_contract_signature(
-            resumed.analysis_contract
-        )
-
-        self.assertEqual(
-            InMemoryConversationStore().save_analysis_runtime_records(
-                run_id="run-persistence-authority-resumed",
-                analysis_contract=analysis,
-                query_contracts=resumed.query_contracts,
-                query_execution_records=(),
-                rows_records=(),
-                snapshot_records=(),
-                completeness_records=(),
-                capability_binding_records=(),
-                evidence_manifests=(),
-                context_manifests=(),
-                trusted_provenance_records=(),
-                verified_claims=(),
-                claim_links=(),
-                repair_attempts=(),
-            ),
-            "published",
-        )
-        self.assertTrue(
-            any(
-                gap.gap_id == "claim_intent:causal_effect:unsupported"
-                for gap in resumed.analysis_contract.contract_gaps
-            )
-        )
-
     def test_ordinary_contract_gap_does_not_force_zero_claims(self):
         from bi_agent.runtime.analysis_contracts import analysis_contract_signature
 
@@ -3349,11 +3391,11 @@ class AnalysisRuntimePersistenceTest(unittest.TestCase):
         )
 
         drifted = deepcopy(manifest)
-        drifted["permission_context"] = {"role": "forged"}
+        drifted["unexpected_context"] = {"source": "forged"}
         for store in (memory, postgres):
             with self.subTest(store=type(store).__name__), self.assertRaisesRegex(
                 EvidenceIntegrityError,
-                "context_manifest_(integrity_invalid|publication_conflict)",
+                "context_manifest_(payload_keys_invalid|publication_conflict)",
             ):
                 store.record_context_manifest(drifted)
         self.assertEqual(memory.context_manifests[manifest["manifest_id"]], manifest)

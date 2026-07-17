@@ -84,7 +84,7 @@ This file records confirmed product and architecture decisions from planning dis
 ### 2026-07-05: Gameplay Coverage And Linkage Policy
 
 - Current gameplay data should be used where it is directly covered: gameplay users, penetration, rounds, bet count, bet amount, average bet amount, system rake rate, GGR/gameplay profit, and filename-derived channel-day context.
-- Available gameplay fields can support gameplay activity, betting-structure, GGR, stable-pattern, and candidate-mechanism explanations when date, gameplay, service scope, channel mapping, sparse-cell, and permission gates pass.
+- Available gameplay fields can support gameplay activity, betting-structure, GGR, stable-pattern, and candidate-mechanism explanations when date, gameplay, service scope, channel mapping, sparse-cell, and fixed sensitive-output checks pass.
 - Missing gameplay fields must not be guessed from adjacent metrics. Runtime blocks gameplay paid_amount attribution, gameplay paid rate, gameplay paid amount, gameplay payment frequency, gameplay single-payment amount, icon exposure/click funnel, and payment-order-to-gameplay linkage until dedicated contracts exist.
 - Per-user betting or GGR indicators may be described as gameplay activity or betting-value context only; they cannot be relabeled as gameplay payment ARPU or paid_amount contribution.
 
@@ -101,7 +101,7 @@ This file records confirmed product and architecture decisions from planning dis
 - The current version does not connect AnySearch or other live external evidence connectors.
 - Runtime should not use ad hoc web/news/forum/media crawling as direct evidence.
 - If a user asks for extra external information, the answer should state that external connector support is a later-phase AnySearch-style integration item; the request can be recorded as a missing external-evidence need, not used as evidence in the current run.
-- Future AnySearch-like external evidence connectors can be added after source contracts, provenance, refresh, permission, affected-scope, confidence, and verifier wording rules are reviewed.
+- Future AnySearch-like external evidence connectors can be added after source contracts, provenance, refresh, service-level source access, affected-scope, confidence, and verifier wording rules are reviewed.
 - Until then, external context should come from reviewed event/evidence records or manual event records.
 
 ### 2026-07-04: Sensitive Identifier Permission Boundary
@@ -109,7 +109,7 @@ This file records confirmed product and architecture decisions from planning dis
 - User ID, IP, and device ID may be used for aggregate analysis, internal data-quality checks, and deduplication.
 - Answers and visualizations must not output raw user IDs, raw IPs, or raw device IDs.
 - Individual-user claims are blocked in the WAJE BI v2 baseline.
-- Data/engineering still needs to enforce field sensitivity tags, masking, role access, sparse-cell thresholds, audit requirements, and verifier checks.
+- Data/engineering still needs to enforce field sensitivity tags, masking, fixed customer-safe output, sparse-cell thresholds, audit requirements, and verifier checks.
 
 ### 2026-07-04: `paid_amount` Payment Status And Dedup Policy
 
@@ -160,20 +160,20 @@ This file records confirmed product and architecture decisions from planning dis
 ### 2026-07-04: Source Contract Promotion Rule
 
 - Passing real-data profiling creates a review artifact first.
-- `contract_backed` requires data owner confirmation of field meanings, source watermark, permissions, payment status enum, and `订单ID` uniqueness.
+- `contract_backed` requires data owner confirmation of field meanings, source watermark, service-level source access, payment status enum, and `订单ID` uniqueness.
 - The 2026-07-04 export completed this review path and is accepted as the current source contract.
 
 ### 2026-07-04: Real Data Joint Review Ownership
 
 - The business owner and data owner will review real-data profiling results together.
 - Joint confirmation is required for business-impacting items such as amount buckets, materiality thresholds, anomaly importance, and ambiguous field business meanings.
-- Data-execution items such as source watermark, raw enum values, uniqueness, and permission enforcement remain data/engineering-owned checks.
+- Data-execution items such as source watermark, raw enum values, uniqueness, and sensitive-output enforcement remain data/engineering-owned checks.
 - Confirmation order is data-execution checks first, joint business review second, then draft source contract or backlog blockers.
 
 ### 2026-07-05: Raw Identifier Scope For Operations Analysis
 
 - Raw `IP` and `设备ID` are not required for the current operations-analysis scope.
-- Confirmed permission choice: raw user ID, raw IP, and raw device ID are never shown in answers or visualizations. They may only be used internally for data-quality checks, deduplication, permission-safe joins, and aggregate analysis.
+- Confirmed output-safety choice: raw user ID, raw IP, and raw device ID are never shown in answers or visualizations. They may only be used internally for data-quality checks, deduplication, contract-approved joins, and aggregate analysis.
 - Aggregate analysis can still use available region, device brand/model, operating system, and network type fields.
 - Device-level deduplication, single-device tracking, raw-IP location checks, and device-level risk analysis are outside the current BI operations-analysis scope.
 
@@ -181,25 +181,24 @@ This file records confirmed product and architecture decisions from planning dis
 
 - Low-sample segment cells should not show detailed values, labels, ranks, amounts, counts, or raw rows in answers or visualizations.
 - First-runtime sparse-cell threshold is `n < 10`: order metrics count paid orders, user metrics count distinct users.
-- Runtime should roll low-sample cells up to an approved higher aggregate grain when that grain is meaningful and permission-safe.
+- Runtime should roll low-sample cells up to an approved higher aggregate grain when that grain is meaningful and privacy-safe.
 - If a low-sample observation may help business readers understand uncertainty, the answer may mention that a similar signal was observed in a small sample, with no detailed cell output.
 - Low-sample observations cannot support main conclusions, quantified claims, rankings, or causal wording.
 - Candidate screening may keep noisier cells above this red line for local scoring and LLM business judgment; sample size, stability, and evidence strength still constrain promotion.
-- Data/engineering still needs to enforce this threshold in permission, artifact filtering, verifier, and visualization checks.
+- Data/engineering still needs to enforce this threshold in query safety, aggregate artifact projection, verifier, and visualization checks.
 
-### 2026-07-05: Role Visibility And LangGraph Runtime Baseline
+### 2026-07-16: Single Analysis Access And LangGraph Runtime Baseline
 
-- First runtime baseline uses three visibility roles: `business_reader`, `analyst`, and `data_owner_admin`.
-- `business_reader` can see business conclusions, visible limitations, and permission-safe aggregate visual blocks.
-- `analyst` can additionally see aggregate evidence, process summaries, path records, degraded or blocked route reasons, and non-sensitive diagnostic detail.
-- `data_owner_admin` can additionally see contract state, validator outputs, audit metadata, runtime debug detail, and owner-review queues.
-- No role can see raw user ID, raw IP, or raw device ID in answers or visualizations.
-- Runtime stores one complete Answer Package. Artifact sections should use visibility tags such as `business_summary`, `aggregate_evidence`, `diagnostic_detail`, and `admin_audit`; runtime filters sections by role before rendering, sharing, or export.
-- Artifact audit records actor, role, artifact id, action, and visible section ids for every open, share, or export action.
-- Bootstrap access uses a backend allowlist and public registration is disabled in the first runtime.
-- Bootstrap access starts with one default principal per role: `bootstrap_business_reader`, `bootstrap_analyst`, and `bootstrap_data_owner_admin`.
-- Real identity-provider mapping can replace the allowlist when auth is connected.
-- First production runtime must integrate LangGraph workflow execution. LangGraph carries visible workflow, checkpoints, branches, loops, retries, interrupts, trace, and node progress; WAJE-owned contracts, validators, evidence state, permissions, and verifier remain the BI authority.
+- This decision supersedes every earlier product-role hierarchy, role-derived permission scope, `permission_limited` ledger state, permission-filtered artifact, and permission-blocked claim semantic in this file. Current contracts use ordinary evidence/data-contract states plus separate fixed restricted-output and service-connection source-access boundaries.
+- The current runtime exposes one BI analysis capability set to every normal user. Dataset availability, query planning, evidence strength, and conclusion rights do not vary by user role or thread owner.
+- User identity remains available for personal conversation ownership, performance safety, audit, and rate limiting. It does not participate in dataset selection, snapshot/release resolution, query contracts, result or artifact reuse, or verifier decisions.
+- Runtime stores one complete Answer Package and applies one fixed customer-safe projection when rendering, sharing, or exporting. The projection includes business summaries, aggregate evidence, non-sensitive diagnostics, contract and query/result references, completeness, and verifier results.
+- `admin_audit`, credentials, raw rows, raw identifiers, and internal owner/debug fields stay server-side for every user.
+- Raw user ID, raw order ID, raw IP, and raw device ID remain forbidden in answers and visualizations. Approved aggregate calculations may use identifiers internally for deduplication, counting, and data-quality checks.
+- Aggregate-only dimensions, sparse-cell limits, SQL safety, data contracts, snapshot/release authority, evidence provenance, claim provenance, and verifier checks remain hard boundaries independent of user identity.
+- Artifact audit records actor, artifact id, action, and visible section ids for every open, share, or export action. No product-role hierarchy or role-derived permission scope is recorded.
+- Public registration and future identity-provider choices are independent of BI analysis capability. Future data-scope authorization will be designed from explicit tenant/workspace and allowed-asset requirements when such requirements exist.
+- First production runtime must integrate LangGraph workflow execution. LangGraph carries visible workflow, checkpoints, branches, loops, retries, interrupts, trace, and node progress; WAJE-owned contracts, validators, evidence state, sensitive-output policy, and verifier remain the BI authority.
 - LangGraph node ids should link to WAJE run/node ids so product views can join workflow progress with evidence refs, path records, verifier results, and Answer Package artifacts.
 - If LangGraph execution fails, runtime must fail the run or affected branch visibly and must not produce a local business-conclusion fallback. It may show failed node, reason, retry/recovery option, and preserved evidence state, but no business conclusion or action recommendation can be published from fallback logic.
 
@@ -253,24 +252,24 @@ This file records confirmed product and architecture decisions from planning dis
 - The graph should deepen when the main conclusion is not stable enough: large unexplained residuals, baseline disagreement, unstable main contribution, concentrated exception periods, strong event-window overlap, or verifier risk that could change the allowed claim/evidence type or wording limit.
 - Weak but non-decisive signals that do not affect the main conclusion should be preserved as suggested follow-ups or limitations rather than forcing deeper execution every time.
 - Degraded or insufficient evidence should be expressed inside the relevant conclusion boundary on the first screen. Users should see which explanation is quantified, which is only a candidate mechanism, and which route is blocked or unsupported.
-- If data quality, missing contracts, unsupported grain, or permissions materially affect the whole answer, the first screen can also include a prominent limitation card.
+- If data quality, missing contracts, unsupported grain, or fixed sensitive-output policy materially affects the whole answer, the first screen can also include a prominent limitation card.
 - Weak or degraded evidence should not be hidden only in expanded details.
-- PRD acceptance cases for `paid_amount_change_explanation` should be organized by business risk. Required risk groups include normal operating review, baseline disagreement, periodic-pattern misclassification, anomaly-dominated change, event candidate explanation, missing contract, data quality issue, over-strong causal wording, and permission-limited evidence.
+- PRD acceptance cases for `paid_amount_change_explanation` should be organized by business risk. Required risk groups include normal operating review, baseline disagreement, periodic-pattern misclassification, anomaly-dominated change, event candidate explanation, missing contract, data quality issue, over-strong causal wording, and restricted-output evidence.
 - The business-risk acceptance set should map back to capability coverage and SSOT factor coverage in the launch acceptance matrix.
 
 ### 2026-07-03: Clarification And Question Tool
 
 - Clarification should be an optional LangGraph branch, not a hard gate.
-- LLM can propose clarification questions when ambiguity could change the business answer, baseline, time semantics, analysis scope, claim strength, permission path, or execution cost.
+- LLM can propose clarification questions when ambiguity could change the business answer, baseline, time semantics, analysis scope, claim strength, or execution cost.
 - Question tool prompts should offer a small set of business-facing options with a recommended interpretation. If the question tool is presented, it can block the current run until the user chooses an option, chooses the recommended inference, or tells the agent to do differently.
 - Clarification can appear during intent binding, graph compilation, targeted graph repair, degraded-path handling, and final answer verification.
 - Accepted graph state should record the clarification result as `user_selected`, `system_inferred`, or `skipped`, together with the chosen assumption and downstream evidence boundary.
 - Local compiler, policy, contracts, permissions, and verifier remain authoritative. The LLM can suggest clarification options and recommendations, while local systems decide whether the resulting graph is executable and what claim strength is allowed.
-- Trigger policy: use LLM judgment to propose clarification candidates, then local policy should prioritize questions that can change the main conclusion, claim boundary, scope, baseline, time semantics, permission path, or execution cost.
+- Trigger policy: use LLM judgment to propose clarification candidates, then local policy should prioritize questions that can change the main conclusion, claim boundary, scope, baseline, time semantics, or execution cost.
 - Clarification UX should follow the Codex/Claude Code style: one clarification turn can include up to 3-4 short questions, each with up to 3 concrete options and one recommended option when appropriate.
 - Each clarification turn should also include a fixed "tell the agent to do differently" escape option so users can override the framing, supply their own instruction, or ask the agent to proceed another way.
 - The system should avoid asking for every missing parameter. Low-risk gaps should use the recommended inference and continue without opening a question tool. If a question tool is opened, one of the options should allow continuing with the recommended inference.
-- Runtime should block for clarification only when ambiguity could change the business conclusion, baseline, time semantics, permission boundary, claim strength, or execution cost. Other assumptions should continue as recommended inferences and be recorded in accepted graph, Answer Package, and verifier checks.
+- Runtime should block for clarification only when ambiguity could change the business conclusion, baseline, time semantics, analysis scope, claim strength, or execution cost. Other assumptions should continue as recommended inferences and be recorded in accepted graph, Answer Package, and verifier checks.
 
 ### 2026-07-03: First Vertical Slice - Intra-Month Payment Pattern
 
@@ -292,12 +291,12 @@ This file records confirmed product and architecture decisions from planning dis
 - Stronger cause wording is allowed only when the evidence and verifier support that claim strength.
 - Candidate mechanism exploration should be SSOT-first with business-neighbor expansion.
 - The system should start from factors, dimensions, events, and static assumptions recorded in `付费金额影响因子分析.mm` and the factor ledger.
-- When the pattern is strong but current evidence does not explain it enough, LLM can propose nearby business candidates such as payday, holiday, version, activity, or channel combinations. Ledger, contracts, permissions, and verifier decide whether those candidates can support a claim, stay as contextual evidence, or become missing-contract items.
+- When the pattern is strong but current evidence does not explain it enough, LLM can propose nearby business candidates such as payday, holiday, version, activity, or channel combinations. Ledger, contracts, fixed sensitive-output policy, and verifier decide whether those candidates can support a claim, stay as contextual evidence, or become missing-contract items.
 - Reasonable mechanisms with incomplete contracts can appear as candidate mechanisms when they have valid contextual or temporal evidence.
 - The answer must state the missing contract or unsupported grain that prevents stronger wording.
 - Missing-contract mechanisms should not be promoted to confirmed causes.
 - First production baseline for `pattern_explanation` should cover the full intended pattern problem domain rather than only the first slice or a small high-frequency subset.
-- Pattern families should include intra-period, weekly, monthly, quarterly, yearly seasonality, event-relative windows, pre/post windows, lag/recovery windows, rolling windows, custom baselines, cohort-related patterns where contracts support them, and segment-level pattern comparisons where grain and permissions allow.
+- Pattern families should include intra-period, weekly, monthly, quarterly, yearly seasonality, event-relative windows, pre/post windows, lag/recovery windows, rolling windows, custom baselines, cohort-related patterns where contracts support them, and segment-level pattern comparisons where grain and fixed output policy allow.
 - Full-domain coverage still needs runtime bounds through accepted graph planning, budget, contracts, SSOT relevance, data quality, and claim-strength policy.
 - Runtime pattern exploration should be bounded by the user's candidate pattern, business context, and evidence-triggered expansion.
 - The graph should expand to sibling patterns, event-relative windows, rolling windows, lag/recovery, or segment-level comparisons only when evidence suggests they can change the conclusion, strengthen the explanation, explain residuals/exceptions, or clarify a user's hypothesis.
@@ -366,7 +365,7 @@ This file records confirmed product and architecture decisions from planning dis
 - Two-dimensional combinations are the default starting point once the graph enters combination attribution.
 - Higher-order combinations require additional evidence, business relevance, stability, and budget support.
 - Attribution candidate pool should combine SSOT-registered candidates, data-discovered candidates, and LLM/user-hypothesized candidates.
-- SSOT and factor ledger are the primary source. Data discovery can add candidates from distribution shifts, structural changes, anomalies, new values, or residual patterns. LLM/user hypotheses can enter the pool only after ledger, contract, permission, and evidence checks.
+- SSOT and factor ledger are the primary source. Data discovery can add candidates from distribution shifts, structural changes, anomalies, new values, or residual patterns. LLM/user hypotheses can enter the pool only after ledger, contract, fixed output-policy, and evidence checks.
 - Candidate openness should not bypass verifier boundaries or claim-strength policy.
 - First-screen answer for `segment_or_factor_attribution` should present actionable business explanation first, then contribution magnitude, stability, coverage, and evidence boundary.
 - Attribution should not be reduced to a Top-N ranking or model score. Rankings can support the explanation but should not replace the business conclusion.
@@ -374,11 +373,11 @@ This file records confirmed product and architecture decisions from planning dis
 - The product can state quantified contribution or explained difference when segment bridge, formula decomposition, or attribution evidence supports it.
 - The product should not convert contribution ranking into causal wording unless intervention, control, mechanism, or stronger causal evidence supports that claim.
 - PRD acceptance cases for `segment_or_factor_attribution` should be organized by attribution risk.
-- Required risk groups include one-dimensional explanation sufficient, one-dimensional explanation misleading and two-dimensional attribution required, two-dimensional explanation sufficient, higher-order combination required, local combination that cannot be generalized, sparse sample risk, permission-limited evidence, and contribution wording incorrectly promoted to causal wording.
+- Required risk groups include one-dimensional explanation sufficient, one-dimensional explanation misleading and two-dimensional attribution required, two-dimensional explanation sufficient, higher-order combination required, local combination that cannot be generalized, sparse sample risk, restricted-output evidence, and contribution wording incorrectly promoted to causal wording.
 - The risk set should map back to dimension types, capabilities, ledger states, and claim thresholds in the launch acceptance matrix.
 - Core answer for `anomaly_or_black_swan_review`: determine whether the anomaly is real, where it appears, and what business or data explanation is supported.
-- The graph should first rule out data quality, metric-contract, time semantics, permission, or cumulative-value issues, then identify abnormal time windows, segments, metrics, or factors, and finally test internal actions, structural changes, external shocks, and black-swan candidates.
-- Anomaly detection should generalize to any supported dimension, factor, metric component, segment, time window, event window, or combination allowed by ledger, contracts, grain, permissions, and budget.
+- The graph should first rule out data quality, metric-contract, time semantics, sensitive-output, or cumulative-value issues, then identify abnormal time windows, segments, metrics, or factors, and finally test internal actions, structural changes, external shocks, and black-swan candidates.
+- Anomaly detection should generalize to any supported dimension, factor, metric component, segment, time window, event window, or combination allowed by ledger, contracts, grain, fixed output policy, and budget.
 - Time anomalies, segment anomalies, metric-chain anomalies, and data anomalies are default examples, not an exhaustive list.
 - Black-swan events should be treated as one candidate explanation class for anomalies.
 - The system should first determine whether an anomaly exists and where it appears, then test external shocks such as policy, market, weather, competitor, platform incidents, or other black-swan candidates when relevant evidence exists.
@@ -387,7 +386,7 @@ This file records confirmed product and architecture decisions from planning dis
 - The answer should state whether the anomaly is real, where it is concentrated, which explanations are supported or candidate-only, and which data or business routes were ruled out.
 - Anomaly lists and external-event lists can support the answer, but should not replace the business conclusion.
 - PRD acceptance cases for `anomaly_or_black_swan_review` should be organized by anomaly risk.
-- Required risk groups include true anomaly, pseudo-anomaly or data issue, local segment anomaly, metric-chain anomaly, internal-action explanation, external black-swan candidate, unsupported black-swan misclassification, and permission or grain-limited anomaly evidence.
+- Required risk groups include true anomaly, pseudo-anomaly or data issue, local segment anomaly, metric-chain anomaly, internal-action explanation, external black-swan candidate, unsupported black-swan misclassification, and restricted-output or grain-limited anomaly evidence.
 - The risk set should map back to capabilities, algorithms, ledger states, and claim thresholds in the launch acceptance matrix.
 - Core answer for `custom_baseline_comparison`: compare the target metric against a user-specified or business-recommended baseline, then explain the difference and its business causes.
 - Custom baseline comparison should not stop at numeric deltas. It should connect to formula decomposition, attribution, event evidence, anomaly review, data quality, and verifier when the user asks why the difference exists.
@@ -399,10 +398,10 @@ This file records confirmed product and architecture decisions from planning dis
 - PRD acceptance cases for `custom_baseline_comparison` should be organized by baseline risk.
 - Required risk groups include user-specified baseline, system-recommended baseline, multiple-baseline disagreement, event-relative baseline, same-weekday or similar-window baseline, target deviation, cumulative-value misuse, wrong time semantics, and unavailable comparable window.
 - The risk set should map back to baseline types, capabilities, ledger states, and claim thresholds in the launch acceptance matrix.
-- Core answer for `data_quality_or_evidence_review`: determine whether a conclusion can be trusted and where data, evidence, contract, permission, or claim-strength limits apply.
+- Core answer for `data_quality_or_evidence_review`: determine whether a conclusion can be trusted and where data, evidence, contract, sensitive-output, or claim-strength limits apply.
 - This question family should review both data quality and evidence sufficiency. It should not be limited to raw data checks or only answer-level evidence checks.
-- Default review scope should cover data quality, contract coverage, permissions, evidence strength, and claim wording.
-- Checks should include missing or duplicate data, cumulative-value misuse, time semantics, metric contracts, dimension/event contracts, permission limits, evidence sufficiency, and whether answer wording exceeds supported claim strength.
+- Default review scope should cover data quality, contract coverage, fixed sensitive-output policy, evidence strength, and claim wording.
+- Checks should include missing or duplicate data, cumulative-value misuse, time semantics, metric contracts, dimension/event contracts, restricted-output limits, evidence sufficiency, and whether answer wording exceeds supported claim strength.
 - First-screen answer for `data_quality_or_evidence_review` should contain trust judgment, affected scope, claims that need degradation, and recommended data or contract fixes.
 - The answer should tell users which conclusion can be trusted, which evidence path is limited, and what data or contract improvement would raise claim strength.
 - A checklist of checks can support the answer but should not replace the trust judgment.
@@ -419,11 +418,11 @@ This file records confirmed product and architecture decisions from planning dis
 - PRD review P0-3 decision: accepted graph should get a product-level lifecycle contract in the PRD. Include minimal graph/node states such as `proposed`, `accepted`, `auto_added`, `repair_requested`, `repaired`, `running`, `completed`, `degraded`, `blocked`, `skipped`, and `verified`, plus clarification outcomes such as `user_selected`, `recommended_inference_selected`, `agent_instructed_differently`, and `system_inferred`.
 - PRD review P0-4 decision: each of the eight foundational capabilities should get a one-page product-contract sketch in the PRD. Each sketch should cover business use, non-use, key parameters, evidence output, lint rules, degradation rules, and typical question families, without locking final API schemas.
 - PRD review P0-5 decision: Answer Package should define a minimal claim group product contract in the PRD. Each claim group should include conclusion text, scope, baseline, target metric, evidence refs, evidence type, strength, supported wording, disallowed wording, limitations, related visual blocks, and verifier status, without locking final API schema.
-- PRD review P1-1 decision: factor ledger reconciliation should be written as an audit/review pipeline in the PRD: extract from `.mm`, generate review artifact, business owner reviews meaning and claim boundary, data/engineering owner reviews contracts/grain/permissions, assign support status, run missing/conflict checks, version the accepted source, and publish a runtime mirror.
+- PRD review P1-1 decision: factor ledger reconciliation should be written as an audit/review pipeline in the PRD: extract from `.mm`, generate review artifact, business owner reviews meaning and claim boundary, data/engineering owner reviews contracts, grain, fixed output safety, and source-connection access, assign support status, run missing/conflict checks, version the accepted source, and publish a runtime mirror.
 - PRD review P1-2 decision: use `business_object_impact_review` as the problem-family name throughout the PRD. Event terms should remain only as business-object subtypes or visualization subtypes, such as event timelines, holidays, campaigns, versions, and external events.
-- PRD review P1-3 decision: production requirements should include minimum launch gates in the PRD. Gates include permission-blocked claim behavior, audit traceability, snapshot/rerun comparability, budget skip recording, slow/failed/degraded run observability, and blocking strong conclusions when verifier fails.
+- PRD review P1-3 decision: production requirements should include minimum launch gates in the PRD. Gates include fixed restricted-output and source-connection boundary behavior, audit traceability, snapshot/rerun comparability, budget skip recording, slow/failed/degraded run observability, and blocking strong conclusions when verifier fails.
 - PRD review P1-4 decision: the question tool's "tell agent to do differently" escape should enter intent rebinding or targeted graph repair. The LLM can reinterpret or propose graph changes, then the local compiler validates. Accepted changes continue with mutation reason recorded; rejected changes produce a business-facing refusal, repair, or degradation explanation.
-- PRD review P1-5 decision: artifacts should be in first baseline scope with a simple model. Artifacts save verified answer, visualization plan, process summary, evidence boundaries, and data/contract snapshot info; support read-only sharing with permission filtering; and allow continuing investigation from the artifact.
+- PRD review P1-5 decision: artifacts should be in first baseline scope with a simple model. Artifacts save verified answer, visualization plan, process summary, evidence boundaries, and data/contract snapshot info; remain personal read-only objects rendered through one fixed customer-safe projection; and allow continuing investigation from the artifact.
 - PRD review P1-6 decision: launch eval should include failure attribution taxonomy by business failure type and system responsibility point. Business failures include wrong question family, wrong scope, wrong baseline, missed key factor, over-strong weak evidence, hidden data gap, misleading visualization, and unsupported main conclusion. System responsibility points include LLM reasoner, graph compiler, semantic compiler, capability API, evidence reducer, answer synthesizer, answer verifier, and visualization planner.
 - Eval failures should not automatically enter runtime guardrails or optimization loops. Promotion requires human validation, dual business/engineering ownership, severity/frequency/generalizability review, and rerunning the affected eval slice after changes.
 - PRD review P2-1 decision: formal PRD should use Chinese as the main language while preserving key English technical terms such as `Answer Package`, `capability card`, `accepted graph`, `claim group`, and `verifier`.
@@ -435,7 +434,7 @@ This file records confirmed product and architecture decisions from planning dis
 - PRD P1 refinement decision: graph compiler behavior should be expressed as an action table for block, auto-add, degrade, targeted repair, skip, verifier repair, and human-reviewed failure promotion.
 - PRD P1 refinement decision: production launch gates should include performance budgets, deployment health checks, version rollback, minimum observability fields, and launch dashboard alert categories.
 - PRD P1 refinement decision: launch acceptance matrix skeleton should include representative SSOT factor groups and ledger states to cover for every question family.
-- PRD signoff refinement decision: ledger statuses should use the same names as `data_contract_state`: `contract_backed`, `evidence_linked`, `static_assumption`, `missing_contract`, `permission_limited`, `unsupported_grain`, and `out_of_scope_for_now`.
+- PRD signoff refinement decision: ledger statuses should use the same names as `data_contract_state`: `contract_backed`, `evidence_linked`, `static_assumption`, `missing_contract`, `unsupported_grain`, and `out_of_scope_for_now`.
 - PRD signoff refinement decision: launch acceptance matrix should separate allowed claim/evidence type from allowed strength or wording limit.
 - PRD signoff refinement decision: launch representative cases require `answer_verify`; `data_quality_check` is required for first-screen claims and strong claims.
 - PRD signoff refinement decision: the first vertical slice should be expressed as required evidence paths for the broader `pattern_explanation` problem class. The month-start case is a regression example; sibling pattern families reuse the same evidence-path shape with their own windows, candidates, visuals, and thresholds.
@@ -447,7 +446,7 @@ This file records confirmed product and architecture decisions from planning dis
 - Payday uses the shared `25..30` business window across relevant scenarios; evidence strength and claim precision come from tested windows, stability, and verifier checks.
 - Factor ledger review should use dual ownership. Business owner reviews business meaning, explanatory validity, and claim boundaries. Data/engineering owner reviews data contracts, grain, permissions, executable capabilities, and runtime feasibility.
 - `.mm` to factor ledger reconciliation: `付费金额影响因子分析.mm` remains the business source tree, and factor ledger must cover every relevant metric, factor, dimension, event, formula, and missing-contract item from that tree with an explicit runtime support status.
-- Ledger status should make every SSOT node reviewable: `contract_backed`, `evidence_linked`, `static_assumption`, `missing_contract`, `permission_limited`, `unsupported_grain`, or `out_of_scope_for_now`.
+- Ledger status should make every SSOT node reviewable: `contract_backed`, `evidence_linked`, `static_assumption`, `missing_contract`, `unsupported_grain`, or `out_of_scope_for_now`.
 - Launch acceptance requires every relevant SSOT node to have an explicit ledger status. A factor does not need to support every strong claim, but it cannot remain unknown for supported baseline question families.
 - Core question families must not pass launch with invisible SSOT gaps. Unsupported or limited factors should appear as degraded paths, missing contracts, unsupported grains, permission limits, or out-of-scope baseline decisions.
 - Capability cards are the business and evidence boundary context exposed to the LLM so it can propose a valid candidate capability graph.
@@ -499,11 +498,11 @@ Confirmed choice: business question families with capability tags.
   - Dimension and combination attribution questions: single-factor, two-factor, and higher-order combinations such as channel x new/returning user x region.
 - Capability tags should include `pattern_scan`, `formula_decompose`, `joint_attribution`, `event_evidence`, `outlier_scan`, `segment_bridge`, `data_quality_check`, and `answer_verify`.
 - Each matrix cell should store two fields: `business_evidence_state` and `data_contract_state`.
-- `business_evidence_state` describes what claim the factor/capability/question intersection can support, such as `quantifiable`, `candidate_mechanism`, `contextual_evidence`, `insufficient`, `permission_limited`, `unsupported_grain`, or `out_of_scope`.
-- `data_contract_state` describes why the system can or cannot execute the analysis, such as `contract_backed`, `evidence_linked`, `static_assumption`, `missing_contract`, `permission_limited`, `unsupported_grain`, or `out_of_scope_for_now`.
+- `business_evidence_state` describes what claim the factor/capability/question intersection can support, such as `quantifiable`, `candidate_mechanism`, `contextual_evidence`, `insufficient`, `unsupported_grain`, or `out_of_scope`.
+- `data_contract_state` describes why the system can or cannot execute the analysis, such as `contract_backed`, `evidence_linked`, `static_assumption`, `missing_contract`, `unsupported_grain`, or `out_of_scope_for_now`.
 - Acceptance pass thresholds should be defined by question family and claim type, not by one universal cell state.
 - Quantified contribution or formula claims generally require `quantifiable` evidence with executable contracts; candidate mechanism claims may pass with `candidate_mechanism` plus valid event/static/evidence linkage; context-only explanations may pass as `contextual_evidence` only when wording is limited.
-- Any main conclusion that would rely on `insufficient`, `missing_contract`, `unsupported_grain`, or permission-blocked evidence must fail that claim path and be degraded, omitted, or shown as a limitation.
+- Any main conclusion that would rely on `insufficient`, `missing_contract`, `unsupported_grain`, fixed restricted-output, or unavailable source-connection evidence must fail that claim path and be degraded, omitted, or shown as a limitation.
 - The matrix should verify both end-to-end business answers and factor/capability coverage.
 
 ## Launch Evaluation
@@ -809,7 +808,7 @@ Thread-scoped result reuse:
 
 - Confirmed choice: investigation threads can reuse prior `result_ref` values through a thread-scoped cache with validation.
 - Reusable results should be keyed or validated by thread id, run id, contract versions, data snapshot/freshness, scope, filters, grain, metric, dimensions, window definitions, baseline definitions, and semantic query hash.
-- Follow-up questions should let the graph compiler search prior result refs and reuse them only when data snapshot, contract versions, permission scope, and semantic scope match. Same or narrower scope may reuse; wider or changed scope must rerun affected nodes.
+- Follow-up questions should let the graph compiler search prior result refs and reuse them only when data snapshot, contract versions, fixed output-safety contract version, and semantic scope match. Same or narrower semantic scope may reuse; wider or changed scope must rerun affected nodes.
 - If validation fails, the query should rerun or the prior result should be marked context-only. Context-only prior results cannot support a new claim.
 - Reused results should still produce new evidence envelopes for the current run/claim when they support a new answer.
 - The Answer Package should record when evidence reused prior result refs.
@@ -1088,7 +1087,7 @@ Pre-launch requirement:
 
 - Before production launch, WAJE BI v2 must review every SSOT factor and decide whether data exists, whether a static or semi-static table should be maintained, whether the factor should start as an agreed assumption, or whether it remains a missing contract.
 - This review should include internal payment/order fields, user dimensions, channel/payment dimensions, geo/device dimensions, product/operation events, failure reasons, external events, and black-swan candidates.
-- Each factor should have a launch status: `contract_backed`, `evidence_linked`, `static_assumption`, `missing_contract`, `permission_limited`, `unsupported_grain`, or `out_of_scope_for_now`.
+- Each factor should have a launch status: `contract_backed`, `evidence_linked`, `static_assumption`, `missing_contract`, `unsupported_grain`, or `out_of_scope_for_now`.
 - Static assumptions must record owner, source, valid window, refresh rule, allowed strength, and wording limit.
 
 ## SSOT Data Capability Ledger

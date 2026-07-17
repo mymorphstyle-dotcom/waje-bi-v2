@@ -4,7 +4,7 @@ business_name: Answer verifier
 review_status: draft
 
 responsibilities:
-  - Verify final claim groups against evidence refs, contract states, scope, baseline, permission, and wording limits.
+  - Verify final claim groups against evidence refs, contract states, scope, baseline, fixed output-safety, source-access state, and wording limits.
   - Block, degrade, or request repair when answer text exceeds supported evidence.
   - Produce verifier status for Answer Package and launch eval.
 
@@ -17,14 +17,13 @@ parameters:
     - disabled_or_degraded_paths
   optional:
     - visualization_plan
-    - permission_context
     - eval_expectations
     - wording_policy
 
 non_uses:
   - Does not generate new analytical evidence.
   - Does not approve claims without evidence refs.
-  - Does not rewrite business contracts, permissions, or ledger states.
+  - Does not rewrite business contracts, fixed output-safety rules, source-access state, or ledger states.
 
 evidence_outputs:
   typed_payload: answer_verify_result
@@ -74,7 +73,7 @@ verifier_hooks:
   - final_claim_number_scope_baseline_check
   - missing_contract_wording_check
   - candidate_mechanism_causality_check
-  - permission_filtered_artifact_check
+  - customer_safe_artifact_projection_check
 
 typical_question_families:
   - paid_amount_change_explanation

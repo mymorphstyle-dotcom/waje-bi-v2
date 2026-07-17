@@ -1,17 +1,18 @@
 from pathlib import Path
 from types import SimpleNamespace
+import json
 import unittest
 
 from bi_agent.conversation import models as conversation_models
 from bi_agent.conversation.agent_core import _build_clarification_source_envelope
 from bi_agent.conversation.runtime import (
     ConversationRuntime,
-    _can_read_scope,
     _classify_intent,
     _looks_like_clarification_answer,
     _metric_business_label_vocabulary,
     _mentioned_metrics,
     _needs_clarification,
+    _intent_summary,
     _should_use_llm_orchestrator,
 )
 from bi_agent.conversation.runtime import _build_clarification
@@ -55,6 +56,12 @@ def _persist_clarification_source_envelope(
 
 
 class ConversationRuntimeTest(unittest.TestCase):
+    def test_unsupported_request_summary_uses_fixed_safety_boundaries(self):
+        self.assertEqual(
+            _intent_summary("unsupported_request", "导出原始用户ID明细"),
+            "用户请求触达固定敏感输出、源访问或执行安全边界。",
+        )
+
     def test_exact_open_clarification_option_precedes_topic_heuristics(self):
         option = "周末规律（周六/周日与工作日比较）"
         state = conversation_models.ClarificationState(
@@ -539,20 +546,6 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertFalse(material_item.can_support_claims)
         self.assertEqual(material_item.claim_use, "context_only")
 
-        blocked = runtime.handle_message(
-            "thread-phase7",
-            "我现在只有普通权限，继续看刚才的细分。",
-            role="business_reader",
-        )
-        self.assertEqual(blocked.reuse_decisions[0].decision, "blocked")
-        self.assertFalse(blocked.context_manifest.can_support_claims)
-        self.assertIn("permission_scope_mismatch", blocked.reuse_decisions[0].reason)
-        blocked_result_items = [
-            item for item in blocked.context_manifest.items if item.source_type == "result_ref"
-        ]
-        self.assertTrue(blocked_result_items[0].expired)
-        self.assertEqual(blocked_result_items[0].claim_use, "blocked")
-
         stale = runtime.handle_message(
             "thread-phase7",
             "数据更新以后，这个判断现在还成立吗？",
@@ -567,106 +560,6 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertTrue(stale_result_items[0].expired)
         self.assertEqual(stale_result_items[0].claim_use, "context_only")
 
-    def test_business_reader_can_follow_viewer_artifact_and_reuse_viewer_candidate(self):
-        store = InMemoryConversationStore()
-        runtime = ConversationRuntime(store)
-        store.create_thread("thread-viewer-alias", owner_id="reader-1")
-        topic = store.create_topic(
-            "thread-viewer-alias",
-            title="付费金额变化",
-            summary="已验证的付费金额变化分析。",
-        )
-        store.set_current_topic("thread-viewer-alias", topic.topic_id)
-        candidate = _add_authoritative_result_candidate(
-            store,
-            topic_id=topic.topic_id,
-            result_ref="result:viewer-candidate",
-            source_run_id="run-candidate",
-            permission_scope="viewer",
-        )
-        store.add_artifact(
-            artifact_id="artifact:viewer-visible",
-            topic_id=topic.topic_id,
-            follow_up_context="viewer scope 的已验证结果。",
-            snapshot_id="2026H1",
-            permission_scope="viewer",
-        )
-
-        result = runtime.handle_message(
-            "thread-viewer-alias",
-            "基于这个结果继续分析昨天付费金额变化。",
-            role="business_reader",
-            current_snapshot="2026H1",
-        )
-
-        self.assertEqual(result.reuse_decisions[0].decision, "candidate")
-        self.assertEqual(
-            result.run_request.to_dict()["reuse_candidates"],
-            [candidate],
-        )
-        artifact = next(
-            item
-            for item in result.context_manifest.items
-            if item.source_ref == "artifact:viewer-visible"
-        )
-        self.assertTrue(artifact.can_support_claims)
-        self.assertFalse(artifact.expired)
-
-    def test_business_reader_cannot_follow_admin_or_unknown_scope(self):
-        for protected_scope in ("admin", "unknown_scope"):
-            with self.subTest(protected_scope=protected_scope):
-                store = InMemoryConversationStore()
-                runtime = ConversationRuntime(store)
-                thread_id = f"thread-protected-{protected_scope}"
-                store.create_thread(thread_id, owner_id="reader-1")
-                topic = store.create_topic(
-                    thread_id,
-                    title="受限分析",
-                    summary="受限分析结果。",
-                )
-                store.set_current_topic(thread_id, topic.topic_id)
-                candidate = _result_candidate_payload(
-                    f"result:{protected_scope}-candidate"
-                )
-                candidate.pop("candidate_signature")
-                candidate["permission_scope"] = protected_scope
-                candidate["candidate_signature"] = canonical_digest(candidate)
-                store.add_result_ref(
-                    topic.topic_id,
-                    result_ref=f"result:{protected_scope}-candidate",
-                    snapshot_id="2026H1",
-                    contract_version="contracts-v1",
-                    permission_scope=protected_scope,
-                    semantic_scope="analysis-contract:sha256:analysis-signature",
-                    payload=candidate,
-                )
-                store.add_artifact(
-                    artifact_id=f"artifact:{protected_scope}-protected",
-                    topic_id=topic.topic_id,
-                    follow_up_context="受限结果。",
-                    snapshot_id="2026H1",
-                    permission_scope=protected_scope,
-                )
-
-                result = runtime.handle_message(
-                    thread_id,
-                    "基于这个结果继续分析昨天付费金额变化。",
-                    role="business_reader",
-                    current_snapshot="2026H1",
-                )
-
-                self.assertEqual(result.reuse_decisions[0].decision, "blocked")
-                artifact = next(
-                    item
-                    for item in result.context_manifest.items
-                    if item.source_ref == f"artifact:{protected_scope}-protected"
-                )
-                self.assertFalse(artifact.can_support_claims)
-                self.assertTrue(artifact.expired)
-
-        self.assertFalse(_can_read_scope("data_owner_admin", "unknown_scope"))
-        self.assertFalse(_can_read_scope("unknown_role", "business_reader"))
-
     def test_in_memory_result_candidates_are_newest_first(self):
         store = InMemoryConversationStore()
         store.create_thread("thread-result-order", owner_id="analyst-1")
@@ -680,7 +573,6 @@ class ConversationRuntimeTest(unittest.TestCase):
                 result_ref=result_ref,
                 snapshot_id="2026H1",
                 contract_version="contracts-v1",
-                permission_scope="analyst",
                 semantic_scope="analysis-contract:sha256:analysis-signature",
                 payload=_result_candidate_payload(result_ref),
             )
@@ -969,54 +861,6 @@ class ConversationRuntimeTest(unittest.TestCase):
                 "继续看刚才的渠道贡献。",
             )
 
-    def test_prior_topic_material_rejects_contract_or_execution_permission_scope_drift(self):
-        for axis in ("contract", "execution"):
-            with self.subTest(axis=axis):
-                class PermissionDriftStore(InMemoryConversationStore):
-                    def resolve_completed_material_authority(self, **kwargs):
-                        authority = super().resolve_completed_material_authority(
-                            **kwargs
-                        )
-                        if axis == "contract":
-                            authority["analysis_contract"][
-                                "permission_scope"
-                            ] = "admin"
-                        else:
-                            authority["material_authority"][
-                                "execution_material"
-                            ]["permission_scope"] = "admin"
-                        return authority
-
-                thread_id = f"thread-permission-drift-{axis}"
-                store = PermissionDriftStore()
-                store.create_thread(thread_id, owner_id="analyst-1")
-                topic = store.create_topic(
-                    thread_id,
-                    title="付费金额变化",
-                    summary="已完成付费金额变化分析。",
-                )
-                store.set_current_topic(thread_id, topic.topic_id)
-                _add_authoritative_result_candidate(
-                    store,
-                    topic_id=topic.topic_id,
-                    result_ref=f"result:permission-{axis}",
-                    source_run_id=f"run-permission-{axis}",
-                )
-
-                expected_error = (
-                    "result_candidate_analysis_contract_mismatch"
-                    if axis == "contract"
-                    else "prior_topic_permission_scope_mismatch"
-                )
-                with self.assertRaisesRegex(
-                    EvidenceIntegrityError,
-                    f"^{expected_error}$",
-                ):
-                    ConversationRuntime(store).handle_message(
-                        thread_id,
-                        "继续看刚才的渠道贡献。",
-                    )
-
     def test_prior_topic_material_conflict_is_order_independent(self):
         orders = (
             (
@@ -1192,7 +1036,7 @@ class ConversationRuntimeTest(unittest.TestCase):
 
     def test_memory_update_creates_audited_proposal_without_long_term_write(self):
         runtime = _seed_runtime()
-        before = runtime.store.long_term_memory("org-default")
+        before = runtime.store.long_term_memory("user")
 
         result = runtime.handle_message(
             "thread-phase7",
@@ -1202,21 +1046,46 @@ class ConversationRuntimeTest(unittest.TestCase):
         self.assertEqual(result.turn_intent.intent, "memory_update")
         self.assertEqual(len(result.memory_proposals), 1)
         self.assertEqual(result.memory_proposals[0].status, "proposed")
-        self.assertEqual(runtime.store.long_term_memory("org-default"), before)
+        self.assertEqual(runtime.store.long_term_memory("user"), before)
 
     def test_memory_items_have_refresh_and_revocation_metadata(self):
         store = InMemoryConversationStore()
         item = store.add_memory_item(
-            owner_scope="org-default",
+            owner_id="user",
             text="默认把 WajeSpecial 单独观察。",
             source_ref="memory:accepted:wajespecial",
-            visibility="analyst",
             status="accepted",
         )
 
         self.assertEqual(item.ttl, "until_revoked")
-        self.assertEqual(item.refresh_rule, "refresh_on_contract_or_scope_change")
+        self.assertEqual(item.refresh_rule, "refresh_on_contract_or_owner_change")
         self.assertEqual(item.revocation_path, "memory_proposal_revoke_or_admin_action")
+
+    def test_personal_memory_is_derived_from_thread_owner(self):
+        store = InMemoryConversationStore()
+        store.create_thread("thread-owner-a", owner_id="owner-a")
+        store.create_thread("thread-owner-b", owner_id="owner-b")
+        store.add_memory_item(
+            owner_id="owner-a",
+            text="仅 owner-a 可见的偏好",
+            source_ref="memory:owner-a",
+            status="accepted",
+        )
+        runtime = ConversationRuntime(store)
+
+        owner_a = runtime.handle_message(
+            "thread-owner-a",
+            "Q2 相比 Q1 付费金额为什么变了？",
+        )
+        owner_b = runtime.handle_message(
+            "thread-owner-b",
+            "Q2 相比 Q1 付费金额为什么变了？",
+        )
+
+        owner_a_manifest = json.dumps(owner_a.context_manifest.to_dict(), ensure_ascii=False)
+        owner_b_manifest = json.dumps(owner_b.context_manifest.to_dict(), ensure_ascii=False)
+        self.assertIn("仅 owner-a 可见的偏好", owner_a_manifest)
+        self.assertNotIn("仅 owner-a 可见的偏好", owner_b_manifest)
 
     def test_runtime_carries_prior_assets_into_run_request(self):
         store = InMemoryConversationStore()
@@ -1736,13 +1605,11 @@ def _seed_runtime() -> ConversationRuntime:
         topic_id=q2_topic.topic_id,
         follow_up_context="Q2/Q1 变化的已验证 Answer Package。",
         snapshot_id="2026H1",
-        permission_scope="analyst",
     )
     store.add_memory_item(
-        owner_scope="org-default",
+        owner_id="user",
         text="默认把 WajeSpecial 单独观察。",
         source_ref="memory:accepted:wajespecial",
-        visibility="analyst",
         status="accepted",
     )
     return runtime
@@ -1755,7 +1622,7 @@ def _result_candidate_payload(
 ) -> dict:
     chain_id = canonical_digest({"result_ref": result_ref})[:16]
     payload = {
-        "schema_version": "result-reuse-candidate.v1",
+        "schema_version": "result-reuse-candidate.v2",
         "source_run_id": source_run_id,
         "result_ref": result_ref,
         "query_contract_ref": f"query-contract:{chain_id}",
@@ -1772,7 +1639,6 @@ def _result_candidate_payload(
         "source_release_refs": ["release:paid-success"],
         "source_release_authority_refs": ["release-authority:paid-success"],
         "source_schema_fingerprints": ["schema:paid-success"],
-        "permission_scope": "analyst",
         "semantic_scope_signature": "analysis-contract:sha256:analysis-signature",
         "rows_ref": f"rows:{chain_id}",
         "rows_record_ref": f"rows-record:{chain_id}",
@@ -1795,7 +1661,6 @@ def _source_publication_payload(candidate, contract):
         "query_contract_id": candidate["query_contract_ref"],
         "analysis_contract_ref": candidate["analysis_contract_ref"],
         "contract_signature": candidate["query_contract_signature"],
-        "permission_scope": candidate["permission_scope"],
         "dataset_snapshot_refs": candidate["source_snapshot_refs"],
     }
     result_payload = {
@@ -1810,7 +1675,6 @@ def _source_publication_payload(candidate, contract):
         "release_ref": candidate["source_release_refs"][0],
         "authority_record_ref": candidate["source_release_authority_refs"][0],
         "schema_fingerprint": candidate["source_schema_fingerprints"][0],
-        "permission_scopes": [candidate["permission_scope"]],
     }
     return {
         "analysis_contract": contract,
@@ -1913,37 +1777,70 @@ def _add_authoritative_result_candidate(
     topic_id,
     result_ref,
     source_run_id,
-    permission_scope="analyst",
     baselines=(),
 ):
     from bi_agent.conversation.clarification_authority import (
+        _compiled_goal_material_projection,
+        build_execution_material,
         build_material_authority,
+    )
+    from bi_agent.runtime.analysis_contract_compiler import (
+        compile_analysis_contract,
     )
     from bi_agent.runtime.analysis_contracts import (
         analysis_contract_signature,
         query_contract_signature,
     )
-    from tests.phase7.test_clarification_resume_authority import (
-        _runtime_material_for_contract,
-        _source_contract,
-    )
+    from bi_agent.runtime.dataset_catalog import DatasetCatalog
+    from datetime import datetime
 
     topic = store.topic(topic_id)
-    contract = _source_contract(source_run_id)
-    contract["permission_scope"] = permission_scope
-    contract["contract_signature"] = analysis_contract_signature(contract)
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    goal_bindings = [{"goal_id": "explain_change", "role": "primary"}]
+    explicit_focus = {
+        "component_ids": [],
+        "dimension_ids": [],
+        "context_source_ids": [],
+    }
     baseline_values = list(baselines)
+    goal_material = _compiled_goal_material_projection(
+        goal_bindings=goal_bindings,
+        target_metric="paid_amount",
+        explicit_focus=explicit_focus,
+        runtime_registry=registry,
+    )
+    proposal = {
+        "question_families": ["business_object_impact_review"],
+        "target_metrics": ["paid_amount"],
+        "requested_components": goal_material["component_ids"],
+        "requested_dimensions": goal_material["dimension_ids"],
+        "requested_context_sources": goal_material["context_sources"],
+        "claim_intents": goal_material["claim_types"],
+        "baselines": baseline_values,
+        "goal_bindings": goal_bindings,
+        "explicit_focus": explicit_focus,
+    }
+    outcome = compile_analysis_contract(
+        run_id=source_run_id,
+        proposal=proposal,
+        accepted_capabilities=("compare_periods", "answer_verify"),
+        catalog=DatasetCatalog(()),
+        registry=registry,
+        as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+    )
+    contract = outcome.analysis_contract.to_dict()
+    contract["contract_signature"] = analysis_contract_signature(contract)
     original_intent = {
         "question_family": "business_object_impact_review",
         "question_families": ["business_object_impact_review"],
         "primary_question_family": "business_object_impact_review",
         "secondary_question_families": [],
         "target_metric": "paid_amount",
-        "requested_components": [],
-        "requested_dimensions": [],
+        "goal_bindings": goal_bindings,
+        "explicit_focus": explicit_focus,
         "baseline_candidates": baseline_values,
-        "context_sources": [],
-        "claim_intents": [],
         "scope": "full_sample",
         "time_window": {
             "target": "yesterday",
@@ -1956,21 +1853,33 @@ def _add_authoritative_result_candidate(
     }
     material_slots = {
         "target_metrics": ["paid_amount"],
-        "requested_components": [],
-        "requested_dimensions": [],
+        "component_ids": goal_material["component_ids"],
+        "dimension_ids": goal_material["dimension_ids"],
         "baselines": baseline_values,
-        "context_sources": [],
-        "claim_intents": [],
+        "context_sources": goal_material["context_sources"],
+        "claim_types": goal_material["claim_types"],
+        "required_outcomes": goal_material["required_outcomes"],
+        "analysis_axis_ids": goal_material["analysis_axis_ids"],
         "diagnostic_tags": [],
         "scope": "full_sample",
     }
+    execution_material = build_execution_material(
+        proposal=proposal,
+        accepted_graph=("compare_periods", "answer_verify"),
+        as_of=contract["as_of"],
+        run_mode="production",
+        runtime_contract_version=registry.contract_version,
+        runtime_registry_digest=registry.source_payload_digest,
+        analysis_contract=contract,
+        query_contracts=(),
+    )
     material_authority = build_material_authority(
         source_run_id=source_run_id,
         thread_id=topic.thread_id,
         topic_id=topic_id,
         original_intent=original_intent,
         material_slots=material_slots,
-        runtime_material=_runtime_material_for_contract(contract),
+        runtime_material=execution_material,
     )
     runtime_context = {
         "context_manifest": {
@@ -2010,7 +1919,6 @@ def _add_authoritative_result_candidate(
         {
             "analysis_contract_ref": contract["analysis_contract_id"],
             "analysis_contract_signature": contract["contract_signature"],
-            "permission_scope": permission_scope,
             "semantic_scope_signature": (
                 "analysis-contract:sha256:"
                 + contract["contract_signature"]
@@ -2039,7 +1947,6 @@ def _add_authoritative_result_candidate(
             "dimension_presence_policy": "paired_required",
         },
         "completeness_assertions": ["all_required_windows_present"],
-        "permission_scope": permission_scope,
         "workload_class": "interactive",
         "query_parameters": {},
         "query_role_ref": "",
@@ -2090,7 +1997,6 @@ def _add_authoritative_result_candidate(
         result_ref=result_ref,
         snapshot_id=candidate["runtime_snapshot_id"],
         contract_version=candidate["runtime_contract_version"],
-        permission_scope=permission_scope,
         semantic_scope=candidate["semantic_scope_signature"],
         payload=candidate,
     )

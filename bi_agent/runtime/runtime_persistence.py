@@ -119,8 +119,6 @@ def _result_candidate_publication_authority_projection(
         != normalized["analysis_contract_ref"]
         or analysis_signature != normalized["analysis_contract_signature"]
         or analysis_contract_signature(typed_analysis) != analysis_signature
-        or typed_analysis.permission_scope
-        != normalized["permission_scope"]
         or normalized["semantic_scope_signature"]
         != f"analysis-contract:sha256:{analysis_signature}"
     ):
@@ -154,8 +152,6 @@ def _result_candidate_publication_authority_projection(
         != normalized["query_contract_signature"]
         or query_contract_signature(typed_query_contract)
         != typed_query_contract.contract_signature
-        or typed_query_contract.permission_scope
-        != normalized["permission_scope"]
         or typed_query_contract.dataset_snapshot_refs
         != tuple(normalized["source_snapshot_refs"])
     ):
@@ -273,8 +269,6 @@ def _result_candidate_publication_authority_projection(
             != normalized["source_release_authority_refs"][index]
             or str(snapshot.get("schema_fingerprint") or "")
             != normalized["source_schema_fingerprints"][index]
-            or normalized["permission_scope"]
-            not in tuple(str(item) for item in snapshot.get("permission_scopes") or ())
         ):
             _source_publication_mismatch("snapshot_release")
         matching_snapshots.append(snapshot_record)
@@ -651,11 +645,7 @@ def validate_analysis_runtime_records(
                 or snapshot.record_digest != record_digest
             ):
                 raise EvidenceIntegrityError("runtime_persistence_snapshot_record_link_mismatch")
-    reports_by_result = _unique_by(
-        completeness_records,
-        "result_ref",
-        "runtime_persistence_completeness_result_duplicate",
-    )
+    reports_by_result = _group_by(completeness_records, "result_ref")
     for report in completeness_records:
         query = query_records.get(report.result_ref)
         if (
@@ -825,7 +815,7 @@ def validate_analysis_runtime_records(
         analysis_contract_ref=analysis_ref,
         query_by_ref=query_by_ref,
         query_records=query_records,
-        reports_by_result=reports_by_result,
+        completeness_by_ref=completeness_by_ref,
         snapshots_by_ref=snapshots_by_ref,
         result_candidate_resolver=result_candidate_resolver,
     )
@@ -1044,7 +1034,7 @@ def _validate_physical_reuse_provenance(
     analysis_contract_ref: str,
     query_by_ref: Mapping[str, QueryContract],
     query_records: Mapping[str, QueryExecutionRecord],
-    reports_by_result: Mapping[str, CompletenessRecord],
+    completeness_by_ref: Mapping[str, CompletenessRecord],
     snapshots_by_ref: Mapping[str, SnapshotRecord],
     result_candidate_resolver: Callable[..., Mapping[str, Any]] | None,
 ) -> None:
@@ -1081,12 +1071,22 @@ def _validate_physical_reuse_provenance(
                     "runtime_persistence_reuse_decision_query_mismatch"
                 )
 
-            report = reports_by_result.get(decision["result_ref"])
+            decision_completeness_refs = tuple(
+                decision["completeness_record_refs"]
+            )
+            current_reports = tuple(
+                completeness_by_ref.get(record_ref)
+                for record_ref in decision_completeness_refs
+            )
             if (
-                report is None
-                or report.query_contract_ref != decision["query_contract_ref"]
-                or tuple(decision["completeness_record_refs"])
-                != (report.record_ref,)
+                any(report is None for report in current_reports)
+                or any(
+                    report.result_ref != decision["result_ref"]
+                    or report.query_contract_ref
+                    != decision["query_contract_ref"]
+                    or report.report_ref != query.completeness_report_ref
+                    for report in current_reports
+                )
             ):
                 raise EvidenceIntegrityError(
                     "runtime_persistence_reuse_decision_completeness_mismatch"
@@ -1110,7 +1110,7 @@ def _validate_physical_reuse_provenance(
                     decision,
                     current_contract=contract,
                     current_query=query,
-                    current_report=report,
+                    current_reports=current_reports,
                     current_snapshots=snapshots_by_ref,
                     result_candidate_resolver=result_candidate_resolver,
                 )
@@ -1128,7 +1128,7 @@ def _validate_physical_reuse_source_authority(
     *,
     current_contract: QueryContract,
     current_query: QueryExecutionRecord,
-    current_report: CompletenessRecord,
+    current_reports: Sequence[CompletenessRecord],
     current_snapshots: Mapping[str, SnapshotRecord],
     result_candidate_resolver: Callable[..., Mapping[str, Any]] | None,
 ) -> None:
@@ -1200,7 +1200,7 @@ def _validate_physical_reuse_source_authority(
         source_cache_authority,
         current_contract=current_contract,
         current_query=current_query,
-        current_report=current_report,
+        current_reports=current_reports,
         current_snapshots=current_snapshots,
     )
 
@@ -1210,7 +1210,7 @@ def _validate_physical_reuse_cache_equivalence(
     *,
     current_contract: QueryContract,
     current_query: QueryExecutionRecord,
-    current_report: CompletenessRecord,
+    current_reports: Sequence[CompletenessRecord],
     current_snapshots: Mapping[str, SnapshotRecord],
 ) -> None:
     candidate = source.get("candidate")
@@ -1255,10 +1255,15 @@ def _validate_physical_reuse_cache_equivalence(
         raise EvidenceIntegrityError(
             "runtime_persistence_reuse_decision_cache_equivalence_mismatch:result"
         )
-    report_payload = canonical_value(current_report.report_payload)
     if (
-        report_payload.get("completeness_status") != "complete"
-        or report_payload.get("analysis_readiness") != "ready"
+        not current_reports
+        or any(
+            canonical_value(report.report_payload).get("completeness_status")
+            != "complete"
+            or canonical_value(report.report_payload).get("analysis_readiness")
+            != "ready"
+            for report in current_reports
+        )
         or any(
             not isinstance(record, Mapping)
             or (record.get("report_payload") or {}).get("completeness_status")
@@ -1330,6 +1335,13 @@ def _unique_by(records: Sequence[Any], field: str, code: str) -> dict[str, Any]:
             raise EvidenceIntegrityError(code)
         result[ref] = record
     return result
+
+
+def _group_by(records: Sequence[Any], field: str) -> dict[str, tuple[Any, ...]]:
+    grouped: dict[str, list[Any]] = {}
+    for record in records:
+        grouped.setdefault(str(getattr(record, field)), []).append(record)
+    return {key: tuple(values) for key, values in grouped.items()}
 
 
 def _validated_auxiliary_terminal_closure(
@@ -1496,10 +1508,6 @@ def _validate_query_contract_analysis_semantics(
     ):
         raise EvidenceIntegrityError(
             "runtime_persistence_analysis_dataset_requirement_mismatch"
-        )
-    if contract.permission_scope != analysis.permission_scope:
-        raise EvidenceIntegrityError(
-            "runtime_persistence_query_permission_scope_mismatch"
         )
     for metric in contract.metric_bindings:
         if canonical_value(metrics.get((metric.metric_id, metric.dataset_id))) != canonical_value(metric):
@@ -2317,7 +2325,7 @@ def _record_from_payload(kind: str, payload: Mapping[str, Any]) -> Any:
     if kind == "snapshot":
         snapshot_payload = dict(data["snapshot"])
         for name in (
-            "schema_fields", "permission_scopes", "source_checksums", "date_range",
+            "schema_fields", "source_checksums", "date_range",
             "no_data_partitions", "no_data_partition_windows",
         ):
             snapshot_payload[name] = tuple(snapshot_payload.get(name) or ())

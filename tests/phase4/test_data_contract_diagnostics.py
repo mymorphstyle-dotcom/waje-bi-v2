@@ -17,7 +17,7 @@ class DataContractDiagnosticsTest(unittest.TestCase):
             ),
             available_fields=("payment_status", "order_id", "paid_amount_ngn"),
             contract_fields=(),
-            permission_denied_fields=(),
+            restricted_output_fields=(),
             unsupported_grains=(),
         )
 
@@ -37,7 +37,7 @@ class DataContractDiagnosticsTest(unittest.TestCase):
             ),
             available_fields=("paid_amount_ngn",),
             contract_fields=("order_id",),
-            permission_denied_fields=(),
+            restricted_output_fields=(),
             unsupported_grains=(),
         )
 
@@ -45,7 +45,7 @@ class DataContractDiagnosticsTest(unittest.TestCase):
         self.assertEqual(diagnostics[0]["data_presence"], "field_missing")
         self.assertIn("补数据字段", diagnostics[0]["repair_path"])
 
-    def test_permission_denied_wins_over_contract_missing(self):
+    def test_restricted_output_wins_over_contract_missing(self):
         diagnostics = diagnose_contract_gaps(
             contract_gaps=(
                 {
@@ -55,12 +55,29 @@ class DataContractDiagnosticsTest(unittest.TestCase):
             ),
             available_fields=("user_id", "paid_amount_ngn"),
             contract_fields=("user_id",),
-            permission_denied_fields=("user_id",),
+            restricted_output_fields=("user_id",),
             unsupported_grains=(),
         )
 
-        self.assertEqual(diagnostics[0]["status"], "permission_blocked")
+        self.assertEqual(diagnostics[0]["status"], "restricted_output_blocked")
         self.assertEqual(diagnostics[0]["claim_effect"], "block_sensitive_detail_claim")
+
+    def test_absent_restricted_field_remains_data_absent(self):
+        diagnostics = diagnose_contract_gaps(
+            contract_gaps=(
+                {
+                    "gap_id": "duplicate_order_contract_missing",
+                    "fields": ("order_id",),
+                },
+            ),
+            available_fields=("paid_amount_ngn",),
+            contract_fields=("order_id",),
+            restricted_output_fields=("order_id",),
+            unsupported_grains=(),
+        )
+
+        self.assertEqual(diagnostics[0]["status"], "data_absent")
+        self.assertEqual(diagnostics[0]["data_presence"], "field_missing")
 
     def test_unsupported_grain_is_distinct_from_no_data(self):
         diagnostics = diagnose_contract_gaps(
@@ -72,7 +89,7 @@ class DataContractDiagnosticsTest(unittest.TestCase):
             ),
             available_fields=("gameplay_id", "paid_amount_ngn"),
             contract_fields=("gameplay_id",),
-            permission_denied_fields=(),
+            restricted_output_fields=(),
             unsupported_grains=("gameplay_id",),
         )
 
@@ -85,7 +102,7 @@ class DataContractDiagnosticsTest(unittest.TestCase):
             contract_gaps=("totally_new_contract_gap",),
             available_fields=("paid_amount_ngn",),
             contract_fields=("paid_amount_ngn",),
-            permission_denied_fields=(),
+            restricted_output_fields=(),
             unsupported_grains=(),
         )
 
@@ -104,7 +121,7 @@ class DataContractDiagnosticsTest(unittest.TestCase):
             ),
             available_fields=("payment_status", "order_id"),
             contract_fields=(),
-            permission_denied_fields=(),
+            restricted_output_fields=(),
             unsupported_grains=(),
         )
 

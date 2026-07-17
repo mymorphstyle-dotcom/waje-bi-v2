@@ -11,10 +11,12 @@ class ObligationRequest:
     question_families: tuple[str, ...]
     diagnostic_tags: tuple[str, ...]
     target_metrics: tuple[str, ...]
-    requested_dimensions: tuple[str, ...]
+    dimension_ids: tuple[str, ...]
     baselines: tuple[str, ...]
     context_sources: tuple[str, ...]
-    claim_intents: tuple[str, ...]
+    analysis_axis_ids: tuple[str, ...]
+    required_outcomes: tuple[str, ...]
+    claim_types: tuple[str, ...]
 
     @classmethod
     def from_intent(
@@ -31,10 +33,12 @@ class ObligationRequest:
             question_families=tuple(item for item in families if item),
             diagnostic_tags=tuple(requirements.get("diagnostic_tags") or ()),
             target_metrics=tuple(requirements.get("target_metrics") or (target_metric,)),
-            requested_dimensions=tuple(requirements.get("requested_dimensions") or ()),
+            dimension_ids=tuple(requirements.get("dimension_ids") or ()),
             baselines=tuple(requirements.get("baselines") or ()),
             context_sources=tuple(requirements.get("context_sources") or ()),
-            claim_intents=tuple(requirements.get("claim_intents") or ()),
+            analysis_axis_ids=tuple(requirements.get("analysis_axis_ids") or ()),
+            required_outcomes=tuple(requirements.get("required_outcomes") or ()),
+            claim_types=tuple(requirements.get("claim_types") or ()),
         )
 
 
@@ -180,10 +184,12 @@ def resolve_partitioned_analysis_obligations(
                 question_families=(family,),
                 diagnostic_tags=tuple(diagnostic_tags_by_family[family]),
                 target_metrics=request.target_metrics,
-                requested_dimensions=request.requested_dimensions,
+                dimension_ids=request.dimension_ids,
                 baselines=request.baselines,
                 context_sources=request.context_sources,
-                claim_intents=request.claim_intents,
+                analysis_axis_ids=request.analysis_axis_ids,
+                required_outcomes=request.required_outcomes,
+                claim_types=request.claim_types,
             ),
             registry,
         )
@@ -287,14 +293,20 @@ def obligation_condition_matches(
     )
     matches = {
         "baselines_present": bool(request.baselines),
-        "dimensions_present": bool(request.requested_dimensions),
-        "multiple_dimensions_present": len(request.requested_dimensions) > 1,
-        "components_present": "formula_component_contribution" in request.claim_intents,
+        "dimensions_present": "dimension_localization" in request.analysis_axis_ids,
+        "multiple_dimensions_present": len(set(request.dimension_ids)) > 1,
+        "components_present": "formula_tree" in request.analysis_axis_ids,
         "event_context_requested": bool(
-            compatible_event_sources.intersection(request.context_sources)
+            "business_context" in request.analysis_axis_ids
+            and compatible_event_sources.intersection(request.context_sources)
         ),
-        "anomaly_review_requested": "external_shock_candidate_or_anomaly" in request.claim_intents,
-        "trust_review_requested": "contract_coverage_and_trust_boundary" in request.claim_intents,
+        "anomaly_review_requested": (
+            "external_shock_candidate_or_anomaly" in request.claim_types
+        ),
+        "trust_review_requested": bool(
+            "evidence_boundaries" in request.required_outcomes
+            or "contract_coverage_and_trust_boundary" in request.claim_types
+        ),
     }
     try:
         return matches[condition]

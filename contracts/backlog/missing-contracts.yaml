@@ -14,7 +14,6 @@ allowed_data_contract_states:
   - evidence_linked
   - static_assumption
   - missing_contract
-  - permission_limited
   - unsupported_grain
   - out_of_scope_for_now
 
@@ -71,7 +70,7 @@ backlog:
       draft_source_contract: contracts/sources/paid-order-detail.source.yaml
       rule: minimal_profiling_only_no_business_conclusions
       confirmation_order:
-        - data_owner_checks_fields_watermark_status_uniqueness_permissions
+        - data_owner_checks_fields_watermark_status_uniqueness_and_source_access
         - business_owner_and_data_owner_review_amount_buckets_materiality_anomaly_importance
         - draft_source_contract_prepared_or_backlog_blockers_recorded
       promotion_rule:
@@ -79,7 +78,7 @@ backlog:
         contract_backed_requires:
           - data_owner_confirms_field_meanings
           - data_owner_confirms_source_watermark
-          - data_owner_confirms_permissions
+          - data_owner_confirms_service_connection_source_access
           - data_owner_confirms_status_enum
           - data_owner_confirms_order_id_uniqueness
         forbidden_promotion:
@@ -356,13 +355,13 @@ backlog:
       paid_order_channel_rule: Use paid-order detail channel values as canonical for paid-order joint analysis; preserve blank and Unknown as quality buckets.
       filename_channel_rule: Market-dashboard and gameplay channel files use filename prefix before the date range as channel.
       cross_source_channel_merge_rule: Merge only exact normalized literal matches unless a later owner-reviewed mapping says otherwise.
-    review_need: Define channel history, campaign/exposure joins, incident links, and permission boundary.
+    review_need: Define channel history, campaign/exposure joins, incident links, source access, and fixed output-safety boundary.
     launch_impact: Channel and payment-method mix analysis can use the current source fields with coverage flags; strong infrastructure, campaign, or exposure attribution claims remain limited.
     upgrade_path: Add reviewed payment-method, campaign, exposure, and channel-history contracts.
 
-  - backlog_id: geo_device_environment_dimension_contracts
-    title: Add geo, device, OS, and network dimension contracts.
-    data_contract_state: missing_contract
+  - backlog_id: geo_device_environment_quality_policy
+    title: Maintain geo, device, OS, and network dimension quality policy.
+    data_contract_state: contract_backed
     affected_factor_groups:
       - geo_device_environment
     affected_capabilities:
@@ -376,6 +375,7 @@ backlog:
       - anomaly_or_black_swan_review
       - revenue_health_review
     source_refs:
+      source_contract: contracts/sources/paid-order-detail.source.yaml
       template_fields:
         - 国家
         - 州/地区
@@ -388,16 +388,20 @@ backlog:
         - 3d78317ffcb878b1519ecf81d111d5f6
         - 6aa393ba4e6bf9e7925e2825bd281504
     expected_owner: data_owner
-    review_need: Define supported segment grain, sparse-cell rules, geography hierarchy, and device taxonomy.
-    launch_impact: Blocks strong geo/device/environment attribution claims.
-    upgrade_path: Add dimension contracts with grain and sparsity limits.
+    reviewed_progress:
+      decided_on: "2026-07-16"
+      current_source_status: paid_order_detail_contract_accepted
+      aggregate_dimensions_available: country, region, city, device_brand, device_model, os, network_type
+      current_runtime_screening: region, device_brand, device_model
+    review_need: Maintain value taxonomies, missingness profiles, hierarchy mappings, reconciliation, and sparse-cell thresholds.
+    launch_impact: Aggregate geo/device screening and contribution can run now; incomplete or sparse cells degrade only the affected output, while causal wording still requires mechanism evidence.
+    upgrade_path: Extend reviewed runtime bindings after coverage profiling and add event evidence for mechanism claims.
 
-  - backlog_id: sensitive_identifier_permission_policy
-    title: Implement permission treatment for user, IP, and device identifiers.
-    data_contract_state: permission_limited
+  - backlog_id: sensitive_identifier_output_policy
+    title: Enforce raw user and order identifier output policy.
+    data_contract_state: contract_backed
     affected_factor_groups:
       - sensitive_identity_and_dedup_fields
-      - geo_device_environment
     affected_capabilities:
       - segment_bridge
       - joint_attribution
@@ -407,18 +411,18 @@ backlog:
       - segment_or_factor_attribution
       - data_quality_or_evidence_review
     source_refs:
+      source_contract: contracts/sources/paid-order-detail.source.yaml
       template_fields:
         - 用户ID
-        - IP
-        - 设备ID
+        - 订单ID
     expected_owner: data_owner
     review_need: >-
       Enforce the reviewed boundary: aggregate analysis, internal quality checks,
-      and dedup may use these fields; raw user ID, IP, and device ID must not
-      appear in answers or visualizations. Confirm field sensitivity tags, role
-      access, masking, sparse-cell thresholds, and audit requirements.
-    launch_impact: Permission-limited paths must surface in Answer Package; hidden fine-grain claims and raw identifier output stay blocked.
-    upgrade_path: Add field sensitivity tags, role-level output policy, masking rules, sparse-cell thresholds, and verifier checks.
+      and dedup may use these fields; raw user ID and order ID must not appear
+      in answers or visualizations. Confirm field sensitivity tags, fixed
+      output enforcement, masking, sparse-cell thresholds, and audit requirements.
+    launch_impact: Raw identifier output and individual-user claims stay blocked; safe aggregate geo, device, channel, and metric analysis remains independent.
+    upgrade_path: Add field sensitivity tags, fixed output policy, masking rules, sparse-cell thresholds, and verifier checks.
 
   - backlog_id: calendar_event_contracts
     title: Add calendar, holiday, and sports event contracts.
@@ -769,6 +773,6 @@ backlog:
       future_connector_examples:
         - AnySearch-like external evidence connector
     expected_owner: data_owner
-    review_need: Define future accepted external evidence sources, connector boundary, refresh, provenance, permission model, and verifier wording rules before ingestion work starts.
+    review_need: Define future accepted external evidence sources, connector boundary, refresh, provenance, service-connection authorization, and verifier wording rules before ingestion work starts.
     launch_impact: Raw crawling, live AnySearch, and unreviewed external feeds cannot support launch claims; reviewed event/evidence records and competitor ranking can still support context or candidate wording.
     upgrade_path: Add external evidence connector contracts, such as AnySearch-like capability contracts, or manual event records in a later phase.

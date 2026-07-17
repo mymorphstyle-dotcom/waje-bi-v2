@@ -4,9 +4,9 @@ business_name: Data quality check
 review_status: draft
 
 responsibilities:
-  - Check metric identity, contract coverage, time semantics, permission context, completeness, and quality limitations.
+  - Check metric identity, contract coverage, time semantics, source availability, fixed output-safety, completeness, and quality limitations.
   - Produce first-screen or strong-claim blockers before analytical claims publish.
-  - Report missing contracts, unsupported grains, permission gaps, and upgrade paths.
+  - Report missing contracts, unsupported grains, source-access failures, restricted-output blocks, and upgrade paths.
 
 parameters:
   required:
@@ -18,7 +18,6 @@ parameters:
     - expected_output_paths
   optional:
     - filters
-    - permission_context
     - freshness_expectation
     - completeness_policy
     - materiality_policy
@@ -26,7 +25,7 @@ parameters:
 
 non_uses:
   - Does not create business explanation by itself.
-  - Does not override metric, dimension, event, or permission contracts.
+  - Does not override metric, dimension, event, source-access, or fixed output-safety contracts.
   - Does not hide missing contracts behind low-confidence wording.
 
 evidence_outputs:
@@ -44,13 +43,14 @@ evidence_outputs:
     - freshness_status
     - completeness_status
     - time_semantics_status
-    - permission_status
+    - source_access_status
+    - restricted_output_status
     - missing_contracts
     - blocked_claim_paths
 
 limitations:
   - Review-only contract coverage can name gaps while runtime data remains unavailable.
-  - Permission and missing-contract blockers must flow into Answer Package limitations.
+  - Source-access, restricted-output, and missing-contract blockers must flow into Answer Package limitations.
   - Data-quality output cannot raise evidence strength for another capability.
 
 degradation_rules:
@@ -58,8 +58,8 @@ degradation_rules:
     output: block dependent claims.
   - when: missing_contract
     output: degrade dependent path and link backlog.
-  - when: permission_limited
-    output: block or mask affected output.
+  - when: restricted_output_blocked
+    output: block restricted detail or emit the safe aggregate projection.
   - when: stale_or_incomplete_data
     output: degrade claim strength or stop with limitation.
 
@@ -77,7 +77,7 @@ lint_rules:
 verifier_hooks:
   - blocked_claim_paths_must_not_publish
   - missing_contracts_must_be_named
-  - permission_limit_must_be_visible
+  - restricted_output_limit_must_be_visible
 
 typical_question_families:
   - data_quality_or_evidence_review

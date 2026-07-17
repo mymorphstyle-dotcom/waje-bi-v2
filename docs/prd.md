@@ -10,7 +10,7 @@
 
 | 术语 | 含义 |
 | --- | --- |
-| `accepted graph` | 经 WAJE 本地 compiler、policy、contract、permission 校验后允许执行的分析图。 |
+| `accepted graph` | 经 WAJE 本地 compiler、policy、contract、固定输出安全和数据源连接访问校验后允许执行的分析图。 |
 | `capability card` | 给 LLM 和本地 compiler/verifier 共同使用的能力说明，描述能力用途、参数边界、证据输出、lint 和降级规则。 |
 | `factor ledger` | 从 `付费金额影响因子分析.mm` 生成并经双 owner 审阅的因子支持状态层。 |
 | `claim group` | Answer Package 中可被前端渲染和 verifier 检查的一组业务结论。 |
@@ -34,7 +34,7 @@ WAJE BI v2 是 clean-slate SQL-first BI Agent，用于回答 `付费金额` 影�
 
 - SQL-first：分析真相来自语义合同、受控 SQL 编译、校验查询、查询执行、证据和 verifier。
 - LLM 只提出意图、假设、candidate graph、澄清选项和叙述草案。
-- WAJE-owned 本地系统负责语义合同、SQL 编译/校验、权限、证据、claim strength、Answer Package 和 verifier。
+- WAJE-owned 本地系统负责语义合同、SQL 编译/校验、固定敏感输出安全、数据源连接访问、证据、claim strength、Answer Package 和 verifier。
 - LangGraph 负责 workflow 可视化、checkpoint、loop、branch、trace、runtime event 和节点进度。
 - Dify 不进入第一版。
 - `付费金额影响因子分析.mm` 是业务 SSOT，factor ledger 是可审阅、可版本化、可对账的运行支持状态层。
@@ -51,6 +51,8 @@ WAJE BI v2 是 clean-slate SQL-first BI Agent，用于回答 `付费金额` 影�
 - 运营团队：复盘活动、投放、版本、外部事件、异常。
 - 数据/BI 负责人：判断结论是否可信，维护合同和证据边界。
 - 管理层读者：阅读简洁结论、关键证据和限制。
+
+所有正常用户拥有相同的 BI 数据分析能力。用户身份仅用于个人对话与 artifact 归属、性能安全、审计和限流；身份、岗位或角色不选择数据维度、分析深度或 claim 能力。原始标识符、个体级明细和稀疏聚合由一套固定的 customer-safe output policy 统一约束。
 
 主要任务：
 
@@ -110,7 +112,7 @@ demo 只证明会话创建、业务问题输入、澄清交互、运行进度和
 
 来源：PRD 访谈、P1-4。
 
-question tool 用于会改变主结论、claim 边界、scope、baseline、时间语义、权限路径或执行成本的歧义。
+question tool 用于会改变主结论、claim 边界、scope、baseline、时间语义、数据源可用性或执行成本的歧义。用户角色和数据能力层级不能作为澄清选项。
 
 规则：
 
@@ -128,7 +130,7 @@ question tool 用于会改变主结论、claim 边界、scope、baseline、时�
 
 1. 用户输入新的方向或约束。
 2. LLM 进入 intent rebinding 或 targeted graph repair。
-3. 本地 compiler 重新校验 capability、参数、权限、合同、budget 和 evidence 输出要求。
+3. 本地 compiler 重新校验 capability、参数、固定敏感输出安全、数据源连接访问、合同、budget 和 evidence 输出要求。
 4. 可执行时继续，并在 accepted graph 记录 mutation reason。
 5. 不可执行时给出业务化拒绝、repair 或 downgrade 说明。
 
@@ -146,7 +148,7 @@ question tool 用于会改变主结论、claim 边界、scope、baseline、时�
 - 例外或分歧
 - 证据边界和限制
 
-卡片数量和顺序不固定。卡片跟随 accepted graph 和 verified evidence 生成，可以包含 baseline stability、formula contribution、attribution、business object impact、pattern evidence、anomaly、data quality、missing contract、permission limit 等。
+卡片数量和顺序不固定。卡片跟随 accepted graph 和 verified evidence 生成，可以包含 baseline stability、formula contribution、attribution、business object impact、pattern evidence、anomaly、data quality、missing contract、restricted-output 或 source-access limit 等。
 
 主结论按业务解释力排序，每条结论必须带证据强度和 claim 边界。
 
@@ -194,7 +196,7 @@ Strength：
 
 - 贡献与因果影响必须分开。
 - 候选机制可以进入答案，但要绑定证据强度和限制。
-- 缺合同、unsupported grain、稀疏数据或权限限制必须降级或阻断 claim path。
+- 缺合同、unsupported grain、稀疏数据、固定敏感输出限制或数据源不可用必须降级或阻断受影响的 claim path。
 - 弱证据不能只藏在展开详情里。
 - verifier 检查最终 wording、数字、scope、evidence refs、disabled/degraded paths、allowed claim/evidence type 和 allowed strength/wording limit。
 
@@ -246,7 +248,7 @@ Strength：
 - missing contract
 - data quality issue
 - 过强因果措辞
-- permission-limited evidence
+- restricted-output or source-access boundary
 
 ### 9.2 `pattern_explanation`
 
@@ -262,7 +264,7 @@ Strength：
 - rolling windows
 - custom baselines
 - 合同支持的 cohort-related patterns
-- grain 和权限支持的 segment-level pattern comparison
+- 合同支持且满足固定敏感输出安全的 segment-level pattern comparison
 
 行为：
 
@@ -429,7 +431,7 @@ Strength：
 
 - SSOT-registered candidates
 - distribution shift、structure change、anomaly、new value、residual pattern 中发现的数据候选
-- 经 ledger、contract、permission、evidence 检查后的 LLM/user hypotheses
+- 经 ledger、contract、fixed restricted-output、source-access、evidence 检查后的 LLM/user hypotheses
 
 首屏：
 
@@ -454,7 +456,7 @@ Strength：
 - 需要高阶组合
 - 局部组合不能泛化
 - sparse sample risk
-- permission-limited evidence
+- restricted-output or source-access boundary
 - contribution wording 被错误提升为 causal wording
 
 ### 9.6 `anomaly_or_black_swan_review`
@@ -463,10 +465,10 @@ Strength：
 
 行为：
 
-- 先排 data quality、metric contract、time semantics、permission、cumulative-value issue。
+- 先排 data quality、metric contract、time semantics、fixed restricted-output safety、source access、cumulative-value issue。
 - 再识别异常 time window、dimension、segment、metric component、event 或 combination。
 - 再测试内部动作、结构变化、外部冲击和 black-swan candidates。
-- anomaly 检测泛化到 ledger、contract、grain、permission、budget 支持的任何维度、因子、指标组件、分群、时间窗口、事件窗口或组合。
+- anomaly 检测泛化到 ledger、contract、grain、fixed restricted-output、source-access、budget 支持的任何维度、因子、指标组件、分群、时间窗口、事件窗口或组合。
 - black-swan 是异常解释候选的一类。大异常不能自动标为 black-swan。
 
 首屏：
@@ -485,7 +487,7 @@ Strength：
 - internal-action explanation
 - external black-swan candidate
 - unsupported black-swan misclassification
-- permission or grain-limited anomaly evidence
+- restricted-output、source-access 或 grain-limited anomaly evidence
 
 ### 9.7 `custom_baseline_comparison`
 
@@ -521,13 +523,14 @@ Strength：
 
 ### 9.8 `data_quality_or_evidence_review`
 
-目标：判断结论是否可信，数据、证据、合同、权限或 claim-strength 限制在哪里。
+目标：判断结论是否可信，数据、证据、合同、固定敏感输出、数据源连接或 claim-strength 限制在哪里。
 
 默认检查：
 
 - data quality
 - contract coverage
-- permissions
+- restricted-output safety
+- source-connection access
 - evidence strength
 - claim wording
 
@@ -538,7 +541,8 @@ Strength：
 - time semantics
 - metric contracts
 - dimension/event contracts
-- permission limits
+- fixed restricted-output limits
+- source-access limits
 - evidence sufficiency
 - answer wording exceeding supported claim strength
 
@@ -554,7 +558,7 @@ Strength：
 - trustworthy main conclusion
 - local claim degradation
 - missing contract
-- permission limit
+- restricted-output or source-access limit
 - cumulative-value misuse
 - time-semantics error
 - insufficient evidence
@@ -706,16 +710,17 @@ Ledger statuses 与 launch acceptance 的 `data_contract_state` 保持一致：
 - `evidence_linked`
 - `static_assumption`
 - `missing_contract`
-- `permission_limited`
 - `unsupported_grain`
 - `out_of_scope_for_now`
+
+固定敏感输出安全和数据源连接访问单独记录，不进入 `data_contract_state`，也不产生用户数据能力层级。
 
 ### 11.2 `.mm` 到 ledger 审阅流水线
 
 1. 从 `.mm` 抽取 metric、factor、dimension、event、formula、missing contract。
 2. 生成 review artifact。
 3. business owner 审 business meaning、解释有效性、claim boundary。
-4. data/engineering owner 审 data contract、grain、permission、可执行 capability。
+4. data/engineering owner 审 data contract、grain、固定敏感输出安全、数据源连接访问和可执行 capability。
 5. 为每个节点分配 ledger status。
 6. 自动检测 missing node、status conflict、unsupported claim/evidence type、unsupported wording limit、缺 backlog 项。
 7. 版本化 accepted ledger source。
@@ -761,8 +766,8 @@ Baseline card spec：
 | `joint_attribution` | target claim, candidate pool, scope, baseline, metric, budget | `joint_attribution_result` | unsupported candidate, sparse-cell violation, forbidden grain | local contribution or insufficient |
 | `event_evidence` | business object, event window, scope, target metric, baseline/control | `event_evidence_result` | missing event timing for strong claim, forbidden data | contextual evidence or candidate mechanism |
 | `outlier_scan` | metric, scope, time range, grain, expected baseline | `outlier_scan_result` | missing baseline, cumulative-value risk | local anomaly or data-limited finding |
-| `segment_bridge` | metric, scope, segment, baseline, time range, grain | `segment_bridge_result` | unsupported segment grain, permission failure | local segment claim or permission-limited claim |
-| `data_quality_check` | scope, metric, time range, grain, contracts, permission context | `data_quality_result` | invalid metric identity, destructive completeness issue | data-limited or blocked claim path |
+| `segment_bridge` | metric, scope, segment, baseline, time range, grain | `segment_bridge_result` | unsupported segment grain, restricted raw detail, unsafe sparse output | local aggregate segment claim or insufficient path |
+| `data_quality_check` | scope, metric, time range, grain, contracts, restricted-output and source-access context | `data_quality_result` | invalid metric identity, destructive completeness issue | data-limited or blocked dependent claim path |
 | `answer_verify` | draft answer, claim groups, evidence refs, visualization plan | `answer_verifier_result` | unsupported main claim, numeric mismatch, over-strong wording | targeted repair, downgraded claim, or blocked answer |
 
 ### 12.1 `pattern_scan`
@@ -792,7 +797,7 @@ Baseline card spec：
 - key parameters：target claim、candidate pool、scope、baseline、metric、time range、max depth/budget、sparse limits。
 - evidence output：candidate ranking、组合贡献、residual reduction、stability、coverage、sparsity warnings、tested candidates。
 - lint rules：进入组合归因后从二维起步；高阶组合需要业务相关性、稳定性和 budget 支持。
-- degradation rules：稀疏样本、权限受限、局部组合无法泛化时限制 claim。
+- degradation rules：稀疏样本、固定输出安全限制、局部组合无法泛化时限制 claim。
 - typical families：`segment_or_factor_attribution`、`paid_amount_change_explanation`、`pattern_explanation`。
 
 ### 12.4 `event_evidence`
@@ -812,7 +817,7 @@ Baseline card spec：
 - key parameters：metric、scope、time range、dimension candidates、grain、expected baseline、sensitivity/budget。
 - evidence output：outlier periods、outlier segments、affected metrics、candidate explanations、ruled-out paths。
 - lint rules：必须先排 data quality、time semantics、cumulative-value risk。
-- degradation rules：异常只在局部或权限受限时限制 claim。
+- degradation rules：异常只在局部或触及固定输出安全边界时限制 claim。
 - typical families：`anomaly_or_black_swan_review`、`paid_amount_change_explanation`、`revenue_health_review`。
 
 ### 12.6 `segment_bridge`
@@ -822,15 +827,15 @@ Baseline card spec：
 - key parameters：metric、scope、segments、baseline、time range、grain、filters。
 - evidence output：segment contribution、mix shift、coverage、local vs broad boundary。
 - lint rules：分群证据不能支持超出 scope 的全局 claim。
-- degradation rules：低覆盖、权限受限、unsupported grain 时降级。
+- degradation rules：低覆盖、固定输出安全限制、unsupported grain 时降级。
 - typical families：`segment_or_factor_attribution`、`business_object_impact_review`、`revenue_health_review`。
 
 ### 12.7 `data_quality_check`
 
 - business use：检查结论能否被数据和合同支持。
 - non-use：不能替代业务解释。
-- key parameters：scope、metric、time range、grain、contracts、permission context、expected output paths。
-- evidence output：completeness、duplicates、time semantics、metric identity、cumulative-value guard、permission coverage、sample size。
+- key parameters：scope、metric、time range、grain、contracts、restricted-output context、source-access context、expected output paths。
+- evidence output：completeness、duplicates、time semantics、metric identity、cumulative-value guard、restricted-output coverage、source availability、sample size。
 - lint rules：高风险查询和强 claim 必须有 data quality check。
 - degradation rules：发现关键质量问题时阻断或降级相关 claim。
 - typical families：全部问题族。
@@ -858,8 +863,8 @@ Graph/node 状态：
 - `repaired`：LLM 修复后再次通过 compiler。
 - `running`：LangGraph 正在执行。
 - `completed`：节点完成并产出证据。
-- `degraded`：节点可执行但证据、合同、权限或质量限制了 claim。
-- `blocked`：安全、权限、合同、SQL safety 或非法 claim path 阻断。
+- `degraded`：节点可执行但证据、合同、固定输出安全、数据源可用性或质量限制了 claim。
+- `blocked`：安全、数据源连接访问、合同、SQL safety 或非法 claim path 阻断。
 - `skipped`：因 budget、用户选择、scope 不适用或弱信号不影响主结论而跳过。
 - `verified`：相关 claim 被 verifier 接受。
 
@@ -902,7 +907,7 @@ Candidate graph node 产品字段：
 
 | Condition | Default action | Owner | User-visible result |
 | --- | --- | --- | --- |
-| permission failure、forbidden data、SQL safety risk | block | local policy/compiler | 说明权限或安全边界，相关 claim 不发布 |
+| restricted raw detail、unsafe sparse output、unavailable source connection、SQL safety risk | block affected path | local policy/compiler | 说明固定安全或数据源边界，受影响的 claim 不发布，其余路径继续 |
 | invalid metric contract、illegal grain/filter/window | block | semantic compiler | 说明口径或粒度不支持 |
 | missing deterministic guardrail | auto-add | graph compiler | process event 记录自动补齐 |
 | missing contract、unsupported grain、weak evidence、sparse data | degrade | capability/verifier | claim 降级，进入 limitation 或 follow-up |
@@ -911,13 +916,14 @@ Candidate graph node 产品字段：
 | budget risk 或 low-value branch | skip or degrade | local controller | 记录 skipped path 和业务影响 |
 | verifier failed strong claim | targeted repair first, then degrade or block | answer verifier | 强结论不发布，展示修复或降级结果 |
 
-自动补齐只允许用于确定性 guardrail 和默认元信息，例如 data quality check、permission check、contract version pinning、timezone guard、completeness check、evidence normalization。会改变业务问题、baseline、窗口语义、claim strength 或候选机制的内容，必须进入 targeted repair 或 question tool。
+自动补齐只允许用于确定性 guardrail 和默认元信息，例如 data quality check、restricted-output check、source-access check、contract version pinning、timezone guard、completeness check、evidence normalization。会改变业务问题、baseline、窗口语义、claim strength 或候选机制的内容，必须进入 targeted repair 或 question tool。
 
 Failure 进入优化循环前需要人工介入：eval failure 先归因到 business failure type 和 system responsibility point，再由 business/engineering owner 判断 severity、frequency 和 generalizability。通过评审后才能升级为 runtime guardrail、capability lint 或 prompt/recipe 变更。
 
 Block 示例：
 
-- permission failure
+- restricted raw identifier or individual-level output
+- unavailable source connection for the dependent path
 - SQL safety risk
 - invalid metric contract
 - illegal grain/filter/window
@@ -945,7 +951,8 @@ Auto-add 示例：
 - cumulative-value guard
 - timezone guard
 - contract version pinning
-- permission check
+- restricted-output check
+- source-access check
 - completeness check
 - evidence normalization
 
@@ -1030,11 +1037,11 @@ Artifact 保存：
 Artifact 能力：
 
 - read-only sharing
-- permission-filtered access
-- permission-filtered static export
+- owner-bound personal history and artifact access
+- fixed customer-safe projection for reading and static export
 - 从 artifact 继续追问或继续 investigation
 
-权限变化后再次访问 artifact 时，需要按当前用户权限过滤答案 section、visual block、dimension、metric、segment、evidence 和 follow-up context。
+同一个 artifact 在任何正常用户视角都使用相同的 customer-safe projection。读取和继续追问仍校验个人归属或显式分享关系；该校验只控制 artifact 归属，不改变 BI 分析能力或答案内容。
 
 ## 18. Runtime 与服务边界
 
@@ -1059,7 +1066,7 @@ Python BI Agent Core 负责：
 - evidence reducer
 - answer verifier
 
-WAJE-owned 系统负责 BI semantics、validation、SQL compilation、evidence strength、permissions、answer verification 和 accepted graph state。
+WAJE-owned 系统负责 BI semantics、validation、SQL compilation、evidence strength、固定敏感输出安全、数据源连接访问、answer verification 和 accepted graph state。
 
 LangGraph 负责可见执行机制、checkpoint、branch/loop display、runtime progress、trace 和 retry。
 
@@ -1069,7 +1076,9 @@ LangGraph 负责可见执行机制、checkpoint、branch/loop display、runtime 
 
 第一版上线门槛：
 
-- 权限阻断：权限不足的数据不得支持 claim；用户可见 permission-limited 说明。
+- 固定敏感输出安全：原始标识符、个体级明细和不安全稀疏输出不得进入答案或 artifact；只阻断依赖该输出的路径。
+- 数据源连接访问：服务未获授权或连接不可用时，只阻断依赖该数据源的查询并明确缺口；不形成用户能力分层。
+- 单一分析能力：所有正常用户拥有同一套 BI 指标、维度和分析路线；身份只用于个人归属、性能安全、审计和限流。
 - 审计可追溯：答案能追溯到 run、contract version、evidence、claim、verifier result。
 - 快照与复跑：分析 pin contract version 和 data freshness；复跑时说明是否可比。
 - 结果复用：thread-scoped result reuse 必须校验 scope、filters、grain、metric、window、baseline、contract version 和 freshness。
@@ -1080,7 +1089,7 @@ LangGraph 负责可见执行机制、checkpoint、branch/loop display、runtime 
 - 部署门槛：frontend/gateway、Python BI Agent Core、Postgres runtime mirror、ClickHouse query access 和 LangGraph adapter 有独立健康检查。
 - 回滚门槛：contract、ledger、capability card、prompt/recipe、verifier policy 变更可按版本回退。
 - 观测字段：每个 run 至少记录 `run_id`、`thread_id`、`user_id`、contract versions、graph version、node status、capability duration、query refs、evidence refs、verifier status、degrade/block reason。
-- 告警范围：slow run、capability error、compiler block、verifier failure、permission spike、contract mismatch、ledger mismatch 进入 launch dashboard。
+- 告警范围：slow run、capability error、compiler block、verifier failure、contract mismatch、ledger mismatch 进入 launch dashboard；restricted-output leak 和 source-access failure 进入安全/运维审计。
 
 ## 20. Launch Evaluation
 
@@ -1154,7 +1163,6 @@ Eval failure 不能自动进入 runtime guardrail 或 optimization loop。promot
 - `candidate_mechanism`
 - `contextual_evidence`
 - `insufficient`
-- `permission_limited`
 - `unsupported_grain`
 - `out_of_scope`
 
@@ -1164,22 +1172,23 @@ Eval failure 不能自动进入 runtime guardrail 或 optimization loop。promot
 - `evidence_linked`
 - `static_assumption`
 - `missing_contract`
-- `permission_limited`
 - `unsupported_grain`
 - `out_of_scope_for_now`
+
+固定敏感输出安全和数据源连接访问作为独立 policy evidence 进入 accepted graph、Answer Package 和 verifier，不占用上述业务证据或数据合同状态。
 
 ### 21.2 可执行骨架
 
 | Question family | Representative SSOT factor groups | Required capabilities | Ledger states to cover | Allowed claim/evidence type | Allowed strength / wording limit | Expected visual blocks | Verifier checks |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `paid_amount_change_explanation` | payment/order metrics, user/payment/channel structure, events, anomalies | `formula_decompose`, `joint_attribution`, `segment_bridge`, `outlier_scan`, `data_quality_check`, `answer_verify`; 按需 `pattern_scan`, `event_evidence` | `contract_backed`, `missing_contract`, `permission_limited` | accounting contribution, candidate mechanism, contextual evidence | quantified claim 需要可复算证据；candidate/contextual 不写 confirmed cause | formula contribution, attribution, anomaly, baseline stability, limitation | 数字、baseline、scope、缺口、降级路径 |
+| `paid_amount_change_explanation` | payment/order metrics, user/payment/channel structure, events, anomalies | `formula_decompose`, `joint_attribution`, `segment_bridge`, `outlier_scan`, `data_quality_check`, `answer_verify`; 按需 `pattern_scan`, `event_evidence` | `contract_backed`, `missing_contract`, `unsupported_grain` | accounting contribution, candidate mechanism, contextual evidence | quantified claim 需要可复算证据；candidate/contextual 不写 confirmed cause | formula contribution, attribution, anomaly, baseline stability, limitation | 数字、baseline、scope、缺口、降级路径、固定输出安全 |
 | `pattern_explanation` | calendar/time windows, payday, holidays, events, segment structure | `pattern_scan`, `data_quality_check`, `answer_verify`; 按需 `event_evidence`, `joint_attribution`, `outlier_scan` | `contract_backed`, `static_assumption`, `evidence_linked`, `unsupported_grain` | statistical association, candidate mechanism | high/medium/low 跟随 recurrence、幅度、稳定性；弱信号只写 tendency | phase/profile/timeline/rolling/lag view, exceptions | pattern family、窗口、稳定性、例外、wording |
 | `business_object_impact_review` | campaigns, ad spend, product versions, metric drivers, dimensions/segments, external context | object type 决定 `event_evidence`、`formula_decompose` 或 `segment_bridge`; `answer_verify`; 首屏/强结论要求 `data_quality_check`; 按需 `joint_attribution` | `contract_backed`, `evidence_linked`, `missing_contract`, `unsupported_grain` | accounting contribution, statistical association, candidate mechanism, causal evidence when supported | net impact 需要 control/causal evidence；无对照时限制为 candidate/contextual | pre/post, exposure timeline, contribution, control comparison | 对照、窗口、证据强度、impact wording |
-| `revenue_health_review` | target metrics, payment funnel, structure, anomalies, data quality | `formula_decompose`, `outlier_scan`, `segment_bridge`, `data_quality_check`, `answer_verify`; 按需 `joint_attribution` | `contract_backed`, `permission_limited`, `missing_contract` | health judgment, accounting contribution, anomaly supported | risk wording 跟随影响大小和 evidence strength；data issue 单独标注 | trend, formula, structure, anomaly, data quality | 目标/历史 baseline、风险分层、数据限制 |
-| `segment_or_factor_attribution` | channel, user type, payment method, device/geo, metric components | `segment_bridge`, `joint_attribution`, `data_quality_check`, `answer_verify`; 按需 `formula_decompose` | `contract_backed`, `unsupported_grain`, `permission_limited` | quantified contribution, explained difference, candidate mechanism | 局部组合只写局部 scope；稀疏或权限限制时降级 | attribution ranking, combination path, stability/coverage | scope、稀疏、权限、贡献/因果分离 |
+| `revenue_health_review` | target metrics, payment funnel, structure, anomalies, data quality | `formula_decompose`, `outlier_scan`, `segment_bridge`, `data_quality_check`, `answer_verify`; 按需 `joint_attribution` | `contract_backed`, `missing_contract`, `unsupported_grain` | health judgment, accounting contribution, anomaly supported | risk wording 跟随影响大小和 evidence strength；data issue 单独标注 | trend, formula, structure, anomaly, data quality | 目标/历史 baseline、风险分层、数据限制 |
+| `segment_or_factor_attribution` | channel, user type, payment method, device/geo, metric components | `segment_bridge`, `joint_attribution`, `data_quality_check`, `answer_verify`; 按需 `formula_decompose` | `contract_backed`, `unsupported_grain`, `missing_contract` | quantified contribution, explained difference, candidate mechanism | 局部组合只写局部 scope；稀疏或固定输出安全限制时降级 | attribution ranking, combination path, stability/coverage | scope、稀疏、固定输出安全、贡献/因果分离 |
 | `anomaly_or_black_swan_review` | time windows, metric chain, dimensions/segments, internal actions, external events | `outlier_scan`, `data_quality_check`, `event_evidence`, `answer_verify`; 按需 `segment_bridge`, `joint_attribution` | `contract_backed`, `evidence_linked`, `missing_contract`, `out_of_scope_for_now` | anomaly supported, candidate explanation, insufficient | black-swan 只能作为候选解释；data issue 优先降级 | anomaly scope, ruled-out paths, event/context timeline | 伪异常、scope、候选解释、黑天鹅 wording |
 | `custom_baseline_comparison` | time baselines, event-relative baselines, target values, similar windows, metric components | `pattern_scan`, `formula_decompose`, `data_quality_check`, `answer_verify`; 按需 `joint_attribution`, `event_evidence` | `contract_backed`, `unsupported_grain`, `missing_contract` | quantified delta, accounting contribution, candidate mechanism | baseline 不可比时降级；分歧 baseline 限制主结论 | baseline comparison, formula, attribution, limitation | baseline、可比性、时间语义、claim boundary |
-| `data_quality_or_evidence_review` | contracts, permissions, metric identity, data freshness, evidence refs | `data_quality_check`, `answer_verify`; 按需回查相关 evidence | 全部 ledger states | trust judgment, degraded claim, insufficient | 可信/不可信要绑定受影响 claim 和 scope | trust summary, data quality, evidence boundary | 数据质量、合同、权限、wording、升级条件 |
+| `data_quality_or_evidence_review` | contracts, restricted-output safety, source access, metric identity, data freshness, evidence refs | `data_quality_check`, `answer_verify`; 按需回查相关 evidence | 全部 ledger states，外加独立 policy evidence | trust judgment, degraded claim, insufficient | 可信/不可信要绑定受影响 claim 和 scope | trust summary, data quality, evidence boundary | 数据质量、合同、固定输出安全、数据源访问、wording、升级条件 |
 
 ### 21.3 代表性单元格示例
 
@@ -1187,7 +1196,7 @@ Eval failure 不能自动进入 runtime guardrail 或 optimization loop。promot
 | --- | --- | --- | --- |
 | `pattern_explanation` × payday × `event_evidence` × full sample month phase × candidate mechanism | `candidate_mechanism` | `static_assumption` / `evidence_linked` | 可以表达 payday window 与月初模式存在业务相关候选机制；强因果 wording 需要额外证据。 |
 | `business_object_impact_review` × ad spend × exposure impact × recent week | `contextual_evidence` or `insufficient` | depends on exposure/control contracts | 缺 exposure/control 时只可表达候选 impact 或限制；不能写 confirmed net impact。 |
-| `segment_or_factor_attribution` × channel × user type × two-dimensional attribution | `quantifiable` when contracts and grain support | `contract_backed` | 可表达组合贡献、覆盖和稳定性；稀疏或权限限制时降级。 |
+| `segment_or_factor_attribution` × channel × user type × two-dimensional attribution | `quantifiable` when contracts and grain support | `contract_backed` | 可表达组合贡献、覆盖和稳定性；稀疏或固定输出安全限制时降级。 |
 
 ## 22. First Baseline Acceptance
 
@@ -1201,9 +1210,9 @@ Eval failure 不能自动进入 runtime guardrail 或 optimization loop。promot
 - Answer Package、claim group、verifier 能约束每个 final claim。
 - 过程事件使用业务语言。
 - 技术 artifact 不进入普通 UI。
-- artifact 支持简单保存、权限过滤分享和继续追问。
+- artifact 支持简单保存、个人归属、固定 customer-safe projection、分享和继续追问。
 - eval 覆盖真实问题、历史失败和边界 case。
-- 权限、审计、快照、复跑、budget、部署、observability launch gates 满足要求。
+- 固定敏感输出安全、数据源连接访问、个人归属、审计、限流、快照、复跑、budget、部署、observability launch gates 满足要求。
 
 ## 23. 后续技术设计范围
 

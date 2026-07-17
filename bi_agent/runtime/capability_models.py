@@ -73,7 +73,6 @@ class CapabilityRequest:
     filters: Mapping[str, Any]
     dimensions: tuple[str, ...]
     contract_versions: Mapping[str, str]
-    role: str
     budget_state: BudgetState
     llm_business_reason: str
     params: Mapping[str, Any]

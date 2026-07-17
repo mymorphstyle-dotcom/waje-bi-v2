@@ -23,7 +23,7 @@ Each package contains:
 - verifier checks
 - failure attribution labels
 
-The package is an expectation contract for eval. It does not assert a final business answer, and it does not promote any `missing_contract`, `permission_limited`, `unsupported_grain`, or `out_of_scope_for_now` path.
+The package is an expectation contract for eval. It does not assert a final business answer, and it does not promote any `missing_contract`, `unsupported_grain`, or `out_of_scope_for_now` path. Fixed restricted-output and source-connection boundaries are evaluated separately from ledger state.
 
 ## Coverage
 
@@ -33,10 +33,10 @@ The package is an expectation contract for eval. It does not assert a final busi
 | `pattern_explanation` | `LE-001` | full-sample month-phase regression, cumulative-value block, candidate mechanism wording |
 | `business_object_impact_review` | `LE-003` | recharge activity missing contracts and control/exposure limits |
 | `revenue_health_review` | `LE-004` | health risk wording, component gaps, payment-quality gaps |
-| `segment_or_factor_attribution` | `LE-005` | channel/payment contribution, geo/device permission block |
+| `segment_or_factor_attribution` | `LE-005` | channel/payment contribution, contract-backed aggregate geo/device analysis, fixed raw-identifier and sparse-output boundary |
 | `anomaly_or_black_swan_review` | `LE-006` | black-swan candidate wording and raw external ingestion block |
 | `custom_baseline_comparison` | `LE-007` | explicit first-ten-days baseline and time semantics |
-| `data_quality_or_evidence_review` | `LE-008` | trust boundary, missing evidence refs, permission visibility |
+| `data_quality_or_evidence_review` | `LE-008` | trust boundary, missing evidence refs, restricted-output visibility |
 
 Source pools are covered by `real_user_questions`, `historical_failure_cases`, and `matrix_generated_boundary_cases`.
 
@@ -57,7 +57,7 @@ Claim group acceptance requires:
 - every claim has evidence refs
 - evidence refs match allowed `evidence_type`, `strength`, and `wording_limit`
 - visual blocks bind to evidence refs and do not imply stronger evidence
-- degraded, blocked, skipped, or permission-limited paths are visible when material
+- degraded, blocked, skipped, restricted-output, or source-access paths are visible when material
 - candidate mechanisms, contextual evidence, and missing contracts keep their wording limits
 
 Failure conditions:
@@ -66,7 +66,7 @@ Failure conditions:
 - wrong baseline or missing baseline on comparative claims
 - missing evidence refs
 - unsupported grain hidden from Answer Package
-- permission leak or raw identifier output
+- restricted-output leak or raw identifier output
 - missing contract hidden or promoted
 - candidate mechanism written as confirmed cause
 - visualization overstates evidence

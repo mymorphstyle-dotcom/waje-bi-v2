@@ -118,7 +118,7 @@ dimensions:
       - day
     known_gaps:
       - component_contracts
-      - sensitive_identifier_permission_policy
+      - sensitive_identifier_output_policy
     reviewed_progress:
       - market_dashboard_2024_2026 covers aggregate first-pay and new-paid metrics at daily and filename-channel daily grain.
       - v2 rates for registration, first-pay, and same-day new paid use 新增 as denominator and should be derived from count fields.
@@ -128,48 +128,57 @@ dimensions:
 
   - dimension_id: geo
     business_name: 地理层级
-    business_meaning: Country, region, and city fields used to localize segment patterns and permission-limited attribution.
+    business_meaning: Country, region, and city fields used to localize aggregate segment patterns, mix shifts, and contribution candidates.
     source_fields:
       - 国家
       - 州/地区
       - 城市
-      - IP
-    data_contract_state: permission_limited
-    business_evidence_state: permission_limited
+    data_contract_state: contract_backed
+    business_evidence_state: quantifiable
     supported_grains:
-      - country_when_contract_exists
-      - city_when_permission_allows
-      - aggregate_only_with_sensitive_output_policy
+      - country
+      - region
+      - city_when_coverage_and_sample_allow
+      - day
+      - aggregate_segment
     unsupported_grains:
-      - raw_ip_output_without_permission
+      - individual_location_claim
     known_gaps:
-      - geo_device_environment_dimension_contracts
-      - sensitive_identifier_permission_policy
-    owner: pending_data_owner_confirmation
-    review_status: draft_pending_owner_review
+      - geo_device_environment_quality_policy
+    reviewed_progress:
+      - paid_order_detail exposes the accepted country, region, and city aggregate fields.
+      - aggregate region analysis is accepted for paid_amount dimension screening.
+      - sparse, incomplete, or unpaired values degrade only the affected segment output.
+    owner: business_owner_and_data_owner_joint_review
+    review_status: reviewed_confirmed_2026-07-16
 
   - dimension_id: device_environment
     business_name: 设备、系统与网络
     business_meaning: Device and network attributes used for quality, segment, and anomaly review.
     source_fields:
-      - 设备ID
       - 设备品牌
       - 设备型号
       - 操作系统
       - 网络类型
-    data_contract_state: permission_limited
-    business_evidence_state: permission_limited
+    data_contract_state: contract_backed
+    business_evidence_state: quantifiable
     supported_grains:
-      - device_model_when_contract_exists
-      - network_type_when_contract_exists
-      - aggregate_only_with_sensitive_output_policy
+      - device_brand
+      - device_model_when_coverage_and_sample_allow
+      - os
+      - network_type_when_coverage_and_sample_allow
+      - day
+      - aggregate_segment
     unsupported_grains:
-      - raw_device_id_output_without_permission
+      - individual_device_claim
     known_gaps:
-      - geo_device_environment_dimension_contracts
-      - sensitive_identifier_permission_policy
-    owner: pending_data_owner_confirmation
-    review_status: draft_pending_owner_review
+      - geo_device_environment_quality_policy
+    reviewed_progress:
+      - paid_order_detail exposes device brand, device model, OS, and network type without a raw device identifier.
+      - aggregate device-brand and device-model analysis is accepted for paid_amount dimension screening.
+      - missingness and sparse values degrade only the affected segment output.
+    owner: business_owner_and_data_owner_joint_review
+    review_status: reviewed_confirmed_2026-07-16
 
   - dimension_id: amount_bucket
     business_name: 充值档位

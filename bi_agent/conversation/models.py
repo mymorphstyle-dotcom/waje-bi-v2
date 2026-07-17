@@ -11,7 +11,7 @@ from bi_agent.runtime.evidence_authority import (
 )
 
 
-RESULT_REUSE_CANDIDATE_SCHEMA_VERSION = "result-reuse-candidate.v1"
+RESULT_REUSE_CANDIDATE_SCHEMA_VERSION = "result-reuse-candidate.v2"
 CLARIFICATION_ESCAPE_OPTION = "tell the agent to do differently"
 RESULT_REUSE_CANDIDATE_FIELDS = (
     "schema_version",
@@ -31,7 +31,6 @@ RESULT_REUSE_CANDIDATE_FIELDS = (
     "source_release_refs",
     "source_release_authority_refs",
     "source_schema_fingerprints",
-    "permission_scope",
     "semantic_scope_signature",
     "rows_ref",
     "rows_record_ref",
@@ -83,9 +82,7 @@ class ContextItem:
     source_ref: str
     summary: str
     can_support_claims: bool
-    visibility: str = "analyst"
     reason: str = ""
-    permission_scope: str = ""
     source_version: str = ""
     expired: bool = False
     claim_use: str = "context_only"
@@ -104,7 +101,6 @@ class ContextManifest:
     sources: list[dict[str, Any]]
     claim_use_policy: dict[str, Any]
     snapshot_version: str | None
-    permission_context: dict[str, Any]
     analysis_assets: list[dict[str, Any]]
     accepted_assumptions: list[dict[str, Any]]
     contract_versions: dict[str, str]
@@ -124,7 +120,6 @@ class ContextManifest:
         sources: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         claim_use_policy: Mapping[str, Any] | None = None,
         snapshot_version: str | None = None,
-        permission_context: Mapping[str, Any] | None = None,
         analysis_assets: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         accepted_assumptions: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         contract_versions: Mapping[str, Any] | None = None,
@@ -162,7 +157,6 @@ class ContextManifest:
             {**default_claim_use_policy, **dict(claim_use_policy or {})},
         )
         object.__setattr__(self, "snapshot_version", snapshot_version)
-        object.__setattr__(self, "permission_context", dict(permission_context or {}))
         object.__setattr__(self, "analysis_assets", [dict(item) for item in analysis_assets or ()])
         object.__setattr__(
             self,
@@ -326,14 +320,13 @@ class ClarificationState:
 @dataclass(frozen=True)
 class MemoryItem:
     memory_id: str
-    owner_scope: str
+    owner_id: str
     text: str
     source_ref: str
-    visibility: str
     status: str
     ttl: str = "until_revoked"
     confidence: str = "user_confirmed"
-    refresh_rule: str = "refresh_on_contract_or_scope_change"
+    refresh_rule: str = "refresh_on_contract_or_owner_change"
     revocation_path: str = "memory_proposal_revoke_or_admin_action"
 
     def to_dict(self) -> dict[str, Any]:
@@ -346,8 +339,7 @@ class MemoryProposal:
     thread_id: str
     text: str
     source_ref: str
-    owner_scope: str
-    visibility: str
+    owner_id: str
     status: str = "proposed"
 
     def to_dict(self) -> dict[str, Any]:
@@ -361,10 +353,9 @@ class ConversationRunRequest:
     topic_id: Optional[str]
     user_message: str
     context_manifest: Mapping[str, Any]
-    permission_context: Mapping[str, Any]
     runtime_budget: Mapping[str, Any]
     analysis_context: Mapping[str, Any] = field(default_factory=dict)
-    clarification_resume_context: Mapping[str, Any] = field(default_factory=dict)
+    clarification_attempt_context: Mapping[str, Any] = field(default_factory=dict)
     prior_analysis_assets: tuple[Mapping[str, Any], ...] = ()
     reuse_candidates: tuple[Mapping[str, Any], ...] = ()
     prior_topic_material_context: Mapping[str, Any] = field(default_factory=dict)
@@ -446,7 +437,6 @@ class ResultRefRecord:
     result_ref: str
     snapshot_id: str
     contract_version: str
-    permission_scope: str
     semantic_scope: str
     payload: Mapping[str, Any] = field(default_factory=dict)
 
@@ -521,4 +511,3 @@ class ArtifactRef:
     topic_id: str
     follow_up_context: str
     snapshot_id: str
-    permission_scope: str

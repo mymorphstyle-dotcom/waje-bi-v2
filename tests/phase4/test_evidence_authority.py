@@ -733,7 +733,10 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             def record_capability_binding(self, plan, binding_payload):
                 return object()
 
-        resigned_contract = replace(contract, permission_scope="admin")
+        resigned_contract = replace(
+            contract,
+            query_intent="component_driver_scan",
+        )
         resigned_contract = replace(
             resigned_contract,
             contract_signature=query_contract_signature(resigned_contract),
@@ -752,10 +755,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             rows_ref=resigned_refs.rows_ref,
             completeness_report_ref=resigned_refs.completeness_report_ref,
         )
-        resigned_snapshot = replace(
-            snapshot,
-            permission_scopes=("analyst",),
-        )
+        resigned_snapshot = snapshot
         resigned_authority = RuntimeEvidenceAuthority()
         resigned_query_record = _record_query_execution(
             resigned_authority,
@@ -852,7 +852,7 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
             )["missing"],
         )
 
-        class ResignedPermissionResolver(MetadataResolver):
+        class ResignedContractResolver(MetadataResolver):
             def resolve_query_execution(self, ref):
                 return resigned_authority.resolve_query_execution(
                     resigned_result.result_ref
@@ -921,20 +921,20 @@ class RuntimeEvidenceAuthorityTest(unittest.TestCase):
         self.assertEqual(resigned_snapshot_bound.status, "blocked")
         self.assertIn("snapshot_record_binding", resigned_snapshot_bound.reasons[0])
 
-        resigned_permission_bound = bind_capability_inputs(
+        resigned_contract_bound = bind_capability_inputs(
             plan,
             results={contract.query_contract_id: result},
             reports={contract.query_contract_id: report},
-            evidence_resolver=ResignedPermissionResolver(),
+            evidence_resolver=ResignedContractResolver(),
             rows_loader=resigned_authority.rows_loader,
             evidence_writer=authority._runtime_writer(),
             runtime_registry=registry,
             release_resolver=_PAID_RELEASE_RESOLVER,
         )
-        self.assertEqual(resigned_permission_bound.status, "blocked")
+        self.assertEqual(resigned_contract_bound.status, "blocked")
         self.assertIn(
             "query_execution_ref_missing",
-            resigned_permission_bound.reasons[0],
+            resigned_contract_bound.reasons[0],
         )
 
         wrong_writer_bound = bind_capability_inputs(

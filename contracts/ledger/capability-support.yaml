@@ -35,7 +35,6 @@ capabilities:
 
 state_visibility:
   missing_contract: Support records use backlog_refs.
-  permission_limited: Support records use limitation_refs or permission backlog refs.
   unsupported_grain: Support records name supported and blocked grains through grain plus backlog_refs.
   out_of_scope_for_now: No representative support record is parked here yet; CF-09 reconciliation can add explicit scope decisions if a SSOT node is outside launch scope.
 
@@ -233,8 +232,8 @@ support_records:
     wording_limit: insufficient
     backlog_refs:
       - component_contracts
-      - sensitive_identifier_permission_policy
-    wording_limit_reason: User-funnel metric contracts and permission-aware cohort rules are required.
+      - sensitive_identifier_output_policy
+    wording_limit_reason: User-funnel metric contracts and reviewed privacy-safe cohort rules are required.
     review_status: draft_pending_owner_review
 
   - support_id: formula_revenue_health_order_chain
@@ -335,28 +334,28 @@ support_records:
     wording_limit_reason: Current gameplay files do not contain icon exposure, icon click, gameplay paid rate, gameplay payment amount, gameplay payment frequency, single-payment amount, or payment-order-to-gameplay linkage. Available gameplay activity and betting fields may stay as context only.
     review_status: draft_pending_owner_review
 
-  - support_id: joint_attribution_geo_device_permission_limited
+  - support_id: joint_attribution_geo_device_contract_backed
     factor_group_id: geo_device_environment
     question_family: segment_or_factor_attribution
     capability: joint_attribution
     grain:
-      - country_when_contract_exists
-      - city_when_permission_allows
-      - device_model_when_contract_exists
-      - network_type_when_contract_exists
+      - country
+      - region
+      - city_when_coverage_and_sample_allow
+      - device_brand
+      - device_model_when_coverage_and_sample_allow
+      - os
+      - network_type_when_coverage_and_sample_allow
     claim_type: geo_device_combination_attribution
-    business_evidence_state: permission_limited
-    data_contract_state: permission_limited
-    evidence_type: insufficient
-    strength: insufficient
-    wording_limit: blocked
+    business_evidence_state: quantifiable
+    data_contract_state: contract_backed
+    evidence_type: statistical_association
+    strength: medium
+    wording_limit: candidate
     backlog_refs:
-      - geo_device_environment_dimension_contracts
-      - sensitive_identifier_permission_policy
-    limitation_refs:
-      - pii_dimension_output_limit
-    wording_limit_reason: Aggregate geo/device attribution can run only at reviewed visible grains; raw IP/device output and sparse cells are blocked until enforcement rules exist.
-    review_status: draft_pending_owner_review
+      - geo_device_environment_quality_policy
+    wording_limit_reason: Aggregate geo and device contribution can be quantified at complete reviewed grains; sparse or incomplete cells are omitted or degraded, and statistical association does not establish causality.
+    review_status: reviewed_confirmed_2026-07-16
 
   - support_id: outlier_black_swan_external_context
     factor_group_id: external_context_events
@@ -494,25 +493,25 @@ support_records:
     wording_limit_reason: Initial grain-aware materiality thresholds are accepted as claim-strength and display-priority gates; below-reportable changes stay background only, material-driver thresholds gate primary explanation candidates, and strong-anomaly thresholds gate strong anomaly wording.
     review_status: reviewed_confirmed_2026-07-05
 
-  - support_id: dq_permission_sensitive_identifiers
+  - support_id: dq_sensitive_identifier_output_boundary
     factor_group_id: sensitive_identity_and_dedup_fields
     question_family: data_quality_or_evidence_review
     capability: data_quality_check
     grain:
       - aggregate_only_with_sensitive_output_policy
       - dedup_internal_check
-    claim_type: permission_and_dedup_boundary
-    business_evidence_state: permission_limited
-    data_contract_state: permission_limited
+    claim_type: sensitive_output_and_dedup_boundary
+    business_evidence_state: contextual_evidence
+    data_contract_state: contract_backed
     evidence_type: insufficient
     strength: insufficient
     wording_limit: context
     backlog_refs:
-      - sensitive_identifier_permission_policy
+      - sensitive_identifier_output_policy
       - payment_status_and_dedup_contract
     limitation_refs:
-      - pii_dimension_output_limit
-    wording_limit_reason: The reviewed boundary can be reported as context; raw identifier output and individual user claims stay blocked.
+      - raw_identifier_output_limit
+    wording_limit_reason: The reviewed boundary can be reported as context; raw user or order identifier output and individual-user claims stay blocked.
     review_status: draft_pending_owner_review
 
   - support_id: verify_paid_amount_change
@@ -572,7 +571,7 @@ support_records:
     evidence_type: insufficient
     strength: insufficient
     wording_limit: blocked
-    wording_limit_reason: answer_verify blocks health judgments that hide metric, quality, permission, or contract limitations.
+    wording_limit_reason: answer_verify blocks health judgments that hide metric, quality, restricted-output, source-access, or contract limitations.
     review_status: draft_pending_owner_review
 
   - support_id: verify_segment_attribution
@@ -587,7 +586,7 @@ support_records:
     evidence_type: insufficient
     strength: insufficient
     wording_limit: blocked
-    wording_limit_reason: answer_verify blocks attribution wording that exceeds supported segment grain, permission, sparsity, or evidence strength.
+    wording_limit_reason: answer_verify blocks attribution wording that exceeds supported segment grain, fixed output-safety, sparsity, or evidence strength.
     review_status: draft_pending_owner_review
 
   - support_id: verify_anomaly_black_swan

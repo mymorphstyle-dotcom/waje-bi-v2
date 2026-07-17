@@ -369,7 +369,7 @@ export default function Home() {
     const agentResult = agentCore && isRecord(agentCore.result) ? agentCore.result : null;
     const runId =
       stringValue(runRecord?.id) ||
-      stringValue(payload.resumedRunId) ||
+      stringValue(payload.attemptRunId) ||
       stringValue(agentResult?.run_id) ||
       fallbackRunId;
     const runStatus =

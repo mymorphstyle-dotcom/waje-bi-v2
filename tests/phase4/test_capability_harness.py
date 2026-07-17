@@ -65,7 +65,6 @@ class CapabilityHarnessTest(unittest.TestCase):
             filters={},
             dimensions=(),
             contract_versions={"metric": "paid_amount.v1"},
-            role="analyst",
             budget_state=BudgetState(
                 mode="research",
                 used_capability_calls=0,

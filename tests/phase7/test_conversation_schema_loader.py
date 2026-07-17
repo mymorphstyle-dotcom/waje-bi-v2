@@ -30,16 +30,27 @@ class ConversationSchemaLoaderTest(unittest.TestCase):
             schema,
         )
 
-    def test_clarification_dispatch_lease_schema_is_upgrade_safe(self):
+    def test_clarification_resolution_and_attempt_schema_separate_choice_from_execution(self):
         schema = (ROOT / "tools" / "runtime" / "conversation-runtime.sql").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("dispatch_owner_id text", schema)
-        self.assertIn("dispatch_lease_expires_at timestamptz", schema)
-        self.assertIn("clarification_resume_dispatch_state_check", schema)
-        self.assertIn("clarification_resume_dispatch_lease_shape_check", schema)
-        self.assertIn("idx_clarification_resume_dispatch_recovery", schema)
+        self.assertIn(
+            "CREATE TABLE IF NOT EXISTS waje_runtime.clarification_resolutions",
+            schema,
+        )
+        self.assertIn("source_run_id text NOT NULL UNIQUE", schema)
+        self.assertIn("accepted_choice jsonb NOT NULL", schema)
+        self.assertIn("status = 'accepted'", schema)
+        self.assertIn(
+            "CREATE TABLE IF NOT EXISTS waje_runtime.clarification_execution_attempts",
+            schema,
+        )
+        self.assertIn("attempt_run_id text PRIMARY KEY", schema)
+        self.assertIn("previous_attempt_run_id text", schema)
+        self.assertIn("UNIQUE(resolution_id, attempt_number)", schema)
+        self.assertIn("'clarification_retry'", schema)
+        self.assertIn("ALTER COLUMN message_id DROP NOT NULL", schema)
 
 
 if __name__ == "__main__":

@@ -118,7 +118,8 @@ Default to YAML for reviewability. If the team chooses JSON later, keep the same
 
 - [x] Create `contracts/README.md`.
 - [x] Define shared vocabularies for `business_evidence_state`, `data_contract_state`, evidence type, strength, and wording limit.
-- [x] Include the agreed `data_contract_state` values: `contract_backed`, `evidence_linked`, `static_assumption`, `missing_contract`, `permission_limited`, `unsupported_grain`, `out_of_scope_for_now`.
+- [x] Include the agreed `data_contract_state` values: `contract_backed`, `evidence_linked`, `static_assumption`, `missing_contract`, `unsupported_grain`, `out_of_scope_for_now`.
+- [x] Define fixed restricted-output and source-connection access boundaries separately from evidence and data-contract states.
 
 **Acceptance:**
 
@@ -169,7 +170,7 @@ Default to YAML for reviewability. If the team chooses JSON later, keep the same
 **Acceptance:**
 
 - [x] A factor can support aggregate analysis while being limited for segment-level analysis.
-- [x] Missing contracts, permission limits, unsupported grains, and out-of-scope states are visible.
+- [x] Missing contracts, fixed restricted-output and source-access limits, unsupported grains, and out-of-scope states are visible.
 - [x] Launch acceptance can derive representative matrix cells from support records.
 
 ### CF-06: Dimension, Event, Assumption, And Backlog Sources
@@ -221,7 +222,7 @@ Default to YAML for reviewability. If the team chooses JSON later, keep the same
 **Acceptance:**
 
 - [x] Business owner can approve meaning and claim boundary.
-- [x] Data/engineering owner can approve data contract state, grain, permission, and feasibility.
+- [x] Data/engineering owner can approve data contract state, grain, fixed restricted-output safety, source-connection access, and feasibility.
 - [x] Review decisions can be copied back into versioned contract source.
 
 ### CF-09: Reconciliation And Lint Checks
@@ -249,7 +250,7 @@ Default to YAML for reviewability. If the team chooses JSON later, keep the same
 **Deliverables:**
 
 - [x] Add a Phase 1 signoff section to `docs/reviews/phase-1-factor-ledger-review.md`.
-- [x] Summarize unresolved missing contracts, unsupported grains, permission limits, and out-of-scope factors.
+- [x] Summarize unresolved missing contracts, unsupported grains, fixed restricted-output/source-access limits, and out-of-scope factors.
 - [x] List contract versions or source file references that Phase 2 should pin.
 - [x] Summarize latest source coverage for 大盘, 玩法, external events, and explicitly unavailable factor areas.
 

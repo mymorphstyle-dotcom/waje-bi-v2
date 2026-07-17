@@ -662,7 +662,6 @@ def _query_contract_from_mapping(item: Mapping[str, Any]) -> QueryContract:
             "filters",
             "result_shape",
             "completeness_assertions",
-            "permission_scope",
             "workload_class",
             "contract_signature",
             "query_parameters",
@@ -737,9 +736,6 @@ def _query_contract_from_mapping(item: Mapping[str, Any]) -> QueryContract:
         completeness_assertions=_strict_string_sequence(
             item["completeness_assertions"],
             path="query_contract.completeness_assertions",
-        ),
-        permission_scope=_strict_string(
-            item["permission_scope"], path="query_contract.permission_scope"
         ),
         workload_class=_strict_string(
             item["workload_class"], path="query_contract.workload_class"
@@ -906,7 +902,6 @@ def _dimension_binding_from_mapping(value: Any, *, index: int) -> DimensionBindi
             "source_field",
             "allowed_grains",
             "null_bucket",
-            "permission_scope",
         ),
         path=path,
     )
@@ -926,9 +921,6 @@ def _dimension_binding_from_mapping(value: Any, *, index: int) -> DimensionBindi
         ),
         null_bucket=_strict_string(
             item["null_bucket"], path=f"{path}.null_bucket"
-        ),
-        permission_scope=_strict_string(
-            item["permission_scope"], path=f"{path}.permission_scope"
         ),
     )
 
@@ -962,6 +954,9 @@ def _resolved_window_from_mapping(value: Any, *, index: int) -> ResolvedWindow:
         ),
         membership_policy=_strict_string(
             item["membership_policy"], path=f"{path}.membership_policy"
+        ),
+        capability_refs=_strict_string_sequence(
+            item["capability_refs"], path=f"{path}.capability_refs"
         ),
     )
 
@@ -1127,7 +1122,17 @@ def _dataset_snapshot_from_mapping(
     path: str,
 ) -> DatasetSnapshot:
     fields = tuple(DatasetSnapshot.__dataclass_fields__)
-    required_fields = fields[:10]
+    required_fields = (
+        "snapshot_ref",
+        "dataset_id",
+        "physical_table",
+        "watermark",
+        "schema_fingerprint",
+        "schema_fields",
+        "contract_ref",
+        "loaded_at",
+        "status",
+    )
     allowed_fields = (
         *fields,
         "snapshot_id",
@@ -1181,9 +1186,6 @@ def _dataset_snapshot_from_mapping(
         ),
         contract_ref=_strict_string(
             value["contract_ref"], path=f"{path}.contract_ref"
-        ),
-        permission_scopes=_strict_string_sequence(
-            value["permission_scopes"], path=f"{path}.permission_scopes"
         ),
         loaded_at=_strict_string(value["loaded_at"], path=f"{path}.loaded_at"),
         status=_strict_string(value["status"], path=f"{path}.status"),

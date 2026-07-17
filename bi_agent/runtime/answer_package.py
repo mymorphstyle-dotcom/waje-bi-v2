@@ -28,6 +28,10 @@ from bi_agent.runtime.formula_claim_numbers import (
     THREE_FACTOR_COMPONENT_IDS,
     formula_component_number_semantics,
 )
+from bi_agent.runtime.diagnostic_insights import (
+    build_diagnostic_insight_portfolio,
+    cross_source_auxiliary_claim_text,
+)
 from bi_agent.runtime.final_narrative_binding import (
     build_final_narrative_publication_binding,
     build_narrative_authority_record,
@@ -89,6 +93,19 @@ def _verified_sources_from_claims(
     return tuple(sources)
 
 
+def _rebuild_diagnostic_insights(
+    evidence: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Recompute publishable diagnostics from authoritative evidence only."""
+
+    return build_diagnostic_insight_portfolio(
+        question={},
+        evidence=tuple(
+            dict(item) for item in evidence if isinstance(item, Mapping)
+        ),
+    )
+
+
 def build_answer_package(
     *,
     run_id: str,
@@ -123,7 +140,6 @@ def build_answer_package(
     contract_gap_diagnostics: Optional[Sequence[Mapping[str, Any]]] = None,
     row_query_plan: Optional[Mapping[str, Any]] = None,
     snapshot_id: str = "",
-    permission_scope: str = "",
     analysis_contract: Optional[Mapping[str, Any]] = None,
     query_contracts: Sequence[Any] = (),
     query_results: Sequence[Any] = (),
@@ -142,6 +158,7 @@ def build_answer_package(
     ] = None,
 ) -> dict[str, Any]:
     evidence = to_jsonable(evidence)
+    diagnostic_insights = _rebuild_diagnostic_insights(evidence)
     accepted_assumptions = tuple(
         dict(item) for item in context_assumptions if isinstance(item, Mapping)
     )
@@ -262,7 +279,6 @@ def build_answer_package(
                     or f"topic:runtime:{run_id}"
                 ),
                 sources=sources,
-                permission_context=context_owner.get("permission_context") or {},
                 accepted_assumptions=accepted_assumptions,
             )
             supplied_context_ref = str(
@@ -368,7 +384,6 @@ def build_answer_package(
                 ),
                 "can_support_claim": False,
             },),
-            permission_context=context_owner.get("permission_context") or {},
             accepted_assumptions=accepted_assumptions,
             can_support_claims=False,
         )
@@ -386,19 +401,39 @@ def build_answer_package(
         trusted_records = ()
     quality_gate = dict(to_jsonable(quality_gate))
     if verifier.get("status") == "degraded" and published_claims:
-        answer_text = _partial_claim_delivery_text(
-            published_claims,
-            verifier,
-            runtime_registry=runtime_registry,
+        retained_narrative = _retain_publishable_bound_narrative(
+            narrative=final_business_summary,
+            statement_bindings=narrative_statement_bindings or (),
+            published_claims=published_claims,
+            evidence=evidence,
+            visible_limitations=visible_limitations,
+            accepted_assumptions=accepted_assumptions,
+            analysis_contract=analysis_contract or {},
+            diagnostic_insights=diagnostic_insights,
+            quality_gate=quality_gate,
+            source_claim_indexes=projected_claim_indexes,
+            required_claim_types=required_claim_intents,
         )
-        final_business_summary = ""
-        narrative_statement_bindings = None
+        if retained_narrative is None:
+            answer_text = _partial_claim_delivery_text(
+                published_claims,
+                verifier,
+                runtime_registry=runtime_registry,
+            )
+            final_business_summary = ""
+            narrative_statement_bindings = None
+        else:
+            final_business_summary = retained_narrative["narrative"]
+            narrative_statement_bindings = retained_narrative[
+                "statement_bindings"
+            ]
     final_narrative_publication_binding: dict[str, Any] = {}
     narrative_authority_record: dict[str, Any] = {}
     narrative_publication: dict[str, Any] = {
         "status": "not_applicable",
         "errors": [],
     }
+    narrative_publication_repair: dict[str, Any] = {}
     narrative_publication_review = build_narrative_publication_review_record(
         quality_gate
     )
@@ -409,7 +444,8 @@ def build_answer_package(
     )
     narrative_candidate = str(final_business_summary or "")
     if (
-        verifier.get("status") in {"passed", "passed_with_warnings"}
+        verifier.get("status")
+        in {"passed", "passed_with_warnings", "degraded"}
         and published_claims
         and narrative_candidate.strip()
         and narrative_statement_bindings is not None
@@ -420,6 +456,7 @@ def build_answer_package(
             visible_limitations=visible_limitations,
             accepted_assumptions=accepted_assumptions,
             question_scope=build_narrative_question_scope(analysis_contract),
+            diagnostic_insights=diagnostic_insights,
         )
         (
             final_narrative_publication_binding,
@@ -431,19 +468,68 @@ def build_answer_package(
             quality_gate=quality_gate,
         )
         if narrative_binding_errors:
-            narrative_publication = {
-                "status": "failed",
-                "errors": [
-                    {
-                        "code": "final_narrative_publication_binding_invalid",
-                        "reasons": list(narrative_binding_errors),
-                    }
-                ],
-            }
+            rejected_binding = dict(final_narrative_publication_binding)
+            retained_narrative = _retain_publishable_bound_narrative(
+                narrative=narrative_candidate,
+                statement_bindings=normalized_narrative_statement_bindings,
+                published_claims=published_claims,
+                evidence=evidence,
+                visible_limitations=visible_limitations,
+                accepted_assumptions=accepted_assumptions,
+                analysis_contract=analysis_contract or {},
+                diagnostic_insights=diagnostic_insights,
+                quality_gate=quality_gate,
+                required_claim_types=required_claim_intents,
+            )
+            if retained_narrative is not None:
+                final_business_summary = retained_narrative["narrative"]
+                narrative_candidate = final_business_summary
+                normalized_narrative_statement_bindings = tuple(
+                    dict(item)
+                    for item in retained_narrative["statement_bindings"]
+                )
+                narrative_statement_bindings = list(
+                    normalized_narrative_statement_bindings
+                )
+                narrative_authority_record = retained_narrative[
+                    "authority_record"
+                ]
+                final_narrative_publication_binding = retained_narrative[
+                    "publication_binding"
+                ]
+                narrative_publication = {"status": "passed", "errors": []}
+                narrative_publication_repair = {
+                    "schema_version": "narrative-publication-repair.v1",
+                    "status": "invalid_statements_removed",
+                    "source_validation_errors": list(narrative_binding_errors),
+                    "accepted_statement_indexes": list(
+                        rejected_binding.get("accepted_statement_indexes") or ()
+                    ),
+                    "rejected_statement_indexes": list(
+                        rejected_binding.get("rejected_statement_indexes") or ()
+                    ),
+                    "statement_reviews": list(
+                        rejected_binding.get("statement_reviews") or ()
+                    ),
+                    "authority_rebindings": list(
+                        retained_narrative.get("authority_rebindings") or ()
+                    ),
+                }
+            else:
+                narrative_publication = {
+                    "status": "failed",
+                    "errors": [
+                        {
+                            "code": "final_narrative_publication_binding_invalid",
+                            "reasons": list(narrative_binding_errors),
+                        }
+                    ],
+                }
         else:
             narrative_publication = {"status": "passed", "errors": []}
     elif (
-        verifier.get("status") in {"passed", "passed_with_warnings"}
+        verifier.get("status")
+        in {"passed", "passed_with_warnings", "degraded"}
         and published_claims
         and narrative_candidate.strip()
     ):
@@ -487,6 +573,7 @@ def build_answer_package(
         "clarification_outcome": to_jsonable(clarification_outcome),
         "causal_audit": to_jsonable(causal_audit),
         "causal_evidence_dossier": to_jsonable(causal_evidence_dossier),
+        "diagnostic_insights": to_jsonable(diagnostic_insights or {}),
         "compiler_runtime_plan": to_jsonable(compiler_runtime_plan),
         "contract_gap_diagnostics": to_jsonable(contract_gap_diagnostics),
         "row_query_plan": to_jsonable(row_query_plan),
@@ -521,6 +608,9 @@ def build_answer_package(
             narrative_publication_review
         ),
         "narrative_publication": canonical_value(narrative_publication),
+        "narrative_publication_repair": canonical_value(
+            narrative_publication_repair
+        ),
     }
 
     evidence_brief = dict(available_evidence_brief or {})
@@ -531,7 +621,6 @@ def build_answer_package(
         "status": "draft",
         "package_type": "draft_answer_package",
         "snapshot_id": snapshot_id,
-        "permission_scope": permission_scope,
         "context_manifest_ref": str(verified_manifest.get("manifest_id") or ""),
         "reuse_decisions": canonical_value(
             trusted_records[0].get("reuse_decisions") if trusted_records else ()
@@ -590,10 +679,7 @@ def build_answer_package(
         ],
         "admin_audit": admin_audit,
     }
-    return scrub_answer_package_for_delivery(
-        package,
-        retain_internal_audit=True,
-    )
+    return package
 
 
 def _partial_claim_delivery_text(
@@ -620,6 +706,320 @@ def _partial_claim_delivery_text(
     elif missing_types:
         lines.append("部分必需结论本轮未发布；以上仅保留已通过验证的结论。")
     return "\n".join(dict.fromkeys(line for line in lines if line))
+
+
+def _retain_publishable_bound_narrative(
+    *,
+    narrative: str,
+    statement_bindings: Sequence[Mapping[str, Any]],
+    published_claims: Sequence[Mapping[str, Any]],
+    evidence: Sequence[Mapping[str, Any]],
+    visible_limitations: Sequence[str],
+    accepted_assumptions: Sequence[Mapping[str, Any]],
+    analysis_contract: Mapping[str, Any],
+    diagnostic_insights: Mapping[str, Any],
+    quality_gate: Mapping[str, Any],
+    source_claim_indexes: Sequence[int] = (),
+    required_claim_types: Sequence[str] = (),
+) -> dict[str, Any] | None:
+    """Retain the valid statement subset without dropping required conclusions."""
+
+    text = str(narrative or "").strip()
+    normalized_bindings = [
+        dict(item) for item in statement_bindings if isinstance(item, Mapping)
+    ]
+    if not text or not normalized_bindings or not published_claims:
+        return None
+    authority_record = build_narrative_authority_record(
+        verified_claims=published_claims,
+        evidence=evidence,
+        visible_limitations=visible_limitations,
+        accepted_assumptions=accepted_assumptions,
+        question_scope=build_narrative_question_scope(analysis_contract),
+        diagnostic_insights=diagnostic_insights,
+    )
+    if source_claim_indexes:
+        remapped_claim_keys = {
+            f"结论{source_index + 1}": f"结论{published_index + 1}"
+            for published_index, source_index in enumerate(source_claim_indexes)
+            if type(source_index) is int and source_index >= 0
+        }
+        normalized_bindings = [
+            {
+                **item,
+                "authority_keys": [
+                    (
+                        remapped_claim_keys[str(key)]
+                        if str(key) in remapped_claim_keys
+                        else (
+                            f"已拒绝:{key}"
+                            if re.fullmatch(r"结论\d+", str(key))
+                            else str(key)
+                        )
+                    )
+                    for key in item.get("authority_keys") or ()
+                ],
+            }
+            for item in normalized_bindings
+        ]
+    binding, errors = build_final_narrative_publication_binding(
+        narrative=text,
+        statement_bindings=normalized_bindings,
+        authority_record=authority_record,
+        quality_gate=quality_gate,
+    )
+    if not errors:
+        if not _statement_bindings_cover_required_claim_types(
+            normalized_bindings,
+            authority_record=authority_record,
+            required_claim_types=required_claim_types,
+        ):
+            return None
+        return {
+            "narrative": text,
+            "statement_bindings": normalized_bindings,
+            "authority_record": authority_record,
+            "publication_binding": binding,
+        }
+
+    accepted_indexes = {
+        index
+        for index in binding.get("accepted_statement_indexes") or ()
+        if type(index) is int and 0 <= index < len(normalized_bindings)
+    }
+    retained_bindings: list[dict[str, Any]] = []
+    authority_rebindings: list[dict[str, Any]] = []
+    for index, statement in enumerate(normalized_bindings):
+        if index in accepted_indexes:
+            retained_bindings.append(statement)
+            continue
+        repaired_statement = _unique_authority_rebinding(
+            statement,
+            authority_record=authority_record,
+            quality_gate=quality_gate,
+        )
+        if repaired_statement is None:
+            continue
+        retained_bindings.append(repaired_statement)
+        authority_rebindings.append(
+            {
+                "statement_index": index,
+                "submitted_authority_keys": list(
+                    statement.get("authority_keys") or ()
+                ),
+                "rebound_authority_keys": list(
+                    repaired_statement.get("authority_keys") or ()
+                ),
+            }
+        )
+    retained_bindings = _prepend_missing_required_claim_bindings(
+        retained_bindings,
+        authority_record=authority_record,
+        quality_gate=quality_gate,
+        required_claim_types=required_claim_types,
+    )
+    if not retained_bindings:
+        return None
+    retained_text = "\n".join(
+        dict.fromkeys(
+            str(item.get("excerpt") or "").strip()
+            for item in retained_bindings
+            if str(item.get("excerpt") or "").strip()
+        )
+    )
+    if not retained_text:
+        return None
+    retained_binding, retained_errors = build_final_narrative_publication_binding(
+        narrative=retained_text,
+        statement_bindings=retained_bindings,
+        authority_record=authority_record,
+        quality_gate=quality_gate,
+    )
+    if retained_errors:
+        return None
+    if not _statement_bindings_cover_required_claim_types(
+        retained_bindings,
+        authority_record=authority_record,
+        required_claim_types=required_claim_types,
+    ):
+        return None
+    return {
+        "narrative": retained_text,
+        "statement_bindings": retained_bindings,
+        "authority_record": authority_record,
+        "publication_binding": retained_binding,
+        "authority_rebindings": authority_rebindings,
+    }
+
+
+def _unique_authority_rebinding(
+    statement: Mapping[str, Any],
+    *,
+    authority_record: Mapping[str, Any],
+    quality_gate: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    excerpt = str(statement.get("excerpt") or "").strip()
+    statement_class = str(statement.get("statement_class") or "")
+    if not excerpt or not statement_class:
+        return None
+    valid_candidates: list[dict[str, Any]] = []
+    submitted_keys = tuple(
+        str(key) for key in statement.get("authority_keys") or () if str(key)
+    )
+    for authority_key in _narrative_authority_keys(authority_record):
+        if (authority_key,) == submitted_keys:
+            continue
+        candidate = {
+            "excerpt": excerpt,
+            "statement_class": statement_class,
+            "authority_keys": [authority_key],
+        }
+        _, errors = build_final_narrative_publication_binding(
+            narrative=excerpt,
+            statement_bindings=(candidate,),
+            authority_record=authority_record,
+            quality_gate=quality_gate,
+        )
+        if not errors:
+            valid_candidates.append(candidate)
+    return valid_candidates[0] if len(valid_candidates) == 1 else None
+
+
+def _narrative_authority_keys(
+    authority_record: Mapping[str, Any],
+) -> tuple[str, ...]:
+    keys = [
+        *(
+            str(item.get("authority_key") or "")
+            for item in authority_record.get("claims") or ()
+            if isinstance(item, Mapping)
+        ),
+        *(
+            str(item.get("factor") or "")
+            for item in authority_record.get("factor_states") or ()
+            if isinstance(item, Mapping)
+        ),
+        *(
+            str(item.get("authority_key") or "")
+            for item in authority_record.get("diagnostic_insights") or ()
+            if isinstance(item, Mapping)
+        ),
+        *(
+            f"数据边界{index}"
+            for index, _ in enumerate(
+                authority_record.get("limitations") or (),
+                start=1,
+            )
+        ),
+        "原因边界",
+        "问题范围",
+    ]
+    return tuple(dict.fromkeys(key for key in keys if key))
+
+
+def _prepend_missing_required_claim_bindings(
+    statement_bindings: Sequence[Mapping[str, Any]],
+    *,
+    authority_record: Mapping[str, Any],
+    quality_gate: Mapping[str, Any],
+    required_claim_types: Sequence[str],
+) -> list[dict[str, Any]]:
+    retained = [dict(item) for item in statement_bindings]
+    missing = _missing_required_claim_types(
+        retained,
+        authority_record=authority_record,
+        required_claim_types=required_claim_types,
+    )
+    replacements: list[dict[str, Any]] = []
+    for claim_type in missing:
+        candidates = [
+            item
+            for item in authority_record.get("claims") or ()
+            if isinstance(item, Mapping)
+            and str(item.get("claim_type") or "") == claim_type
+            and str(item.get("statement") or "").strip()
+            and str(item.get("authority_key") or "")
+        ]
+        if len(candidates) != 1:
+            continue
+        claim = candidates[0]
+        replacement = {
+            "excerpt": str(claim["statement"]).strip(),
+            "statement_class": _claim_type_statement_class(claim_type),
+            "authority_keys": [str(claim["authority_key"])],
+        }
+        _, errors = build_final_narrative_publication_binding(
+            narrative=replacement["excerpt"],
+            statement_bindings=(replacement,),
+            authority_record=authority_record,
+            quality_gate=quality_gate,
+        )
+        if not errors:
+            replacements.append(replacement)
+    return [*replacements, *retained]
+
+
+def _missing_required_claim_types(
+    statement_bindings: Sequence[Mapping[str, Any]],
+    *,
+    authority_record: Mapping[str, Any],
+    required_claim_types: Sequence[str],
+) -> tuple[str, ...]:
+    required = tuple(
+        dict.fromkeys(str(value) for value in required_claim_types if str(value))
+    )
+    return tuple(
+        claim_type
+        for claim_type in required
+        if not _statement_bindings_cover_required_claim_types(
+            statement_bindings,
+            authority_record=authority_record,
+            required_claim_types=(claim_type,),
+        )
+    )
+
+
+def _claim_type_statement_class(claim_type: str) -> str:
+    if claim_type == "formula_component_contribution":
+        return "factor_contribution"
+    if claim_type == "contract_coverage_and_trust_boundary":
+        return "data_boundary"
+    if claim_type in {"observed_factor_change", "observed_activity"}:
+        return "factor_observation"
+    return "verified_claim"
+
+
+def _statement_bindings_cover_required_claim_types(
+    statement_bindings: Sequence[Mapping[str, Any]],
+    *,
+    authority_record: Mapping[str, Any],
+    required_claim_types: Sequence[str],
+) -> bool:
+    required = {str(value) for value in required_claim_types if str(value)}
+    if not required:
+        return True
+    claim_type_by_key = {
+        str(item.get("authority_key") or ""): str(item.get("claim_type") or "")
+        for item in authority_record.get("claims") or ()
+        if isinstance(item, Mapping) and str(item.get("authority_key") or "")
+    }
+    covered = {
+        claim_type_by_key[str(key)]
+        for binding in statement_bindings
+        if isinstance(binding, Mapping)
+        for key in binding.get("authority_keys") or ()
+        if str(key) in claim_type_by_key
+    }
+    if "formula_component_contribution" in required and any(
+        str(binding.get("statement_class") or "") == "factor_contribution"
+        for binding in statement_bindings
+        if isinstance(binding, Mapping)
+    ) and any(
+        claim_type == "formula_component_contribution"
+        for claim_type in claim_type_by_key.values()
+    ):
+        covered.add("formula_component_contribution")
+    return required.issubset(covered)
 
 
 def _partial_claim_business_text(
@@ -1122,6 +1522,7 @@ def reverify_answer_package_for_delivery(
                     if isinstance(reported_admin, Mapping)
                     else {}
                 ),
+                diagnostic_insights=_rebuild_diagnostic_insights(evidence),
             )
             binding_errors.extend(
                 final_narrative_binding_errors(
@@ -1872,6 +2273,7 @@ def _claim_authority_facts(
     baseline_windows: dict[str, dict[str, Any]] = {}
     authority_facts: list[AuthorityFact] = []
     authority_context_facts: list[dict[str, Any]] = []
+    authority_derived_facts: list[dict[str, Any]] = []
     refs = tuple(str(ref) for ref in claim.get("evidence_refs") or ())
     if not refs:
         raise ValueError("authority_evidence_refs_missing")
@@ -1893,6 +2295,14 @@ def _claim_authority_facts(
         )
         if str(claim.get("claim_type") or "") not in binding.supported_claim_types:
             raise ValueError("authority_claim_type_mismatch")
+        derived_fact = _cross_source_association_authority_fact(
+            evidence_item,
+            result_refs=tuple(
+                result.result_ref for result in chain.primary_results
+            ),
+        )
+        if derived_fact:
+            authority_derived_facts.append(derived_fact)
         for result in chain.primary_results:
             query_record = chain.query_records[result.result_ref]
             contract = query_record.contract
@@ -2143,10 +2553,101 @@ def _claim_authority_facts(
         "metric_ids": tuple(sorted(metric_ids)),
         "authority_facts": tuple(authority_facts),
         "authority_context_facts": tuple(authority_context_facts),
+        "authority_derived_facts": tuple(authority_derived_facts),
         "grains": tuple(sorted(grains)),
         "target_windows": tuple(target_windows.values()),
         "baseline_windows": tuple(baseline_windows.values()),
     }
+
+
+def _cross_source_association_authority_fact(
+    evidence: Mapping[str, Any],
+    *,
+    result_refs: Sequence[str],
+) -> dict[str, Any] | None:
+    if (
+        str(evidence.get("capability_id") or evidence.get("capability") or "")
+        != "cross_source_association"
+        or str(evidence.get("strength") or "") not in {"high", "medium"}
+        or str(evidence.get("wording_limit") or "") != "stable_association"
+    ):
+        return None
+    payload = evidence.get("typed_payload") or {}
+    if not isinstance(payload, Mapping):
+        return None
+    statement = cross_source_auxiliary_claim_text(payload)
+    primary_outcome = str(payload.get("primary_outcome") or "paid_amount")
+    source_result_refs = tuple(
+        dict.fromkeys(str(ref) for ref in result_refs if str(ref))
+    )
+    fact_payload = canonical_value(
+        {
+            "evidence_ref": str(evidence.get("evidence_ref") or ""),
+            "result_refs": source_result_refs,
+            "claim_type": "cross_source_statistical_association",
+            "target_metric": primary_outcome,
+            "scope": str(evidence.get("scope") or payload.get("scope") or ""),
+            "time_window": str(
+                evidence.get("time_window") or payload.get("time_window") or ""
+            ),
+            "statement": statement,
+            "strength": str(evidence.get("strength") or ""),
+            "wording_limit": str(evidence.get("wording_limit") or ""),
+        }
+    )
+    if not fact_payload["evidence_ref"] or not source_result_refs:
+        return None
+    return {
+        **fact_payload,
+        "fact_ref": (
+            "authority-derived-fact:sha256:"
+            f"{canonical_digest(fact_payload)}"
+        ),
+    }
+
+
+def _project_derived_association_claim(
+    claim: Mapping[str, Any],
+    derived_facts: Sequence[Mapping[str, Any]],
+    facts: Mapping[str, Any],
+) -> dict[str, Any]:
+    statements = tuple(
+        dict.fromkeys(
+            str(fact.get("statement") or "").strip()
+            for fact in derived_facts
+            if str(fact.get("statement") or "").strip()
+        )
+    )
+    if not statements:
+        raise ValueError("derived_association_statement_missing")
+    projected = {
+        "text": " ".join(statements),
+        "claim_strength": str(claim.get("claim_strength") or ""),
+        "claim_type": str(claim.get("claim_type") or ""),
+        "evidence_refs": tuple(
+            str(ref) for ref in claim.get("evidence_refs") or ()
+        ),
+        "numbers": {},
+        "fact_refs": [
+            str(fact["fact_ref"])
+            for fact in derived_facts
+            if str(fact.get("fact_ref") or "")
+        ],
+    }
+    for field in ("scope", "time_window", "target_metric"):
+        values = tuple(
+            dict.fromkeys(
+                str(fact.get(field) or "")
+                for fact in derived_facts
+                if str(fact.get(field) or "")
+            )
+        )
+        if len(values) == 1:
+            projected[field] = values[0]
+    grains = tuple(facts.get("grains") or ())
+    if len(grains) == 1:
+        projected["grain"] = list(grains[0])
+    return projected
 
 
 def _project_claim_from_authority(
@@ -2155,6 +2656,13 @@ def _project_claim_from_authority(
     *,
     runtime_registry: RuntimeContractRegistry | None = None,
 ) -> dict[str, Any]:
+    derived_facts = tuple(facts.get("authority_derived_facts") or ())
+    if (
+        str(claim.get("claim_type") or "")
+        == "cross_source_statistical_association"
+        and derived_facts
+    ):
+        return _project_derived_association_claim(claim, derived_facts, facts)
     mappings = _map_claim_numbers_to_authority(claim, facts)
     context_facts = tuple(facts.get("authority_context_facts") or ())
     if not mappings and context_facts:
@@ -3513,7 +4021,6 @@ def _project_client_answer_package(
         "status": status,
         "package_type": "draft_answer_package",
         "snapshot_id": _safe_ref(candidate.get("snapshot_id")),
-        "permission_scope": _safe_ref(candidate.get("permission_scope")),
         "context_manifest_ref": _safe_ref(
             candidate.get("context_manifest_ref")
         ),
@@ -4163,11 +4670,15 @@ def verify_answer_package(
             expected = claim.get(field)
             if expected is None:
                 continue
-            seen = [
-                evidence_by_ref[ref].get("typed_payload", {}).get(field)
-                for ref in authority_backed_refs
-                if field in evidence_by_ref[ref].get("typed_payload", {})
-            ]
+            seen = []
+            for ref in authority_backed_refs:
+                item = evidence_by_ref[ref]
+                payload = item.get("typed_payload") or {}
+                value = item.get(field)
+                if value is None and isinstance(payload, Mapping):
+                    value = payload.get(field)
+                if value is not None:
+                    seen.append(value)
             if not seen or any(value != expected for value in seen):
                 errors.append(
                     {
@@ -4418,6 +4929,11 @@ def collect_visible_limitations(evidence: Sequence[Mapping[str, Any]]) -> list[s
 
 
 def _requires_authority(evidence: Mapping[str, Any]) -> bool:
+    if (
+        str(evidence.get("strength") or "") == "low"
+        and str(evidence.get("wording_limit") or "") == "sensitivity_only"
+    ):
+        return False
     return str(evidence.get("evidence_type") or "") not in {
         "insufficient",
         "blocked",

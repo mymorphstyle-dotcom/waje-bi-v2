@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS waje_runtime.run_dispatches (
   producer_kind text NOT NULL
     CONSTRAINT run_dispatch_producer_kind_check
     CHECK (producer_kind IN (
-      'thread_message', 'artifact_continue', 'clarification_resume'
+      'thread_message', 'artifact_continue', 'clarification_resume',
+      'clarification_retry'
     )),
   scope_ref text NOT NULL,
   request_identity text NOT NULL,
@@ -64,7 +65,7 @@ CREATE TABLE IF NOT EXISTS waje_runtime.run_dispatches (
   request_payload jsonb NOT NULL,
   thread_id text NOT NULL REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
   run_id text NOT NULL UNIQUE REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  message_id text NOT NULL UNIQUE REFERENCES waje_runtime.conversation_messages(message_id) ON DELETE CASCADE,
+  message_id text UNIQUE REFERENCES waje_runtime.conversation_messages(message_id) ON DELETE CASCADE,
   dispatch_state text NOT NULL DEFAULT 'pending'
     CONSTRAINT run_dispatch_state_check
     CHECK (dispatch_state IN ('pending', 'leased', 'running', 'terminal')),
@@ -87,59 +88,56 @@ CREATE INDEX IF NOT EXISTS idx_run_dispatch_recovery
   ON waje_runtime.run_dispatches(dispatch_state, lease_expires_at)
   WHERE dispatch_state IN ('pending', 'leased', 'running');
 
-CREATE TABLE IF NOT EXISTS waje_runtime.clarification_resume_claims (
-  source_run_id text PRIMARY KEY REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  resumed_run_id text NOT NULL UNIQUE REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+ALTER TABLE waje_runtime.run_dispatches
+  ALTER COLUMN message_id DROP NOT NULL;
+
+ALTER TABLE waje_runtime.run_dispatches
+  DROP CONSTRAINT IF EXISTS run_dispatch_producer_kind_check;
+
+ALTER TABLE waje_runtime.run_dispatches
+  ADD CONSTRAINT run_dispatch_producer_kind_check
+  CHECK (producer_kind IN (
+    'thread_message', 'artifact_continue', 'clarification_resume',
+    'clarification_retry'
+  ));
+
+CREATE TABLE IF NOT EXISTS waje_runtime.clarification_resolutions (
+  resolution_id text PRIMARY KEY,
+  source_run_id text NOT NULL UNIQUE REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
   thread_id text NOT NULL REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
-  request_identity text NOT NULL,
+  topic_id text NOT NULL REFERENCES waje_runtime.conversation_topics(topic_id) ON DELETE CASCADE,
+  owner_id text NOT NULL,
   submission jsonb NOT NULL,
+  accepted_choice jsonb NOT NULL,
   message_id text NOT NULL UNIQUE REFERENCES waje_runtime.conversation_messages(message_id) ON DELETE CASCADE,
-  dispatch_state text NOT NULL DEFAULT 'pending'
-    CONSTRAINT clarification_resume_dispatch_state_check
-    CHECK (dispatch_state IN ('pending', 'leased', 'dispatched')),
-  dispatch_owner_id text,
-  dispatch_lease_expires_at timestamptz,
-  dispatched_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now()
+  source_request_digest text NOT NULL,
+  resolution_digest text NOT NULL,
+  status text NOT NULL DEFAULT 'accepted'
+    CONSTRAINT clarification_resolution_status_check
+    CHECK (status = 'accepted'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  accepted_at timestamptz NOT NULL DEFAULT now()
 );
 
-ALTER TABLE waje_runtime.clarification_resume_claims
-  ADD COLUMN IF NOT EXISTS dispatch_state text NOT NULL DEFAULT 'pending',
-  ADD COLUMN IF NOT EXISTS dispatch_owner_id text,
-  ADD COLUMN IF NOT EXISTS dispatch_lease_expires_at timestamptz,
-  ADD COLUMN IF NOT EXISTS dispatched_at timestamptz;
+CREATE TABLE IF NOT EXISTS waje_runtime.clarification_execution_attempts (
+  attempt_run_id text PRIMARY KEY REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  resolution_id text NOT NULL REFERENCES waje_runtime.clarification_resolutions(resolution_id) ON DELETE CASCADE,
+  previous_attempt_run_id text REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  attempt_number integer NOT NULL CHECK (attempt_number > 0),
+  request_identity text NOT NULL,
+  request_digest text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(resolution_id, attempt_number),
+  UNIQUE(resolution_id, request_identity),
+  UNIQUE(resolution_id, previous_attempt_run_id),
+  CHECK (
+    previous_attempt_run_id IS NULL
+    OR previous_attempt_run_id <> attempt_run_id
+  )
+);
 
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'clarification_resume_dispatch_state_check'
-      AND conrelid = 'waje_runtime.clarification_resume_claims'::regclass
-  ) THEN
-    ALTER TABLE waje_runtime.clarification_resume_claims
-      ADD CONSTRAINT clarification_resume_dispatch_state_check
-      CHECK (dispatch_state IN ('pending', 'leased', 'dispatched'));
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'clarification_resume_dispatch_lease_shape_check'
-      AND conrelid = 'waje_runtime.clarification_resume_claims'::regclass
-  ) THEN
-    ALTER TABLE waje_runtime.clarification_resume_claims
-      ADD CONSTRAINT clarification_resume_dispatch_lease_shape_check
-      CHECK (
-        dispatch_state <> 'leased'
-        OR (
-          dispatch_owner_id IS NOT NULL
-          AND dispatch_lease_expires_at IS NOT NULL
-        )
-      );
-  END IF;
-END
-$$;
-
-CREATE INDEX IF NOT EXISTS idx_clarification_resume_dispatch_recovery
-  ON waje_runtime.clarification_resume_claims(dispatch_state, dispatch_lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_clarification_attempt_resolution
+  ON waje_runtime.clarification_execution_attempts(resolution_id, attempt_number);
 
 CREATE TABLE IF NOT EXISTS waje_runtime.run_nodes (
   node_id text PRIMARY KEY,
@@ -165,7 +163,6 @@ CREATE TABLE IF NOT EXISTS waje_runtime.result_refs (
   topic_id text NOT NULL REFERENCES waje_runtime.conversation_topics(topic_id) ON DELETE CASCADE,
   snapshot_id text NOT NULL,
   contract_version text NOT NULL,
-  permission_scope text NOT NULL,
   semantic_scope text NOT NULL,
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -204,7 +201,6 @@ CREATE TABLE IF NOT EXISTS waje_runtime.investigation_artifacts (
   topic_id text NOT NULL REFERENCES waje_runtime.conversation_topics(topic_id) ON DELETE CASCADE,
   run_id text REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE SET NULL,
   snapshot_id text NOT NULL,
-  permission_scope text NOT NULL,
   follow_up_context text NOT NULL,
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -212,21 +208,20 @@ CREATE TABLE IF NOT EXISTS waje_runtime.investigation_artifacts (
 
 CREATE TABLE IF NOT EXISTS waje_runtime.memory_items (
   memory_id text PRIMARY KEY,
-  owner_scope text NOT NULL,
+  owner_id text NOT NULL,
   text text NOT NULL,
   source_ref text NOT NULL,
-  visibility text NOT NULL,
   status text NOT NULL,
   ttl text NOT NULL DEFAULT 'until_revoked',
   confidence text NOT NULL DEFAULT 'user_confirmed',
-  refresh_rule text NOT NULL DEFAULT 'refresh_on_contract_or_scope_change',
+  refresh_rule text NOT NULL DEFAULT 'refresh_on_contract_or_owner_change',
   revocation_path text NOT NULL DEFAULT 'memory_proposal_revoke_or_admin_action',
   created_at timestamptz NOT NULL DEFAULT now(),
   revoked_at timestamptz
 );
 
 ALTER TABLE waje_runtime.memory_items
-  ADD COLUMN IF NOT EXISTS refresh_rule text NOT NULL DEFAULT 'refresh_on_contract_or_scope_change';
+  ADD COLUMN IF NOT EXISTS refresh_rule text NOT NULL DEFAULT 'refresh_on_contract_or_owner_change';
 
 ALTER TABLE waje_runtime.memory_items
   ADD COLUMN IF NOT EXISTS revocation_path text NOT NULL DEFAULT 'memory_proposal_revoke_or_admin_action';
@@ -236,8 +231,7 @@ CREATE TABLE IF NOT EXISTS waje_runtime.memory_proposals (
   thread_id text NOT NULL REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
   text text NOT NULL,
   source_ref text NOT NULL,
-  owner_scope text NOT NULL,
-  visibility text NOT NULL,
+  owner_id text NOT NULL,
   status text NOT NULL DEFAULT 'proposed',
   created_at timestamptz NOT NULL DEFAULT now(),
   decided_at timestamptz
@@ -263,7 +257,6 @@ CREATE TABLE IF NOT EXISTS waje_runtime.dataset_snapshots (
   schema_fingerprint text NOT NULL,
   schema_fields jsonb NOT NULL DEFAULT '[]'::jsonb,
   contract_ref text NOT NULL,
-  permission_scopes jsonb NOT NULL DEFAULT '[]'::jsonb,
   loaded_at timestamptz NOT NULL,
   status text NOT NULL,
   logical_snapshot_id text NOT NULL DEFAULT '',

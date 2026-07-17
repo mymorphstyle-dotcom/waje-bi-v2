@@ -20,7 +20,6 @@ allowed_data_contract_states:
   - evidence_linked
   - static_assumption
   - missing_contract
-  - permission_limited
   - unsupported_grain
   - out_of_scope_for_now
 
@@ -29,7 +28,6 @@ allowed_business_evidence_states:
   - candidate_mechanism
   - contextual_evidence
   - insufficient
-  - permission_limited
   - unsupported_grain
   - out_of_scope
 
@@ -186,7 +184,7 @@ factor_groups:
       - cohort_when_contract_exists
       - segment_when_dimension_contract_exists
     unsupported_grains:
-      - individual_user_without_permission
+      - individual_user_claim
     allowed_evidence_types:
       - accounting_contribution
       - candidate_mechanism
@@ -198,14 +196,14 @@ factor_groups:
       - blocked
     known_gaps:
       - component_contracts
-      - sensitive_identifier_permission_policy
+      - sensitive_identifier_output_policy
     reviewed_progress:
       - market_dashboard_source_candidate_covers_daily_new_users_registration_first_pay_and_new_paid_metrics
       - registration_rate_first_pay_rate_and_same_day_new_paid_rate_use_新增_as_denominator
       - source_rate_columns_need_owner_review_before_direct_use
       - paid_order_detail_can_support_first_observed_pay_success_only_when_full_historical_paid_orders_are_loaded
       - paid_active_retention_still_needs_cohort_contract
-    upgrade_path: Add user-funnel metric contracts, lifetime first-pay rules, and permission-aware cohort rules.
+    upgrade_path: Add user-funnel metric contracts, lifetime first-pay rules, and reviewed privacy-safe cohort rules.
     launch_priority: p0
 
   - factor_group_id: payment_channel_and_method
@@ -376,14 +374,13 @@ factor_groups:
         - id: 6c8e58a8d85aceaf679665e9fe894338
           label: 极端天气
       source_contracts:
+        - contracts/sources/paid-order-detail.source.yaml
         - contracts/sources/external-events.source.yaml
         - contracts/sources/competitor-ranking.source.yaml
       source_template_fields:
         - 国家
         - 州/地区
         - 城市
-        - IP
-        - 设备ID
         - 设备品牌
         - 设备型号
         - 操作系统
@@ -391,18 +388,23 @@ factor_groups:
     review:
       business_owner_role: business_owner
       data_owner_role: data_owner
-      review_status: draft_pending_owner_review
-    data_contract_state: permission_limited
-    default_business_evidence_state: permission_limited
+      review_status: reviewed_confirmed_2026-07-16
+    data_contract_state: contract_backed
+    default_business_evidence_state: quantifiable
     supported_grains:
-      - country_when_contract_exists
-      - city_when_permission_allows
-      - device_model_when_contract_exists
-      - network_type_when_contract_exists
-      - aggregate_only_with_sensitive_output_policy
+      - country
+      - region
+      - city_when_coverage_and_sample_allow
+      - device_brand
+      - device_model_when_coverage_and_sample_allow
+      - os
+      - network_type_when_coverage_and_sample_allow
+      - day
+      - aggregate_segment
     unsupported_grains:
-      - raw_ip_output_without_permission
-      - raw_device_id_output_without_permission
+      - individual_location_claim
+      - individual_device_claim
+      - causal_attribution_without_mechanism_evidence
     allowed_evidence_types:
       - accounting_contribution
       - statistical_association
@@ -415,15 +417,13 @@ factor_groups:
       - insufficient
       - blocked
     known_gaps:
-      - geo_device_environment_dimension_contracts
-      - sensitive_identifier_permission_policy
+      - geo_device_environment_quality_policy
       - external_context_event_contracts
-    limitation_refs:
-      - pii_dimension_output_limit
     reviewed_progress:
-      - raw_IP_and_device_ID_are_not_required_for_current_operations_analysis
-      - current_paid_order_source_has_region_device_brand_device_model_OS_and_network_type_for_aggregate_analysis_with_missingness_limits
-    upgrade_path: Add dimension contracts, event sources, sparse-cell rules, and enforcement for aggregate-only sensitive output.
+      - current_paid_order_source_contracts_country_region_city_device_brand_device_model_OS_and_network_type_for_aggregate_analysis
+      - current_dimension_screening_keeps_missingness_reconciliation_and_sparse_cell_limits_per_dimension
+      - aggregate_dimension_contribution_is_accounting_or_association_evidence_and_does_not_establish_causality
+    upgrade_path: Maintain geography and device taxonomies, profile coverage, and add external event sources for mechanism review.
     launch_priority: p0
 
   - factor_group_id: calendar_time_and_payday
@@ -742,45 +742,45 @@ factor_groups:
     launch_priority: p0
 
   - factor_group_id: sensitive_identity_and_dedup_fields
-    business_name: 用户、IP、设备标识与去重支持字段
-    business_meaning: Identifier fields may support aggregate analysis, internal quality checks, deduplication, and permission-aware joins; raw values must not appear in answers or visualizations.
+    business_name: 用户、订单标识与去重支持字段
+    business_meaning: User and order identifiers support aggregate counts, internal quality checks, and deduplication; raw values must not appear in answers or visualizations.
     source_refs:
       source_template_fields:
         - 用户ID
-        - IP
-        - 设备ID
         - 订单ID
     review:
       business_owner_role: business_owner
       data_owner_role: data_owner
       review_status: draft_pending_owner_review
-    data_contract_state: permission_limited
-    default_business_evidence_state: permission_limited
+    data_contract_state: contract_backed
+    default_business_evidence_state: quantifiable
     supported_grains:
       - aggregate_only_with_sensitive_output_policy
       - dedup_internal_check
     unsupported_grains:
-      - raw_identifier_output_without_permission
-      - individual_user_claim_without_permission
+      - raw_identifier_output
+      - individual_user_claim
     allowed_evidence_types:
+      - accounting_contribution
       - insufficient
     allowed_wording_limits:
+      - quantified
       - context
       - blocked
       - insufficient
     known_gaps:
-      - sensitive_identifier_permission_policy
+      - sensitive_identifier_output_policy
       - payment_status_and_dedup_contract
     limitation_refs:
-      - pii_dimension_output_limit
-    upgrade_path: Add field sensitivity tags, masking enforcement, aggregation thresholds, and role-based access checks.
+      - raw_identifier_output_limit
+    upgrade_path: Add field sensitivity tags, masking enforcement, aggregation thresholds, fixed output checks, and audit coverage.
     launch_priority: p0
 
 review_limitations:
-  - limitation_id: pii_dimension_output_limit
-    data_contract_state: permission_limited
-    description: Reviewed business boundary allows aggregate analysis, internal quality checks, and dedup support; raw user, IP, and device identifiers are blocked in answers and visualizations pending enforced masking, role, and sparse-cell rules.
-    backlog_ref: sensitive_identifier_permission_policy
+  - limitation_id: raw_identifier_output_limit
+    data_contract_state: unsupported_grain
+    description: Reviewed business boundary allows aggregate analysis, internal quality checks, and dedup support; raw user and order identifiers are blocked in answers and visualizations.
+    backlog_ref: sensitive_identifier_output_policy
   - limitation_id: raw_external_ingestion_phase1_scope
     data_contract_state: out_of_scope_for_now
     description: Raw news, forum, media, website crawling, and live AnySearch-like connectors are outside the current version; future AnySearch-style external evidence connectors require reviewed source contracts and verifier wording rules.

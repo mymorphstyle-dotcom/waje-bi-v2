@@ -89,7 +89,6 @@ def _component_query(metric_ids: tuple[str, ...]) -> QueryContract:
             required_window_ids=("target_day", "previous_day"),
         ),
         completeness_assertions=("execution_succeeded",),
-        permission_scope="analyst",
         workload_class="ordinary",
         contract_signature="query-signature",
     )

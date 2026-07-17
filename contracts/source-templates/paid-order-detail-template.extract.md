@@ -49,11 +49,11 @@ Runtime source status: candidate template only until source contract review
 
 Use this workbook as a source template candidate for the `paid_amount` metric contract and payment-related factor review. It can help reviewers define metric meaning, time semantics, amount basis, status taxonomy, currency policy, dedup key, user flags, channel/payment dimensions, geo/device dimensions, and payment latency evidence.
 
-It should not become a final table contract until owners confirm definitions, refresh source or watermark, permissions, timezone, refund/reversal policy, and data quality rules.
+It should not become a final table contract until owners confirm definitions, refresh source or watermark, service-connection source access, timezone, refund/reversal policy, fixed output-safety, and data quality rules.
 
 ### Real Data Review
 
-When the real dataset arrives, review actual fields, sample values, source watermark, permissions, status enum, order ID uniqueness, currency basis, refund/reversal behavior, and sensitive identifier treatment before accepting any runtime source contract.
+When the real dataset arrives, review actual fields, sample values, source watermark, service-connection source access, status enum, order ID uniqueness, currency basis, refund/reversal behavior, and sensitive identifier treatment before accepting any runtime source contract.
 
 First pass should run minimal profiling only: field alignment, row count, time range, current-data watermark, payment status distribution, order ID uniqueness, amount and currency distribution, refund or status-backfill signals, and masked sensitive-field statistics. Do not publish formal business conclusions from this intake pass.
 
@@ -87,4 +87,4 @@ For intra-month payment pattern analysis, this source becomes useful when the sy
 - Confirm whether status backfills are visible in the current source snapshot at run time.
 - Keep this template as review input until real data is checked and a source contract is accepted.
 - Later data updates should create a new run or artifact version instead of rewriting historical answers.
-- Enforce accepted permission treatment for `用户ID`, `IP`, and `设备ID`: aggregate analysis, internal quality checks, and dedup may use these fields; raw identifiers must not appear in answers or visualizations.
+- Enforce one fixed sensitive-output treatment for any present raw identifiers: aggregate analysis, internal quality checks, and dedup may use them; raw identifiers must not appear in answers or visualizations for any user.

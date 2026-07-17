@@ -6,7 +6,7 @@ Primary SSOT: `contracts/ssot/付费金额影响因子分析.mm`
 
 ## Review Purpose
 
-This artifact groups the 142-node SSOT by business factor group. Reviewers should approve business meaning, claim boundary, data contract state, grain support, permission boundary, and upgrade path at the group level, then use source refs in the YAML files for node-level trace.
+This artifact groups the 142-node SSOT by business factor group. Reviewers should approve business meaning, claim boundary, data contract state, grain support, fixed restricted-output boundary, source-connection access, and upgrade path at the group level, then use source refs in the YAML files for node-level trace.
 
 ## Marker Legend
 
@@ -14,7 +14,7 @@ This artifact groups the 142-node SSOT by business factor group. Reviewers shoul
 |---|---|---|
 | `pending_owner` | Business/data owner has not approved meaning, state, or feasibility. | business owner + data owner |
 | `contract_gap` | A needed metric, dimension, event, source, or policy contract is missing. | data/engineering owner |
-| `permission_gap` | Data may exist, but access/output policy blocks or masks claims. | data/engineering owner |
+| `restricted_output_gap` | A fixed raw-detail or sparse-output rule needs review or enforcement. It applies equally to every customer. | data/engineering owner |
 | `unsupported_grain` | Aggregate use may be allowed while requested fine grain is blocked. | business owner + data owner |
 | `out_of_scope` | Explicitly outside Phase 1 contract foundation or current launch path. | product + data owner |
 
@@ -24,18 +24,18 @@ This artifact groups the 142-node SSOT by business factor group. Reviewers shoul
 |---|---|---|---|
 | 付费金额指标与订单明细源 | `contract_backed`, P0 | `data_quality_check`, `pattern_scan`, `answer_verify` can use the accepted 2026 H1 paid-order source and initial grain-aware materiality policy. | `pending_owner`, `contract_gap`: refund/reversal source. Current source binding, NGN, status boundary, dedup, Lagos business date, materiality, and dev Postgres contract mirror are accepted for the 2026-01-01 through 2026-06-30 snapshot. |
 | 付费订单与支付链路指标 | `evidence_linked`, P0 | `formula_decompose` can use 大盘 daily formula fields and paid-order detail joint fields. | `pending_owner`, `contract_gap`: `付费日活` maps to 大盘 `日活历史付费人数`; paid-order detail handles joint analysis, order status, dedup, payment method, channel, geo/device, and amount bucket paths. |
-| 新增、注册、首充与留存因素 | `evidence_linked`, P0 | `formula_decompose` and impact review can use 大盘 day and channel-day fields for DAU, new users, registration, first-pay, same-day new paid, paid users, and paid amount after owner review. | `pending_owner`, `contract_gap`, `permission_gap`: v2 rates use `新增` as denominator and should be derived from counts; lifetime first-pay needs full historical paid-order imports; paid-active retention still needs cohort contract; 大盘 cannot support joint grains. |
+| 新增、注册、首充与留存因素 | `evidence_linked`, P0 | `formula_decompose` and impact review can use 大盘 day and channel-day fields for DAU, new users, registration, first-pay, same-day new paid, paid users, and paid amount after owner review. | `pending_owner`, `contract_gap`: v2 rates use `新增` as denominator and should be derived from counts; lifetime first-pay needs full historical paid-order imports; paid-active retention still needs cohort contract; 大盘 cannot support joint grains. |
 | 支付方式、支付渠道与通道稳定性 | `evidence_linked`, P0 | `segment_bridge` and `joint_attribution` can use current channel and payment-method values for mix/contribution analysis. | `pending_owner`, `contract_gap`: payment incident links, bank/server stability, campaign/exposure joins, and channel-history merges. |
 | 充值档位、客单价与用户价值结构 | `missing_contract`, P0 | `formula_decompose` and `segment_bridge` after data-assisted NGN amount buckets and conversion rules exist. | `pending_owner`, `contract_gap`: amount bucket policy, conversion source, recharge strategy events. |
 | 投放、渠道、素材、SEO、GEO 与拉新运营 | `missing_contract`, P0 | Aggregate channel and aggregate `投放成本` can be profiled; campaign/action attribution waits for contracts. | `pending_owner`, `contract_gap`: 投放预算、出价、campaign 消耗、素材 CTR/CVR、SEO/GEO 排名、用户推荐活动 are unavailable without new source information. |
-| 地理、设备、系统、网络与环境因素 | `permission_limited`, P0 | Aggregate `segment_bridge` or `joint_attribution` can run only inside permission, masking, and sparsity limits. | `pending_owner`, `permission_gap`, `unsupported_grain`: raw IP/device ID outputs blocked; aggregate city/device claims need dimension and sparse-cell enforcement. |
+| 地理、设备、系统、网络与环境因素 | `contract_backed`, P0 | Aggregate `segment_bridge` or `joint_attribution` can run for every customer at the supported city/device grains. | `pending_owner`, `restricted_output_gap`, `unsupported_grain`: raw IP/device ID outputs stay blocked; aggregate city/device claims require dimension contracts and fixed sparse-cell enforcement. |
 | 时间窗口、发薪周期、节假日与日内分布 | `static_assumption`, P0 | `pattern_scan` and `event_evidence` can use the 25..30 payday dimension as candidate mechanism. | `pending_owner`, `contract_gap`: payday window wording, calendar/event contracts, hour-level timing source contract. |
 | 产品、活动、服务器与运营事件 | `missing_contract`, P0 | `event_evidence` for business-object impact after event timing, affected scope, exposure/control exist. | `pending_owner`, `contract_gap`: 服务器稳定性、Grafana、支付事故、产品更新、首充礼包、充值活动 are unavailable without new source information. |
 | 外部环境、竞品、政策、赛事、天气与黑天鹅候选 | `evidence_linked`, P1 | `event_evidence` and `outlier_scan` can use the imported external-event workbook and competitor ranking CSV for context or candidate mechanisms; confirmed cause wording is blocked. | `contract_gap`, `out_of_scope`: workbook covers sports, weather, power, network, media policy, macro/fx, payday, social stability, holidays; competitor ranking is imported; stronger official policy feeds remain separate gaps. |
 | 玩法曝光、点击、付费率、频次与玩法 ARPU | `missing_contract`, P1 | Gameplay files cover activity and betting fields, but payment attribution paths still block. | `pending_owner`, `contract_gap`: icon exposure, icon click, gameplay paid rate, gameplay paid amount, gameplay paid frequency, gameplay single-payment amount, and payment-order-to-gameplay linkage are unavailable without new source information. |
 | 玩法流水、人均下注、下注金额与返奖率 | `evidence_linked`, P1 | `segment_bridge` can review gameplay users, penetration, rounds, bet count, bet amount, average bet amount, system rake rate, and GGR. | `pending_owner`, `contract_gap`: `玩法盈利` is confirmed as GGR; payout rate is deferred for now; gameplay payment attribution still needs payment-order-to-gameplay linkage. |
 | 支付状态、耗时、失败与数据质量 | `evidence_linked`, P0 | `data_quality_check`, `outlier_scan`, and `formula_decompose` can use accepted status and dedup rules for current paid-order snapshot. | `pending_owner`, `contract_gap`: latency-specific claims carry missingness limits; server/Grafana/payment-incident links remain unavailable without new source information. |
-| 用户、IP、设备标识与去重支持字段 | `permission_limited`, P0 | Aggregate analysis, internal dedup, and data-quality checks can reference fields; visible raw identifier claims are blocked. | `permission_gap`, `unsupported_grain`: raw user/IP/device output and individual claims blocked; masking, role, audit, and sparse-cell enforcement still need data/engineering review. |
+| 用户、IP、设备标识与去重支持字段 | `contract_backed`, P0 | Aggregate analysis, internal dedup, and data-quality checks can reference fields; visible raw identifier and individual-level claims are blocked by fixed output safety. | `restricted_output_gap`, `unsupported_grain`: raw user/IP/device output and individual claims stay blocked; customer-safe projection, audit, and sparse-cell enforcement still need data/engineering review. |
 
 ## Question Family Coverage
 
@@ -45,10 +45,10 @@ This artifact groups the 142-node SSOT by business factor group. Reviewers shoul
 | `pattern_explanation` | Covered by pattern scan, payday-dimension event evidence, payment-quality outlier review, hourly timing gap, and answer verification. |
 | `business_object_impact_review` | Covered by product/operation event evidence, metric-driver formula decomposition, and answer verification. |
 | `revenue_health_review` | Covered by formula decomposition, payment-quality anomaly review, and answer verification. |
-| `segment_or_factor_attribution` | Covered by payment-method segment bridge, geo/device permission-limited joint attribution, and answer verification. |
+| `segment_or_factor_attribution` | Covered by payment-method segment bridge, contract-backed aggregate geo/device joint attribution, fixed sparse-output safety, and answer verification. |
 | `anomaly_or_black_swan_review` | Covered by external-context outlier/event evidence, raw external ingestion scope block, and answer verification. |
 | `custom_baseline_comparison` | Covered by pattern scan, formula decomposition, and answer verification. |
-| `data_quality_or_evidence_review` | Covered by contract coverage review, permission/dedup review, accepted materiality policy, and answer verification. |
+| `data_quality_or_evidence_review` | Covered by contract coverage review, sensitive-output/dedup review, accepted materiality policy, and answer verification. |
 
 ## 2026-07-05 Source Coverage Update
 

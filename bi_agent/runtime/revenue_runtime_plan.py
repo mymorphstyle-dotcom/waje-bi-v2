@@ -80,7 +80,6 @@ def build_revenue_runtime_plan(
     windows = _windows(normalized_context)
     baselines = _baselines(normalized_context, axes, question_text)
     scope = _scope(normalized_context)
-    permission_scope = _permission_scope(normalized_context)
     snapshot_version = _snapshot_version(normalized_context)
     contract_versions = _contract_versions(normalized_context)
     schema_fields = _schema_fields(normalized_context)
@@ -107,7 +106,6 @@ def build_revenue_runtime_plan(
         time_window=str(normalized_context.get("time_window") or ""),
         windows=windows,
         baselines=baselines,
-        permission_scope=permission_scope,
         snapshot_version=snapshot_version,
         contract_versions=contract_versions,
         schema_fingerprint=schema_fingerprint,
@@ -146,7 +144,6 @@ def build_revenue_runtime_plan(
         time_window=str(normalized_context.get("time_window") or ""),
         windows=windows,
         baselines=baselines,
-        permission_scope=permission_scope,
         snapshot_version=snapshot_version,
         dimensions=_required_dimension_scan_dimensions(graph),
         required_fields=reuse_required_fields,
@@ -161,7 +158,6 @@ def build_revenue_runtime_plan(
         "diagnostic_axes": axes,
         "windows": windows,
         "baselines": baselines,
-        "permission_scope": permission_scope,
         "snapshot_version": snapshot_version,
         "contract_versions": contract_versions,
         "schema_fingerprint": schema_fingerprint,
@@ -293,7 +289,12 @@ def _baselines(
     axes: tuple[str, ...],
     question_text: str,
 ) -> tuple[str, ...]:
-    explicit = bound_context.get("baselines")
+    requirements = bound_context.get("analysis_requirements")
+    explicit = (
+        requirements.get("baselines")
+        if isinstance(requirements, Mapping)
+        else bound_context.get("baselines")
+    )
     if isinstance(explicit, Iterable) and not isinstance(explicit, (str, bytes, Mapping)):
         normalized = tuple(dict.fromkeys(str(item) for item in explicit if item))
         if normalized:
@@ -303,9 +304,7 @@ def _baselines(
             bound_context.get("target")
         ):
             return ("custom_baseline",)
-    if "multi_baseline" in axes:
-        return ("previous_day", "rolling_7_day_baseline", "same_weekday_last_week")
-    if any(token in question_text for token in ("前一天", "昨天", "上涨", "下跌", "变化")):
+    if any(token in question_text for token in ("前一天", "昨天")):
         return ("previous_day",)
     return ()
 
@@ -408,11 +407,22 @@ def _capability_params(
         pattern_params = dict(pattern_params)
     else:
         pattern_params = {}
-    if "rolling_window_compare" in graph:
-        params["rolling_window_compare"] = {
-            "window_days": int(pattern_params.get("window_days") or 7),
-            "baseline": "rolling_7_day_baseline",
-        }
+    raw_context_specs = bound_context.get("context_window_specs") or ()
+    context_specs = tuple(
+        dict(spec)
+        for spec in raw_context_specs
+        if isinstance(spec, Mapping)
+    )
+    for capability_id in ("rolling_window_compare", "compare_period_phases"):
+        selected_specs = tuple(
+            spec
+            for spec in context_specs
+            if str(spec.get("capability_id") or "") == capability_id
+        )
+        if capability_id in graph and selected_specs:
+            params[capability_id] = {
+                "context_window_specs": selected_specs,
+            }
     if "segment_contribution" in graph:
         params["segment_contribution"] = {"top_k": 5, "min_sample_size": 10}
     if "joint_attribution" in graph:
@@ -435,7 +445,6 @@ def _reusable_asset_rows(
     time_window: str,
     windows: Mapping[str, Any],
     baselines: tuple[str, ...],
-    permission_scope: str,
     snapshot_version: str,
     contract_versions: Mapping[str, str],
     schema_fingerprint: str,
@@ -471,7 +480,6 @@ def _reusable_asset_rows(
         time_window=time_window,
         windows=windows,
         baselines=baselines,
-        permission_scope=permission_scope,
         snapshot_version=snapshot_version,
         required_dimensions=tuple(needed_dimensions),
         required_fields=required_fields,
@@ -905,10 +913,6 @@ def _label_from_bound_item(value: Any) -> str:
 
 def _scope(bound_context: Mapping[str, Any]) -> str:
     return str(bound_context.get("scope") or "full_sample")
-
-
-def _permission_scope(bound_context: Mapping[str, Any]) -> str:
-    return str(bound_context.get("permission_scope") or "analyst")
 
 
 def _snapshot_version(bound_context: Mapping[str, Any]) -> str:

@@ -17,7 +17,6 @@ class DatasetSnapshot:
     schema_fingerprint: str
     schema_fields: tuple[str, ...]
     contract_ref: str
-    permission_scopes: tuple[str, ...]
     loaded_at: str
     status: str
     evidence_state: str = "claim_ready"
@@ -50,7 +49,6 @@ class DatasetSnapshotImmutableProjection:
     schema_fingerprint: str
     schema_fields: tuple[str, ...]
     contract_ref: str
-    permission_scopes: tuple[str, ...]
     loaded_at: str
     evidence_state: str
     reconciliation_status: str
@@ -153,21 +151,16 @@ class DatasetCatalog:
         dataset_id: str,
         *,
         as_of: datetime,
-        permission_scope: str,
         evidence_states: tuple[str, ...] = ("claim_ready",),
         release_resolver: DatasetReleaseResolver | None = None,
     ) -> DatasetSnapshot:
         _validate_evidence_states(evidence_states)
-        eligible = [
-            candidate
-            for candidate in self.as_of_candidates(
-                dataset_id,
-                as_of=as_of,
-                evidence_states=evidence_states,
-                release_resolver=release_resolver,
-            )
-            if permission_scope in candidate[1].permission_scopes
-        ]
+        eligible = self.as_of_candidates(
+            dataset_id,
+            as_of=as_of,
+            evidence_states=evidence_states,
+            release_resolver=release_resolver,
+        )
         if not eligible:
             raise KeyError(f"dataset_snapshot_unavailable:{dataset_id}")
         return max(eligible, key=lambda candidate: (candidate[0], candidate[1].snapshot_ref))[1]
@@ -426,9 +419,6 @@ def immutable_dataset_snapshot_projection(
         schema_fingerprint=str(payload.get("schema_fingerprint") or ""),
         schema_fields=_projection_string_tuple(payload.get("schema_fields")),
         contract_ref=str(payload.get("contract_ref") or ""),
-        permission_scopes=_projection_string_tuple(
-            payload.get("permission_scopes")
-        ),
         loaded_at=str(payload.get("loaded_at") or ""),
         evidence_state=str(payload.get("evidence_state") or "claim_ready"),
         reconciliation_status=str(

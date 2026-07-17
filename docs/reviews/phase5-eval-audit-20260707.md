@@ -106,4 +106,4 @@ Phase 6 接续项：
 
 - 用更大的 10 case 和随机开放样本继续评估 route drift、复合意图和隐性澄清。
 - 扩展八类问题族的 capability coverage。
-- 把生产观测、权限过滤、rerun comparability 和 release gates 留到后续生产门禁。
+- 把生产观测、个人归属、固定 customer-safe projection、rerun comparability 和 release gates 留到后续生产门禁。

@@ -238,6 +238,7 @@ def metric(dataset_id="paid_order_success", expression=None):
                 "comparative_change",
                 "formula_component_contribution",
                 "segment_contribution_or_mix_shift",
+                "cross_source_statistical_association",
             )
         ),
         reconciliation_tolerance=(
@@ -269,7 +270,6 @@ def dimension(dimension_id="channel"):
         dimension_id,
         ("day", "window_id"),
         null_bucket=("Blank" if dimension_id == "channel" else "Unknown"),
-        permission_scope="analyst",
     )
 
 
@@ -327,7 +327,6 @@ def snapshot(dataset_id="paid_order_success", *, fields=(), table="analytics.pai
         "schema",
         tuple(fields or default_fields[dataset_id]),
         f"contract:{dataset_id}@1",
-        ("analyst",),
         "2026-07-05T00:00:00Z",
         "active",
     )
@@ -472,7 +471,6 @@ def contract(
             str(reviewed_shape["dimension_presence_policy"]),
         ),
         completeness_assertions=("required_windows", "unique_key"),
-        permission_scope="analyst",
         workload_class="interactive_aggregate",
         contract_signature="",
         query_parameters=(
@@ -704,113 +702,58 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         self.assertIn("arrayExists(recurrence_day_offset", compiled.sql_text)
         self.assertIn("dateDiff('day'", compiled.sql_text)
 
-    def test_gameplay_activity_probe_uses_typed_context_policy_and_canonical_dimension(self):
+    def test_derived_metric_alias_collision_prefers_physical_source_columns(self):
         registry = RuntimeContractRegistry.from_path(
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
         )
-        self.assertTrue(
-            registry.metric_display_policy_allowed(
-                "gameplay_activity_amount", "number"
+        bindings = []
+        for metric_id in (
+            "player_bet_amount",
+            "player_bet_count",
+            "player_avg_bet_amount",
+        ):
+            metric_contract = registry.metric(metric_id, dataset_id="gameplay")
+            bindings.append(
+                MetricBinding(
+                    metric_id=metric_id,
+                    contract_ref=metric_contract["contract_ref"],
+                    dataset_id="gameplay",
+                    expression=metric_contract["expression"],
+                    aggregation=metric_contract["aggregation"],
+                    required_fields=tuple(metric_contract["required_fields"]),
+                    grain=tuple(metric_contract["grain"]),
+                    numerator_metric=str(
+                        metric_contract.get("numerator_metric") or ""
+                    ),
+                    denominator_metric=str(
+                        metric_contract.get("denominator_metric") or ""
+                    ),
+                    claim_types=tuple(metric_contract["claim_types"]),
+                    reconciliation_tolerance=metric_contract[
+                        "reconciliation_tolerance"
+                    ],
+                    reconciliation_strategy=metric_contract[
+                        "reconciliation_strategy"
+                    ],
+                    value_semantics=metric_contract["value_semantics"],
+                    display_format=metric_contract["display_format"],
+                )
             )
-        )
-        dimension_contract = registry.dimension("gameplay", dataset_id="gameplay")
-        self.assertEqual(dimension_contract["source_field"], "gameplay")
-        self.assertIn("window_id", dimension_contract["allowed_grains"])
-        metric_contract = registry.metric("player_bet_amount", dataset_id="gameplay")
-        metric_binding = MetricBinding(
-            metric_id="player_bet_amount",
-            contract_ref=metric_contract["contract_ref"],
-            dataset_id="gameplay",
-            expression=metric_contract["expression"],
-            aggregation=metric_contract["aggregation"],
-            required_fields=tuple(metric_contract["required_fields"]),
-            grain=tuple(metric_contract["grain"]),
-            claim_types=tuple(metric_contract["claim_types"]),
-            reconciliation_tolerance=metric_contract["reconciliation_tolerance"],
-            reconciliation_strategy=metric_contract["reconciliation_strategy"],
-            value_semantics=metric_contract["value_semantics"],
-            display_format=metric_contract["display_format"],
-        )
-        dimension_binding = DimensionBinding(
-            "gameplay",
-            dimension_contract["contract_ref"],
-            "gameplay",
-            dimension_contract["source_field"],
-            tuple(dimension_contract["allowed_grains"]),
-        )
+
         compiled = compile_clickhouse_query(
             contract(
                 dataset_id="gameplay",
-                query_intent="gameplay_activity_probe",
-                metrics=(metric_binding,),
-                dimensions=(dimension_binding,),
+                query_intent="association_candidate_timeseries",
+                metrics=tuple(bindings),
             ),
             {"snapshot:gameplay:1": snapshot("gameplay")},
         )
-        self.assertIn("sum(player_bet_amount)", compiled.sql_text)
+
         self.assertIn(
-            "ifNull(nullIf(trim(toString(`gameplay`)), ''), "
-            "%(dimension_null_bucket_0)s) AS `gameplay`",
+            "sum(player_bet_amount) / nullIf(sum(player_bet_count), 0)",
             compiled.sql_text,
         )
-        self.assertNotIn("paid_amount", compiled.sql_text)
-        self.assertEqual(
-            dimension_contract["allowed_grains"],
-            ["day", "window_id"],
-        )
-        self.assertEqual(
-            contract(
-                dataset_id="gameplay",
-                query_intent="gameplay_activity_probe",
-                metrics=(metric_binding,),
-                dimensions=(dimension_binding,),
-            ).result_shape.dimension_presence_policy,
-            "sparse_allowed",
-        )
-
-    def test_dimension_presence_policy_is_signed_and_registry_bound(self):
-        base = contract(
-            dataset_id="gameplay",
-            query_intent="gameplay_activity_probe",
-            metrics=(),
-            dimensions=(),
-        )
-        drifted = replace(
-            base,
-            result_shape=replace(
-                base.result_shape,
-                dimension_presence_policy="paired_required",
-            ),
-        )
-        with self.assertRaisesRegex(ValueError, "query_contract_signature_mismatch"):
-            compile_clickhouse_query(
-                drifted,
-                {"snapshot:gameplay:1": snapshot("gameplay")},
-            )
-        with self.assertRaisesRegex(ValueError, "reviewed_result_shape_mismatch"):
-            compile_clickhouse_query(
-                resigned(drifted),
-                {"snapshot:gameplay:1": snapshot("gameplay")},
-            )
-
-        payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
-        payload["query_shapes"]["gameplay_activity_probe"].pop(
-            "dimension_presence_policy"
-        )
-        with self.assertRaisesRegex(
-            ValueError,
-            "runtime_query_shape_dimension_presence_policy",
-        ):
-            RuntimeContractRegistry(payload)
-        payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
-        payload["query_shapes"]["gameplay_activity_probe"][
-            "dimension_presence_policy"
-        ] = "infer_missing_as_zero"
-        with self.assertRaisesRegex(
-            ValueError,
-            "runtime_query_shape_dimension_presence_policy",
-        ):
-            RuntimeContractRegistry(payload)
+        self.assertEqual(compiled.settings["prefer_column_name_to_alias"], 1)
 
     def test_rejects_high_value_dimensions_outside_reviewed_threshold_grain(self):
         base = contract(

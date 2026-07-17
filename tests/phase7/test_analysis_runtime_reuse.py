@@ -124,10 +124,29 @@ class _CompositeReleaseResolver:
 
 
 def _proposal(baselines=("previous_day", "rolling_7_day_baseline")):
+    from bi_agent.conversation.clarification_authority import (
+        _compiled_goal_material_projection,
+    )
+
+    registry = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    )
+    goal_material = _compiled_goal_material_projection(
+        goal_bindings=[{"goal_id": "explain_change", "role": "primary"}],
+        target_metric="paid_amount",
+        explicit_focus={
+            "component_ids": [],
+            "dimension_ids": [],
+            "context_source_ids": [],
+        },
+        runtime_registry=registry,
+    )
     return {
         "question_families": ["custom_baseline_comparison"],
         "target_metrics": ["paid_amount"],
-        "claim_intents": ["comparative_change"],
+        "requested_components": goal_material["component_ids"],
+        "requested_dimensions": goal_material["dimension_ids"],
+        "claim_intents": goal_material["claim_types"],
         "scope": {"type": "full_sample"},
         "target_semantic": "yesterday",
         "baselines": list(baselines),
@@ -140,10 +159,6 @@ def _multi_query_proposal():
         "question_families": [
             "custom_baseline_comparison",
             "recurring_pattern_analysis",
-        ],
-        "claim_intents": [
-            "comparative_change",
-            "recurring_pattern_existence",
         ],
     }
 
@@ -184,7 +199,6 @@ def _source_request(run_id, topic_id, baselines=("previous_day", "rolling_7_day_
         proposal=_proposal(baselines),
         accepted_graph=("compare_periods",),
         as_of="2026-06-03T12:00:00+01:00",
-        permission_scope="analyst",
     )
 
 
@@ -199,6 +213,7 @@ def _publish_source(
     accepted_graph=("compare_periods",),
 ):
     from bi_agent.conversation.clarification_authority import (
+        _compiled_goal_material_projection,
         build_execution_material,
         build_material_authority,
     )
@@ -225,7 +240,6 @@ def _publish_source(
             "run_id": source_run_id,
             "thread_id": "thread-reuse",
             "topic_id": topic_id,
-            "permission_context": {"role": "analyst"},
             **source_request_payload,
         },
         artifact_path="artifacts/phase7/source-reuse/answer_package.json",
@@ -235,18 +249,27 @@ def _publish_source(
         **bundle,
     )
     contract = result.analysis_contract
-    metric_ids = tuple(
-        dict.fromkeys(binding.metric_id for binding in contract.metric_bindings)
-    )
     families = tuple(contract.question_families)
     scope_payload = canonical_value(contract.scope)
     scope = str(scope_payload.get("type") or "full_sample")
     proposal = dict(proposal or _proposal())
+    target_metric_id = str(proposal["target_metrics"][0])
+    goal_bindings = [{"goal_id": "explain_change", "role": "primary"}]
+    explicit_focus = {
+        "component_ids": [],
+        "dimension_ids": [],
+        "context_source_ids": [],
+    }
+    goal_material = _compiled_goal_material_projection(
+        goal_bindings=goal_bindings,
+        target_metric=target_metric_id,
+        explicit_focus=explicit_focus,
+        runtime_registry=runtime.registry,
+    )
     execution_material = build_execution_material(
         proposal=proposal,
         accepted_graph=accepted_graph,
         as_of=contract.as_of,
-        permission_scope=contract.permission_scope,
         run_mode="production",
         runtime_contract_version=runtime.registry.contract_version,
         runtime_registry_digest=runtime.registry.source_payload_digest,
@@ -263,21 +286,21 @@ def _publish_source(
             "question_families": list(families),
             "primary_question_family": families[0],
             "secondary_question_families": list(families[1:]),
-            "target_metric": metric_ids[0],
-            "requested_components": [],
-            "requested_dimensions": [],
+            "target_metric": target_metric_id,
+            "goal_bindings": goal_bindings,
+            "explicit_focus": explicit_focus,
             "baseline_candidates": list(proposal["baselines"]),
-            "context_sources": [],
-            "claim_intents": list(contract.claim_intents),
             "scope": scope,
         },
         material_slots={
-            "target_metrics": list(metric_ids),
-            "requested_components": [],
-            "requested_dimensions": [],
+            "target_metrics": [target_metric_id],
+            "component_ids": goal_material["component_ids"],
+            "dimension_ids": goal_material["dimension_ids"],
             "baselines": list(proposal["baselines"]),
-            "context_sources": [],
-            "claim_intents": list(contract.claim_intents),
+            "context_sources": goal_material["context_sources"],
+            "claim_types": goal_material["claim_types"],
+            "required_outcomes": goal_material["required_outcomes"],
+            "analysis_axis_ids": goal_material["analysis_axis_ids"],
             "diagnostic_tags": [],
             "scope": scope,
         },
@@ -297,8 +320,7 @@ def _publish_source(
             result_ref=item["result_ref"],
             snapshot_id="2026H1",
             contract_version="contracts-v1",
-            permission_scope="analyst",
-            semantic_scope=f"analysis-contract:sha256:{analysis_signature}",
+                semantic_scope=f"analysis-contract:sha256:{analysis_signature}",
             payload=item,
         )
 
@@ -318,7 +340,7 @@ def _candidate(runtime, result, signed_snapshots, *, result_index=0):
     snapshots_by_ref = {item.snapshot_ref: item for item in signed_snapshots}
     analysis_signature = analysis_contract_signature(result.analysis_contract)
     payload = {
-        "schema_version": "result-reuse-candidate.v1",
+        "schema_version": "result-reuse-candidate.v2",
         "source_run_id": result.analysis_contract.analysis_contract_id.split(":")[1],
         "result_ref": source_result.result_ref,
         "query_contract_ref": query.query_contract_ref,
@@ -343,7 +365,6 @@ def _candidate(runtime, result, signed_snapshots, *, result_index=0):
             snapshots_by_ref[ref].schema_fingerprint
             for ref in query.source_snapshot_refs
         ],
-        "permission_scope": query.contract.permission_scope,
         "semantic_scope_signature": (
             f"analysis-contract:sha256:{analysis_signature}"
         ),
@@ -646,6 +667,47 @@ def _bundle_with_current_completeness_state(
     )
 
 
+def _bundle_with_physical_completeness_sibling(
+    bundle,
+    *,
+    completeness_status,
+    analysis_readiness,
+):
+    report = bundle["completeness_records"][0]
+    report_payload = canonical_value(
+        {
+            **dict(report.report_payload),
+            "completeness_status": completeness_status,
+            "analysis_readiness": analysis_readiness,
+            "coverage_summary": {
+                **dict(report.report_payload.get("coverage_summary") or {}),
+                "validation_context": "physical-reuse-exact-version",
+            },
+        }
+    )
+    report_digest = canonical_digest(report_payload)
+    sibling = replace(
+        report,
+        record_ref=f"completeness-record:{report.report_ref}:{report_digest}",
+        report_digest=report_digest,
+        report_payload=report_payload,
+    )
+    decision = _resigned_physical_decision(
+        bundle["trusted_provenance_records"][0]["reuse_decisions"][0],
+        completeness_record_refs=(sibling.record_ref,),
+    )
+    return _bundle_with_physical_decision(
+        {
+            **bundle,
+            "completeness_records": (
+                *bundle["completeness_records"],
+                sibling,
+            ),
+        },
+        decision,
+    )
+
+
 def _bundle_with_current_snapshot_axis(bundle, **snapshot_changes):
     from bi_agent.runtime.evidence_authority import snapshot_authority_record
     from tests.phase4.test_authoritative_query_chain import _resign_binding
@@ -792,7 +854,6 @@ def _physical_reuse_result_fixture(*, current_run_id):
             proposal=_proposal(),
             accepted_graph=("compare_periods",),
             as_of="2026-06-03T12:00:00+01:00",
-            permission_scope="analyst",
             reuse_candidates=(candidate,),
         )
     )
@@ -800,7 +861,6 @@ def _physical_reuse_result_fixture(*, current_run_id):
         "run_id": current_run_id,
         "thread_id": "thread-reuse",
         "topic_id": topic_id,
-        "permission_context": {"role": "analyst"},
         "context_manifest": {
             "snapshot_version": "2026H1",
             "contract_versions": {"runtime": "contracts-v1"},
@@ -833,7 +893,6 @@ def _pg_candidate_authority_row(runtime, decision):
         "result_ref": record["result_ref"],
         "snapshot_id": record["snapshot_id"],
         "contract_version": record["contract_version"],
-        "permission_scope": record["permission_scope"],
         "semantic_scope": record["semantic_scope"],
         "result_ref_payload": record["payload"],
         "source_run_id": authority["source_run_id"],
@@ -1111,8 +1170,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 proposal=proposal,
                 accepted_graph=accepted_graph,
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
-            )
+                    )
         )
         candidates = tuple(
             _candidate(runtime, source, signed, result_index=index)
@@ -1134,8 +1192,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 proposal=proposal,
                 accepted_graph=accepted_graph,
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
-                reuse_candidates=candidates,
+                        reuse_candidates=candidates,
             )
         )
         completeness_by_result = {
@@ -1189,7 +1246,6 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
             "run_id": "run-multi-claim-current",
             "thread_id": "thread-reuse",
             "topic_id": topic_id,
-            "permission_context": {"role": "analyst"},
             "context_manifest": {
                 "snapshot_version": "2026H1",
                 "contract_versions": {"runtime": "contracts-v1"},
@@ -1235,7 +1291,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
             )
         )
 
-    def test_exact_authority_candidate_materializes_current_run_without_provider_call(self):
+    def test_exact_authority_candidate_reuses_query_without_provider_call(self):
         runtime, provider, store, topic_id, signed = _runtime_fixture()
         source = runtime.execute(_source_request("run-source", topic_id))
         candidate = _candidate(runtime, source, signed)
@@ -1248,13 +1304,13 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 proposal=_proposal(),
                 accepted_graph=("compare_periods",),
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
-                reuse_candidates=(candidate,),
+                        reuse_candidates=(candidate,),
             )
         )
 
         self.assertEqual(provider.calls, 1)
-        self.assertEqual(current.status, "ready")
+        self.assertEqual(current.status, "clarify")
+        self.assertEqual(current.reuse_decisions[0]["decision"], "reuse")
         self.assertEqual(current.reuse_decisions[0]["decision"], "reuse")
         self.assertEqual(
             current.reuse_decisions[0]["source_ref"],
@@ -1395,8 +1451,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 ),
                 accepted_graph=("compare_periods",),
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
-                reuse_candidates=(candidate,),
+                        reuse_candidates=(candidate,),
             )
         )
 
@@ -1459,8 +1514,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 "run_id": "run-baseline-source",
                 "thread_id": "thread-reuse",
                 "topic_id": topic_id,
-                "permission_context": {"role": "analyst"},
-            },
+                },
             artifact_path="artifacts/phase7/reuse-source/answer_package.json",
         )
         current_bundle = runtime.build_persistence_bundle(
@@ -1470,8 +1524,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 "run_id": "run-baseline-current",
                 "thread_id": "thread-reuse",
                 "topic_id": topic_id,
-                "permission_context": {"role": "analyst"},
-                "reuse_decisions": [
+                    "reuse_decisions": [
                     {
                         "source_ref": candidate["result_ref"],
                         "decision": "candidate",
@@ -1725,7 +1778,9 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 "request_contract_drift",
                 lambda store, source_run_id: store.runs[source_run_id][
                     "request"
-                ]["analysis_contract"].update({"permission_scope": "viewer"}),
+                ]["analysis_contract"].update(
+                    {"as_of": "2026-06-04T12:00:00+01:00"}
+                ),
             ),
             (
                 "request_material_drift",
@@ -1862,8 +1917,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 proposal=_proposal(("previous_day",)),
                 accepted_graph=("compare_periods",),
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
-                reuse_candidates=(candidate,),
+                        reuse_candidates=(candidate,),
             )
         )
         self.assertEqual(current.reuse_decisions[0]["decision"], "rerun")
@@ -1871,7 +1925,6 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
             "run_id": current_run_id,
             "thread_id": "thread-reuse",
             "topic_id": topic_id,
-            "permission_context": {"role": "analyst"},
             "context_manifest": {
                 "snapshot_version": "2026H1",
                 "contract_versions": {"runtime": "contracts-v1"},
@@ -1989,14 +2042,6 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 "snapshot_release",
             ),
             (
-                "permission-scopes",
-                lambda bundle: _bundle_with_current_snapshot_axis(
-                    bundle,
-                    permission_scopes=("analyst", "viewer"),
-                ),
-                "snapshot_release",
-            ),
-            (
                 "date-range",
                 lambda bundle: _bundle_with_current_snapshot_axis(
                     bundle,
@@ -2023,6 +2068,44 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                     runtime.store.save_analysis_runtime_records(
                         run_id=request["run_id"],
                         **invalid,
+                    )
+
+    def test_physical_reuse_validates_the_declared_completeness_version(self):
+        cases = (
+            ("complete", "ready", "published"),
+            (
+                "incomplete",
+                "partial",
+                "runtime_persistence_reuse_decision_"
+                "cache_equivalence_mismatch:completeness",
+            ),
+        )
+        for completeness_status, analysis_readiness, expected in cases:
+            with self.subTest(completeness_status=completeness_status):
+                run_id = f"run-physical-version-{completeness_status}"
+                runtime, _, request, bundle = _physical_reuse_bundle_fixture(
+                    current_run_id=run_id,
+                    answer_package={"status": "complete", "sections": []},
+                )
+                versioned = _bundle_with_physical_completeness_sibling(
+                    bundle,
+                    completeness_status=completeness_status,
+                    analysis_readiness=analysis_readiness,
+                )
+
+                if expected == "published":
+                    self.assertEqual(
+                        runtime.store.save_analysis_runtime_records(
+                            run_id=request["run_id"],
+                            **versioned,
+                        ),
+                        expected,
+                    )
+                    continue
+                with self.assertRaisesRegex(EvidenceIntegrityError, expected):
+                    runtime.store.save_analysis_runtime_records(
+                        run_id=request["run_id"],
+                        **versioned,
                     )
 
     def test_in_memory_run_request_is_frozen_from_nested_caller_mutation(self):
@@ -2232,7 +2315,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
         connection = _NormalizedPgCandidateConnection(runtime, decision)
         connection.root_row["analysis_contract"] = {
             **connection.root_row["analysis_contract"],
-            "permission_scope": "viewer",
+            "as_of": "2026-06-04T12:00:00+01:00",
         }
 
         with self.assertRaisesRegex(
@@ -2559,7 +2642,6 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
             "run_id": run_id,
             "thread_id": "thread-reuse",
             "topic_id": topic_id,
-            "permission_context": {"role": "analyst"},
             "context_manifest": {"manifest_id": "context-current"},
             "reuse_decisions": [
                 {
@@ -2674,8 +2756,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                         proposal=_proposal(),
                         accepted_graph=("compare_periods",),
                         as_of="2026-06-03T12:00:00+01:00",
-                        permission_scope="analyst",
-                        reuse_candidates=(mutate(candidate),),
+                                        reuse_candidates=(mutate(candidate),),
                     )
                 )
 
@@ -2705,8 +2786,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                         "run_id": current_run_id,
                         "thread_id": "thread-reuse",
                         "topic_id": topic_id,
-                        "permission_context": {"role": "analyst"},
-                    },
+                                },
                     artifact_path=(
                         f"artifacts/phase7/{current_run_id}/answer_package.json"
                     ),
@@ -2756,8 +2836,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 proposal=_proposal(),
                 accepted_graph=("compare_periods",),
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
-                reuse_candidates=(candidate,),
+                        reuse_candidates=(candidate,),
             )
         )
 
@@ -2798,8 +2877,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 proposal=_proposal(),
                 accepted_graph=("compare_periods",),
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
-                reuse_candidates=(candidate,),
+                        reuse_candidates=(candidate,),
             )
         )
 
@@ -2823,8 +2901,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 proposal=_proposal(("previous_day",)),
                 accepted_graph=("compare_periods",),
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
-                reuse_candidates=(candidate,),
+                        reuse_candidates=(candidate,),
             )
         )
 
@@ -2833,61 +2910,6 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
         self.assertEqual(
             current.reuse_decisions[0]["reason"],
             "reuse_fixed_window_mismatch",
-        )
-
-    def test_changed_permission_scope_reruns(self):
-        registry = RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
-        authority = RuntimeEvidenceAuthority(runtime_registry=registry)
-        permission_snapshot = replace(
-            snapshot("paid_order_success", "paid_success", "2026-07-04"),
-            permission_scopes=("viewer", "analyst"),
-        )
-        catalog, release_resolver, signed = canonical_release_catalog(
-            permission_snapshot
-        )
-        provider = _CountingRowsRuntime()
-        store = InMemoryConversationStore()
-        store.create_thread("thread-reuse", owner_id="analyst-1")
-        topic = store.create_topic("thread-reuse", title="付费金额权限分析")
-        runtime = AnalysisRuntime(
-            catalog=catalog,
-            registry=registry,
-            executor=ClickHouseQueryExecutor(
-                provider,
-                evidence_resolver=authority,
-                rows_loader=authority.rows_loader,
-                evidence_writer=authority._runtime_writer(),
-                release_resolver=release_resolver,
-            ),
-            release_resolver=release_resolver,
-            evidence_authority=authority,
-            store=store,
-        )
-        source = runtime.execute(
-            _source_request("run-permission-source", topic.topic_id)
-        )
-        candidate = _candidate(runtime, source, signed)
-        _publish_source(runtime, store, topic.topic_id, source, candidate)
-
-        current = runtime.execute(
-            AnalysisRuntimeRequest.create(
-                run_id="run-permission-current",
-                topic_id=topic.topic_id,
-                proposal=_proposal(),
-                accepted_graph=("compare_periods",),
-                as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="viewer",
-                reuse_candidates=(candidate,),
-            )
-        )
-
-        self.assertEqual(provider.calls, 2)
-        self.assertEqual(current.reuse_decisions[0]["decision"], "rerun")
-        self.assertEqual(
-            current.reuse_decisions[0]["reason"],
-            "reuse_permission_scope_mismatch",
         )
 
     def test_changed_active_release_or_schema_reruns_current_compiled_contract(self):
@@ -2951,8 +2973,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 proposal=_proposal(),
                 accepted_graph=("compare_periods",),
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
-                reuse_candidates=(candidate,),
+                        reuse_candidates=(candidate,),
             )
         )
 
@@ -2999,7 +3020,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
             decision="reuse",
             reason="validated_authoritative_query_chain",
         )
-        candidate = {"schema_version": "result-reuse-candidate.v1"}
+        candidate = {"schema_version": "result-reuse-candidate.v2"}
 
         class FakeAnalysisRuntime:
             def __init__(self):
@@ -3017,7 +3038,6 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                     catalog=DatasetCatalog(()),
                     registry=self.registry,
                     as_of=request.as_of,
-                    permission_scope=request.permission_scope,
                 )
                 return SimpleNamespace(
                     to_workflow_payload=lambda: {
@@ -3041,7 +3061,6 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 "analysis_runtime": analysis_runtime,
                 "run_id": "run-workflow-reuse",
                 "topic_id": "topic-workflow-reuse",
-                "role": "analyst",
                 "analysis_context": {
                     "as_of": "2026-06-03T12:00:00+01:00",
                 },
@@ -3139,8 +3158,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 proposal=_proposal(),
                 accepted_graph=("compare_periods",),
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
-                reuse_candidates=(newest_mismatch, exact),
+                        reuse_candidates=(newest_mismatch, exact),
             )
         )
 
@@ -3178,8 +3196,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                         proposal=_proposal(),
                         accepted_graph=("compare_periods",),
                         as_of="2026-06-03T12:00:00+01:00",
-                        permission_scope="analyst",
-                        reuse_candidates=(mutate(candidate),),
+                                        reuse_candidates=(mutate(candidate),),
                     )
                 )
 
@@ -3187,7 +3204,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 self.assertEqual(current.reuse_decisions[0]["decision"], "rerun")
                 self.assertEqual(
                     current.reuse_decisions[0]["reason"],
-                    "reuse_candidate_shape_invalid",
+                    "result_candidate_payload_shape_invalid",
                 )
 
     def test_ownerless_reuse_hint_does_not_block_fresh_result_delivery(self):
@@ -3200,8 +3217,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                 proposal=_proposal(),
                 accepted_graph=("compare_periods",),
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
-                reuse_candidates=({},),
+                        reuse_candidates=({},),
             )
         )
 
@@ -3256,8 +3272,7 @@ class AnalysisRuntimeReuseTest(unittest.TestCase):
                         proposal=_proposal(),
                         accepted_graph=("compare_periods",),
                         as_of="2026-06-03T12:00:00+01:00",
-                        permission_scope="analyst",
-                        reuse_candidates=(mutate(candidate),),
+                                        reuse_candidates=(mutate(candidate),),
                     )
                 )
 

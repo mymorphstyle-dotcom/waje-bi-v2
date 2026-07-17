@@ -21,11 +21,10 @@ parameters:
     - filters
     - top_k
     - sparse_limits
-    - permission_context
     - bridge_method
 
 non_uses:
-  - Does not run on dimensions without reviewed contract, backlog, or permission treatment.
+  - Does not run on dimensions without reviewed contract, backlog, or output policy.
   - Does not expose raw identifiers.
   - Does not explain multi-factor interactions without joint attribution.
 
@@ -45,20 +44,20 @@ evidence_outputs:
     - mix_shift
     - coverage
     - sparse_warnings
-    - permission_blocks
+    - restricted_output_blocks
     - unsupported_segments
     - recommended_next_capabilities
 
 limitations:
   - Quantified segment claims require dimension contract and compatible metric grain.
-  - Permission-limited dimensions can support internal checks while blocking visible outputs.
+  - Raw identifiers and restricted detail can support internal checks while remaining blocked from visible outputs for every user.
   - Sparse segments degrade to local exception or insufficient wording.
 
 degradation_rules:
   - when: dimension_missing_contract
     output: missing-contract limitation and backlog refs.
-  - when: permission_limited
-    output: masked aggregate or blocked visible claim.
+  - when: restricted_output_blocked
+    output: safe aggregate output or a blocked restricted-detail claim.
   - when: unsupported_grain
     output: downgrade to supported grain or block.
 
@@ -66,9 +65,9 @@ lint_rules:
   - rule_id: dimension_contract_required
     severity: block
     check: Dimension must be declared in dimension or factor ledger source.
-  - rule_id: permission_context_required
+  - rule_id: restricted_output_policy_required
     severity: block
-    check: Sensitive dimensions require permission context.
+    check: Restricted fields require an aggregate-only output policy and cannot be emitted as raw values.
   - rule_id: sparse_cell_guard
     severity: degrade
     check: Sparse cells cannot support strong segment claims.

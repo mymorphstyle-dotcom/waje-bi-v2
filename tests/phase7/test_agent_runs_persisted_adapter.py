@@ -39,6 +39,14 @@ class AgentRunsPersistedAdapterTest(unittest.TestCase):
         self.assertIn("checkpoint_events", agent_runs)
         self.assertIn("withRunNodes", agent_runs)
 
+    def test_replay_validator_labels_use_fixed_sensitive_output_policy(self):
+        replays = (ROOT / "app" / "api" / "replays" / "route.ts").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("sensitive_output_policy", replays)
+        self.assertIn("敏感输出安全检查", replays)
+
 
 if __name__ == "__main__":
     unittest.main()

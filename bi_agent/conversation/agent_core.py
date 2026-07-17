@@ -40,10 +40,6 @@ from bi_agent.runtime.analysis_contracts import (
     analysis_contract_from_dict,
     analysis_contract_signature,
 )
-from bi_agent.runtime.analysis_obligations import (
-    ObligationRequest,
-    resolve_analysis_obligations,
-)
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     canonical_digest,
@@ -51,11 +47,7 @@ from bi_agent.runtime.evidence_authority import (
 )
 from bi_agent.runtime.artifacts import synchronize_existing_artifact
 from bi_agent.runtime.langgraph_workflow import run_pattern_workflow
-from bi_agent.runtime.runtime_contract_registry import (
-    CANONICAL_RUNTIME_BINDINGS_PATH,
-    RuntimeContractRegistry,
-)
-from bi_agent.runtime.permission_roles import resolve_product_runtime_roles
+from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
 
 WorkflowRunner = Callable[[dict[str, Any]], Any]
@@ -124,35 +116,20 @@ class ConversationAgentCore:
         run_id: str | None = None,
         user_message: str,
         user_id: str | None = None,
-        permission_context: dict | None = None,
-        role: str | None = None,
-        runtime_permission_scope: str | None = None,
         artifact_root: str = "artifacts/phase-7",
         clarification: dict[str, Any] | None = None,
-        clarification_dispatch: dict[str, str] | None = None,
         run_dispatch: dict[str, Any] | None = None,
         prior_analysis_assets: tuple[Mapping[str, Any], ...] = (),
         analysis_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         analysis_context = _validated_analysis_context(analysis_context)
-        context_role = (permission_context or {}).get("role")
-        role, runtime_permission_scope = resolve_product_runtime_roles(
-            role,
-            runtime_permission_scope,
-            permission_context_role=(
-                str(context_role) if context_role not in (None, "") else None
-            ),
-        )
-        permission_context = {
-            **{
-                key: value
-                for key, value in (permission_context or {}).items()
-                if key not in {"role", "permission_scope", "runtime_permission_scope"}
-            },
-            "role": role,
-        }
         run_id = run_id or f"run-{uuid4().hex[:12]}"
         thread = self.store.get_thread(thread_id)
+        if user_id and str(thread.owner_id or "") != str(user_id):
+            raise EvidenceIntegrityError("thread_owner_mismatch")
+        set_actor_id = getattr(self.store, "set_actor_id", None)
+        if callable(set_actor_id):
+            set_actor_id(str(user_id or "system"))
         if run_dispatch:
             claim_dispatch = getattr(self.store, "claim_run_dispatch", None)
             if not callable(claim_dispatch):
@@ -167,46 +144,63 @@ class ConversationAgentCore:
                 ),
                 lease_epoch=run_dispatch.get("lease_epoch"),
             )
-        elif clarification_dispatch:
-            claim_dispatch = getattr(
-                self.store,
-                "claim_clarification_dispatch",
-                None,
-            )
-            if not callable(claim_dispatch):
-                raise EvidenceIntegrityError(
-                    "clarification_dispatch_claim_resolver_missing"
-                )
-            claim_dispatch(
-                source_run_id=str(
-                    clarification_dispatch.get("source_run_id") or ""
-                ),
-                resumed_run_id=run_id,
-                thread_id=thread_id,
-                dispatch_owner_id=str(
-                    clarification_dispatch.get("dispatch_owner_id") or ""
-                ),
-            )
         else:
             self.store.upsert_run(run_id, thread_id=thread_id, status="running")
         try:
             _emit_agent_core_startup_ack()
-            clarification_resume_claim: dict[str, Any] = {}
-            if clarification and clarification.get("runId"):
-                resolve_resume_claim = getattr(
+            clarification_attempt_authority: dict[str, Any] = {}
+            if clarification:
+                if set(clarification) != {
+                    "sourceRunId",
+                    "resolutionId",
+                    "attemptRunId",
+                    "answer",
+                    "selectedOptionId",
+                    "source",
+                    "retryAttempt",
+                } or not isinstance(clarification.get("retryAttempt"), bool):
+                    raise EvidenceIntegrityError(
+                        "clarification_attempt_envelope_invalid"
+                    )
+                source_run_id = str(
+                    clarification.get("sourceRunId") or ""
+                ).strip()
+                declared_attempt_run_id = str(
+                    clarification.get("attemptRunId") or ""
+                ).strip()
+                if (
+                    not source_run_id
+                    or declared_attempt_run_id != run_id
+                    or not str(clarification.get("resolutionId") or "").strip()
+                    or not str(clarification.get("answer") or "").strip()
+                    or str(clarification.get("answer") or "").strip()
+                    != user_message.strip()
+                    or clarification.get("source") != "user"
+                    or (
+                        clarification.get("selectedOptionId") is not None
+                        and not str(
+                            clarification.get("selectedOptionId") or ""
+                        ).strip()
+                    )
+                ):
+                    raise EvidenceIntegrityError(
+                        "clarification_attempt_envelope_invalid"
+                    )
+                resolve_attempt_authority = getattr(
                     self.store,
-                    "resolve_clarification_resume_claim",
+                    "resolve_clarification_attempt_authority",
                     None,
                 )
-                if not callable(resolve_resume_claim):
+                if not callable(resolve_attempt_authority):
                     raise EvidenceIntegrityError(
-                        "clarification_resume_claim_resolver_missing"
+                        "clarification_attempt_authority_resolver_missing"
                     )
-                clarification_resume_claim = dict(
-                    resolve_resume_claim(
-                        source_run_id=str(clarification["runId"]),
-                        resumed_run_id=run_id,
+                clarification_attempt_authority = dict(
+                    resolve_attempt_authority(
+                        source_run_id=source_run_id,
+                        attempt_run_id=run_id,
                         thread_id=thread_id,
+                        owner_id=str(thread.owner_id or ""),
                         answer=str(
                             clarification.get("answer") or user_message
                         ).strip(),
@@ -218,6 +212,53 @@ class ConversationAgentCore:
                         source=str(clarification.get("source") or "user"),
                     )
                 )
+                if (
+                    str(clarification.get("resolutionId") or "")
+                    != str(
+                        clarification_attempt_authority.get(
+                            "resolution_id"
+                        )
+                        or ""
+                    )
+                    or clarification.get("retryAttempt")
+                    != bool(
+                        clarification_attempt_authority.get(
+                            "retry_attempt"
+                        )
+                    )
+                ):
+                    raise EvidenceIntegrityError(
+                        "clarification_attempt_envelope_conflict"
+                    )
+                if clarification_attempt_authority.get("retry_attempt"):
+                    self.store.add_audit_event(
+                        "clarification_resolution_reused",
+                        thread_id=thread_id,
+                        topic_id=str(
+                            clarification_attempt_authority.get("topic_id")
+                            or ""
+                        ),
+                        run_id=run_id,
+                        ref=str(
+                            clarification_attempt_authority.get(
+                                "resolution_id"
+                            )
+                            or ""
+                        ),
+                        payload={
+                            "source_run_id": source_run_id,
+                            "previous_attempt_run_id": (
+                                clarification_attempt_authority.get(
+                                    "previous_attempt_run_id"
+                                )
+                            ),
+                            "attempt_number": (
+                                clarification_attempt_authority.get(
+                                    "attempt_number"
+                                )
+                            ),
+                        },
+                    )
             if clarification:
                 self.store.add_audit_event(
                     "clarification_answer_submitted",
@@ -232,11 +273,12 @@ class ConversationAgentCore:
             ).handle_message(
                 thread_id,
                 user_message,
-                role=role,
                 run_id=run_id,
                 prior_analysis_assets=tuple(prior_analysis_assets or ()),
                 analysis_context=analysis_context,
-                clarification_resume_claim=clarification_resume_claim,
+                clarification_attempt_authority=(
+                    clarification_attempt_authority
+                ),
             )
         except Exception as exc:
             failure_reason = _conversation_entry_failure_reason(exc)
@@ -269,8 +311,6 @@ class ConversationAgentCore:
                     "intent": turn.turn_intent.intent,
                     "clarification": clarification_payload,
                     "clarification_answer": clarification,
-                    "user_id": user_id,
-                    "permission_context": permission_context,
                     "clarification_source_envelope": (
                         _build_clarification_source_envelope(
                             source_run_id=run_id,
@@ -328,20 +368,20 @@ class ConversationAgentCore:
             }
 
         request = turn.run_request.to_dict()
-        resume_context = request.get("clarification_resume_context") or {}
+        attempt_context = request.get("clarification_attempt_context") or {}
         clarification_choice = _clarification_choice_from_answer(
             user_message,
             turn.turn_intent.intent,
             explicit_choice=clarification,
             selected_material_action=(
-                resume_context.get("selected_material_action") or {}
+                attempt_context.get("selected_material_action") or {}
             ),
         )
         request["context_manifest"] = context_manifest
         request["reuse_decisions"] = [decision.to_dict() for decision in turn.reuse_decisions]
         original_question = ""
-        if resume_context:
-            raw_original_question = resume_context.get("question")
+        if attempt_context:
+            raw_original_question = attempt_context.get("question")
             if (
                 not isinstance(raw_original_question, str)
                 or not raw_original_question
@@ -354,14 +394,10 @@ class ConversationAgentCore:
         request.update(
             {
                 "run_id": run_id,
-                "question": original_question if resume_context else user_message,
+                "question": original_question if attempt_context else user_message,
                 "clarification_user_message": (
-                    user_message if resume_context else ""
+                    user_message if attempt_context else ""
                 ),
-                "role": role,
-                "runtime_permission_scope": runtime_permission_scope,
-                "user_id": user_id,
-                "permission_context": permission_context,
                 "artifact_root": artifact_root,
                 "clarification_answer": clarification,
                 "prior_analysis_assets": tuple(turn.run_request.prior_analysis_assets or ()),
@@ -371,7 +407,7 @@ class ConversationAgentCore:
         if clarification_choice:
             request["clarification_choice"] = clarification_choice
         accepted_degradation_choice = dict(
-            resume_context.get("accepted_degradation_choice") or {}
+            attempt_context.get("accepted_degradation_choice") or {}
         )
         if not accepted_degradation_choice:
             accepted_degradation_choice = dict(
@@ -385,108 +421,7 @@ class ConversationAgentCore:
                 )
             )
         if accepted_degradation_choice:
-            action_kind = str(
-                accepted_degradation_choice.get("action_kind") or ""
-            )
-            if action_kind in {
-                "omit_unavailable_context",
-                "continue_with_boundary_only",
-            }:
-                accepted_degradation_choice = (
-                    _authority_closed_degradation_choice(
-                        accepted_degradation_choice,
-                        {
-                            "analysis_contract": resume_context.get(
-                                "analysis_contract"
-                            )
-                        },
-                        self.runtime_registry,
-                    )
-                )
-                resume_context = {
-                    **dict(resume_context),
-                    "accepted_degradation_choice": (
-                        accepted_degradation_choice
-                    ),
-                }
-                request["clarification_resume_context"] = resume_context
             request["accepted_degradation_choice"] = accepted_degradation_choice
-            if action_kind in {
-                "omit_unavailable_context",
-                "continue_with_boundary_only",
-            }:
-                source_run_id = str(resume_context.get("resume_run_id") or "")
-                record_outcome = getattr(
-                    self.store, "record_clarification_outcome", None
-                )
-                resolve_authority = getattr(
-                    self.store, "resolve_clarification_resume_authority", None
-                )
-                try:
-                    if (
-                        not source_run_id
-                        or not callable(record_outcome)
-                        or not callable(resolve_authority)
-                    ):
-                        raise ValueError(
-                            "clarification_resume_authority_unavailable"
-                        )
-                    outcome_ref = record_outcome(
-                        source_run_id=source_run_id,
-                        thread_id=thread_id,
-                        topic_id=turn.topic_id or "",
-                        choice=accepted_degradation_choice,
-                    )
-                    authority = resolve_authority(
-                        source_run_id=source_run_id,
-                        thread_id=thread_id,
-                        topic_id=turn.topic_id or "",
-                        choice=accepted_degradation_choice,
-                        outcome_ref=outcome_ref,
-                    )
-                except Exception as exc:
-                    self.store.upsert_run(
-                        run_id,
-                        thread_id=thread_id,
-                        turn_id=turn.turn_id,
-                        topic_id=turn.topic_id or "",
-                        status="failed",
-                        request={
-                            **_persistable_request(request),
-                            "failure_reason": (
-                                "clarification_resume_authority_failed"
-                            ),
-                        },
-                    )
-                    self.store.add_audit_event(
-                        "clarification_resume_authority_failed",
-                        thread_id=thread_id,
-                        topic_id=turn.topic_id or "",
-                        run_id=run_id,
-                        ref=source_run_id,
-                        payload={
-                            "reason": str(exc),
-                            "error_type": type(exc).__name__,
-                        },
-                    )
-                    return {
-                        "status": "failed",
-                        "run_id": run_id,
-                        "turn_id": turn.turn_id,
-                        "topic_id": turn.topic_id,
-                        "failure_reason": (
-                            "clarification_resume_authority_failed"
-                        ),
-                    }
-                request["accepted_degradation_choice"] = accepted_degradation_choice
-                context_manifest = _manifest_with_accepted_choice(
-                    context_manifest,
-                    accepted_degradation_choice,
-                )
-                request["context_manifest"] = context_manifest
-                self.store.record_context_manifest(context_manifest)
-                request["accepted_terminal_gap_authority"] = authority
-                request["clarification_outcome_ref"] = outcome_ref
         if self.row_provider is not None:
             request["row_provider"] = self.row_provider
         if self.evidence_resolver is not None:
@@ -502,10 +437,12 @@ class ConversationAgentCore:
         if self.analysis_runtime is not None:
             request["analysis_runtime"] = self.analysis_runtime
             request["run_mode"] = "production"
-        selected_action = resume_context.get("selected_query_gap_action") or {}
+        selected_action = attempt_context.get("selected_query_gap_action") or {}
         action_kind = str(selected_action.get("action_kind") or "")
         if action_kind in {"wait_for_source", "user_redirect"}:
-            prior_clarification = dict(resume_context.get("clarification") or {})
+            prior_clarification = dict(
+                attempt_context.get("clarification") or {}
+            )
             clarification_source_envelope = _build_clarification_source_envelope(
                 source_run_id=run_id,
                 source_thread_id=thread_id,
@@ -513,11 +450,11 @@ class ConversationAgentCore:
                 source_owner_id=thread.owner_id,
                 question=str(request.get("question") or ""),
                 analysis_context=request.get("analysis_context") or {},
-                accepted_graph=resume_context.get("accepted_graph") or (),
-                analysis_contract=resume_context.get("analysis_contract") or {},
-                analysis_route=resume_context.get("analysis_route") or {},
-                original_intent=resume_context.get("original_intent") or {},
-                material_slots=resume_context.get("material_slots") or {},
+                accepted_graph=attempt_context.get("accepted_graph") or (),
+                analysis_contract=attempt_context.get("analysis_contract") or {},
+                analysis_route=attempt_context.get("analysis_route") or {},
+                original_intent=attempt_context.get("original_intent") or {},
+                material_slots=attempt_context.get("material_slots") or {},
                 clarification=prior_clarification,
             )
             if action_kind == "wait_for_source":
@@ -1221,7 +1158,6 @@ class ConversationAgentCore:
                 or _manifest_with_current_run_evidence(
                     context_manifest,
                     package,
-                    role,
                 )
             )
             if turn.topic_id and hasattr(self.store, "save_analysis_assets"):
@@ -1947,8 +1883,7 @@ def _publish_result_reuse_candidates(
         _authority_mapping(context_manifest.get("contract_versions")).get("runtime")
         or ""
     )
-    permission_scope = str(analysis.get("permission_scope") or "")
-    if not runtime_snapshot_id or not runtime_contract_version or not permission_scope:
+    if not runtime_snapshot_id or not runtime_contract_version:
         return ()
 
     query_records = {
@@ -2094,18 +2029,12 @@ def _publish_result_reuse_candidates(
             ):
                 valid_snapshots = False
                 break
-            if permission_scope not in tuple(
-                str(scope)
-                for scope in snapshot_payload.get("permission_scopes") or ()
-            ):
-                valid_snapshots = False
-                break
             snapshots.append(snapshot_payload)
         if not valid_snapshots:
             continue
         candidate = sign_result_reuse_candidate(
             {
-                "schema_version": "result-reuse-candidate.v1",
+                "schema_version": "result-reuse-candidate.v2",
                 "source_run_id": run_id,
                 "result_ref": result_ref,
                 "query_contract_ref": str(
@@ -2138,7 +2067,6 @@ def _publish_result_reuse_candidates(
                 "source_schema_fingerprints": [
                     str(snapshot["schema_fingerprint"]) for snapshot in snapshots
                 ],
-                "permission_scope": permission_scope,
                 "semantic_scope_signature": semantic_scope_signature,
                 "rows_ref": rows_ref,
                 "rows_record_ref": str(
@@ -2176,7 +2104,6 @@ def _publish_result_reuse_candidates(
             result_ref=result_ref,
             snapshot_id=runtime_snapshot_id,
             contract_version=runtime_contract_version,
-            permission_scope=permission_scope,
             semantic_scope=semantic_scope_signature,
             payload=candidate,
         )
@@ -2428,95 +2355,6 @@ def _looks_like_daily_outlier_removal_choice(text: str) -> bool:
     )
 
 
-def _authority_closed_degradation_choice(
-    choice: Mapping[str, Any],
-    authority: Mapping[str, Any],
-    registry: RuntimeContractRegistry | None,
-) -> dict[str, Any]:
-    action_kind = str(choice.get("action_kind") or "")
-    if action_kind not in {
-        "omit_unavailable_context",
-        "continue_with_boundary_only",
-    }:
-        return dict(choice)
-    source = authority.get("analysis_contract")
-    if not isinstance(source, Mapping):
-        return dict(choice)
-    try:
-        contract_payload = dict(source)
-        stored_signature = str(
-            contract_payload.pop("contract_signature", "") or ""
-        )
-        contract = analysis_contract_from_dict(contract_payload)
-        if stored_signature and stored_signature != analysis_contract_signature(
-            contract
-        ):
-            return dict(choice)
-    except (KeyError, TypeError, ValueError):
-        return dict(choice)
-    registry = registry or RuntimeContractRegistry.from_path(
-        CANONICAL_RUNTIME_BINDINGS_PATH
-    )
-    target_metrics = tuple(
-        dict.fromkeys(binding.metric_id for binding in contract.metric_bindings)
-    ) or tuple(
-        metric
-        for metric in contract.target_metric_refs
-        if metric in registry.metric_ids
-    )
-    if not target_metrics:
-        return dict(choice)
-    resolution = resolve_analysis_obligations(
-        ObligationRequest(
-            question_families=contract.question_families,
-            diagnostic_tags=(),
-            target_metrics=target_metrics,
-            requested_dimensions=tuple(
-                binding.dimension_id for binding in contract.dimension_bindings
-            ),
-            baselines=tuple(
-                window.window_id
-                for window in contract.resolved_windows
-                if window.role != "target"
-            ),
-            context_sources=(),
-            claim_intents=contract.claim_intents,
-        ),
-        registry,
-    )
-    obligation_capabilities = set(
-        (
-            *resolution.required_capabilities,
-            *resolution.conditional_capabilities,
-            *resolution.independent_capabilities,
-        )
-    )
-    obligation_capabilities.update(contract.capability_requirements)
-    nonready = {
-        capability
-        for gap in contract.contract_gaps
-        for capability in gap.affected_capabilities
-        if capability in obligation_capabilities
-    }
-    affected = [
-        capability
-        for capability in contract.capability_requirements
-        if capability in nonready
-    ]
-    if not affected:
-        return dict(choice)
-    return {**dict(choice), "affected_capabilities": affected}
-
-
-def _manifest_with_accepted_choice(
-    manifest: Mapping[str, Any],
-    choice: Mapping[str, Any],
-) -> dict[str, Any]:
-    updated = dict(manifest)
-    updated["accepted_assumptions"] = [dict(choice)]
-    return _derived_context_manifest(manifest, updated)
-
-
 def _derived_context_manifest(
     parent: Mapping[str, Any],
     updated: Mapping[str, Any],
@@ -2548,7 +2386,6 @@ def _derived_context_manifest(
 def _manifest_with_current_run_evidence(
     manifest: dict[str, Any],
     package: dict[str, Any],
-    role: str,
 ) -> dict[str, Any]:
     refs = _claim_evidence_refs(package)
     if not refs:
@@ -2566,9 +2403,7 @@ def _manifest_with_current_run_evidence(
                 "source_ref": ref,
                 "summary": "本轮 workflow 产出的可审计证据引用。",
                 "can_support_claims": True,
-                "visibility": role,
                 "reason": "current_run_evidence",
-                "permission_scope": role,
                 "source_version": snapshot,
                 "expired": False,
                 "claim_use": "evidence",
@@ -2618,12 +2453,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--thread-id", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--message", required=True)
-    parser.add_argument("--role", default="analyst")
-    parser.add_argument("--runtime-permission-scope")
+    parser.add_argument("--user-id", required=True)
     parser.add_argument("--artifact-root", default="artifacts/phase-7")
     parser.add_argument("--clarification")
-    parser.add_argument("--clarification-dispatch-source-run-id")
-    parser.add_argument("--clarification-dispatch-owner-id")
     parser.add_argument("--dispatch-owner-id")
     parser.add_argument("--dispatch-lease-epoch", type=int)
     parser.add_argument("--prior-analysis-assets")
@@ -2631,20 +2463,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
     clarification = json.loads(args.clarification) if args.clarification else None
     prior_analysis_assets = _parse_prior_analysis_assets(args.prior_analysis_assets)
-    if bool(args.clarification_dispatch_source_run_id) != bool(
-        args.clarification_dispatch_owner_id
-    ):
-        parser.error(
-            "clarification dispatch source run id and owner id must be provided together"
-        )
-    clarification_dispatch = (
-        {
-            "source_run_id": args.clarification_dispatch_source_run_id,
-            "dispatch_owner_id": args.clarification_dispatch_owner_id,
-        }
-        if args.clarification_dispatch_source_run_id
-        else None
-    )
     if bool(args.dispatch_owner_id) != bool(args.dispatch_lease_epoch):
         parser.error(
             "dispatch owner id and positive lease epoch must be provided together"
@@ -2663,11 +2481,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         thread_id=args.thread_id,
         run_id=args.run_id,
         user_message=args.message,
-        role=args.role,
-        runtime_permission_scope=args.runtime_permission_scope,
+        user_id=args.user_id,
         artifact_root=args.artifact_root,
         clarification=clarification,
-        clarification_dispatch=clarification_dispatch,
         run_dispatch=run_dispatch,
         prior_analysis_assets=prior_analysis_assets,
         analysis_context={"as_of": args.as_of} if args.as_of else None,

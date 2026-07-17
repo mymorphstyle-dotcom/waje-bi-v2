@@ -22,6 +22,7 @@ TERMINAL_RUN_STATUSES = frozenset(
 )
 DEFAULT_TIMEOUT_SECONDS = 900.0
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
+AUTHENTICATED_USER_HEADER = "x-waje-authenticated-user-id"
 
 
 def _json_request(
@@ -30,10 +31,14 @@ def _json_request(
     *,
     method: str = "GET",
     payload: dict[str, Any] | None = None,
+    user_id: str,
     request_identity: str | None = None,
 ) -> dict[str, Any]:
     body = None if payload is None else json.dumps(payload).encode("utf-8")
-    headers = {"Accept": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        AUTHENTICATED_USER_HEADER: user_id,
+    }
     if body is not None:
         headers["Content-Type"] = "application/json"
     if request_identity:
@@ -60,12 +65,20 @@ def _json_request(
     return parsed
 
 
-def _events(base_url: str, events_url: Any) -> list[dict[str, Any]]:
+def _events(
+    base_url: str,
+    events_url: Any,
+    *,
+    user_id: str,
+) -> list[dict[str, Any]]:
     if not isinstance(events_url, str) or not events_url:
         return []
     request = Request(
         urljoin(base_url.rstrip("/") + "/", events_url.lstrip("/")),
-        headers={"Accept": "text/event-stream"},
+        headers={
+            "Accept": "text/event-stream",
+            AUTHENTICATED_USER_HEADER: user_id,
+        },
         method="GET",
     )
     try:
@@ -91,7 +104,7 @@ def _gateway_run_id(response: dict[str, Any]) -> str:
     run = response.get("run")
     if isinstance(run, dict):
         candidates.append(run.get("id"))
-    candidates.append(response.get("resumedRunId"))
+    candidates.append(response.get("attemptRunId"))
     agent_core = response.get("agentCore")
     if isinstance(agent_core, dict):
         result = agent_core.get("result")
@@ -136,6 +149,7 @@ def _event_identity(event: dict[str, Any]) -> str:
 def _poll_run_events(
     *,
     base_url: str,
+    user_id: str,
     run_id: str,
     events_url: str,
     timeout_seconds: float,
@@ -146,7 +160,7 @@ def _poll_run_events(
     terminal_status = ""
     poll_attempts = 0
     while True:
-        snapshot = _events(base_url, events_url)
+        snapshot = _events(base_url, events_url, user_id=user_id)
         poll_attempts += 1
         for event in snapshot:
             observed.setdefault(_event_identity(event), event)
@@ -180,6 +194,7 @@ def _poll_run_events(
 def _observe_gateway_response(
     *,
     base_url: str,
+    user_id: str,
     response: dict[str, Any],
     timeout_seconds: float,
     poll_interval_seconds: float,
@@ -190,6 +205,7 @@ def _observe_gateway_response(
         events_url = f"/api/runs/{run_id}/events"
     return _poll_run_events(
         base_url=base_url,
+        user_id=user_id,
         run_id=run_id,
         events_url=events_url,
         timeout_seconds=timeout_seconds,
@@ -197,12 +213,12 @@ def _observe_gateway_response(
     )
 
 
-def _create_thread(base_url: str, owner_id: str) -> str:
+def _create_thread(base_url: str, user_id: str) -> str:
     response = _json_request(
         base_url,
         "/api/threads",
         method="POST",
-        payload={"ownerId": owner_id},
+        user_id=user_id,
     )
     thread = response.get("thread")
     if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
@@ -213,6 +229,7 @@ def _create_thread(base_url: str, owner_id: str) -> str:
 def _run_first_turn(
     *,
     base_url: str,
+    user_id: str,
     thread_id: str,
     question: str,
     request_identity: str,
@@ -224,10 +241,12 @@ def _run_first_turn(
         f"/api/threads/{thread_id}/messages",
         method="POST",
         payload={"message": question},
+        user_id=user_id,
         request_identity=request_identity,
     )
     observation = _observe_gateway_response(
         base_url=base_url,
+        user_id=user_id,
         response=response,
         timeout_seconds=timeout_seconds,
         poll_interval_seconds=poll_interval_seconds,
@@ -240,9 +259,10 @@ def _run_first_turn(
     }
 
 
-def _resume_clarification(
+def _submit_clarification_resolution(
     *,
     base_url: str,
+    user_id: str,
     run_id: str,
     answer: str,
     selected_option_id: str | None,
@@ -258,17 +278,51 @@ def _resume_clarification(
         f"/api/runs/{run_id}/clarifications",
         method="POST",
         payload=payload,
+        user_id=user_id,
         request_identity=request_identity,
     )
     observation = _observe_gateway_response(
         base_url=base_url,
+        user_id=user_id,
         response=response,
         timeout_seconds=timeout_seconds,
         poll_interval_seconds=poll_interval_seconds,
     )
     return {
-        "operation": "clarification_resume",
+        "operation": "clarification_resolution",
         "source_run_id": run_id,
+        "gateway_response": response,
+        **observation,
+    }
+
+
+def _retry_clarification_attempt(
+    *,
+    base_url: str,
+    user_id: str,
+    failed_run_id: str,
+    request_identity: str,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> dict[str, Any]:
+    response = _json_request(
+        base_url,
+        f"/api/runs/{failed_run_id}/retry",
+        method="POST",
+        payload={},
+        user_id=user_id,
+        request_identity=request_identity,
+    )
+    observation = _observe_gateway_response(
+        base_url=base_url,
+        user_id=user_id,
+        response=response,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+    return {
+        "operation": "clarification_retry",
+        "previous_attempt_run_id": failed_run_id,
         "gateway_response": response,
         **observation,
     }
@@ -277,12 +331,14 @@ def _resume_clarification(
 def _poll_existing_run(
     *,
     base_url: str,
+    user_id: str,
     run_id: str,
     timeout_seconds: float,
     poll_interval_seconds: float,
 ) -> dict[str, Any]:
     observation = _poll_run_events(
         base_url=base_url,
+        user_id=user_id,
         run_id=run_id,
         events_url=f"/api/runs/{run_id}/events",
         timeout_seconds=timeout_seconds,
@@ -300,12 +356,17 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:3000")
-    parser.add_argument("--owner-id", default="human-led-test")
+    parser.add_argument("--user-id", default="human-led-test")
     parser.add_argument("--thread-id")
     parser.add_argument("--question")
     parser.add_argument("--run-id")
     parser.add_argument("--clarification-answer")
     parser.add_argument("--selected-option-id")
+    parser.add_argument(
+        "--retry",
+        action="store_true",
+        help="Create a new execution attempt from one failed clarified run.",
+    )
     parser.add_argument(
         "--events-only",
         "--poll",
@@ -332,29 +393,41 @@ def main(argv: list[str] | None = None) -> int:
         and not args.run_id
         and not args.clarification_answer
         and not args.events_only
+        and not args.retry
     )
-    resume = bool(
+    clarification_resolution = bool(
         args.run_id
         and args.clarification_answer
+        and not args.events_only
+        and not args.retry
+    )
+    retry = bool(
+        args.run_id
+        and args.retry
+        and not args.clarification_answer
         and not args.events_only
     )
     events_only = bool(
         args.run_id
         and args.events_only
         and not args.clarification_answer
+        and not args.retry
     )
-    if sum((first_turn, resume, events_only)) != 1:
+    if sum((first_turn, clarification_resolution, retry, events_only)) != 1:
         parser.error(
             "provide exactly one operation: --question; "
             "--run-id with --clarification-answer; or "
+            "--run-id with --retry; or "
             "--run-id with --events-only"
         )
     if args.timeout_seconds <= 0:
         parser.error("--timeout-seconds must be positive")
     if args.poll_interval_seconds <= 0:
         parser.error("--poll-interval-seconds must be positive")
-    if args.selected_option_id and not resume:
-        parser.error("--selected-option-id requires clarification resume")
+    if args.selected_option_id and not clarification_resolution:
+        parser.error("--selected-option-id requires a clarification answer")
+    if not args.user_id.strip():
+        parser.error("--user-id must be non-empty")
 
     request_identity = (
         ""
@@ -364,19 +437,21 @@ def main(argv: list[str] | None = None) -> int:
     if first_turn:
         thread_id = args.thread_id or _create_thread(
             args.base_url,
-            args.owner_id,
+            args.user_id,
         )
         output = _run_first_turn(
             base_url=args.base_url,
+            user_id=args.user_id,
             thread_id=thread_id,
             question=args.question,
             request_identity=request_identity,
             timeout_seconds=args.timeout_seconds,
             poll_interval_seconds=args.poll_interval_seconds,
         )
-    elif resume:
-        output = _resume_clarification(
+    elif clarification_resolution:
+        output = _submit_clarification_resolution(
             base_url=args.base_url,
+            user_id=args.user_id,
             run_id=args.run_id,
             answer=args.clarification_answer,
             selected_option_id=args.selected_option_id,
@@ -384,9 +459,19 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.timeout_seconds,
             poll_interval_seconds=args.poll_interval_seconds,
         )
+    elif retry:
+        output = _retry_clarification_attempt(
+            base_url=args.base_url,
+            user_id=args.user_id,
+            failed_run_id=args.run_id,
+            request_identity=request_identity,
+            timeout_seconds=args.timeout_seconds,
+            poll_interval_seconds=args.poll_interval_seconds,
+        )
     else:
         output = _poll_existing_run(
             base_url=args.base_url,
+            user_id=args.user_id,
             run_id=args.run_id,
             timeout_seconds=args.timeout_seconds,
             poll_interval_seconds=args.poll_interval_seconds,

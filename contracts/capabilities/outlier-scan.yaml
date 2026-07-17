@@ -5,7 +5,7 @@ review_status: draft
 
 responsibilities:
   - Identify abnormal periods, windows, segments, factor candidates, and exception scopes.
-  - Distinguish true anomalies from metric, contract, data-quality, timezone, or permission issues.
+  - Distinguish true anomalies from metric, contract, data-quality, timezone, source-access, or fixed output-safety issues.
   - Produce candidate explanation paths for event evidence, segment bridge, joint attribution, or data-quality review.
 
 parameters:
@@ -50,7 +50,7 @@ evidence_outputs:
 
 limitations:
   - Strong anomaly wording needs reviewed metric, time, and materiality contracts.
-  - Segment outliers must pass permission and sparse-cell limits.
+  - Segment outliers must pass fixed restricted-output and sparse-cell limits.
   - External black-swan candidates stay contextual or candidate unless evidence supports more.
 
 degradation_rules:
@@ -58,8 +58,8 @@ degradation_rules:
     output: route to data_quality_check or degrade anomaly claim.
   - when: missing_external_event_contract
     output: contextual candidate only.
-  - when: sparse_or_permission_limited_segment
-    output: blocked or aggregate exception wording.
+  - when: sparse_or_restricted_output_segment
+    output: blocked restricted detail or aggregate exception wording.
 
 lint_rules:
   - rule_id: anomaly_definition_required

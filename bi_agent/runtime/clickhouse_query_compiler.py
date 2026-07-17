@@ -212,7 +212,15 @@ def _compile_clickhouse_query_with_registry(
             parameters=parameters,
         )
 
-    settings = {"result_overflow_mode": "throw", "readonly": 2}
+    settings = {
+        "result_overflow_mode": "throw",
+        "readonly": 2,
+        # Metric contracts describe physical source columns.  Prefer those
+        # columns when an output metric alias has the same name, otherwise
+        # ClickHouse can substitute the alias inside a sibling aggregate and
+        # turn a valid derived ratio into a nested aggregate.
+        "prefer_column_name_to_alias": 1,
+    }
     if contract.result_shape.result_semantics == "complete_context_rows":
         reviewed_shape = registry.query_shape(contract.query_intent)
         max_context_rows = reviewed_shape.get("max_context_rows")
@@ -297,7 +305,6 @@ def _compile_grouped_query(
     if not metrics and contract.query_intent not in {
         "event_context_probe",
         "data_quality_probe",
-        "gameplay_activity_probe",
     }:
         raise ValueError(f"query_contract_metrics_required:{contract.query_intent}")
 
@@ -569,7 +576,6 @@ def _validate_runtime_types(
         "query_contract_id",
         "analysis_contract_ref",
         "query_intent",
-        "permission_scope",
         "workload_class",
         "contract_signature",
     ):
@@ -721,7 +727,6 @@ def _validate_dimension_binding_types(binding: DimensionBinding) -> None:
         "dataset_id",
         "source_field",
         "null_bucket",
-        "permission_scope",
     ):
         _require_runtime_string(
             getattr(binding, field_name),
@@ -759,6 +764,10 @@ def _validate_window_types(window: ResolvedWindow) -> None:
             "invalid_query_contract_runtime_type:"
             "resolved_windows.required_complete_days"
         )
+    _require_runtime_string_tuple(
+        window.capability_refs,
+        "resolved_windows.capability_refs",
+    )
 
 
 def _validate_result_shape_types(result_shape: ResultShape) -> None:
@@ -818,11 +827,10 @@ def _validate_snapshot_types(snapshot: DatasetSnapshot) -> None:
             "rows_content_hash",
         }:
             raise ValueError(f"invalid_snapshot_metadata:{field_name}")
-    for value in (snapshot.schema_fields, snapshot.permission_scopes):
-        if not isinstance(value, tuple) or any(
-            not isinstance(item, str) for item in value
-        ):
-            raise TypeError("invalid_snapshot_runtime_type")
+    if not isinstance(snapshot.schema_fields, tuple) or any(
+        not isinstance(item, str) for item in snapshot.schema_fields
+    ):
+        raise TypeError("invalid_snapshot_runtime_type")
     try:
         date.fromisoformat(snapshot.watermark)
     except ValueError as exc:
@@ -919,7 +927,8 @@ def _single_snapshot(
     if snapshot.evidence_state != "claim_ready" and contract.query_intent not in {
         "data_quality_probe",
         "event_context_probe",
-        "gameplay_activity_probe",
+        "association_outcome_timeseries",
+        "association_candidate_timeseries",
         "channel_context_probe",
         "source_reconciliation_probe",
     }:
@@ -930,7 +939,8 @@ def _single_snapshot(
         contract.dimension_bindings
         and contract.query_intent not in {
             "data_quality_probe",
-            "gameplay_activity_probe",
+            "association_outcome_timeseries",
+            "association_candidate_timeseries",
             "channel_context_probe",
             "source_reconciliation_probe",
         }
@@ -941,8 +951,6 @@ def _single_snapshot(
             "dataset_reconciliation_not_matched:"
             f"{snapshot_ref}:{snapshot.reconciliation_status}"
         )
-    if contract.permission_scope not in snapshot.permission_scopes:
-        raise PermissionError(f"dataset_snapshot_permission_denied:{snapshot_ref}")
     for binding in (*contract.metric_bindings, *contract.dimension_bindings):
         if binding.dataset_id != snapshot.dataset_id:
             raise ValueError(
@@ -1353,7 +1361,6 @@ def _verify_reviewed_bindings(
             source_field=str(reviewed.get("source_field") or ""),
             allowed_grains=_string_tuple(reviewed.get("allowed_grains")),
             null_bucket=str(reviewed.get("null_bucket") or "Unknown"),
-            permission_scope=contract.permission_scope,
         )
         if binding != expected:
             raise ValueError(

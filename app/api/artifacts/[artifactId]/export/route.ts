@@ -1,18 +1,16 @@
-import { jsonError, readArtifactForRole } from "../../../_conversationStore";
+import { jsonError, readArtifact } from "../../../_conversationStore";
+import { resolveCustomerActor } from "../../../_customerActor";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ artifactId: string }> };
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(request: Request, context: RouteContext) {
   const { artifactId } = await context.params;
   try {
-    const artifact = await readArtifactForRole(
-      artifactId,
-      process.env.WAJE_GATEWAY_ROLE || "analyst",
-      "export",
-    );
+    const actorId = resolveCustomerActor(request);
+    const artifact = await readArtifact(artifactId, actorId, "export");
     return new Response(markdownForArtifact(artifact), {
       headers: {
         "content-type": "text/markdown; charset=utf-8",
@@ -24,12 +22,12 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 }
 
-function markdownForArtifact(artifact: Awaited<ReturnType<typeof readArtifactForRole>>) {
+function markdownForArtifact(artifact: Awaited<ReturnType<typeof readArtifact>>) {
   const summary = sectionPayload(artifact.answerPackage, "summary");
   const title = String(summary.final_business_summary ? "业务分析结果" : artifact.id);
   const answer = String(summary.final_business_summary || summary.answer_text || "");
-  const notice = artifact.hiddenSectionCount > 0 ? "\n\n> 部分细分结果因权限不可见。\n" : "";
-  return [`# ${title}`, "", answer || "当前权限下没有可导出的业务摘要。", notice].join("\n").trim() + "\n";
+  const notice = artifact.hiddenSectionCount > 0 ? "\n\n> 内部运维与审计信息未包含在导出结果中。\n" : "";
+  return [`# ${title}`, "", answer || "当前没有可导出的业务摘要。", notice].join("\n").trim() + "\n";
 }
 
 function sectionPayload(answerPackage: Record<string, unknown>, sectionId: string) {

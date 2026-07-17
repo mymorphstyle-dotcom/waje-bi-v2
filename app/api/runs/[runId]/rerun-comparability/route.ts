@@ -1,4 +1,5 @@
 import { jsonError, runRerunComparability } from "../../../_conversationStore";
+import { resolveCustomerActor } from "../../../_customerActor";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,7 +11,8 @@ export async function GET(request: Request, context: RouteContext) {
   const candidateRunId = new URL(request.url).searchParams.get("candidateRunId");
   if (!candidateRunId) return Response.json({ error: "candidateRunId_required" }, { status: 400 });
   try {
-    return Response.json(await runRerunComparability(runId, candidateRunId));
+    const actorId = resolveCustomerActor(request);
+    return Response.json(await runRerunComparability(runId, candidateRunId, actorId));
   } catch (error) {
     return jsonError(error);
   }

@@ -85,7 +85,7 @@ def joint_attribution(
         )
         return make_evidence_envelope(
             "joint_attribution",
-            evidence_type="permission_limited",
+            evidence_type="insufficient",
             strength="insufficient",
             wording_limit="blocked",
             typed_payload={
@@ -101,7 +101,7 @@ def joint_attribution(
     if skipped_sparse and not safe_rows:
         return make_evidence_envelope(
             "joint_attribution",
-            evidence_type="permission_limited",
+            evidence_type="insufficient",
             strength="insufficient",
             wording_limit="blocked",
             typed_payload={

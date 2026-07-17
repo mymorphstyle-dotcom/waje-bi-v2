@@ -17,9 +17,11 @@ _SAMPLE_SIZE_KEYS = (
     "paid_users",
 )
 _UNKNOWN_VALUES = frozenset(("", "unknown", "null", "none", "n/a"))
-_LOCALIZABLE_FACTORS = frozenset(
-    {"paid_users", "paid_frequency", "avg_order_amount"}
-)
+_LOCALIZABLE_FACTORS = frozenset({"paid_users", "paid_frequency", "avg_order_amount"})
+_MIN_DIMENSION_DIFFERENTIATION = 0.01
+_MIN_EXCESS_CHANGE_RATIO = 0.05
+_NEAR_CONSTANT_DOMINANT_SHARE = 0.98
+_NEAR_CONSTANT_MAX_SHARE_SHIFT = 0.01
 
 
 def candidate_dimension_screen(
@@ -78,6 +80,7 @@ def candidate_dimension_screen(
         )
         for dimension, rows in rows_by_dimension.items()
     )
+    _annotate_hierarchy_depths(profiles)
     labels = {
         dimension: str(value.get("business_name") or dimension)
         for dimension, value in metadata.items()
@@ -108,23 +111,40 @@ def candidate_dimension_screen(
                         "global_primary_factor": primary_factor,
                         "leading_value": profile["leading_value"],
                         "leading_direction": profile["leading_direction"],
-                        "leading_absolute_delta": profile[
-                            "leading_absolute_delta"
+                        "leading_absolute_delta": profile["leading_absolute_delta"],
+                        "leading_excess_value": profile["leading_excess_value"],
+                        "leading_absolute_excess_delta": profile[
+                            "leading_absolute_excess_delta"
+                        ],
+                        "excess_movement": profile["excess_movement"],
+                        "excess_change_ratio": profile["excess_change_ratio"],
+                        "dimension_differentiation_score": profile[
+                            "dimension_differentiation_score"
                         ],
                         "primary_factor_alignment_coverage": profile[
                             "primary_factor_alignment_coverage"
                         ],
+                        "primary_factor_alignment_score": profile[
+                            "primary_factor_alignment_score"
+                        ],
+                        "diagnostic_priority_components": profile[
+                            "diagnostic_priority_components"
+                        ],
                         "hierarchy_id": profile["hierarchy_id"],
                         "hierarchy_level": profile["hierarchy_level"],
                         "parent_dimension": profile["parent_dimension"],
+                        "hierarchy_depth": profile["hierarchy_depth"],
                     }
                     for profile in profiles
-                    if profile["candidate_eligible"]
+                    if profile["business_readout_eligible"]
                 ),
                 key=lambda item: (
                     item["diagnostic_priority_score"],
+                    item["excess_change_ratio"],
+                    item["dimension_differentiation_score"],
                     item["primary_factor_alignment_coverage"],
-                    item["leading_absolute_delta"],
+                    item["hierarchy_depth"],
+                    item["leading_absolute_excess_delta"],
                     item["dimension"],
                 ),
                 reverse=True,
@@ -133,6 +153,9 @@ def candidate_dimension_screen(
         )
     )
     eligible = tuple(item["dimension"] for item in diagnostic_priorities)
+    coverage_ready = tuple(
+        profile["dimension"] for profile in profiles if profile["candidate_eligible"]
+    )
     selected_candidate = diagnostic_priorities[0] if diagnostic_priorities else None
     selected_profile = next(
         (
@@ -143,21 +166,56 @@ def candidate_dimension_screen(
         ),
         None,
     )
-    selected_segment = None
-    if selected_profile is not None:
-        selected_segment = max(
-            selected_profile["primary_factor_segments"]
-            or (
-                *selected_profile["top_lifts"],
-                *selected_profile["top_drags"],
-            ),
-            key=lambda item: abs(item["delta"]),
-            default=None,
+    selected_segment = _selected_profile_segment(selected_profile)
+    hierarchy_diagnostics = _build_hierarchy_diagnostics(profiles)
+    selected_hierarchy_id = (
+        str(selected_candidate.get("hierarchy_id") or "") if selected_candidate else ""
+    )
+    if selected_hierarchy_id:
+        selected_hierarchy_profiles = _related_hierarchy_readout_profiles(
+            profiles,
+            selected_dimension=str(selected_candidate["dimension"]),
         )
+    elif selected_profile is not None:
+        selected_hierarchy_profiles = (selected_profile,)
+    else:
+        selected_hierarchy_profiles = ()
+    selected_hierarchy_dimensions = tuple(
+        profile["dimension"] for profile in selected_hierarchy_profiles
+    )
+    selected_business_readouts = tuple(
+        _profile_business_readout(
+            profile,
+            dimension_label=labels.get(profile["dimension"], profile["dimension"]),
+        )
+        for profile in selected_hierarchy_profiles
+        if _selected_profile_segment(profile) is not None
+    )
+    profiles_by_dimension = {
+        str(profile["dimension"]): profile for profile in profiles
+    }
+    selected_readout_dimensions = {
+        str(item["dimension"]) for item in selected_business_readouts
+    }
+    additional_business_readouts = tuple(
+        _profile_business_readout(
+            profiles_by_dimension[str(candidate["dimension"])],
+            dimension_label=str(candidate["dimension_label"]),
+        )
+        for candidate in diagnostic_priorities
+        if str(candidate["dimension"]) in profiles_by_dimension
+        and str(candidate["dimension"]) not in selected_readout_dimensions
+        and _selected_profile_segment(
+            profiles_by_dimension[str(candidate["dimension"])]
+        )
+        is not None
+    )
+    business_readouts = (
+        *selected_business_readouts,
+        *additional_business_readouts,
+    )
     limitation_values = {
-        limitation
-        for profile in profiles
-        for limitation in profile["limitations"]
+        limitation for profile in profiles for limitation in profile["limitations"]
     }
     if not overall_available:
         limitation_values.add("overall_reconciliation_unavailable")
@@ -169,52 +227,103 @@ def candidate_dimension_screen(
     if selected_segment is not None:
         numeric_facts.update(
             {
-                "paid_amount_baseline_value": selected_segment[
-                    "baseline_amount"
-                ],
-                "paid_amount_target_value": selected_segment[
-                    "target_amount"
-                ],
+                "paid_amount_baseline_value": selected_segment["baseline_amount"],
+                "paid_amount_target_value": selected_segment["target_amount"],
                 "paid_amount_delta": selected_segment["delta"],
             }
         )
         if selected_segment["baseline_amount"]:
-            numeric_facts["paid_amount_relative_change"] = (
-                selected_segment["delta"]
-                / abs(selected_segment["baseline_amount"])
-            )
+            numeric_facts["paid_amount_relative_change"] = selected_segment[
+                "delta"
+            ] / abs(selected_segment["baseline_amount"])
+    for readout in business_readouts:
+        prefix = str(readout["dimension"])
+        numeric_facts.update(
+            {
+                f"{prefix}_paid_amount_baseline_value": readout["baseline_amount"],
+                f"{prefix}_paid_amount_target_value": readout["target_amount"],
+                f"{prefix}_paid_amount_delta": readout["delta"],
+                f"{prefix}_paid_amount_excess_delta": readout["excess_delta"],
+            }
+        )
     selected_dimension = selected_candidate["dimension"] if selected_candidate else ""
     selected_label = selected_candidate["dimension_label"] if selected_candidate else ""
     selected_value = selected_segment["value"] if selected_segment else ""
-    business_readout = (
-        f"{selected_label}是当前优先排查维度，重点关注{selected_value}：目标期付费金额"
-        f"{selected_segment['target_amount']:,.2f}，基线期"
-        f"{selected_segment['baseline_amount']:,.2f}，变化"
-        f"{selected_segment['delta']:+,.2f}。该优先级用于定位，跨维度不可相加。"
-        if selected_segment is not None
-        else "当前候选维度没有形成通过对账和样本门槛的定位结果。"
-    )
+    if business_readouts:
+        label_groups = [
+            "→".join(
+                item["dimension_label"] for item in selected_business_readouts
+            )
+        ] if selected_business_readouts else []
+        label_groups.extend(
+            item["dimension_label"]
+            for item in business_readouts
+            if str(item["dimension"]) not in selected_readout_dimensions
+        )
+        path_label = "、".join(label_groups)
+        detail = "；".join(
+            item["business_readout"] for item in business_readouts
+        )
+        business_readout = (
+            f"当前有信息量的定位维度依次为{path_label}。{detail}。"
+            "这些结果用于定位，跨维度不可相加。"
+        )
+    else:
+        business_readout = (
+            "当前候选维度没有形成同时通过对账、样本、超额变化和区分度门槛的定位结果。"
+        )
     return make_evidence_envelope(
         "candidate_dimension_screen",
-        evidence_type="statistical_association" if eligible else "insufficient_evidence",
+        evidence_type="statistical_association"
+        if eligible
+        else "insufficient_evidence",
         strength="medium" if eligible else "low",
         wording_limit="candidate" if eligible else "insufficient",
         numeric_facts=numeric_facts,
         typed_payload={
             "analysis_role": "auxiliary_localization",
             "ranking_scope": "cross_dimension_diagnostic_priority",
-            "dimension_ranking_basis": "primary_factor_localization_concentration",
+            "dimension_ranking_basis": (
+                "excess_change_differentiation_primary_factor_alignment"
+            ),
             "global_primary_factor": primary_factor,
             "causal_claim_allowed": False,
             "formula_contribution_comparable": False,
             "cross_dimension_additivity_allowed": False,
             "within_dimension_amount_contribution_additive": True,
+            "excess_delta_additive_to_total_change": False,
+            "excess_delta_definition": (
+                "目标期实际金额减去按基线份额分配的目标期预期金额；"
+                "用于识别结构性超额变化，不作为因果贡献。"
+            ),
+            "business_readout_gate": {
+                "minimum_dimension_differentiation": _MIN_DIMENSION_DIFFERENTIATION,
+                "minimum_excess_change_ratio": _MIN_EXCESS_CHANGE_RATIO,
+                "near_constant_dominant_share": _NEAR_CONSTANT_DOMINANT_SHARE,
+                "near_constant_max_share_shift": _NEAR_CONSTANT_MAX_SHARE_SHIFT,
+            },
+            "coverage_ready_dimensions": coverage_ready,
             "eligible_dimensions": eligible,
             "diagnostic_priorities": diagnostic_priorities,
             "ranked_dimension_candidates": diagnostic_priorities,
             "selected_dimension": selected_dimension,
             "selected_dimension_label": selected_label,
             "selected_value": selected_value,
+            "selected_hierarchy_id": selected_hierarchy_id,
+            "selected_hierarchy_dimensions": selected_hierarchy_dimensions,
+            "selected_business_readouts": selected_business_readouts,
+            "business_readouts": business_readouts,
+            "dimension_findings": tuple(
+                {
+                    **readout,
+                    "finding_type": "hierarchical_localization",
+                    "dimension_id": readout["dimension"],
+                    "member": readout["value"],
+                    "evidence_state": "verified",
+                }
+                for readout in business_readouts
+            ),
+            "hierarchy_diagnostics": hierarchy_diagnostics,
             "business_readout": business_readout,
             "claim_boundary": (
                 "维度内部的分群金额变化可以对账；维度之间是重叠切片，"
@@ -300,33 +409,23 @@ def _dimension_profile(
         baseline_amount = float(baseline_cell["amount"])
         target_amount = float(target_cell["amount"])
         baseline_orders = (
-            float(baseline_cell["orders"])
-            if baseline_cell["orders_observed"]
-            else None
+            float(baseline_cell["orders"]) if baseline_cell["orders_observed"] else None
         )
         target_orders = (
-            float(target_cell["orders"])
-            if target_cell["orders_observed"]
-            else None
+            float(target_cell["orders"]) if target_cell["orders_observed"] else None
         )
         baseline_users = (
-            float(baseline_cell["users"])
-            if baseline_cell["users_observed"]
-            else None
+            float(baseline_cell["users"]) if baseline_cell["users_observed"] else None
         )
         target_users = (
-            float(target_cell["users"])
-            if target_cell["users_observed"]
-            else None
+            float(target_cell["users"]) if target_cell["users_observed"] else None
         )
         baseline_frequency = _safe_divide(baseline_orders, baseline_users)
         target_frequency = _safe_divide(target_orders, target_users)
         baseline_average = _safe_divide(baseline_amount, baseline_orders)
         target_average = _safe_divide(target_amount, target_orders)
         observed_samples = tuple(
-            sample
-            for cell in groups.values()
-            for sample in cell["samples"]
+            sample for cell in groups.values() for sample in cell["samples"]
         )
         sample_verified = bool(observed_samples)
         sample_eligible = sample_verified and min(observed_samples) >= min_sample_size
@@ -383,6 +482,31 @@ def _dimension_profile(
     )
     total_delta = observed_target - observed_baseline
     for item in contributions:
+        baseline_share = _safe_divide(
+            item["baseline_amount"],
+            observed_baseline,
+        )
+        target_share = _safe_divide(
+            item["target_amount"],
+            observed_target,
+        )
+        expected_target_at_baseline_mix = (
+            baseline_share * observed_target if baseline_share is not None else None
+        )
+        excess_delta = (
+            item["target_amount"] - expected_target_at_baseline_mix
+            if expected_target_at_baseline_mix is not None
+            else None
+        )
+        item["baseline_amount_share"] = baseline_share
+        item["target_amount_share"] = target_share
+        item["expected_target_amount_at_baseline_mix"] = expected_target_at_baseline_mix
+        item["expected_delta_at_baseline_mix"] = (
+            expected_target_at_baseline_mix - item["baseline_amount"]
+            if expected_target_at_baseline_mix is not None
+            else None
+        )
+        item["excess_delta"] = excess_delta
         item["amount_contribution_share"] = (
             item["delta"] / total_delta if total_delta else None
         )
@@ -434,9 +558,7 @@ def _dimension_profile(
         )
     )
     primary_factor_segments = all_primary_factor_segments[:top_k]
-    aligned_movement = sum(
-        abs(item["delta"]) for item in all_primary_factor_segments
-    )
+    aligned_movement = sum(abs(item["delta"]) for item in all_primary_factor_segments)
     alignment_coverage = (
         aligned_movement / absolute_movement if absolute_movement else 0.0
     )
@@ -445,8 +567,80 @@ def _dimension_profile(
         if leading is not None and absolute_movement
         else 0.0
     )
-    diagnostic_priority_score = leading_concentration * (
-        alignment_coverage if global_primary_factor else 1.0
+    excess_ranked = tuple(item for item in ranked if item["excess_delta"] is not None)
+    top_excess_lifts = tuple(
+        sorted(
+            (item for item in excess_ranked if item["excess_delta"] > 0),
+            key=lambda item: item["excess_delta"],
+            reverse=True,
+        )[:top_k]
+    )
+    top_excess_drags = tuple(
+        sorted(
+            (item for item in excess_ranked if item["excess_delta"] < 0),
+            key=lambda item: item["excess_delta"],
+        )[:top_k]
+    )
+    excess_movement = (
+        sum(abs(float(item["excess_delta"])) for item in excess_ranked) / 2.0
+    )
+    dimension_differentiation_score = (
+        sum(
+            abs(
+                float(item["target_amount_share"])
+                - float(item["baseline_amount_share"])
+            )
+            for item in excess_ranked
+            if item["target_amount_share"] is not None
+            and item["baseline_amount_share"] is not None
+        )
+        / 2.0
+    )
+    movement_reference = max(
+        abs(total_delta),
+        abs(observed_baseline) * reconciliation_tolerance,
+        abs(observed_target) * reconciliation_tolerance,
+        1e-12,
+    )
+    excess_change_ratio = min(1.0, excess_movement / movement_reference)
+    dominant_baseline_share = max(
+        (
+            float(item["baseline_amount_share"])
+            for item in excess_ranked
+            if item["baseline_amount_share"] is not None
+        ),
+        default=0.0,
+    )
+    dominant_target_share = max(
+        (
+            float(item["target_amount_share"])
+            for item in excess_ranked
+            if item["target_amount_share"] is not None
+        ),
+        default=0.0,
+    )
+    near_constant_dimension = (
+        bool(excess_ranked)
+        and dominant_baseline_share >= _NEAR_CONSTANT_DOMINANT_SHARE
+        and dominant_target_share >= _NEAR_CONSTANT_DOMINANT_SHARE
+        and dimension_differentiation_score <= _NEAR_CONSTANT_MAX_SHARE_SHIFT
+    )
+    alignment_score = alignment_coverage if global_primary_factor else 1.0
+    diagnostic_priority_score = (
+        0.45 * excess_change_ratio
+        + 0.35 * dimension_differentiation_score
+        + 0.20 * alignment_score
+    )
+    business_readout_eligible = (
+        candidate_eligible
+        and not near_constant_dimension
+        and dimension_differentiation_score >= _MIN_DIMENSION_DIFFERENTIATION
+        and excess_change_ratio >= _MIN_EXCESS_CHANGE_RATIO
+    )
+    leading_excess = max(
+        excess_ranked,
+        key=lambda item: abs(float(item["excess_delta"])),
+        default=None,
     )
     displayed_delta = sum(item["delta"] for item in (*top_lifts, *top_drags))
     limitations = []
@@ -460,17 +654,26 @@ def _dimension_profile(
         limitations.append(f"dimension_reconciliation_failed:{dimension}")
     if any(not item["sample_size_verified"] for item in contributions):
         limitations.append(f"sample_size_unverified:{dimension}")
-    if any(item["sample_size_verified"] and not item["sample_eligible"] for item in contributions):
+    if any(
+        item["sample_size_verified"] and not item["sample_eligible"]
+        for item in contributions
+    ):
         limitations.append(f"sparse_dimension_values:{dimension}")
     if reconciled and ranked and not has_movement:
         limitations.append(f"no_dimension_movement:{dimension}")
+    if candidate_eligible and near_constant_dimension:
+        limitations.append(f"near_constant_dimension:{dimension}")
+    if candidate_eligible and not business_readout_eligible:
+        limitations.append(f"low_dimension_information_value:{dimension}")
     if global_primary_factor and candidate_eligible and not all_primary_factor_segments:
         limitations.append(f"primary_factor_not_localized:{dimension}")
     profile_status = (
         "unavailable"
         if not complete or not rows
+        else "coverage_only"
+        if candidate_eligible and not business_readout_eligible
         else "ready"
-        if candidate_eligible
+        if business_readout_eligible
         and (not global_primary_factor or all_primary_factor_segments)
         else "degraded"
     )
@@ -479,6 +682,14 @@ def _dimension_profile(
         "profile_status": profile_status,
         "window_complete": complete,
         "candidate_eligible": candidate_eligible,
+        "business_readout_eligible": business_readout_eligible,
+        "selection_status": (
+            "business_readout_candidate"
+            if business_readout_eligible
+            else "internal_coverage_only"
+            if candidate_eligible
+            else "unavailable"
+        ),
         "reconciliation_status": (
             "not_checked" if not complete else "passed" if reconciled else "failed"
         ),
@@ -492,9 +703,7 @@ def _dimension_profile(
             else None
         ),
         "target_reconciliation_gap": (
-            observed_target - target_overall
-            if target_overall is not None
-            else None
+            observed_target - target_overall if target_overall is not None else None
         ),
         "total_delta": total_delta,
         "absolute_movement": absolute_movement,
@@ -502,19 +711,45 @@ def _dimension_profile(
         "leading_direction": (
             "lift"
             if leading and leading["delta"] > 0
-            else "drag" if leading and leading["delta"] < 0 else "flat"
+            else "drag"
+            if leading and leading["delta"] < 0
+            else "flat"
         ),
         "leading_absolute_delta": abs(leading["delta"]) if leading else 0.0,
         "leading_movement_concentration": leading_concentration,
+        "leading_excess_value": leading_excess["value"] if leading_excess else "",
+        "leading_excess_direction": (
+            "lift"
+            if leading_excess and leading_excess["excess_delta"] > 0
+            else "drag"
+            if leading_excess and leading_excess["excess_delta"] < 0
+            else "flat"
+        ),
+        "leading_absolute_excess_delta": (
+            abs(float(leading_excess["excess_delta"])) if leading_excess else 0.0
+        ),
+        "top_excess_lifts": top_excess_lifts,
+        "top_excess_drags": top_excess_drags,
+        "excess_movement": excess_movement,
+        "excess_change_ratio": excess_change_ratio,
+        "dimension_differentiation_score": dimension_differentiation_score,
+        "dominant_baseline_share": dominant_baseline_share,
+        "dominant_target_share": dominant_target_share,
+        "near_constant_dimension": near_constant_dimension,
         "global_primary_factor": global_primary_factor,
         "primary_factor_segments": primary_factor_segments,
         "primary_factor_alignment_coverage": alignment_coverage,
+        "primary_factor_alignment_score": alignment_score,
         "diagnostic_priority_score": diagnostic_priority_score,
+        "diagnostic_priority_components": {
+            "excess_change_ratio": excess_change_ratio,
+            "dimension_differentiation_score": (dimension_differentiation_score),
+            "primary_factor_alignment_score": alignment_score,
+        },
         "hierarchy_id": str(dimension_metadata.get("hierarchy_id") or ""),
         "hierarchy_level": str(dimension_metadata.get("hierarchy_level") or ""),
-        "parent_dimension": str(
-            dimension_metadata.get("parent_dimension") or ""
-        ),
+        "parent_dimension": str(dimension_metadata.get("parent_dimension") or ""),
+        "hierarchy_depth": 0,
         "unknown_bucket": unknown_bucket,
         "top_lifts": top_lifts,
         "top_drags": top_drags,
@@ -524,6 +759,277 @@ def _dimension_profile(
         "unpaired_dimension_value_count": incomplete_values,
         "suppressed_segment_count": len(contributions) - len(ranked),
         "limitations": tuple(limitations),
+    }
+
+
+def _annotate_hierarchy_depths(
+    profiles: tuple[dict[str, Any], ...],
+) -> None:
+    by_dimension = {
+        str(profile.get("dimension") or ""): profile
+        for profile in profiles
+        if str(profile.get("dimension") or "")
+    }
+
+    def resolve_depth(
+        profile: Mapping[str, Any],
+        trail: frozenset[str] = frozenset(),
+    ) -> int:
+        dimension = str(profile.get("dimension") or "")
+        parent_dimension = str(profile.get("parent_dimension") or "")
+        hierarchy_id = str(profile.get("hierarchy_id") or "")
+        if not parent_dimension or dimension in trail:
+            return 0
+        parent = by_dimension.get(parent_dimension)
+        if parent is None or str(parent.get("hierarchy_id") or "") != hierarchy_id:
+            return 0
+        return 1 + resolve_depth(parent, trail | {dimension})
+
+    for profile in profiles:
+        profile["hierarchy_depth"] = resolve_depth(profile)
+
+
+def _build_hierarchy_diagnostics(
+    profiles: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, Any], ...]:
+    hierarchy_ids = tuple(
+        dict.fromkeys(
+            str(profile.get("hierarchy_id") or "")
+            for profile in profiles
+            if str(profile.get("hierarchy_id") or "")
+        )
+    )
+    diagnostics = []
+    for hierarchy_id in hierarchy_ids:
+        levels = tuple(
+            sorted(
+                (
+                    profile
+                    for profile in profiles
+                    if profile["hierarchy_id"] == hierarchy_id
+                ),
+                key=lambda profile: (
+                    profile["hierarchy_depth"],
+                    profile["dimension"],
+                ),
+            )
+        )
+        dimension_paths = _hierarchy_dimension_paths(levels)
+        diagnostics.append(
+            {
+                "hierarchy_id": hierarchy_id,
+                "dimension_path": (
+                    dimension_paths[0] if len(dimension_paths) == 1 else ()
+                ),
+                "dimension_paths": dimension_paths,
+                "business_readout_paths": tuple(
+                    tuple(
+                        dimension
+                        for dimension in path
+                        if next(
+                            profile
+                            for profile in levels
+                            if profile["dimension"] == dimension
+                        )["business_readout_eligible"]
+                    )
+                    for path in dimension_paths
+                    if any(
+                        next(
+                            profile
+                            for profile in levels
+                            if profile["dimension"] == dimension
+                        )["business_readout_eligible"]
+                        for dimension in path
+                    )
+                ),
+                "coverage_dimensions": tuple(
+                    profile["dimension"]
+                    for profile in levels
+                    if profile["selection_status"] == "internal_coverage_only"
+                ),
+                "business_readout_dimensions": tuple(
+                    profile["dimension"]
+                    for profile in levels
+                    if profile["business_readout_eligible"]
+                ),
+                "levels": tuple(
+                    {
+                        "dimension": profile["dimension"],
+                        "hierarchy_level": profile["hierarchy_level"],
+                        "parent_dimension": profile["parent_dimension"],
+                        "hierarchy_depth": profile["hierarchy_depth"],
+                        "profile_status": profile["profile_status"],
+                        "selection_status": profile["selection_status"],
+                        "reconciliation_status": profile["reconciliation_status"],
+                        "dimension_differentiation_score": profile[
+                            "dimension_differentiation_score"
+                        ],
+                        "excess_movement": profile["excess_movement"],
+                        "excess_change_ratio": profile["excess_change_ratio"],
+                        "primary_factor_alignment_score": profile[
+                            "primary_factor_alignment_score"
+                        ],
+                        "diagnostic_priority_score": profile[
+                            "diagnostic_priority_score"
+                        ],
+                    }
+                    for profile in levels
+                ),
+            }
+        )
+    return tuple(diagnostics)
+
+
+def _hierarchy_dimension_paths(
+    profiles: tuple[Mapping[str, Any], ...],
+) -> tuple[tuple[str, ...], ...]:
+    by_dimension = {
+        str(profile.get("dimension") or ""): profile
+        for profile in profiles
+        if str(profile.get("dimension") or "")
+    }
+    children: dict[str, list[str]] = {}
+    roots = []
+    for dimension, profile in by_dimension.items():
+        parent = str(profile.get("parent_dimension") or "")
+        if parent and parent in by_dimension:
+            children.setdefault(parent, []).append(dimension)
+        else:
+            roots.append(dimension)
+    paths: list[tuple[str, ...]] = []
+
+    def visit(
+        dimension: str,
+        path: tuple[str, ...],
+    ) -> None:
+        if dimension in path:
+            paths.append((*path, dimension))
+            return
+        next_path = (*path, dimension)
+        descendants = tuple(sorted(children.get(dimension, ())))
+        if not descendants:
+            paths.append(next_path)
+            return
+        for child in descendants:
+            visit(child, next_path)
+
+    for root in sorted(roots):
+        visit(root, ())
+    covered = {dimension for path in paths for dimension in path}
+    for dimension in sorted(set(by_dimension) - covered):
+        visit(dimension, ())
+    return tuple(paths)
+
+
+def _related_hierarchy_readout_profiles(
+    profiles: tuple[dict[str, Any], ...],
+    *,
+    selected_dimension: str,
+) -> tuple[dict[str, Any], ...]:
+    by_dimension = {
+        str(profile.get("dimension") or ""): profile
+        for profile in profiles
+        if str(profile.get("dimension") or "")
+    }
+    selected = by_dimension.get(selected_dimension)
+    if selected is None:
+        return ()
+    hierarchy_id = str(selected.get("hierarchy_id") or "")
+
+    def ancestor_dimensions(dimension: str) -> frozenset[str]:
+        ancestors: set[str] = set()
+        current = by_dimension.get(dimension)
+        while current is not None:
+            parent = str(current.get("parent_dimension") or "")
+            if not parent or parent in ancestors:
+                break
+            parent_profile = by_dimension.get(parent)
+            if (
+                parent_profile is None
+                or str(parent_profile.get("hierarchy_id") or "") != hierarchy_id
+            ):
+                break
+            ancestors.add(parent)
+            current = parent_profile
+        return frozenset(ancestors)
+
+    selected_ancestors = ancestor_dimensions(selected_dimension)
+    related = tuple(
+        profile
+        for profile in profiles
+        if profile["hierarchy_id"] == hierarchy_id
+        and profile["business_readout_eligible"]
+        and (
+            profile["dimension"] == selected_dimension
+            or profile["dimension"] in selected_ancestors
+            or selected_dimension in ancestor_dimensions(profile["dimension"])
+        )
+    )
+    return tuple(
+        sorted(
+            related,
+            key=lambda profile: (
+                profile["hierarchy_depth"],
+                profile["dimension"],
+            ),
+        )
+    )
+
+
+def _selected_profile_segment(
+    profile: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    if profile is None:
+        return None
+    primary_factor_segments = tuple(profile.get("primary_factor_segments") or ())
+    excess_segments = tuple(
+        (
+            *(profile.get("top_excess_lifts") or ()),
+            *(profile.get("top_excess_drags") or ()),
+        )
+    )
+    candidates = primary_factor_segments or excess_segments
+    return max(
+        candidates,
+        key=lambda item: abs(float(item.get("excess_delta") or 0.0)),
+        default=None,
+    )
+
+
+def _profile_business_readout(
+    profile: Mapping[str, Any],
+    *,
+    dimension_label: str,
+) -> dict[str, Any]:
+    segment = _selected_profile_segment(profile)
+    if segment is None:
+        return {}
+    excess_delta = float(segment.get("excess_delta") or 0.0)
+    value = str(segment.get("value") or "")
+    return {
+        "dimension": str(profile.get("dimension") or ""),
+        "dimension_label": dimension_label,
+        "hierarchy_id": str(profile.get("hierarchy_id") or ""),
+        "hierarchy_level": str(profile.get("hierarchy_level") or ""),
+        "parent_dimension": str(profile.get("parent_dimension") or ""),
+        "value": value,
+        "baseline_amount": float(segment["baseline_amount"]),
+        "target_amount": float(segment["target_amount"]),
+        "delta": float(segment["delta"]),
+        "excess_delta": excess_delta,
+        "dimension_differentiation_score": float(
+            profile.get("dimension_differentiation_score") or 0.0
+        ),
+        "primary_factor_alignment_coverage": float(
+            profile.get("primary_factor_alignment_coverage") or 0.0
+        ),
+        "business_readout": (
+            f"{dimension_label}重点关注{value}：目标期付费金额"
+            f"{float(segment['target_amount']):,.2f}，基线期"
+            f"{float(segment['baseline_amount']):,.2f}，实际变化"
+            f"{float(segment['delta']):+,.2f}，相对基线结构的超额变化"
+            f"{excess_delta:+,.2f}"
+        ),
     }
 
 

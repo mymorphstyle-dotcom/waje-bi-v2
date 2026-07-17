@@ -240,7 +240,7 @@ expectation_packages:
           semantic_query_status: accepted_at_supported_grain
           required_bindings:
             - dimension_refs
-            - permission_handoff
+            - restricted_output_policy
             - supported_grain
       evidence_envelopes:
         - support_id: formula_paid_amount_change_order_chain
@@ -395,7 +395,7 @@ expectation_packages:
     forbidden_capabilities: []
     expected_compiler_actions:
       - outcome: auto_repair
-        reason: add materiality, freshness, permission, and verifier checks.
+        reason: add materiality, freshness, source-access, fixed output-safety, and verifier checks.
       - outcome: degrade
         reason: health risk wording degrades when component, payment-quality, incident, or comparable-window evidence is insufficient.
     expected_evidence_contract_states:
@@ -525,15 +525,14 @@ expectation_packages:
         wording_limit: quantified
         backlog_refs:
           - channel_payment_dimension_contracts
-      - support_id: joint_attribution_geo_device_permission_limited
-        business_evidence_state: permission_limited
-        data_contract_state: permission_limited
-        evidence_type: insufficient
-        strength: insufficient
-        wording_limit: blocked
+      - support_id: joint_attribution_geo_device_contract_backed
+        business_evidence_state: quantifiable
+        data_contract_state: contract_backed
+        evidence_type: statistical_association
+        strength: medium
+        wording_limit: candidate
         backlog_refs:
-          - geo_device_environment_dimension_contracts
-          - sensitive_identifier_permission_policy
+          - geo_device_environment_quality_policy
     allowed_claims:
       - claim_type: segment_contribution_or_mix_shift
         evidence_type: accounting_contribution
@@ -541,20 +540,20 @@ expectation_packages:
         wording_limit: quantified
         condition: supported segment grain, coverage, and sparse limits pass.
       - claim_type: geo_device_combination_attribution
-        evidence_type: insufficient
-        strength: insufficient
-        wording_limit: blocked
-        condition: raw identifier and permission-limited outputs are blocked.
+        evidence_type: statistical_association
+        strength: medium
+        wording_limit: candidate
+        condition: aggregate reviewed dimensions pass coverage and sparse-cell checks; raw identifier values remain blocked for every user.
     expected_visual_blocks:
       - attribution_ranking
       - combination_path
       - stability_coverage
-      - permission_limit
+      - restricted_output_limit
     verifier_checks:
       - attribution_claim_states_scope_and_grain
       - contribution_is_not_causal_wording
       - raw_identifier_output_is_absent
-      - permission_limited_paths_are_visible
+      - restricted_output_paths_are_visible_when_relevant
     semantic_evidence_expectations:
       semantic_query_records:
         - capability: segment_bridge
@@ -563,15 +562,16 @@ expectation_packages:
           required_bindings:
             - channel_and_payment_method_dimension_refs
             - requested_and_accepted_grain
-            - permission_handoff
+            - restricted_output_policy
             - sparse_cell_guard
         - capability: joint_attribution
-          support_id: joint_attribution_geo_device_permission_limited
-          semantic_query_status: blocked_or_aggregate_only_degraded
+          support_id: joint_attribution_geo_device_contract_backed
+          semantic_query_status: accepted_at_supported_aggregate_grain
           required_bindings:
-            - permission_handoff
-            - blocked_raw_identifier_fields
-            - limitation_refs
+            - geo_device_dimension_refs
+            - requested_and_accepted_grain
+            - restricted_output_policy
+            - sparse_cell_guard
       evidence_envelopes:
         - support_id: segment_attribution_payment_method
           typed_payload: segment_bridge_result
@@ -579,27 +579,27 @@ expectation_packages:
           strength: medium
           wording_limit: quantified
           numeric_reconciliation: required
-        - support_id: joint_attribution_geo_device_permission_limited
+        - support_id: joint_attribution_geo_device_contract_backed
           typed_payload: joint_attribution_result
-          evidence_type: insufficient
-          strength: insufficient
-          wording_limit: blocked
+          evidence_type: statistical_association
+          strength: medium
+          wording_limit: candidate
           limitation_refs:
-            - pii_dimension_output_limit
+            - geo_device_environment_quality_policy
       answer_package_handoff:
         - attribution_claims_bind_scope_grain_and_evidence_refs
-        - raw_user_ip_device_output_is_blocked
-        - permission_limited_path_refs_are_visible
+        - raw_user_and_order_identifier_output_is_blocked
+        - restricted_output_path_refs_are_visible_when_relevant
     failure_attribution:
       business_failure_types:
-        - permission_leak
+        - restricted_output_leak
         - unsupported_main_conclusion
         - over_strong_weak_evidence
         - misleading_visualization
       system_responsibility_points:
         - graph_compiler
         - semantic_compiler
-        - permission_policy
+        - restricted_output_policy
         - answer_verifier
         - visualization_planner
 
@@ -863,7 +863,7 @@ expectation_packages:
       - outcome: block
         reason: missing evidence refs, missing-contract without backlog, raw identifiers, and unsupported main claims cannot publish.
       - outcome: degrade
-        reason: permission-limited, stale, incomplete, or weak evidence lowers trust judgment wording.
+        reason: restricted-output, source-access, stale, incomplete, or weak evidence lowers trust judgment wording.
     expected_evidence_contract_states:
       - support_id: dq_contract_coverage_review
         business_evidence_state: quantifiable
@@ -882,14 +882,14 @@ expectation_packages:
         strength: medium
         wording_limit: quantified
         backlog_refs: []
-      - support_id: dq_permission_sensitive_identifiers
-        business_evidence_state: permission_limited
-        data_contract_state: permission_limited
+      - support_id: dq_sensitive_identifier_output_boundary
+        business_evidence_state: contextual_evidence
+        data_contract_state: contract_backed
         evidence_type: insufficient
         strength: insufficient
         wording_limit: context
         backlog_refs:
-          - sensitive_identifier_permission_policy
+          - sensitive_identifier_output_policy
           - payment_status_and_dedup_contract
     allowed_claims:
       - claim_type: contract_coverage_and_trust_boundary
@@ -902,7 +902,7 @@ expectation_packages:
         strength: medium
         wording_limit: quantified
         condition: initial materiality policy is accepted for supported grains and gates main conclusion, driver, anomaly, and display-priority wording.
-      - claim_type: permission_and_dedup_boundary
+      - claim_type: sensitive_output_and_dedup_boundary
         evidence_type: insufficient
         strength: insufficient
         wording_limit: context
@@ -911,12 +911,12 @@ expectation_packages:
       - trust_summary
       - data_quality_view
       - evidence_boundary
-      - permission_limit
+      - restricted_output_limit
     verifier_checks:
       - every_claim_has_evidence_ref
       - blocked_claim_paths_do_not_publish
       - missing_contracts_are_named_with_backlog_refs
-      - permission_limits_are_visible
+      - restricted_output_limits_are_visible
       - upgrade_paths_do_not_promote_gaps
     semantic_evidence_expectations:
       semantic_query_records:
@@ -929,11 +929,11 @@ expectation_packages:
             - current_data_snapshot
             - disabled_degraded_blocked_path_refs
         - capability: data_quality_check
-          support_id: dq_permission_sensitive_identifiers
-          semantic_query_status: accepted_with_permission_limit
+          support_id: dq_sensitive_identifier_output_boundary
+          semantic_query_status: accepted_with_fixed_output_boundary
           required_bindings:
-            - permission_handoff
-            - blocked_raw_identifier_fields
+            - restricted_output_policy
+            - blocked_raw_user_and_order_identifier_fields
       evidence_envelopes:
         - support_id: dq_contract_coverage_review
           typed_payload: data_quality_result
@@ -945,24 +945,24 @@ expectation_packages:
           evidence_type: statistical_association
           strength: medium
           wording_limit: quantified
-        - support_id: dq_permission_sensitive_identifiers
+        - support_id: dq_sensitive_identifier_output_boundary
           typed_payload: data_quality_result
           evidence_type: insufficient
           strength: insufficient
           wording_limit: context
           limitation_refs:
-            - pii_dimension_output_limit
+            - raw_identifier_output_limit
       answer_package_handoff:
         - every_reviewed_claim_binds_evidence_refs
         - blocked_claim_paths_do_not_publish
-        - missing_contract_and_permission_limits_are_visible_without_promoting_gaps
+        - missing_contract_and_restricted_output_limits_are_visible_without_promoting_gaps
     failure_attribution:
       business_failure_types:
         - hidden_data_gap
         - unsupported_main_conclusion
-        - permission_leak
+        - restricted_output_leak
       system_responsibility_points:
         - graph_compiler
         - evidence_reducer
         - answer_verifier
-        - permission_policy
+        - restricted_output_policy

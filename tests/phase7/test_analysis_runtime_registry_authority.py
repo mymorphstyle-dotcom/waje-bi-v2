@@ -54,13 +54,12 @@ def test_reuse_materialization_uses_analysis_runtime_registry_authority() -> Non
                 proposal=_proposal(),
                 accepted_graph=("compare_periods",),
                 as_of="2026-06-03T12:00:00+01:00",
-                permission_scope="analyst",
                 reuse_candidates=(candidate,),
             )
         )
 
     assert provider.calls == 1
-    assert current.status == "ready"
+    assert current.status == "clarify"
     assert current.query_results[0].execution_status == "succeeded"
     assert current.reuse_decisions[0]["decision"] == "reuse"
     assert current.reuse_decisions[0]["reason"] == (

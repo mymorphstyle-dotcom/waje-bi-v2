@@ -12,11 +12,11 @@ The current workbench can continue using local React components, `@xyflow/react`
 
 WAJE needs a Codex-like investigation shell, but BI truth and auditability must stay in WAJE-owned systems:
 
-- `TraceRun` is already bound to Answer Package, run nodes, evidence refs, claim groups, visual blocks, and role-filtered artifact behavior.
+- `TraceRun` is already bound to Answer Package, run nodes, evidence refs, claim groups, visual blocks, personal artifact ownership, and a fixed customer-safe projection.
 - The Gateway APIs already expose thread, run events, clarifications, artifact continue/open/export, and memory proposal decisions.
-- `Postgres Runtime Store` owns product state, audit events, permissions, result refs, evidence refs, answer packages, and memory proposal records.
+- `Postgres Runtime Store` owns product state, personal ownership, audit events, source-access records, result refs, evidence refs, answer packages, and memory proposal records.
 - LangGraph remains the execution/checkpoint/trace adapter; frontend components should render its business-readable process, not redefine it.
-- External UI/runtime SDKs may help with component ergonomics later, but they cannot become a BI truth source, memory source, or permission/audit authority.
+- External UI/runtime SDKs may help with component ergonomics later, but they cannot become a BI truth source, memory source, ownership/source-access authority, or audit authority.
 
 ## Boundary
 
@@ -29,7 +29,7 @@ Allowed later:
 Not allowed in Phase 7 runtime:
 
 - Moving thread/topic/run state from Postgres into an external SDK runtime.
-- Letting a frontend SDK decide evidence strength, result reuse, claim support, permission filtering, or memory persistence.
+- Letting a frontend SDK decide evidence strength, result reuse, claim support, customer-safe projection, personal ownership, source access, or memory persistence.
 - Letting SDK tool calls reach raw SQL or bypass WAJE capability APIs.
 - Sending raw LLM payloads, hidden reasoning, SQL, evidence envelopes, or verifier internals to the default business UI.
 
@@ -46,5 +46,5 @@ Re-evaluate the SDK choice when one of these is true:
 
 - The chat composer becomes live streaming and needs a richer message/tool-call component model.
 - The current workbench component cost starts slowing feature work.
-- A candidate SDK can render WAJE thread/run/process/evidence contracts directly, with permission-safe lazy loading and no runtime authority shift.
+- A candidate SDK can render WAJE thread/run/process/evidence contracts directly, with owner-safe, customer-safe lazy loading and no runtime authority shift.
 - Phase 8 production gates require integration-level observability or deployment features that an external SDK can provide without weakening WAJE's evidence boundary.

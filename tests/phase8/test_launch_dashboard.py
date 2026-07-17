@@ -23,14 +23,13 @@ class LaunchDashboardTest(unittest.TestCase):
             "verifier_failed_runs",
             "capability_error_runs",
             "compiler_block_runs",
-            "permission_spike_runs",
             "contract_mismatch_runs",
             "ledger_mismatch_runs",
         ):
             with self.subTest(category=category):
                 self.assertIn(category, store)
 
-        for signal in ("artifact_continue_blocked", "contract_version_mismatch", "missing_contract", "unsupported_grain"):
+        for signal in ("contract_version_mismatch", "missing_contract", "unsupported_grain"):
             with self.subTest(signal=signal):
                 self.assertIn(signal, store)
 

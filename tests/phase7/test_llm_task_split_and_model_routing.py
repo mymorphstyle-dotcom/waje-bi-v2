@@ -438,13 +438,14 @@ def test_workflow_uses_narrow_explicit_model_profiles_by_node_responsibility():
         "next_action": ("critical", "disabled"),
         "promotion_direction": ("critical", "disabled"),
         "evidence_interpretation": ("default", "disabled"),
-        "answer_synthesis": ("default", "disabled"),
+        "answer_synthesis": ("critical", "enabled"),
         "boundary_decision": ("default", "disabled"),
         "data_coverage_interpretation": ("default", "disabled"),
         "causal_audit": ("default", "disabled"),
         "answer_repair": ("default", "disabled"),
         "final_answer_audit": ("default", "disabled"),
-        "final_business_summary": ("default", "disabled"),
+        "final_business_summary": ("critical", "enabled"),
+        "final_narrative_binding": ("default", "disabled"),
         "final_route_narrative": ("default", "disabled"),
     }
     client = _TierAwareWorkflowClient(
@@ -519,8 +520,10 @@ def test_workflow_uses_narrow_explicit_model_profiles_by_node_responsibility():
             "final_answer_audit": {"material_findings": []},
             "final_business_summary": {
                 "summary_text": "目标日相对前一天的变化已经得到验证。",
-                "statement_bindings": [],
                 "display_summary": "已形成最终业务回答。",
+            },
+            "final_narrative_binding": {
+                "statement_bindings": [],
             },
             "final_route_narrative": {
                 "route_summary": "先验证变化，再检查影响因素。",

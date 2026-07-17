@@ -143,7 +143,7 @@ class PatternScanTest(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(result.evidence_type, "permission_limited")
+        self.assertEqual(result.evidence_type, "insufficient")
         self.assertEqual(result.wording_limit, "blocked")
         self.assertIn("sparse_cell", result.limitations)
         self.assertIn("raw_identifier_present", result.limitations)
@@ -156,7 +156,7 @@ class PatternScanTest(unittest.TestCase):
             with self.subTest(segments=segments):
                 result = segment_bridge(segments)
 
-                self.assertEqual(result.evidence_type, "permission_limited")
+                self.assertEqual(result.evidence_type, "insufficient")
                 self.assertEqual(result.wording_limit, "blocked")
                 self.assertIn("sample_size_unverified", result.limitations)
 
@@ -247,7 +247,7 @@ class PatternScanTest(unittest.TestCase):
             dimension_keys=("channel", "phase"),
         )
 
-        self.assertEqual(result.evidence_type, "permission_limited")
+        self.assertEqual(result.evidence_type, "insufficient")
         self.assertEqual(result.wording_limit, "blocked")
         self.assertIn("sparse_cell", result.limitations)
         self.assertIn("raw_identifier_present", result.limitations)

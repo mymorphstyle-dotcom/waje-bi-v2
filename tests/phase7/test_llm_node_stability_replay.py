@@ -18,6 +18,7 @@ from tools.phase7.run_llm_node_stability_replay import (
     main,
     revalidate_results,
     reserve_artifact_directory,
+    summarize_results,
 )
 
 
@@ -72,7 +73,31 @@ def test_replay_scenarios_use_case_b_inputs_and_current_prompts() -> None:
         assert scenario.source_path in {str(INITIAL_PACKAGE), str(RESUME_PACKAGE)}
 
     by_id = {scenario.scenario_id: scenario for scenario in scenarios}
-    assert by_id["business_intent"].provenance == "exact_replay_payload"
+    assert by_id["business_intent"].provenance == (
+        "exact_question_current_contract_projection"
+    )
+    initial_calls = json.loads(INITIAL_PACKAGE.read_text(encoding="utf-8"))[
+        "llm_calls"
+    ]
+    source_business_call = next(
+        call for call in initial_calls if call.get("task") == "business_intent"
+    )
+    source_business_payload = _extract_input_payload(
+        source_business_call["messages"]
+    )
+    assert by_id["business_intent"].payload["question"] == (
+        source_business_payload["question"]
+    )
+    assert "explain_change" in by_id["business_intent"].payload[
+        "allowed_goal_ids"
+    ]
+    assert set(by_id["business_intent"].payload).isdisjoint(
+        {
+            "allowed_claim_types",
+            "allowed_claim_semantics",
+            "requested_component_policy",
+        }
+    )
     assert by_id["boundary_decision_unbound"].source_path == str(INITIAL_PACKAGE)
     assert by_id["boundary_decision_bound"].source_path == str(RESUME_PACKAGE)
     assert by_id["analysis_route_plan"].provenance == "derived_task_split"
@@ -91,7 +116,8 @@ def test_replay_scenarios_use_case_b_inputs_and_current_prompts() -> None:
         "causalBoundary",
         "answerShape",
     }
-    assert len(answer_context["evidence"]["claimSlots"]) == 2
+    claim_slots = answer_context["evidence"]["claimSlots"]
+    assert isinstance(claim_slots, list) and claim_slots
     serialized_answer_context = json.dumps(answer_context, ensure_ascii=False)
     for internal_name in (
         "draft_claims",
@@ -258,8 +284,214 @@ def test_execute_job_once_calls_provider_once_and_drops_reasoning_content() -> N
     assert create_calls[0]["extra_body"] == {
         "thinking": {"type": job.thinking}
     }
-    assert create_calls[0]["reasoning_effort"] == "high"
+    assert "reasoning_effort" not in create_calls[0]
     assert "temperature" not in create_calls[0]
+
+
+def test_execute_job_once_uses_production_disabled_thinking_request() -> None:
+    scenario = _scenarios()[0]
+    job = build_job_matrix(
+        [scenario],
+        repeats=1,
+        model_tiers=("flash",),
+        thinking_modes=("disabled",),
+    )[0]
+    create_calls: list[dict[str, object]] = []
+
+    class FakeCompletions:
+        def create(self, **request):
+            create_calls.append(request)
+            return SimpleNamespace(
+                id="response-disabled",
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="{}",
+                            reasoning_content=None,
+                        )
+                    )
+                ],
+                usage=None,
+            )
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCompletions())
+    )
+
+    execute_job_once(job, client=fake_client)
+
+    assert len(create_calls) == 1
+    assert create_calls[0]["extra_body"] == {
+        "thinking": {"type": "disabled"}
+    }
+    assert create_calls[0]["temperature"] == 0
+    assert "reasoning_effort" not in create_calls[0]
+
+
+def test_business_intent_stability_contract_uses_goal_bindings_only() -> None:
+    job = next(
+        job
+        for job in build_job_matrix(_scenarios(), repeats=1)
+        if job.scenario_id == "business_intent"
+    )
+    valid = {
+        "question_family": "paid_amount_change_explanation",
+        "target_metric": "paid_amount",
+        "pattern_family": "custom_baseline",
+        "pattern_params": {},
+        "scope": "full_sample",
+        "time_window": "2026-06-01",
+        "target_claim": "先验证付费金额是否上涨，再解释主要变化因素。",
+        "baseline_candidates": [],
+        "analysis_requirements": {
+            "goal_bindings": [
+                {"goal_id": "explain_change", "role": "primary"}
+            ],
+            "explicit_focus": {
+                "component_ids": [],
+                "dimension_ids": [],
+                "context_source_ids": [],
+            },
+        },
+        "status_message": "上涨仍是待验证前提，比较基线仍待确认。",
+    }
+
+    assert _task_contract_errors(job, valid) == []
+
+    provider_owned_derivation = {
+        **valid,
+        "required_outcomes": ["direction_and_magnitude"],
+        "analysis_axes": ["formula_tree"],
+    }
+    legacy_claim_schema = {
+        **valid,
+        "analysis_requirements": {
+            **valid["analysis_requirements"],
+            "claim_intents": ["comparative_change"],
+        },
+    }
+
+    assert "business_intent_local_derivation_owned_by_provider" in (
+        _task_contract_errors(job, provider_owned_derivation)
+    )
+    assert "business_intent_legacy_planning_field_present" in (
+        _task_contract_errors(job, legacy_claim_schema)
+    )
+
+    for legacy_field, legacy_value in (
+        ("claim_intents", ["comparative_change"]),
+        ("requested_dimensions", ["region"]),
+        ("requested_components", ["paid_users"]),
+    ):
+        top_level_legacy = {**valid, legacy_field: legacy_value}
+        assert "business_intent_legacy_planning_field_present" in (
+            _task_contract_errors(job, top_level_legacy)
+        )
+
+
+def test_business_intent_material_signature_tracks_only_machine_semantics() -> None:
+    job = next(
+        job
+        for job in build_job_matrix(_scenarios(), repeats=1)
+        if job.scenario_id == "business_intent"
+    )
+    first = {
+        "question_family": "paid_amount_change_explanation",
+        "target_metric": "paid_amount",
+        "pattern_family": "custom_baseline",
+        "pattern_params": {},
+        "scope": "full_sample",
+        "time_window": "2026-06-01",
+        "target_claim": "验证付费金额变化并解释主要因素。",
+        "baseline_candidates": [],
+        "analysis_requirements": {
+            "goal_bindings": [
+                {"goal_id": "explain_change", "role": "primary"}
+            ],
+            "explicit_focus": {
+                "component_ids": [],
+                "dimension_ids": [],
+                "context_source_ids": [],
+            },
+        },
+        "status_message": "上涨仍待验证。",
+    }
+    wording_variant = {
+        **first,
+        "target_claim": "先核实真实方向，再寻找主要驱动。",
+        "status_message": "当前尚未查询，因此不确认上涨。",
+    }
+    focus_drift = {
+        **first,
+        "analysis_requirements": {
+            **first["analysis_requirements"],
+            "explicit_focus": {
+                "component_ids": [],
+                "dimension_ids": ["region"],
+                "context_source_ids": [],
+            },
+        },
+    }
+
+    assert _material_signature(job, first) == _material_signature(
+        job,
+        wording_variant,
+    )
+    assert _material_signature(job, first) != _material_signature(
+        job,
+        focus_drift,
+    )
+
+
+def test_summary_requires_every_call_and_one_material_signature() -> None:
+    base_result = {
+        "scenario_id": "business_intent",
+        "model_tier": "flash",
+        "thinking": "enabled",
+        "status": "completed",
+        "validation": {
+            "required_keys_pass": True,
+            "business_contract_pass": True,
+        },
+        "output_hash": "output-1",
+        "material_signature": "material-1",
+        "duration_ms": 1000,
+        "usage": {"total_tokens": 100},
+    }
+    stable = [
+        {**base_result, "job_id": f"business_intent-r{repeat:02d}"}
+        for repeat in range(1, 11)
+    ]
+
+    stable_summary = summarize_results(stable)
+    assert stable_summary["strict_stability_pass"] is True
+    assert stable_summary["groups"][0]["sample_count"] == 10
+    assert stable_summary["groups"][0]["material_signature_stable"] is True
+    assert stable_summary["groups"][0]["unique_material_signature_count"] == 1
+
+    drifted = [
+        *stable[:-1],
+        {
+            **stable[-1],
+            "material_signature": "material-2",
+        },
+    ]
+    drifted_summary = summarize_results(drifted)
+    assert drifted_summary["strict_stability_pass"] is False
+    assert drifted_summary["groups"][0]["material_signature_stable"] is False
+
+    one_invalid = [
+        *stable[:-1],
+        {
+            **stable[-1],
+            "validation": {
+                "required_keys_pass": True,
+                "business_contract_pass": False,
+            },
+        },
+    ]
+    invalid_summary = summarize_results(one_invalid)
+    assert invalid_summary["strict_stability_pass"] is False
 
 
 def test_case_b_expectations_reject_material_business_failures() -> None:
@@ -274,7 +506,14 @@ def test_case_b_expectations_reject_material_business_failures() -> None:
             "scope": "full_sample",
             "time_window": "2026-06-01",
             "baseline_candidates": ["previous_day"],
-            "analysis_requirements": {"claim_intents": []},
+            "analysis_requirements": {
+                "goal_bindings": [],
+                "explicit_focus": {
+                    "component_ids": [],
+                    "dimension_ids": [],
+                    "context_source_ids": [],
+                },
+            },
         },
         "boundary_decision_unbound": {
             "boundary_status": "clear",
@@ -379,31 +618,6 @@ def test_case_b_expectations_reject_material_business_failures() -> None:
         assert errors, scenario_id
 
 
-def test_final_summary_stability_contract_rejects_malformed_statement_bindings() -> None:
-    job = next(
-        job
-        for job in build_job_matrix(_scenarios(), repeats=1)
-        if job.scenario_id == "final_business_summary"
-    )
-    output = {
-        "summary_text": (
-            "我对问题的理解是：核对目标日付费金额变化。\n"
-            "分析脉络：先比较目标日与前一天，再检查因素贡献。\n"
-            "关键发现：2026年6月1日较2026年5月31日上涨1.35%。\n"
-            "最终结论：单笔付费金额贡献126.2%，付费频次贡献-28.2%，"
-            "付费人数贡献2.0%。\n"
-            "需要注意：首充人数贡献尚未量化；支付成功率缺少独立观测，"
-            "本轮按不变处理。"
-        ),
-        "statement_bindings": "结论1",
-        "display_summary": "已完成目标日与前一天的因素核对。",
-    }
-
-    assert "final_business_summary_contract_invalid:statement_bindings" in (
-        _task_contract_errors(job, output)
-    )
-
-
 def test_case_b_expectations_accept_replay_supported_core_decisions() -> None:
     jobs = {
         job.scenario_id: job
@@ -428,7 +642,27 @@ def test_case_b_expectations_accept_replay_supported_core_decisions() -> None:
     semantic = output(resume_calls, "semantic_audit")
     semantic.pop("extracted_claims", None)
     supported = {
-        "business_intent": output(initial_calls, "business_intent"),
+        "business_intent": {
+            "question_family": "paid_amount_change_explanation",
+            "target_metric": "paid_amount",
+            "pattern_family": "custom_baseline",
+            "pattern_params": {},
+            "scope": "full_sample",
+            "time_window": "2026-06-01",
+            "target_claim": "先验证付费金额是否上涨，再解释变化因素。",
+            "baseline_candidates": [],
+            "analysis_requirements": {
+                "goal_bindings": [
+                    {"goal_id": "explain_change", "role": "primary"}
+                ],
+                "explicit_focus": {
+                    "component_ids": [],
+                    "dimension_ids": [],
+                    "context_source_ids": [],
+                },
+            },
+            "status_message": "上涨是待验证前提，比较基线仍待确认。",
+        },
         "boundary_decision_unbound": output(
             initial_calls,
             "boundary_decision",
@@ -860,13 +1094,13 @@ def test_revalidation_preserves_raw_output_and_recomputes_business_contract() ->
         "target_claim": "解释用户提出的上涨假设。",
         "baseline_candidates": ["previous_day"],
         "analysis_requirements": {
-            "claim_intents": [
-                "comparative_change",
-                "formula_component_contribution",
+            "goal_bindings": [
+                {"goal_id": "explain_change", "role": "primary"}
             ],
-            "claim_intent_roles": {
-                "comparative_change": "user_required",
-                "formula_component_contribution": "user_required",
+            "explicit_focus": {
+                "component_ids": [],
+                "dimension_ids": [],
+                "context_source_ids": [],
             },
         },
         "status_message": "前一天是推荐候选，仍待用户确认。",

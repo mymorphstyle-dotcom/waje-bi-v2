@@ -6,12 +6,7 @@ import math
 from typing import Any, Iterable, Mapping
 
 from bi_agent.conversation.clarification_authority import (
-    bind_terminal_resume_proposal_material,
     canonical_execution_grain,
-    validate_material_authority,
-    validate_material_authority_contract_overlap,
-    validate_terminal_resume_proposal_overlap,
-    validate_terminal_runtime_context_overlap,
 )
 from bi_agent.runtime.analysis_contracts import (
     AnalysisContract,
@@ -25,23 +20,15 @@ from bi_agent.runtime.analysis_contracts import (
     ReconciliationBinding,
     ResolvedWindow,
     ResultShape,
-    analysis_contract_from_dict,
-    analysis_contract_signature,
     query_contract_signature,
-    stable_contract_signature,
 )
 from bi_agent.runtime.contract_gaps import (
     canonical_source_ambiguity_source_ids,
     canonical_source_ambiguity_subset,
     is_canonical_direct_analysis_source_ambiguity,
-    is_canonical_unsupported_required_claim_gap,
     is_unscoped_direct_analysis_source_ambiguity,
     reviewed_queryless_gap_claim_types,
 )
-from bi_agent.runtime.capability_execution import (
-    degradation_action_is_non_blocking,
-)
-from bi_agent.runtime.evidence_authority import canonical_value
 from bi_agent.runtime.dataset_catalog import (
     DatasetCatalog,
     DatasetReleaseResolver,
@@ -50,18 +37,6 @@ from bi_agent.runtime.dataset_catalog import (
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from bi_agent.runtime.window_resolver import WindowResolution, resolve_revenue_windows
 
-
-_TERMINAL_GAP_AUTHORITY_KEYS = frozenset(
-    {
-        "source_run_id",
-        "thread_id",
-        "topic_id",
-        "analysis_contract",
-        "analysis_contract_signature",
-        "material_authority",
-        "clarification_outcome",
-    }
-)
 
 _CANONICAL_FIXED_WINDOW_ORDER = (
     "target_day",
@@ -165,49 +140,6 @@ class _DependencyIndex:
     source_selection_gaps: tuple[ContractGap, ...]
 
 
-def _bind_terminal_execution_material(
-    proposal: Mapping[str, Any],
-    *,
-    accepted_capabilities: tuple[str, ...],
-    registry: RuntimeContractRegistry,
-    as_of: datetime,
-    permission_scope: str,
-) -> Mapping[str, Any]:
-    choice = proposal.get("accepted_degradation_choice")
-    if not isinstance(choice, Mapping) or str(
-        choice.get("action_kind") or ""
-    ) not in {"omit_unavailable_context", "continue_with_boundary_only"}:
-        return proposal
-    authority = proposal.get("accepted_terminal_gap_authority")
-    if not isinstance(authority, Mapping) or set(
-        authority
-    ) != _TERMINAL_GAP_AUTHORITY_KEYS:
-        raise ValueError("accepted_terminal_gap_authority_shape_invalid")
-    material = validate_material_authority(
-        authority.get("material_authority"),
-        source_run_id=str(authority.get("source_run_id") or ""),
-        thread_id=str(proposal.get("resume_thread_id") or ""),
-        topic_id=str(proposal.get("resume_topic_id") or ""),
-        require_execution_material=True,
-    )
-    execution = material["execution_material"]
-    bound_proposal = bind_terminal_resume_proposal_material(
-        material,
-        proposal,
-    )
-    validate_terminal_runtime_context_overlap(
-        material,
-        analysis_context={"as_of": as_of},
-        permission_scope=permission_scope,
-        accepted_graph=accepted_capabilities,
-        accepted_choice=choice,
-        run_mode="production",
-        runtime_contract_version=registry.contract_version,
-        runtime_registry_digest=registry.source_payload_digest,
-    )
-    return bound_proposal
-
-
 def compile_analysis_contract(
     *,
     run_id: str,
@@ -216,18 +148,10 @@ def compile_analysis_contract(
     catalog: DatasetCatalog,
     registry: RuntimeContractRegistry,
     as_of: datetime,
-    permission_scope: str,
     release_resolver: DatasetReleaseResolver | None = None,
 ) -> AnalysisCompileOutcome:
     capabilities = _dedupe(accepted_capabilities)
     capability_roles = _validated_capability_roles(proposal, capabilities)
-    proposal = _bind_terminal_execution_material(
-        proposal,
-        accepted_capabilities=capabilities,
-        registry=registry,
-        as_of=as_of,
-        permission_scope=permission_scope,
-    )
     proposal = {
         **proposal,
         "grain": canonical_execution_grain(proposal.get("grain")),
@@ -248,7 +172,6 @@ def compile_analysis_contract(
         catalog,
         registry,
         as_of,
-        permission_scope,
         dependencies.dataset_owners,
         release_resolver,
     )
@@ -273,55 +196,26 @@ def compile_analysis_contract(
         dependencies.dimension_ids,
         proposal,
         registry,
-        permission_scope,
         snapshots,
         dependencies.dimension_owners,
         dependencies.dimension_dataset_ids,
     )
-    (
-        accepted_terminal_gaps,
-        clarification_outcome_ref,
-        authority_claim_intents,
-    ) = _accepted_terminal_gap_authority(proposal)
-    contract_capabilities = _dedupe(
-        (
-            *capabilities,
-            *(
-                capability
-                for gap in accepted_terminal_gaps
-                for capability in gap.affected_capabilities
-                if capability != "analysis_contract"
-            ),
-        )
-    )
     accepted_claim_intents, claim_intent_gaps = _bind_claim_intents(
         proposal,
-        contract_capabilities,
+        capabilities,
         metric_bindings,
         registry,
-        ready_capabilities=capabilities,
-        accepted_terminal_gaps=accepted_terminal_gaps,
-        authority_claim_intents=authority_claim_intents,
     )
     affected_capabilities = capabilities or ("analysis_contract",)
-    contract_dataset_ids = _dedupe(
-        (
-            *required_dataset_ids,
-            *(
-                gap.dataset_id
-                for gap in accepted_terminal_gaps
-                if gap.dataset_id
-            ),
-        )
+    context_window_specs = _context_window_specs(
+        proposal,
+        accepted_capabilities=capabilities,
+        registry=registry,
     )
     resolution = _resolve_advisory_windows(
         target_semantic=str(proposal.get("target_semantic") or "yesterday"),
-        baselines=_dedupe(
-            (
-                *_ordered_values(proposal, "baselines"),
-                *_ordered_values(proposal, "auxiliary_baselines"),
-            )
-        ),
+        baselines=_dedupe(_ordered_values(proposal, "baselines")),
+        context_window_specs=context_window_specs,
         as_of=as_of,
         timezone_name=registry.business_timezone,
         dataset_watermarks={
@@ -347,7 +241,6 @@ def compile_analysis_contract(
         metric_bindings,
         dimension_bindings,
         registry,
-        permission_scope,
         capability_dependencies,
     )
     capability_plans = _build_capability_plans(
@@ -377,13 +270,17 @@ def compile_analysis_contract(
             *metric_gaps,
             *dimension_gaps,
             *capability_input_gaps,
-            *accepted_terminal_gaps,
         ),
         affected_capabilities=affected_capabilities,
         affected_claim_types=accepted_claim_intents,
         claim_types_by_capability=_claim_types_by_capability(
             capabilities, accepted_claim_intents, registry
         ),
+        registry=registry,
+    )
+    scoped_gaps = _apply_capability_role_to_gaps(
+        scoped_gaps,
+        capability_roles=capability_roles,
         registry=registry,
     )
     gaps = _merge_contract_gaps(
@@ -415,137 +312,11 @@ def compile_analysis_contract(
         resolved_windows=resolution.windows,
         metric_bindings=metric_bindings,
         dimension_bindings=dimension_bindings,
-        dataset_requirements=contract_dataset_ids,
-        capability_requirements=contract_capabilities,
-        permission_scope=permission_scope,
+        dataset_requirements=required_dataset_ids,
+        capability_requirements=capabilities,
         contract_gaps=tuple(gaps),
-        clarification_outcome_ref=clarification_outcome_ref,
     )
     return AnalysisCompileOutcome(analysis, query_contracts, capability_plans)
-
-
-def _accepted_terminal_gap_authority(
-    proposal: Mapping[str, Any],
-) -> tuple[tuple[ContractGap, ...], str, tuple[str, ...]]:
-    choice = proposal.get("accepted_degradation_choice")
-    if not isinstance(choice, Mapping):
-        return (), "", ()
-    if str(choice.get("action_kind") or "") not in {
-        "omit_unavailable_context",
-        "continue_with_boundary_only",
-    }:
-        return (), "", ()
-    choice_id = str(choice.get("choice_id") or "")
-    source_run_id = str(choice.get("source_run_id") or "")
-    raw_affected = choice.get("affected_capabilities")
-    if (
-        not isinstance(raw_affected, (list, tuple))
-        or not raw_affected
-        or any(not isinstance(item, str) or not item.strip() for item in raw_affected)
-        or len(set(raw_affected)) != len(raw_affected)
-    ):
-        raise ValueError("accepted_terminal_gap_affected_capabilities_invalid")
-    affected = set(raw_affected)
-    if not affected:
-        return (), "", ()
-    if not choice_id or not source_run_id:
-        raise ValueError("accepted_terminal_gap_choice_authority_invalid")
-    authority = proposal.get("accepted_terminal_gap_authority")
-    if not isinstance(authority, Mapping):
-        raise ValueError("accepted_terminal_gap_authority_missing")
-    if set(authority) != _TERMINAL_GAP_AUTHORITY_KEYS:
-        raise ValueError("accepted_terminal_gap_authority_shape_invalid")
-    if str(authority.get("source_run_id") or "") != source_run_id:
-        raise ValueError("accepted_terminal_gap_source_mismatch")
-    expected_thread = str(proposal.get("resume_thread_id") or "")
-    expected_topic = str(proposal.get("resume_topic_id") or "")
-    if (
-        not expected_thread
-        or not expected_topic
-        or authority.get("thread_id") != expected_thread
-        or authority.get("topic_id") != expected_topic
-    ):
-        raise ValueError("accepted_terminal_gap_owner_mismatch")
-    validated_material_authority = validate_material_authority(
-        authority.get("material_authority"),
-        source_run_id=source_run_id,
-        thread_id=expected_thread,
-        topic_id=expected_topic,
-        require_execution_material=True,
-    )
-    source = authority.get("analysis_contract")
-    if not isinstance(source, Mapping):
-        raise ValueError("accepted_terminal_gap_source_invalid")
-    try:
-        prior = analysis_contract_from_dict(source)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("accepted_terminal_gap_source_invalid") from exc
-    if prior.analysis_contract_id != f"analysis:{source_run_id}:1":
-        raise ValueError("accepted_terminal_gap_source_mismatch")
-    if str(authority.get("analysis_contract_signature") or "") != (
-        analysis_contract_signature(prior)
-    ):
-        raise ValueError("accepted_terminal_gap_contract_signature_invalid")
-    validate_material_authority_contract_overlap(
-        validated_material_authority,
-        prior,
-    )
-    validate_terminal_resume_proposal_overlap(
-        validated_material_authority,
-        proposal,
-    )
-    outcome = authority.get("clarification_outcome")
-    if not isinstance(outcome, Mapping) or set(outcome) != {
-        "outcome_ref",
-        "source_run_id",
-        "thread_id",
-        "topic_id",
-        "choice",
-        "outcome_signature",
-    }:
-        raise ValueError("accepted_terminal_gap_outcome_invalid")
-    outcome_body = {
-        key: value for key, value in outcome.items() if key != "outcome_signature"
-    }
-    if str(outcome.get("outcome_signature") or "") != stable_contract_signature(
-        outcome_body
-    ):
-        raise ValueError("accepted_terminal_gap_outcome_signature_invalid")
-    if (
-        outcome.get("source_run_id") != source_run_id
-        or outcome.get("thread_id") != authority.get("thread_id")
-        or outcome.get("topic_id") != authority.get("topic_id")
-    ):
-        raise ValueError("accepted_terminal_gap_outcome_owner_mismatch")
-    if canonical_value(outcome.get("choice")) != canonical_value(dict(choice)):
-        raise ValueError("accepted_terminal_gap_outcome_choice_mismatch")
-    outcome_ref = str(outcome.get("outcome_ref") or "")
-    expected_outcome_ref = "clarification-outcome:" + stable_contract_signature(
-        {
-            "source_run_id": source_run_id,
-            "thread_id": authority.get("thread_id"),
-            "topic_id": authority.get("topic_id"),
-            "choice": canonical_value(dict(choice)),
-        }
-    )
-    if outcome_ref != expected_outcome_ref:
-        raise ValueError("accepted_terminal_gap_outcome_ref_invalid")
-    allowed_scope = affected | {"analysis_contract"}
-    carried = tuple(
-        replace(
-            gap,
-            affected_capabilities=_dedupe(
-                capability
-                for capability in (*gap.affected_capabilities, "analysis_contract")
-                if capability in allowed_scope
-            ),
-        )
-        for gap in prior.contract_gaps
-        if affected.intersection(gap.affected_capabilities)
-    )
-    if not carried:
-        raise ValueError("accepted_terminal_gap_scope_mismatch")
-    return carried, outcome_ref, prior.claim_intents
 
 
 def _required_metric_ids(
@@ -556,6 +327,8 @@ def _required_metric_ids(
     metric_ids = list(_values(proposal, "target_metrics"))
     requested_components = _values(proposal, "requested_components")
     metric_ids.extend(requested_components)
+    association_metrics = _values(proposal, "association_metrics")
+    metric_ids.extend(association_metrics)
     explicitly_requested = set(metric_ids)
     for capability_id in accepted_capabilities:
         contract = _registry_entry(registry.capability_inputs, capability_id)
@@ -631,7 +404,11 @@ def _build_dependency_index(
     metric_ids = _required_metric_ids(proposal, accepted_capabilities, registry)
     dimension_ids = _values(proposal, "requested_dimensions")
     explicit_metrics = set(
-        (*_values(proposal, "target_metrics"), *_values(proposal, "requested_components"))
+        (
+            *_values(proposal, "target_metrics"),
+            *_values(proposal, "requested_components"),
+            *_values(proposal, "association_metrics"),
+        )
     )
     target_metrics = _values(proposal, "target_metrics")
     capability_metric_gaps: list[ContractGap] = []
@@ -678,7 +455,12 @@ def _build_dependency_index(
         contract = _registry_entry(registry.capability_inputs, capability_id)
         if contract is None or str(contract.get("dimension_mode") or "") != "requested":
             continue
+        allowed_dimensions = set(
+            _mapping_values(contract, "allowed_dimensions")
+        )
         for dimension_id in dimension_ids:
+            if allowed_dimensions and dimension_id not in allowed_dimensions:
+                continue
             _append_owner(dimension_owners, dimension_id, capability_id)
     for dimension_id in dimension_ids:
         if not dimension_owners[dimension_id]:
@@ -858,7 +640,6 @@ def _resolve_snapshots(
     catalog: DatasetCatalog,
     registry: RuntimeContractRegistry,
     as_of: datetime,
-    permission_scope: str,
     dataset_owners: Mapping[str, tuple[str, ...]],
     release_resolver: DatasetReleaseResolver | None,
 ) -> tuple[tuple[DatasetSnapshot, ...], tuple[ContractGap, ...]]:
@@ -885,23 +666,12 @@ def _resolve_snapshots(
                 catalog.resolve(
                     dataset_id,
                     as_of=as_of,
-                    permission_scope=permission_scope,
                     evidence_states=("claim_ready", "context_only"),
                     release_resolver=release_resolver,
                 )
             )
         except KeyError:
-            eligible_candidates = catalog.as_of_candidates(
-                dataset_id,
-                as_of=as_of,
-                evidence_states=("claim_ready", "context_only"),
-                release_resolver=release_resolver,
-            )
-            permission_blocked = bool(eligible_candidates) and not any(
-                permission_scope in item.permission_scopes
-                for _, item in eligible_candidates
-            )
-            future_candidates = () if permission_blocked else catalog.future_as_of_candidates(
+            future_candidates = catalog.future_as_of_candidates(
                 dataset_id,
                 as_of=as_of,
                 evidence_states=("claim_ready", "context_only"),
@@ -932,21 +702,16 @@ def _resolve_snapshots(
                     )
                 )
                 continue
-            gap_type = "permission_blocked" if permission_blocked else "source_unbound"
-            repair_options = (
-                ("request_permission", "use_permitted_aggregate")
-                if permission_blocked
-                else ("register_dataset_snapshot", "bind_source")
-            )
+            gap_type = "source_unbound"
+            repair_options = ("register_dataset_snapshot", "bind_source")
             gaps.append(
                 _contract_gap(
                     gap_type=gap_type,
                     gap_id=f"dataset:{dataset_id}:{gap_type}",
                     dataset_id=dataset_id,
                     affected_capabilities=affected_capabilities,
-                    owner="permission_owner" if permission_blocked else "data_owner",
+                    owner="data_owner",
                     repair_options=repair_options,
-                    requires_clarification=permission_blocked,
                 )
             )
     return tuple(snapshots), tuple(gaps)
@@ -1052,7 +817,8 @@ def _snapshot_supports_query(
     context_families = {
         "data_quality_probe",
         "event_context_probe",
-        "gameplay_activity_probe",
+        "association_outcome_timeseries",
+        "association_candidate_timeseries",
         "channel_context_probe",
         "source_reconciliation_probe",
     }
@@ -1240,7 +1006,6 @@ def _bind_dimensions(
     dimension_ids: tuple[str, ...],
     proposal: Mapping[str, Any],
     registry: RuntimeContractRegistry,
-    permission_scope: str,
     snapshots: tuple[DatasetSnapshot, ...],
     dimension_owners: Mapping[str, tuple[str, ...]],
     dimension_dataset_ids: Mapping[str, tuple[str, ...]],
@@ -1261,7 +1026,6 @@ def _bind_dimensions(
                 dataset_id=dataset_id,
                 contract=contract,
                 requested_grain=requested_grain,
-                permission_scope=permission_scope,
                 snapshot=snapshots_by_dataset.get(dataset_id),
                 affected_capabilities=affected_capabilities,
             )
@@ -1278,7 +1042,6 @@ def _bind_dimension_source(
     dataset_id: str,
     contract: Mapping[str, Any],
     requested_grain: str,
-    permission_scope: str,
     snapshot: DatasetSnapshot | None,
     affected_capabilities: tuple[str, ...],
 ) -> tuple[DimensionBinding | None, ContractGap | None]:
@@ -1319,7 +1082,6 @@ def _bind_dimension_source(
         source_field=source_field,
         allowed_grains=allowed_grains,
         null_bucket=str(contract.get("null_bucket") or "Unknown"),
-        permission_scope=permission_scope,
     ), None
 
 
@@ -1328,10 +1090,6 @@ def _bind_claim_intents(
     accepted_capabilities: tuple[str, ...],
     metric_bindings: tuple[MetricBinding, ...],
     registry: RuntimeContractRegistry,
-    *,
-    ready_capabilities: tuple[str, ...],
-    accepted_terminal_gaps: tuple[ContractGap, ...],
-    authority_claim_intents: tuple[str, ...],
 ) -> tuple[tuple[str, ...], tuple[ContractGap, ...]]:
     explicit = _values(proposal, "claim_intents")
 
@@ -1432,43 +1190,15 @@ def _bind_claim_intents(
             accepted = ()
         return accepted, (*material_gaps, *auxiliary_gaps)
 
-    if accepted_terminal_gaps:
-        terminal_gap_claims = {
-            claim_type
-            for gap in accepted_terminal_gaps
-            for claim_type in gap.affected_claim_types
-        }
-        carried_claims = _dedupe(
-            claim_type
-            for claim_type in authority_claim_intents
-            if claim_type in terminal_gap_claims
-        )
-        if (
-            "unbound_claim_intent" in authority_claim_intents
-            and any(
-                is_canonical_unsupported_required_claim_gap(gap)
-                for gap in accepted_terminal_gaps
-            )
-        ):
-            carried_claims = _dedupe((*carried_claims, "unbound_claim_intent"))
-        accepted = _dedupe(
-            (
-                *reviewed_claims(ready_capabilities),
-                *carried_claims,
-            )
-        )
-        if accepted:
-            return accepted, ()
-    else:
-        if capability_ceiling:
-            return capability_ceiling, ()
+    if capability_ceiling:
+        return capability_ceiling, ()
 
-        metric_inferred = []
-        for binding in metric_bindings:
-            metric_inferred.extend(binding.claim_types)
-        accepted = _dedupe(metric_inferred)
-        if accepted:
-            return accepted, ()
+    metric_inferred = []
+    for binding in metric_bindings:
+        metric_inferred.extend(binding.claim_types)
+    accepted = _dedupe(metric_inferred)
+    if accepted:
+        return accepted, ()
 
     diagnosed = ("unbound_claim_intent",)
     return diagnosed, (
@@ -1487,10 +1217,12 @@ def _bind_claim_intents(
         ),
     )
 
+
 def _resolve_advisory_windows(
     *,
     target_semantic: str,
     baselines: tuple[str, ...],
+    context_window_specs: tuple[Mapping[str, Any], ...],
     as_of: datetime,
     timezone_name: str,
     dataset_watermarks: Mapping[str, date],
@@ -1502,6 +1234,7 @@ def _resolve_advisory_windows(
         return resolve_revenue_windows(
             target_semantic=target_semantic,
             baselines=baselines,
+            context_window_specs=context_window_specs,
             as_of=as_of,
             timezone_name=timezone_name,
             dataset_watermarks=dataset_watermarks,
@@ -1516,6 +1249,10 @@ def _resolve_advisory_windows(
             "unsupported_target_semantic",
             "unsupported_baseline",
             "duplicate_baseline",
+            "context_window_specs_invalid",
+            "context_window_spec_invalid",
+            "unsupported_context_window_relation",
+            "unsupported_context_window_unit",
         }:
             raise
         return WindowResolution(
@@ -1612,7 +1349,6 @@ def _build_query_contracts(
     metric_bindings: tuple[MetricBinding, ...],
     dimension_bindings: tuple[DimensionBinding, ...],
     registry: RuntimeContractRegistry,
-    permission_scope: str,
     capability_dependencies: tuple[CapabilityDependencySet, ...] = (),
 ) -> tuple[tuple[QueryContract, ...], dict[str, tuple[str, ...]]]:
     if not windows:
@@ -1622,8 +1358,7 @@ def _build_query_contracts(
     snapshot_by_dataset = {item.dataset_id: item for item in snapshots}
     metric_ids_available = {item.metric_id for item in metric_bindings}
     filters = _filters(proposal)
-    query_windows = _canonical_query_windows(windows)
-    window_refs = tuple(item.window_id for item in query_windows)
+    canonical_windows = _canonical_query_windows(windows)
     logical_queries: list[dict[str, Any]] = []
     query_owners: list[set[str]] = []
     seen: dict[str, int] = {}
@@ -1645,6 +1380,15 @@ def _build_query_contracts(
         capability = _registry_entry(registry.capability_inputs, capability_id)
         if capability is None:
             continue
+        query_windows = _query_windows_for_capability(
+            capability_id=capability_id,
+            capability=capability,
+            proposal=proposal,
+            windows=canonical_windows,
+        )
+        if not query_windows:
+            continue
+        window_refs = tuple(item.window_id for item in query_windows)
         dependency_set = dependencies_by_capability.get(capability_id)
         capability_metric_ids = (
             set(dependency_set.metric_ids) if dependency_set is not None else None
@@ -1740,6 +1484,11 @@ def _build_query_contracts(
                             item
                             for item in dimension_bindings
                             if include_dimensions and item.dataset_id == dataset_id
+                            and (
+                                dependency_set is None
+                                or item.dimension_id
+                                in set(dependency_set.dimension_ids)
+                            )
                         ),
                         key=lambda item: item.dimension_id,
                     )
@@ -1780,7 +1529,6 @@ def _build_query_contracts(
                             "unique_result_grain",
                             "source_snapshot_matches_contract",
                         ),
-                        "permission_scope": permission_scope,
                         "workload_class": str(
                             capability.get("workload_class")
                             or "interactive_aggregate"
@@ -1793,7 +1541,8 @@ def _build_query_contracts(
                     if query_dimensions and query_family not in {
                         "channel_context_probe",
                         "data_quality_probe",
-                        "gameplay_activity_probe",
+                        "association_outcome_timeseries",
+                        "association_candidate_timeseries",
                     }:
                         companion_shape_contract = _registry_entry(
                             registry.query_shape,
@@ -2024,10 +1773,69 @@ def _reconcile_capability_inputs(
             "degradation_action": degradation_action,
             "role_sources": list(role.get("sources") or ()),
         }
-        requires_input_clarification = not (
-            gap_context["analysis_role"] == "auxiliary"
-            and degradation_action_is_non_blocking(degradation_action)
+        # An auxiliary path may block its own claim, but it cannot reopen a
+        # material clarification after the primary comparison is bound.
+        requires_input_clarification = (
+            gap_context["analysis_role"] != "auxiliary"
         )
+        context_window_state = _context_window_binding_state(
+            capability_id,
+            windows,
+            registry,
+        )
+        if context_window_state in {"unbound", "ambiguous"}:
+            current_claim_types = _mapping_values(
+                contract,
+                "supported_claim_types",
+            )
+            requested_claim_types = set(_values(proposal, "claim_intents"))
+            if requested_claim_types:
+                current_claim_types = tuple(
+                    claim_type
+                    for claim_type in current_claim_types
+                    if claim_type in requested_claim_types
+                )
+            sibling_claim_types = {
+                claim_type
+                for sibling_id, sibling_plan in plan_by_capability.items()
+                if sibling_id != capability_id
+                and all(
+                    slot.query_contract_refs
+                    for slot in sibling_plan.required_input_slots
+                )
+                for claim_type in sibling_plan.supported_claim_types
+            }
+            unavailable_claim_types = tuple(
+                claim_type
+                for claim_type in current_claim_types
+                if claim_type not in sibling_claim_types
+            )
+            gap_context = {
+                **gap_context,
+                "context_window_binding": context_window_state,
+                "claim_scope_explicit": True,
+                "publication_status": "unavailable",
+            }
+            gap = _contract_gap(
+                gap_type="contract_partial",
+                gap_id=(
+                    f"capability:{capability_id}:context_window_spec:"
+                    f"{context_window_state}"
+                ),
+                affected_capabilities=(capability_id,),
+                affected_claim_types=unavailable_claim_types,
+                repair_options=(
+                    "bind_context_window_spec",
+                    "remove_capability_path",
+                    "clarify_context_window_intent",
+                ),
+                requires_clarification=requires_input_clarification,
+                diagnostic_context=gap_context,
+            )
+            gaps[gap.gap_id] = gap
+            # A context capability without its own accepted window cannot use
+            # target plus the primary baseline as substitute evidence.
+            continue
         for window_id in _mapping_values(contract, "required_windows"):
             if window_id not in available_windows:
                 gap = _contract_gap(
@@ -2105,6 +1913,42 @@ def _reconcile_capability_inputs(
     return tuple(gaps.values())
 
 
+def _context_window_binding_state(
+    capability_id: str,
+    windows: tuple[ResolvedWindow, ...],
+    registry: RuntimeContractRegistry,
+) -> str:
+    """Return whether a selected capability owns an executable time context.
+
+    Context-window capabilities receive one reviewed reference window. An
+    explicitly required primary baseline may satisfy the same contract when
+    the capability declares that baseline in required_windows. Merely having a
+    user-selected comparison baseline does not satisfy a context capability.
+    """
+
+    contract = _registry_entry(registry.capability_inputs, capability_id)
+    if contract is None or not isinstance(
+        contract.get("context_window_policy"), Mapping
+    ):
+        return "not_required"
+    owned_context_refs = tuple(
+        window
+        for window in windows
+        if capability_id in tuple(window.capability_refs or ())
+    )
+    if len(owned_context_refs) == 1:
+        return "bound"
+    if len(owned_context_refs) > 1:
+        return "ambiguous"
+    required_windows = set(_mapping_values(contract, "required_windows"))
+    if any(
+        window.role == "baseline" and window.window_id in required_windows
+        for window in windows
+    ):
+        return "primary_baseline_bound"
+    return "unbound"
+
+
 def _result_shape(
     metric_bindings: tuple[MetricBinding, ...],
     dimension_bindings: tuple[DimensionBinding, ...],
@@ -2161,7 +2005,11 @@ def _scope_gaps(
             )
         )
         claim_types = gap.affected_claim_types
-        if not claim_types and claim_types_by_capability is not None:
+        if (
+            not claim_types
+            and claim_types_by_capability is not None
+            and gap.diagnostic_context.get("claim_scope_explicit") is not True
+        ):
             claim_types = _dedupe(
                 claim_type
                 for capability_id in capabilities
@@ -2221,6 +2069,83 @@ def _queryless_capability_blocks_claims(
             registry=registry,
         )
     )
+
+
+def _apply_capability_role_to_gaps(
+    gaps: Iterable[ContractGap],
+    *,
+    capability_roles: Mapping[str, Mapping[str, Any]],
+    registry: RuntimeContractRegistry,
+) -> tuple[ContractGap, ...]:
+    """Keep source and snapshot gaps local to auxiliary analysis paths."""
+
+    scoped: list[ContractGap] = []
+    for gap in gaps:
+        affected = tuple(
+            capability_id
+            for capability_id in gap.affected_capabilities
+            if capability_id != "analysis_contract"
+        )
+        auxiliary_only = (
+            bool(affected)
+            and "analysis_contract" not in set(gap.affected_capabilities)
+            and all(
+                str(
+                    (capability_roles.get(capability_id) or {}).get(
+                        "analysis_role"
+                    )
+                    or "required"
+                )
+                == "auxiliary"
+                for capability_id in affected
+            )
+        )
+        if not auxiliary_only:
+            scoped.append(gap)
+            continue
+        actions = tuple(
+            dict.fromkeys(
+                str(
+                    (
+                        _registry_entry(
+                            registry.capability_inputs,
+                            capability_id,
+                        )
+                        or {}
+                    )
+                    .get("degradation_policy", {})
+                    .get("missing_required_input")
+                    or "omit_path"
+                )
+                for capability_id in affected
+            )
+        )
+        role_sources = tuple(
+            dict.fromkeys(
+                str(source)
+                for capability_id in affected
+                for source in (
+                    capability_roles.get(capability_id) or {}
+                ).get("sources", ())
+                if str(source)
+            )
+        )
+        scoped.append(
+            replace(
+                gap,
+                requires_clarification=False,
+                diagnostic_context={
+                    **dict(gap.diagnostic_context),
+                    "analysis_role": "auxiliary",
+                    "degradation_action": (
+                        actions[0] if len(actions) == 1 else "omit_path"
+                    ),
+                    "role_sources": list(role_sources),
+                    "publication_status": "unavailable",
+                },
+            )
+        )
+    return tuple(scoped)
 
 
 def _merge_contract_gaps(
@@ -2336,6 +2261,55 @@ def _canonical_query_windows(
             ),
         )
     )
+
+
+def _query_windows_for_capability(
+    *,
+    capability_id: str,
+    capability: Mapping[str, Any],
+    proposal: Mapping[str, Any],
+    windows: tuple[ResolvedWindow, ...],
+) -> tuple[ResolvedWindow, ...]:
+    """Bind each query path only to the windows that path can consume.
+
+    Target plus the user-confirmed comparison baselines form the primary
+    analysis window set. Auxiliary context belongs only to capabilities named
+    by its reviewed window specification (or by a capability's explicit
+    required_windows contract). This keeps a missing context series from
+    changing the completeness of formula, segment, or direction queries.
+    """
+
+    owned_context_ids = {
+        window.window_id
+        for window in windows
+        if capability_id in tuple(window.capability_refs or ())
+    }
+    required_window_ids = set(
+        _mapping_values(capability, "required_windows")
+    )
+    if isinstance(capability.get("context_window_policy"), Mapping) and not (
+        owned_context_ids
+        or any(
+            window.role == "baseline"
+            and window.window_id in required_window_ids
+            for window in windows
+        )
+    ):
+        return ()
+    selected_ids = {
+        "target_day",
+        *_values(proposal, "baselines"),
+        *required_window_ids,
+        *owned_context_ids,
+    }
+    selected = tuple(
+        window for window in windows if window.window_id in selected_ids
+    )
+    if not selected or selected[0].window_id != "target_day":
+        raise ValueError(
+            f"capability_query_target_window_missing:{capability_id}"
+        )
+    return selected
 
 
 def _canonical_scope_type(value: Any) -> Any:
@@ -2820,6 +2794,67 @@ def _sequence_values(value: Any) -> tuple[str, ...]:
     else:
         values = ()
     return _dedupe(str(item).strip() for item in values if str(item).strip())
+
+
+def _context_window_specs(
+    proposal: Mapping[str, Any],
+    *,
+    accepted_capabilities: tuple[str, ...],
+    registry: RuntimeContractRegistry,
+) -> tuple[Mapping[str, Any], ...]:
+    raw = proposal.get("context_window_specs") or ()
+    if not isinstance(raw, (list, tuple)) or any(
+        not isinstance(item, Mapping) for item in raw
+    ):
+        raise ValueError("context_window_specs_invalid:shape")
+    accepted = set(accepted_capabilities)
+    output: list[dict[str, Any]] = []
+    seen_capabilities: set[str] = set()
+    for index, item in enumerate(raw):
+        if set(item) != {"capability_id", "relation", "unit", "count"}:
+            raise ValueError(f"context_window_spec_invalid:{index}:shape")
+        capability_id = str(item.get("capability_id") or "")
+        relation = str(item.get("relation") or "")
+        unit = str(item.get("unit") or "")
+        count = item.get("count")
+        try:
+            policy = registry.capability_inputs(capability_id).get(
+                "context_window_policy"
+            )
+        except KeyError:
+            policy = None
+        bounds = (
+            policy.get("count_bounds")
+            if isinstance(policy, Mapping)
+            else None
+        )
+        unit_bounds = bounds.get(unit) if isinstance(bounds, Mapping) else None
+        valid_count = (
+            isinstance(count, int)
+            and not isinstance(count, bool)
+            and isinstance(unit_bounds, (list, tuple))
+            and len(unit_bounds) == 2
+            and unit_bounds[0] <= count <= unit_bounds[1]
+        )
+        if (
+            capability_id not in accepted
+            or not isinstance(policy, Mapping)
+            or relation != policy.get("relation")
+            or unit not in set(policy.get("allowed_units") or ())
+            or not valid_count
+            or capability_id in seen_capabilities
+        ):
+            raise ValueError(f"context_window_spec_invalid:{index}:policy")
+        seen_capabilities.add(capability_id)
+        output.append(
+            {
+                "capability_id": capability_id,
+                "relation": relation,
+                "unit": unit,
+                "count": count,
+            }
+        )
+    return tuple(output)
 
 
 def _dedupe(values: Iterable[Any]) -> tuple[str, ...]:

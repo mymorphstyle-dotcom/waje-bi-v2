@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 from bi_agent.conversation.models import CLARIFICATION_ESCAPE_OPTION  # noqa: E402
 from bi_agent.runtime.langgraph_workflow import (  # noqa: E402
     _build_final_route_narrative_payload,
+    _business_intent_payload,
     _business_answer_context,
     _business_causal_audit_payload,
     _business_display_review,
@@ -31,12 +32,18 @@ from bi_agent.runtime.langgraph_workflow import (  # noqa: E402
     _final_narrative_statement_bindings,
     _validate_business_factor_state_narrative,
     _validate_causal_audit_provider_output,
+    _validate_business_intent_provider_output,
     _validate_final_answer_audit_provider_output,
 )
 from bi_agent.runtime.llm_client import (  # noqa: E402
+    _chat_completion_request,
     _contains_unlocalized_narrative_tokens,
 )
 from bi_agent.runtime.llm_prompts import build_prompt  # noqa: E402
+from bi_agent.runtime.runtime_contract_registry import (  # noqa: E402
+    CANONICAL_RUNTIME_BINDINGS_PATH,
+    RuntimeContractRegistry,
+)
 
 
 DEFAULT_INITIAL_PACKAGE = REPO_ROOT / (
@@ -55,6 +62,18 @@ DEFAULT_WORKERS = 12
 DEFAULT_TIMEOUT_SECONDS = 300.0
 MODEL_TIERS = ("flash", "pro")
 THINKING_MODES = ("enabled", "disabled")
+_BUSINESS_INTENT_LEGACY_PLANNING_FIELDS = frozenset(
+    {
+        "claim_intents",
+        "claim_intent_roles",
+        "requested_components",
+        "requested_dimensions",
+        "context_sources",
+    }
+)
+_BUSINESS_INTENT_LOCAL_DERIVATION_FIELDS = frozenset(
+    {"required_outcomes", "analysis_axes"}
+)
 
 _CASE_B_CURRENT_BUSINESS_DRAFT = (
     "我对问题的理解是：核对2026年6月1日付费金额相较2026年5月31日的变化，"
@@ -113,12 +132,9 @@ def load_replay_scenarios(
     resume_calls = _load_root_llm_calls(resume_path)
 
     scenarios = [
-        _scenario_from_call(
-            scenario_id="business_intent",
-            current_task="business_intent",
+        _business_intent_scenario(
             source_path=initial_path,
             calls=initial_calls,
-            source_task="business_intent",
         ),
         _scenario_from_call(
             scenario_id="boundary_decision_unbound",
@@ -269,16 +285,12 @@ def execute_job_once(
 ) -> dict[str, Any]:
     started_at = _utc_now()
     started = perf_counter()
-    request: dict[str, Any] = {
-        "model": job.model,
-        "messages": [dict(message) for message in job.messages],
-        "response_format": {"type": "json_object"},
-        "extra_body": {"thinking": {"type": job.thinking}},
-    }
-    if job.thinking == "enabled":
-        request["reasoning_effort"] = "high"
-    else:
-        request["temperature"] = 0
+    request = _chat_completion_request(
+        model=job.model,
+        messages=job.messages,
+        thinking=job.thinking,
+        deepseek_endpoint=True,
+    )
     try:
         response = client.chat.completions.create(**request)
         message = response.choices[0].message
@@ -495,6 +507,19 @@ def summarize_results(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             int((item.get("usage") or {}).get("total_tokens") or 0)
             for item in items
         )
+        every_result_has_one_material_signature = bool(items) and all(
+            bool(item.get("material_signature")) for item in items
+        )
+        material_signature_stable = (
+            every_result_has_one_material_signature
+            and len(material_signatures) == 1
+        )
+        strict_stability_pass = (
+            len(completed) == len(items)
+            and len(schema_passes) == len(items)
+            and len(contract_passes) == len(items)
+            and material_signature_stable
+        )
         groups.append(
             {
                 "scenario_id": scenario_id,
@@ -508,6 +533,8 @@ def summarize_results(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 ),
                 "unique_output_count": len(output_hashes),
                 "unique_material_signature_count": len(material_signatures),
+                "material_signature_stable": material_signature_stable,
+                "strict_stability_pass": strict_stability_pass,
                 "latency_ms_p50": _percentile(durations, 0.50),
                 "latency_ms_p95": _percentile(durations, 0.95),
                 "total_tokens": usage_total,
@@ -529,6 +556,8 @@ def summarize_results(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             for result in results
             if (result.get("validation") or {}).get("business_contract_pass") is True
         ),
+        "strict_stability_pass": bool(groups)
+        and all(group["strict_stability_pass"] for group in groups),
         "groups": groups,
     }
 
@@ -738,6 +767,61 @@ def _scenario_from_call(
         payload=payload,
         messages=spec.messages,
     )
+
+
+def _business_intent_scenario(
+    *,
+    source_path: Path,
+    calls: Sequence[Mapping[str, Any]],
+) -> ReplayScenario:
+    call_index, call = _find_call(calls, "business_intent", 0)
+    replay_payload = _extract_input_payload(call.get("messages") or ())
+    request = _business_intent_request_from_replay_payload(replay_payload)
+    payload = _business_intent_payload(request)
+    spec = build_prompt("business_intent", payload)
+    return ReplayScenario(
+        scenario_id="business_intent",
+        task="business_intent",
+        provenance="exact_question_current_contract_projection",
+        source_path=str(source_path),
+        source_task="business_intent",
+        source_call_index=call_index,
+        source_input_hash=str(
+            call.get("input_hash") or _hash_json(call.get("messages"))
+        ),
+        prompt_version=spec.prompt_version,
+        required_keys=spec.required_keys,
+        payload=payload,
+        messages=spec.messages,
+    )
+
+
+def _business_intent_request_from_replay_payload(
+    replay_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    question = str(replay_payload.get("question") or "").strip()
+    if not question:
+        raise ValueError("business_intent_replay_question_missing")
+    request: dict[str, Any] = {"question": question}
+    bound = replay_payload.get("bound_business_context")
+    if isinstance(bound, Mapping):
+        for key in (
+            "target_metric",
+            "pattern_family",
+            "pattern_params",
+            "scope",
+            "time_window",
+            "baseline",
+            "target",
+        ):
+            if key in bound:
+                request[key] = bound[key]
+    reviewed_window = replay_payload.get("reviewed_time_window_recommendation")
+    if isinstance(reviewed_window, Mapping):
+        time_window = reviewed_window.get("time_window")
+        if isinstance(time_window, str) and time_window:
+            request["analysis_context"] = {"target_date": time_window}
+    return request
 
 
 def _final_route_narrative_scenario(
@@ -1109,6 +1193,30 @@ def _task_contract_errors(
             errors.append("machine_identifier_in_narrative")
     elif job.task == "business_intent":
         input_payload = _extract_input_payload(job.messages)
+        legacy_fields = _nested_mapping_keys(
+            parsed,
+            _BUSINESS_INTENT_LEGACY_PLANNING_FIELDS,
+        )
+        if legacy_fields:
+            errors.append("business_intent_legacy_planning_field_present")
+        provider_derived_fields = _nested_mapping_keys(
+            parsed,
+            _BUSINESS_INTENT_LOCAL_DERIVATION_FIELDS,
+        )
+        if provider_derived_fields:
+            errors.append("business_intent_local_derivation_owned_by_provider")
+        registry = RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        )
+        request = _business_intent_request_from_replay_payload(input_payload)
+        try:
+            _validate_business_intent_provider_output(
+                parsed,
+                request,
+                registry,
+            )
+        except Exception as exc:
+            errors.append(str(exc))
         closed_fields = {
             "target_metric": "allowed_target_metric_ids",
             "scope": "allowed_scope_types",
@@ -1197,15 +1305,18 @@ def _case_b_expectation_errors(
             if output.get(field) != expected:
                 errors.append(f"case_b_value_mismatch:{field}")
         requirements = output.get("analysis_requirements") or {}
-        claims = set(requirements.get("claim_intents") or ())
-        required_claims = {"comparative_change", "formula_component_contribution"}
-        if not required_claims.issubset(claims):
-            errors.append("case_b_required_claim_intent_missing")
-        roles = requirements.get("claim_intent_roles") or {}
-        if any(roles.get(claim) != "user_required" for claim in required_claims):
-            errors.append("case_b_required_claim_role_changed")
-        if "observed_activity" in claims:
-            errors.append("case_b_unrequested_activity_claim")
+        expected_requirements = {
+            "goal_bindings": [
+                {"goal_id": "explain_change", "role": "primary"}
+            ],
+            "explicit_focus": {
+                "component_ids": [],
+                "dimension_ids": [],
+                "context_source_ids": [],
+            },
+        }
+        if requirements != expected_requirements:
+            errors.append("case_b_analysis_goal_binding_mismatch")
         if _prequery_direction_asserted(prose):
             errors.append("case_b_direction_confirmed_before_query")
         if re.search(
@@ -1611,6 +1722,23 @@ def _nested_text_values(value: Any) -> list[str]:
     return []
 
 
+def _nested_mapping_keys(value: Any, selected: frozenset[str]) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            normalized_key = str(key)
+            if normalized_key in selected:
+                found.add(normalized_key)
+            found.update(_nested_mapping_keys(item, selected))
+    elif isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        for item in value:
+            found.update(_nested_mapping_keys(item, selected))
+    return found
+
+
 def _core_factor_text_errors(
     text: str,
     *,
@@ -1827,6 +1955,10 @@ def _material_signature(
                 "dataset_requirements",
                 "diagnostic_tags",
                 "claim_intents",
+                "goal_bindings",
+                "component_ids",
+                "dimension_ids",
+                "context_source_ids",
             },
         )
     elif task == "boundary_decision":

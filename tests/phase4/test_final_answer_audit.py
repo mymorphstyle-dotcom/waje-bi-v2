@@ -105,7 +105,7 @@ class FinalAnswerAuditTest(unittest.TestCase):
             {
                 "final_business_summary": "最终结论：Q2 相比 Q1 的付费金额提升 20.0%。",
                 "validator_results": [
-                    {"validator": "permission", "ok": False},
+                    {"validator": "sensitive_output_policy", "ok": False},
                     {"validator": "sql_safety", "ok": True},
                 ],
                 "verifier": {
@@ -126,7 +126,7 @@ class FinalAnswerAuditTest(unittest.TestCase):
         self.assertEqual(
             audit["hard_blockers"],
             [
-                "permission_leak",
+                "sensitive_output_leak",
                 "verifier_evidence_contradiction",
                 "unsupported_main_claim",
             ],

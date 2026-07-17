@@ -38,6 +38,7 @@ from bi_agent.runtime.langgraph_workflow import (
     _key_findings_sentence,
     _local_final_answer_hard_blockers,
     _normalize_claim_numbers,
+    _panel_hypotheses_from_temporal_association,
     _production_bound_input,
     _repair_answer,
     _route_after_hard_verify,
@@ -52,11 +53,87 @@ from tests.phase7.test_core_driver_capability_binding import (
 )
 
 
+def test_channel_panel_reuses_each_robust_temporal_candidate_once() -> None:
+    temporal_evidence = SimpleNamespace(
+        typed_payload={
+            "associations_by_outcome": {
+                "paid_amount": {
+                    "association": {
+                        "supported_associations": (
+                            {
+                                "candidate_key": "player_bet_amount",
+                                "transform": "level",
+                                "lag": 0,
+                                "supported": True,
+                                "rolling": {"stable": True},
+                            },
+                            {
+                                "candidate_key": "player_bet_amount",
+                                "transform": "signed_log_difference",
+                                "lag": 1,
+                                "supported": True,
+                                "rolling": {"stable": True},
+                            },
+                            {
+                                "candidate_key": "player_bet_amount",
+                                "transform": "difference",
+                                "lag": 2,
+                                "supported": True,
+                                "rolling": {"stable": True},
+                            },
+                            {
+                                "candidate_key": "gameplay_rounds",
+                                "transform": "difference",
+                                "lag": 0,
+                                "supported": True,
+                                "rolling": {"stable": False},
+                            },
+                        )
+                    }
+                },
+                "avg_order_amount": {
+                    "association": {
+                        "supported_associations": (
+                            {
+                                "candidate_key": "player_avg_bet_amount",
+                                "transform": "difference",
+                                "lag": 0,
+                                "supported": True,
+                                "rolling": {"stable": True},
+                            },
+                        )
+                    }
+                },
+            }
+        }
+    )
+
+    assert _panel_hypotheses_from_temporal_association(temporal_evidence) == (
+        {
+            "hypothesis_id": (
+                "paid_amount:player_bet_amount:signed_log_difference:lag1"
+            ),
+            "outcome_metric": "paid_amount",
+            "candidate_metric": "player_bet_amount",
+            "transform": "signed_log_difference",
+            "lag": 1,
+        },
+        {
+            "hypothesis_id": (
+                "avg_order_amount:player_avg_bet_amount:difference:lag0"
+            ),
+            "outcome_metric": "avg_order_amount",
+            "candidate_metric": "player_avg_bet_amount",
+            "transform": "difference",
+            "lag": 0,
+        },
+    )
+
+
 def _state(*capabilities: str) -> dict:
     return {
         "request": {
             "run_mode": "production",
-            "role": "analyst",
             "runtime_rows_by_intent": {
                 "daily_metric_baselines": (
                     {
@@ -146,6 +223,95 @@ def test_omittable_capability_gap_degrades_ready_siblings_without_clarification(
             },
         ),
         persistence_records={},
+    )
+
+    assert result.status == "degraded"
+
+
+def test_auxiliary_block_claim_gap_only_blocks_its_claim_with_ready_siblings():
+    result = analysis_runtime_module.AnalysisRuntimeResult(
+        analysis_contract=object(),
+        query_contracts=(),
+        query_results=(object(),),
+        completeness_reports=(),
+        capability_plans=(
+            SimpleNamespace(
+                capability_id="driver_decomposition",
+                degradation_policy={"missing_required_input": "block_claim"},
+            ),
+            SimpleNamespace(
+                capability_id="rolling_window_compare",
+                degradation_policy={"missing_required_input": "block_claim"},
+            ),
+        ),
+        bound_capability_inputs={
+            "driver_decomposition": SimpleNamespace(status="ready"),
+            "rolling_window_compare": SimpleNamespace(status="blocked"),
+        },
+        repair_decisions=(),
+        typed_gaps=(
+            {
+                "gap_type": "contract_partial",
+                "requires_clarification": False,
+                "affected_capabilities": ("rolling_window_compare",),
+                "affected_claim_types": ("baseline_stability",),
+                "diagnostic_context": {
+                    "analysis_role": "auxiliary",
+                    "degradation_action": "block_claim",
+                },
+            },
+        ),
+        persistence_records={},
+    )
+
+    assert result.status == "degraded"
+
+
+def test_auxiliary_query_recompile_does_not_recompile_ready_primary_analysis():
+    primary_slot = SimpleNamespace(
+        query_contract_refs=("query:primary",),
+        validation_query_contract_refs=(),
+    )
+    auxiliary_slot = SimpleNamespace(
+        query_contract_refs=("query:context",),
+        validation_query_contract_refs=(),
+    )
+    result = analysis_runtime_module.AnalysisRuntimeResult(
+        analysis_contract=object(),
+        query_contracts=(),
+        query_results=(object(),),
+        completeness_reports=(),
+        capability_plans=(
+            SimpleNamespace(
+                capability_id="driver_decomposition",
+                degradation_policy={"missing_required_input": "block_claim"},
+                required_input_slots=(primary_slot,),
+                optional_input_slots=(),
+            ),
+            SimpleNamespace(
+                capability_id="rolling_window_compare",
+                degradation_policy={"missing_required_input": "block_claim"},
+                required_input_slots=(auxiliary_slot,),
+                optional_input_slots=(),
+            ),
+        ),
+        bound_capability_inputs={
+            "driver_decomposition": SimpleNamespace(status="ready"),
+            "rolling_window_compare": SimpleNamespace(status="blocked"),
+        },
+        repair_decisions=(
+            SimpleNamespace(
+                action="recompile",
+                reason="query_shape_mismatch",
+                failed_query_contract_ref="query:context",
+            ),
+        ),
+        typed_gaps=(),
+        persistence_records={},
+        capability_roles={
+            "driver_decomposition": "required",
+            "rolling_window_compare": "auxiliary",
+        },
     )
 
     assert result.status == "degraded"
@@ -957,6 +1123,7 @@ def test_claim_readiness_accepts_only_declared_optional_slot_degradation():
             ),
             "degradation_policy": {
                 "missing_optional_input": "omit_optional_component",
+                "incomplete_input": "omit_optional_component",
             },
             "minimum_readiness": {"required_slots": "all"},
         },
@@ -972,6 +1139,16 @@ def test_claim_readiness_accepts_only_declared_optional_slot_degradation():
             },
         }
     )
+    failed_optional_query = SimpleNamespace(
+        **{
+            **claim_ready.__dict__,
+            "binding_payload": {
+                "reasons": (
+                    "query_execution_failed:payment_success_scan:clickhouse_query_failed",
+                ),
+            },
+        }
+    )
 
     claim_ready_check = getattr(
         capability_execution_module,
@@ -980,6 +1157,7 @@ def test_claim_readiness_accepts_only_declared_optional_slot_degradation():
     )
     assert claim_ready_check is not None
     assert claim_ready_check(claim_ready) is True
+    assert claim_ready_check(failed_optional_query) is True
     assert claim_ready_check(undeclared_gap) is False
 
 
@@ -1411,7 +1589,7 @@ def test_final_summary_receives_verified_subset_and_business_gap_only():
             "target_metric": "paid_amount",
             "target": {"label": "2026-06-01"},
             "baseline": {"label": "2026-05-31"},
-            "required_claim_intents": [
+            "required_claim_types": [
                 "comparative_change",
                 "formula_component_contribution",
             ],

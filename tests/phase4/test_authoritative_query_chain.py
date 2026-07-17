@@ -105,7 +105,6 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
                 filters={},
                 dimensions=("gameplay",),
                 contract_versions={},
-                role="analyst",
                 budget_state=BudgetState("ordinary", 0, 50, 100),
                 llm_business_reason="Use sparse gameplay activity context.",
                 params={},
@@ -192,7 +191,6 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
                         filters={},
                         dimensions=dimensions,
                         contract_versions={},
-                        role="analyst",
                         budget_state=BudgetState("ordinary", 0, 50, 100),
                         llm_business_reason="Use authoritative ClickHouse rows.",
                         params={},
@@ -334,7 +332,6 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
                 filters={},
                 dimensions=(),
                 contract_versions={},
-                role="analyst",
                 budget_state=BudgetState("ordinary", 0, 50, 100),
                 llm_business_reason="Use reviewed event rows.",
                 params={"rows": ({"event_id": "forged"},)},
@@ -833,7 +830,6 @@ def _gameplay_authority_context(registry, *, include_sparse_baseline=False):
         schema_fingerprint="b1" * 32,
         schema_fields=tuple(registry.dataset("gameplay")["schema_fields"]),
         contract_ref="contracts/sources/gameplay.source.yaml@0.1",
-        permission_scopes=("analyst",),
         loaded_at="2026-06-03T00:00:00+00:00",
         status="active",
         evidence_state="context_only",
@@ -887,7 +883,6 @@ def _gameplay_authority_context(registry, *, include_sparse_baseline=False):
         catalog=DatasetCatalog((base,), release_resolver=release_resolver),
         registry=registry,
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        permission_scope="analyst",
         release_resolver=release_resolver,
     )
     contract = next(
@@ -1004,7 +999,6 @@ def _event_authority_context(registry):
         schema_fingerprint="a1" * 32,
         schema_fields=schema_fields,
         contract_ref="contracts/sources/external-events.source.yaml@0.1",
-        permission_scopes=("analyst",),
         loaded_at="2026-06-03T00:00:00+00:00",
         status="active",
         evidence_state="context_only",
@@ -1043,7 +1037,6 @@ def _event_authority_context(registry):
         catalog=DatasetCatalog((snapshot,), release_resolver=release_resolver),
         registry=registry,
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        permission_scope="analyst",
         release_resolver=release_resolver,
     )
     contract = outcome.query_contracts[0]
@@ -1139,7 +1132,6 @@ def _dashboard_authority_context(registry):
             "paid_amount",
         ),
         contract_ref="contract:market-dashboard@1",
-        permission_scopes=("analyst",),
         loaded_at="2026-06-03T00:00:00+00:00",
         status="active",
         evidence_state="claim_ready",
@@ -1201,7 +1193,6 @@ def _dashboard_authority_context(registry):
         catalog=catalog,
         registry=registry,
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        permission_scope="analyst",
         release_resolver=release_resolver,
     )
     contract = outcome.query_contracts[0]

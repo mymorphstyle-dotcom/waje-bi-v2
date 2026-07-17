@@ -80,7 +80,7 @@ nodes:
   label: 电力波动
   depth: 6
   factor_group_id: geo_device_environment
-  data_contract_state: permission_limited
+  data_contract_state: evidence_linked
   review_status: accepted_initial_mapping_by_rule
 - node_id: 2983f2dbc6aaf7227a676f4647713448
   label: 活跃的媒体、官网、论坛，可能有相关实事新闻，可以尝试抓取，提前预知一些有计划的波动
@@ -92,7 +92,7 @@ nodes:
   label: 网络波动
   depth: 6
   factor_group_id: geo_device_environment
-  data_contract_state: permission_limited
+  data_contract_state: contract_backed
   review_status: accepted_initial_mapping_by_rule
 - node_id: 819c810557f99ca5cd042ef7a8463ae5
   label: 活跃的媒体、官网、论坛，可能有相关实事新闻，可以尝试抓取，提前预知一些有计划的波动
@@ -152,7 +152,7 @@ nodes:
   label: 极端天气
   depth: 6
   factor_group_id: geo_device_environment
-  data_contract_state: permission_limited
+  data_contract_state: evidence_linked
   review_status: accepted_initial_mapping_by_rule
 - node_id: 359e1f21b2b43c741712b3dd733689bc
   label: 内部因素
@@ -236,7 +236,7 @@ nodes:
   label: 被邀请用户的数量及占比
   depth: 6
   factor_group_id: marketing_channel_and_growth_ops
-  data_contract_state: permission_limited
+  data_contract_state: missing_contract
   review_status: accepted_initial_mapping_by_rule
 - node_id: caea77d50c306f78a10cbfc075a314f6
   label: 外部联运
@@ -260,7 +260,7 @@ nodes:
   label: 网络波动
   depth: 5
   factor_group_id: geo_device_environment
-  data_contract_state: permission_limited
+  data_contract_state: contract_backed
   review_status: accepted_initial_mapping_by_rule
 - node_id: 9be69034c89542129003cd3a48450b12
   label: 内部因素
@@ -386,7 +386,7 @@ nodes:
   label: 投放端：新用户质量影响
   depth: 5
   factor_group_id: marketing_channel_and_growth_ops
-  data_contract_state: permission_limited
+  data_contract_state: missing_contract
   review_status: accepted_initial_mapping_by_rule
 - node_id: 934212ab93575d5f8b0fb4d4b1599072
   label: 各个渠道的消耗、新增、首充人数占比
@@ -410,7 +410,7 @@ nodes:
   label: 清洗后的数据（结果值：哪天发生、影响哪些用户、玩法、网络、设备）（大型事故，影响稳定性的东西）
   depth: 7
   factor_group_id: geo_device_environment
-  data_contract_state: permission_limited
+  data_contract_state: evidence_linked
   review_status: accepted_initial_mapping_by_rule
 - node_id: 623a44cfde427bd718d5887cae453e95
   label: 手动记录
@@ -488,7 +488,7 @@ nodes:
   label: 分层用户的维护和产品策略
   depth: 4
   factor_group_id: amount_tier_and_user_value
-  data_contract_state: permission_limited
+  data_contract_state: evidence_linked
   review_status: accepted_initial_mapping_by_rule
 - node_id: 65aee0fc9a470f7c63c6dbe8c8c8185a
   label: 支付成功率
@@ -554,13 +554,13 @@ nodes:
   label: 地理属性分布波动
   depth: 2
   factor_group_id: geo_device_environment
-  data_contract_state: permission_limited
+  data_contract_state: contract_backed
   review_status: accepted_initial_mapping_by_rule
 - node_id: 6aa393ba4e6bf9e7925e2825bd281504
   label: 手机型号分布波动
   depth: 2
   factor_group_id: geo_device_environment
-  data_contract_state: permission_limited
+  data_contract_state: contract_backed
   review_status: accepted_initial_mapping_by_rule
 - node_id: 60908a59f4bdaf00675716ca1d9f4b4a
   label: 各个玩法人数*玩法arpu
@@ -722,7 +722,7 @@ nodes:
   label: 今日充值金额不同档位的用户充值金额相加
   depth: 2
   factor_group_id: amount_tier_and_user_value
-  data_contract_state: permission_limited
+  data_contract_state: evidence_linked
   review_status: accepted_initial_mapping_by_rule
 - node_id: 83d04615bed57847183e5c022b788af4
   label: 公式
@@ -764,7 +764,7 @@ nodes:
   label: 付费金额=sum（机型）
   depth: 2
   factor_group_id: geo_device_environment
-  data_contract_state: permission_limited
+  data_contract_state: contract_backed
   review_status: accepted_initial_mapping_by_rule
 - node_id: 882c4c534d4d165796562109beb068da
   label: 当日首充人数=当日新增*注册率*首次付费率（注册口径）
@@ -862,4 +862,3 @@ nodes:
   factor_group_id: gameplay_ggr_and_betting
   data_contract_state: missing_contract
   review_status: accepted_initial_mapping_by_rule
-

@@ -52,9 +52,16 @@ class InMemoryConversationStore:
         self.dataset_snapshots: dict[str, dict[str, Any]] = {}
         self.dataset_snapshot_releases: dict[str, dict[str, Any]] = {}
         self.clarification_states: dict[str, ClarificationState] = {}
+        self.clarification_resolutions: dict[str, dict[str, Any]] = {}
+        self.clarification_execution_attempts: dict[str, dict[str, Any]] = {}
+        self.clarification_attempt_dispatches: dict[str, dict[str, Any]] = {}
         self.analysis_runtime_records: dict[str, dict[str, Any]] = {}
         self.analysis_runtime_authority: dict[str, dict[str, Any]] = defaultdict(dict)
         self._audit_events: list[dict] = []
+        self._actor_id = "system"
+
+    def set_actor_id(self, actor_id: str) -> None:
+        self._actor_id = actor_id or "system"
 
     @property
     def audit_events(self) -> list[dict]:
@@ -486,130 +493,94 @@ class InMemoryConversationStore:
             }
         )
 
-    def record_clarification_outcome(
+    def resolve_clarification_attempt_authority(
         self,
         *,
         source_run_id: str,
+        attempt_run_id: str,
         thread_id: str,
-        topic_id: str,
-        choice: Mapping[str, Any],
-    ) -> str:
-        from bi_agent.conversation.clarification_authority import (
-            build_clarification_outcome,
-        )
-        from bi_agent.runtime.evidence_authority import (
-            EvidenceIntegrityError,
-            canonical_value,
-        )
-
-        source_run = self.runs.get(source_run_id)
-        if not source_run:
-            raise EvidenceIntegrityError("clarification_outcome_source_run_missing")
-        if str(source_run.get("status") or "") != "waiting_for_clarification":
-            raise EvidenceIntegrityError("clarification_outcome_source_run_stale")
-        if (
-            str(source_run.get("thread_id") or "") != thread_id
-            or str(source_run.get("topic_id") or "") != topic_id
-        ):
-            raise EvidenceIntegrityError("clarification_outcome_owner_mismatch")
-
-        payload = build_clarification_outcome(
-            source_run_id=source_run_id,
-            thread_id=thread_id,
-            topic_id=topic_id,
-            choice=choice,
-        )
-        existing = tuple(
-            event
-            for event in self._audit_events
-            if event.get("event_type") == "clarification_outcome_recorded"
-            and event.get("run_id") == source_run_id
-        )
-        if existing:
-            if len(existing) != 1:
-                raise EvidenceIntegrityError("clarification_outcome_ambiguous")
-            event = existing[0]
-            if (
-                str(event.get("thread_id") or "") == thread_id
-                and str(event.get("topic_id") or "") == topic_id
-                and str(event.get("ref") or "") == payload["outcome_ref"]
-                and canonical_value(event.get("payload") or {})
-                == canonical_value(payload)
-            ):
-                return str(payload["outcome_ref"])
-            raise EvidenceIntegrityError("clarification_outcome_conflict")
-        self.add_audit_event(
-            "clarification_outcome_recorded",
-            thread_id=thread_id,
-            topic_id=topic_id,
-            run_id=source_run_id,
-            ref=payload["outcome_ref"],
-            payload=payload,
-        )
-        return str(payload["outcome_ref"])
-
-    def resolve_clarification_resume_authority(
-        self,
-        *,
-        source_run_id: str,
-        thread_id: str,
-        topic_id: str,
-        choice: Mapping[str, Any],
-        outcome_ref: str,
+        owner_id: str,
+        answer: str,
+        selected_option_id: str | None,
+        source: str,
     ) -> dict[str, Any]:
         from bi_agent.conversation.clarification_authority import (
-            validate_clarification_resume_authority,
+            validate_clarification_resolution_attempt,
         )
         from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
 
-        run = self.runs.get(source_run_id)
-        if not run:
-            raise EvidenceIntegrityError("clarification_resume_source_run_missing")
-        contracts = tuple(
-            payload
-            for payload in self.analysis_runtime_authority["analysis_contract"].values()
-            if str(payload.get("analysis_contract_id") or "")
-            == f"analysis:{source_run_id}:1"
+        attempt = self.clarification_execution_attempts.get(attempt_run_id)
+        if not isinstance(attempt, Mapping):
+            raise EvidenceIntegrityError(
+                "clarification_attempt_authority_missing"
+            )
+        resolution = self.clarification_resolutions.get(
+            str(attempt.get("resolution_id") or "")
         )
-        if len(contracts) != 1:
-            raise EvidenceIntegrityError("clarification_resume_contract_missing")
-        outcome_events = tuple(
-            event
-            for event in self._audit_events
-            if event.get("event_type") == "clarification_outcome_recorded"
-            and event.get("run_id") == source_run_id
-        )
-        if not outcome_events:
-            raise EvidenceIntegrityError("clarification_resume_outcome_missing")
-        if len(outcome_events) != 1:
-            raise EvidenceIntegrityError("clarification_resume_outcome_ambiguous")
-        event = outcome_events[0]
-        if str(event.get("ref") or "") != outcome_ref:
-            raise EvidenceIntegrityError("clarification_resume_outcome_missing")
-        run_request = run.get("request") or {}
-        material_authority = (
-            run_request.get("material_authority")
-            if isinstance(run_request, Mapping)
+        source_run = self.runs.get(source_run_id)
+        attempt_run = self.runs.get(attempt_run_id)
+        dispatch = self.clarification_attempt_dispatches.get(attempt_run_id)
+        thread = self.threads.get(thread_id)
+        if (
+            not isinstance(resolution, Mapping)
+            or not isinstance(source_run, Mapping)
+            or not isinstance(attempt_run, Mapping)
+            or not isinstance(dispatch, Mapping)
+            or thread is None
+        ):
+            raise EvidenceIntegrityError(
+                "clarification_attempt_authority_missing"
+            )
+        previous_attempt_run_id = attempt.get("previous_attempt_run_id")
+        previous_attempt = (
+            self.clarification_execution_attempts.get(
+                str(previous_attempt_run_id)
+            )
+            if previous_attempt_run_id
             else None
         )
-        return validate_clarification_resume_authority(
-            source_run_id=source_run_id,
-            thread_id=thread_id,
-            topic_id=topic_id,
-            choice=choice,
-            outcome_ref=outcome_ref,
-            analysis_contract=contracts[0],
-            stored_contract_signature=str(contracts[0].get("contract_signature") or ""),
-            analysis_run_id=source_run_id,
-            run_status=str(run.get("status") or ""),
-            run_thread_id=str(run.get("thread_id") or ""),
-            run_topic_id=str(run.get("topic_id") or ""),
-            clarification_outcome=event.get("payload") or {},
-            outcome_run_id=str(event.get("run_id") or ""),
-            outcome_thread_id=str(event.get("thread_id") or ""),
-            outcome_topic_id=str(event.get("topic_id") or ""),
-            material_authority=material_authority,
+        previous_run = (
+            self.runs.get(str(previous_attempt_run_id))
+            if previous_attempt_run_id
+            else None
         )
+        validated_attempt = {
+            **dict(attempt),
+            "previous_resolution_id": (
+                previous_attempt.get("resolution_id")
+                if isinstance(previous_attempt, Mapping)
+                else None
+            ),
+            "previous_attempt_number": (
+                previous_attempt.get("attempt_number")
+                if isinstance(previous_attempt, Mapping)
+                else None
+            ),
+            "previous_attempt_status": (
+                previous_run.get("status")
+                if isinstance(previous_run, Mapping)
+                else None
+            ),
+        }
+        resolved = validate_clarification_resolution_attempt(
+            resolution=resolution,
+            attempt=validated_attempt,
+            source_run={
+                **dict(source_run),
+                "run_id": source_run_id,
+                "owner_id": thread.owner_id,
+            },
+            attempt_run={**dict(attempt_run), "run_id": attempt_run_id},
+            dispatch=dispatch,
+            source_run_id=source_run_id,
+            attempt_run_id=attempt_run_id,
+            thread_id=thread_id,
+            owner_id=owner_id,
+            answer=answer,
+            selected_option_id=selected_option_id,
+            source=source,
+        )
+        return deepcopy(resolved)
 
     def resolve_completed_material_authority(
         self,
@@ -874,7 +845,6 @@ class InMemoryConversationStore:
                     topic_id=topic_id,
                     follow_up_context=_package_follow_up_context(package),
                     snapshot_id=package.get("snapshot_id") or package.get("snapshot") or "unknown",
-                    permission_scope=package.get("permission_scope") or package.get("visibility") or "analyst",
                 )
         self.add_audit_event("answer_package_recorded", run_id=run_id, ref=run_id)
 
@@ -1223,6 +1193,7 @@ class InMemoryConversationStore:
             self._audit_events,
             {
                 "event_type": event_type,
+                "actor_id": self._actor_id,
                 "thread_id": thread_id,
                 "topic_id": topic_id,
                 "run_id": run_id,
@@ -1245,7 +1216,6 @@ class InMemoryConversationStore:
         result_ref: str,
         snapshot_id: str,
         contract_version: str,
-        permission_scope: str,
         semantic_scope: str,
         payload: Mapping[str, Any] | None = None,
     ) -> None:
@@ -1258,7 +1228,6 @@ class InMemoryConversationStore:
             candidate_payload["result_ref"] != result_ref
             or candidate_payload["runtime_snapshot_id"] != snapshot_id
             or candidate_payload["runtime_contract_version"] != contract_version
-            or candidate_payload["permission_scope"] != permission_scope
             or candidate_payload["semantic_scope_signature"] != semantic_scope
         ):
             raise EvidenceIntegrityError("result_ref_candidate_projection_mismatch")
@@ -1267,7 +1236,6 @@ class InMemoryConversationStore:
             result_ref=result_ref,
             snapshot_id=snapshot_id,
             contract_version=contract_version,
-            permission_scope=permission_scope,
             semantic_scope=semantic_scope,
             payload=deepcopy(candidate_payload),
         )
@@ -1389,7 +1357,6 @@ class InMemoryConversationStore:
             or record.result_ref != payload["result_ref"]
             or record.snapshot_id != payload["runtime_snapshot_id"]
             or record.contract_version != payload["runtime_contract_version"]
-            or record.permission_scope != payload["permission_scope"]
             or record.semantic_scope != payload["semantic_scope_signature"]
             or not isinstance(context_manifest, Mapping)
             or str(context_manifest.get("snapshot_version") or "")
@@ -1426,14 +1393,12 @@ class InMemoryConversationStore:
         topic_id: str,
         follow_up_context: str,
         snapshot_id: str,
-        permission_scope: str,
     ) -> None:
         self.artifacts[artifact_id] = ArtifactRef(
             artifact_id=artifact_id,
             topic_id=topic_id,
             follow_up_context=follow_up_context,
             snapshot_id=snapshot_id,
-            permission_scope=permission_scope,
         )
 
     def latest_artifact_for_topic(self, topic_id: Optional[str]) -> Optional[ArtifactRef]:
@@ -1447,29 +1412,27 @@ class InMemoryConversationStore:
     def add_memory_item(
         self,
         *,
-        owner_scope: str,
+        owner_id: str,
         text: str,
         source_ref: str,
-        visibility: str,
         status: str,
-        refresh_rule: str = "refresh_on_contract_or_scope_change",
+        refresh_rule: str = "refresh_on_contract_or_owner_change",
         revocation_path: str = "memory_proposal_revoke_or_admin_action",
     ) -> MemoryItem:
         item = MemoryItem(
             memory_id=f"memory-{uuid4().hex[:12]}",
-            owner_scope=owner_scope,
+            owner_id=owner_id,
             text=text,
             source_ref=source_ref,
-            visibility=visibility,
             status=status,
             refresh_rule=refresh_rule,
             revocation_path=revocation_path,
         )
-        self.memory_items[owner_scope].append(item)
+        self.memory_items[owner_id].append(item)
         return item
 
-    def long_term_memory(self, owner_scope: str) -> tuple[MemoryItem, ...]:
-        return tuple(item for item in self.memory_items.get(owner_scope, ()) if item.status == "accepted")
+    def long_term_memory(self, owner_id: str) -> tuple[MemoryItem, ...]:
+        return tuple(item for item in self.memory_items.get(owner_id, ()) if item.status == "accepted")
 
     def add_memory_proposal(self, proposal: MemoryProposal) -> None:
         self.memory_proposals[proposal.proposal_id] = proposal
@@ -1479,10 +1442,9 @@ class InMemoryConversationStore:
         if not proposal:
             return None
         return self.add_memory_item(
-            owner_scope=proposal.owner_scope,
+            owner_id=proposal.owner_id,
             text=proposal.text,
             source_ref=proposal.source_ref,
-            visibility=proposal.visibility,
             status="accepted",
         )
 
@@ -1507,9 +1469,7 @@ def _context_manifest_from_payload(payload: dict) -> ContextManifest:
                 source_ref=item.get("source_ref") or item.get("ref", ""),
                 summary=item.get("summary", ""),
                 can_support_claims=bool(item.get("can_support_claims")),
-                visibility=item.get("visibility", "analyst"),
                 reason=item.get("reason", ""),
-                permission_scope=item.get("permission_scope", ""),
                 source_version=item.get("source_version", ""),
                 expired=bool(item.get("expired")),
                 claim_use=item.get("claim_use", "context_only"),
@@ -1520,7 +1480,6 @@ def _context_manifest_from_payload(payload: dict) -> ContextManifest:
         sources=list(payload.get("sources") or []),
         claim_use_policy=dict(payload.get("claim_use_policy") or {}),
         snapshot_version=payload.get("snapshot_version"),
-        permission_context=dict(payload.get("permission_context") or {}),
         analysis_assets=list(payload.get("analysis_assets") or []),
         accepted_assumptions=list(payload.get("accepted_assumptions") or []),
         contract_versions=dict(payload.get("contract_versions") or {}),

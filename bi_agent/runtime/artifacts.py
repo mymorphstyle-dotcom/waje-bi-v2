@@ -7,13 +7,9 @@ import tempfile
 from typing import Any
 
 
-ROLE_VISIBILITY = {
-    "business_reader": frozenset({"business_summary", "aggregate_evidence"}),
-    "analyst": frozenset(
-        {"business_summary", "aggregate_evidence", "diagnostic_detail"}
-    ),
-    "data_owner_admin": None,
-}
+CUSTOMER_SAFE_VISIBILITIES = frozenset(
+    {"business_summary", "aggregate_evidence", "diagnostic_detail"}
+)
 
 
 def persist_artifact(
@@ -69,11 +65,7 @@ def synchronize_existing_artifact(
             temp_path.unlink(missing_ok=True)
 
 
-def filter_artifact_for_role(artifact: Mapping[str, Any], role: str) -> dict[str, Any]:
-    allowed = ROLE_VISIBILITY.get(role, ROLE_VISIBILITY["business_reader"])
-    if allowed is None:
-        return to_jsonable(dict(artifact))
-
+def filter_customer_safe_artifact(artifact: Mapping[str, Any]) -> dict[str, Any]:
     filtered = {
         "run_id": artifact.get("run_id"),
         "status": artifact.get("status"),
@@ -81,7 +73,7 @@ def filter_artifact_for_role(artifact: Mapping[str, Any], role: str) -> dict[str
         "sections": [
             section
             for section in artifact.get("sections", [])
-            if section.get("visibility") in allowed
+            if section.get("visibility") in CUSTOMER_SAFE_VISIBILITIES
         ],
     }
     return to_jsonable(filtered)

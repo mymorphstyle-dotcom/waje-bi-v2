@@ -37,7 +37,6 @@ from bi_agent.runtime.evidence_authority import (
     canonical_digest,
     canonical_value,
 )
-from bi_agent.runtime.permission_roles import can_read_scope as _can_read_permission_scope
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
@@ -93,34 +92,43 @@ class ConversationRuntime:
         thread_id: str,
         user_message: str,
         *,
-        role: str = "analyst",
         active_run_status: str = "idle",
         current_snapshot: str = "2026H1",
         contract_version: str = "contracts-v1",
-        owner_scope: str = "org-default",
         run_id: str | None = None,
         prior_analysis_assets: tuple[Mapping[str, Any], ...] = (),
         analysis_context: Mapping[str, Any] | None = None,
-        clarification_resume_claim: Mapping[str, Any] | None = None,
+        clarification_attempt_authority: Mapping[str, Any] | None = None,
     ) -> ConversationTurnResult:
         thread = self.store.get_thread(thread_id)
+        owner_id = str(thread.owner_id or "").strip()
+        if not owner_id:
+            raise ConversationOrchestrationError("thread_owner_missing")
         explicit_source_run_id = str(
-            (clarification_resume_claim or {}).get("source_run_id") or ""
+            (clarification_attempt_authority or {}).get("source_run_id") or ""
         )
         if explicit_source_run_id:
             if (
                 str(
-                    (clarification_resume_claim or {}).get("resumed_run_id")
+                    (clarification_attempt_authority or {}).get(
+                        "attempt_run_id"
+                    )
                     or ""
                 )
                 != str(run_id or "")
                 or str(
-                    (clarification_resume_claim or {}).get("thread_id") or ""
+                    (clarification_attempt_authority or {}).get("thread_id")
+                    or ""
                 )
                 != thread_id
+                or str(
+                    (clarification_attempt_authority or {}).get("owner_id")
+                    or ""
+                )
+                != owner_id
             ):
                 raise ConversationOrchestrationError(
-                    "clarification_resume_claim_owner_mismatch"
+                    "clarification_attempt_authority_owner_mismatch"
                 )
             get_clarification_state = getattr(
                 self.store,
@@ -134,19 +142,22 @@ class ConversationRuntime:
             open_clarification = get_clarification_state(
                 explicit_source_run_id
             )
-            if open_clarification is None:
+            if (
+                open_clarification is None
+                or open_clarification.topic_id
+                != str(
+                    (clarification_attempt_authority or {}).get("topic_id")
+                    or ""
+                )
+            ):
                 raise ConversationOrchestrationError(
                     "clarification_source_state_missing"
                 )
         else:
             open_clarification = self.store.get_open_clarification(thread_id)
         text = user_message.strip()
-        matches_open_clarification = (
-            True
-            if explicit_source_run_id and open_clarification
-            else _looks_like_clarification_answer(text, open_clarification)
-            if open_clarification
-            else False
+        matches_open_clarification = bool(
+            explicit_source_run_id and open_clarification
         )
         prior_request: dict[str, Any] = {}
         clarification_source: dict[str, Any] = {}
@@ -170,17 +181,19 @@ class ConversationRuntime:
             prior_clarification = dict(
                 clarification_source.get("clarification") or {}
             )
-            selected_query_gap_action = _selected_query_gap_action(
-                prior_clarification,
-                user_message,
-                selected_option_id=str(
-                    (clarification_resume_claim or {}).get(
-                        "selected_option_id"
-                    )
-                    or ""
-                ),
-                clarification_state=open_clarification,
+            selected_query_gap_action = (
+                (clarification_attempt_authority or {}).get(
+                    "accepted_choice"
+                )
+                or {}
             )
+            if not isinstance(selected_query_gap_action, Mapping) or not (
+                selected_query_gap_action
+            ):
+                raise ConversationOrchestrationError(
+                    "clarification_attempt_choice_missing"
+                )
+            selected_query_gap_action = dict(selected_query_gap_action)
             if str(
                 selected_query_gap_action.get("action_kind") or ""
             ) == "bind_material_choice":
@@ -248,7 +261,6 @@ class ConversationRuntime:
             intent_name,
             topic_relation,
             user_message,
-            role,
             current_snapshot,
             contract_version,
         )
@@ -267,7 +279,6 @@ class ConversationRuntime:
                 self._validated_prior_topic_material_context(
                     thread_id=thread_id,
                     topic=topic,
-                    role=role,
                     candidates=material_context_candidates,
                 )
             )
@@ -278,11 +289,10 @@ class ConversationRuntime:
             turn_id,
             topic,
             user_message,
-            role,
             current_snapshot,
             contract_version,
             reuse_decisions,
-            owner_scope,
+            owner_id,
             combined_prior_assets,
             pending_clarification_id if intent_name == "clarification_answer" else "",
             prior_topic_material_context=prior_topic_material_context,
@@ -299,8 +309,7 @@ class ConversationRuntime:
             turn_id,
             user_message,
             intent_name,
-            owner_scope,
-            role,
+            owner_id,
         )
         for proposal in memory_proposals:
             self.store.add_memory_proposal(proposal)
@@ -330,7 +339,7 @@ class ConversationRuntime:
             )
         run_request = None
         if not needs_clarification and _should_run(intent_name, topic_relation):
-            clarification_resume_context = {}
+            clarification_attempt_context = {}
             if intent_name == "clarification_answer" and open_clarification:
                 if prior_request:
                     prior_clarification = dict(
@@ -339,10 +348,42 @@ class ConversationRuntime:
                     source_material = dict(
                         clarification_source.get("source_material") or {}
                     )
-                    clarification_resume_context = {
-                        "resume_run_id": str(
+                    retry_attempt = bool(
+                        (clarification_attempt_authority or {}).get(
+                            "retry_attempt"
+                        )
+                    )
+                    source_material = {
+                        "original_intent": dict(
+                            source_material.get("original_intent") or {}
+                        ),
+                        "material_slots": dict(
+                            source_material.get("material_slots") or {}
+                        ),
+                    }
+                    clarification_attempt_context = {
+                        "source_run_id": str(
                             clarification_source.get("source_run_id") or ""
                         ),
+                        "resolution_id": str(
+                            (clarification_attempt_authority or {}).get(
+                                "resolution_id"
+                            )
+                            or ""
+                        ),
+                        "attempt_run_id": str(run_id or ""),
+                        "previous_attempt_run_id": (
+                            (clarification_attempt_authority or {}).get(
+                                "previous_attempt_run_id"
+                            )
+                        ),
+                        "attempt_number": int(
+                            (clarification_attempt_authority or {}).get(
+                                "attempt_number"
+                            )
+                            or 0
+                        ),
+                        "retry_attempt": retry_attempt,
                         "source_thread_id": str(
                             clarification_source.get("source_thread_id") or ""
                         ),
@@ -350,18 +391,10 @@ class ConversationRuntime:
                             clarification_source.get("source_topic_id") or ""
                         ),
                         "question": clarification_source["question"],
-                        "accepted_graph": tuple(
-                            source_material.get("accepted_graph") or ()
-                        ),
-                        "analysis_contract": dict(
-                            source_material.get("analysis_contract") or {}
-                        ),
-                        "analysis_route": dict(
-                            source_material.get("analysis_route") or {}
-                        ),
-                        "analysis_context": dict(
-                            clarification_source.get("analysis_context") or {}
-                        ),
+                        "accepted_graph": (),
+                        "analysis_contract": {},
+                        "analysis_route": {},
+                        "analysis_context": dict(analysis_context or {}),
                         "original_intent": dict(
                             source_material.get("original_intent") or {}
                         ),
@@ -369,18 +402,19 @@ class ConversationRuntime:
                             source_material.get("material_slots") or {}
                         ),
                         "clarification": prior_clarification,
+                        "accepted_choice": selected_query_gap_action,
                         "selected_query_gap_action": selected_query_gap_action,
                         "selected_material_action": selected_material_action,
                         "accepted_degradation_choice": accepted_degradation_choice,
                     }
             request_analysis_context = dict(analysis_context or {})
             request_user_message = user_message
-            if clarification_resume_context:
+            if clarification_attempt_context:
                 request_analysis_context = dict(
-                    clarification_resume_context.get("analysis_context") or {}
+                    clarification_attempt_context.get("analysis_context") or {}
                 )
                 request_user_message = str(
-                    clarification_resume_context["question"]
+                    clarification_attempt_context["question"]
                 )
             run_request = ConversationRunRequest(
                 thread_id=thread_id,
@@ -388,10 +422,9 @@ class ConversationRuntime:
                 topic_id=topic.topic_id if topic else None,
                 user_message=request_user_message,
                 context_manifest=manifest.to_dict(),
-                permission_context={"role": role},
                 runtime_budget=_runtime_budget(user_message),
                 analysis_context=request_analysis_context,
-                clarification_resume_context=clarification_resume_context,
+                clarification_attempt_context=clarification_attempt_context,
                 prior_analysis_assets=combined_prior_assets,
                 reuse_candidates=reuse_candidates,
                 prior_topic_material_context=prior_topic_material_context,
@@ -565,7 +598,6 @@ class ConversationRuntime:
         intent: str,
         relation: str,
         message: str,
-        role: str,
         current_snapshot: str,
         contract_version: str,
     ) -> tuple[ReuseDecision, ...]:
@@ -574,7 +606,7 @@ class ConversationRuntime:
         if intent in {"off_topic", "capability_question", "memory_update"}:
             return (ReuseDecision("none", "", "no_bi_claim_requested"),)
         if intent == "unsupported_request":
-            return (ReuseDecision("blocked", "", "permission_or_safety_boundary"),)
+            return (ReuseDecision("blocked", "", "safety_boundary"),)
         results = self.store.results_for_topic(topic.topic_id if topic else None)
         candidates = []
         for result in results:
@@ -586,34 +618,6 @@ class ConversationRuntime:
                 continue
             candidates.append(result)
         if not candidates:
-            if results:
-                legacy = results[0]
-                if contract_version != legacy.contract_version:
-                    return (
-                        ReuseDecision(
-                            "context_only",
-                            legacy.result_ref,
-                            "contract_version_mismatch",
-                        ),
-                    )
-                legacy_decision = evaluate_reuse_candidate(
-                    source_snapshot=legacy.snapshot_id,
-                    current_snapshot=current_snapshot,
-                    permission_match=_can_read_scope(role, legacy.permission_scope),
-                    semantic_scope_match=not _must_rerun(message, intent, relation),
-                    source_ref=legacy.result_ref,
-                )
-                if legacy_decision.decision == "candidate":
-                    return (
-                        ReuseDecision(
-                            "none",
-                            legacy.result_ref,
-                            "legacy_result_context_only",
-                            can_support_claim=False,
-                            requires_rerun=False,
-                        ),
-                    )
-                return (legacy_decision,)
             return (ReuseDecision("rerun", "", "no_prior_result_ref"),)
         decisions: list[ReuseDecision] = []
         rejected: list[ReuseDecision] = []
@@ -630,7 +634,6 @@ class ConversationRuntime:
             decision = evaluate_reuse_candidate(
                 source_snapshot=candidate.snapshot_id,
                 current_snapshot=current_snapshot,
-                permission_match=_can_read_scope(role, candidate.permission_scope),
                 semantic_scope_match=not _must_rerun(message, intent, relation),
                 source_ref=candidate.result_ref,
             )
@@ -694,7 +697,6 @@ class ConversationRuntime:
         *,
         thread_id: str,
         topic: TopicState,
-        role: str,
         candidates: tuple[Mapping[str, Any], ...],
     ) -> dict[str, Any]:
         resolve_candidate = getattr(
@@ -726,7 +728,6 @@ class ConversationRuntime:
                 "result_ref": result_ref,
                 "snapshot_id": candidate["runtime_snapshot_id"],
                 "contract_version": candidate["runtime_contract_version"],
-                "permission_scope": candidate["permission_scope"],
                 "semantic_scope": candidate["semantic_scope_signature"],
                 "payload": candidate,
             }
@@ -777,21 +778,6 @@ class ConversationRuntime:
                 raise EvidenceIntegrityError(
                     "prior_topic_result_candidate_contract_mismatch"
                 )
-            permission_scopes = {
-                candidate["permission_scope"],
-                str(indexed_record.get("permission_scope") or ""),
-                str(contract.get("permission_scope") or ""),
-                str(execution_material.get("permission_scope") or ""),
-            }
-            if len(permission_scopes) != 1 or "" in permission_scopes:
-                raise EvidenceIntegrityError(
-                    "prior_topic_permission_scope_mismatch"
-                )
-            permission_scope = next(iter(permission_scopes))
-            if not _can_read_scope(role, permission_scope):
-                raise EvidenceIntegrityError(
-                    "prior_topic_permission_scope_denied"
-                )
             if (
                 not indexed_contract_payload
                 or canonical_value(indexed_contract_payload)
@@ -834,11 +820,10 @@ class ConversationRuntime:
         turn_id: str,
         topic: Optional[TopicState],
         message: str,
-        role: str,
         current_snapshot: str,
         contract_version: str,
         reuse_decisions: tuple[ReuseDecision, ...],
-        owner_scope: str,
+        owner_id: str,
         analysis_assets: tuple[dict[str, Any], ...],
         pending_clarification_id: str = "",
         prior_topic_material_context: Mapping[str, Any] | None = None,
@@ -854,7 +839,6 @@ class ConversationRuntime:
                     summary="用户已回答上一轮澄清问题，本轮按该选择恢复执行。",
                     can_support_claims=False,
                     reason="clarification_outcome",
-                    permission_scope=role,
                     source_version=contract_version,
                     claim_use="context_only",
                 )
@@ -867,7 +851,6 @@ class ConversationRuntime:
                     summary=topic.summary,
                     can_support_claims=False,
                     reason="topic_context_only",
-                    permission_scope=role,
                     source_version=contract_version,
                     claim_use="context_only",
                 )
@@ -887,12 +870,6 @@ class ConversationRuntime:
                     summary="已验证的上一轮业务分析物料，仅用于续问意图绑定。",
                     can_support_claims=False,
                     reason="prior_topic_material_context",
-                    permission_scope=str(
-                        (prior_topic_material_context or {}).get(
-                            "permission_scope"
-                        )
-                        or ""
-                    ),
                     source_version=str(
                         authority.get("analysis_contract_signature") or ""
                     ),
@@ -909,7 +886,6 @@ class ConversationRuntime:
                     summary=f"上一轮结果引用，当前复用判断为 {decision.decision}。",
                     can_support_claims=decision.decision == "reuse",
                     reason=decision.reason,
-                    permission_scope=role,
                     source_version=f"{contract_version}:{current_snapshot}",
                     expired=decision.decision in {"rerun", "context_only", "blocked"},
                     claim_use=(
@@ -921,39 +897,31 @@ class ConversationRuntime:
             )
         artifact = self.store.latest_artifact_for_topic(topic.topic_id if topic else None)
         if artifact and intent == "artifact_continue":
-            artifact_can_support = (
-                artifact.snapshot_id == current_snapshot
-                and _can_read_scope(role, artifact.permission_scope)
-            )
+            artifact_can_support = artifact.snapshot_id == current_snapshot
             items.append(
                 ContextItem(
                     source_type="artifact",
                     source_ref=artifact.artifact_id,
                     summary=artifact.follow_up_context,
                     can_support_claims=artifact_can_support,
-                    visibility=artifact.permission_scope,
                     reason="artifact_follow_up_context" if artifact_can_support else "artifact_context_only",
-                    permission_scope=artifact.permission_scope,
                     source_version=artifact.snapshot_id,
                     expired=not artifact_can_support,
                     claim_use="reuse" if artifact_can_support else "context_only",
                 )
             )
-        for memory in self.store.long_term_memory(owner_scope):
-            if role != "business_reader" or memory.visibility == "business_reader":
-                items.append(
-                    ContextItem(
-                        source_type="memory",
-                        source_ref=memory.source_ref,
-                        summary=memory.text,
-                        can_support_claims=False,
-                        visibility=memory.visibility,
-                        reason="preference_only",
-                        permission_scope=memory.visibility,
-                        source_version=memory.ttl,
-                        claim_use="preference_only",
-                    )
+        for memory in self.store.long_term_memory(owner_id):
+            items.append(
+                ContextItem(
+                    source_type="memory",
+                    source_ref=memory.source_ref,
+                    summary=memory.text,
+                    can_support_claims=False,
+                    reason="preference_only",
+                    source_version=memory.ttl,
+                    claim_use="preference_only",
                 )
+            )
         if not items:
             items.append(
                 ContextItem(
@@ -962,7 +930,6 @@ class ConversationRuntime:
                     summary="本轮没有可复用 BI 证据上下文。",
                     can_support_claims=False,
                     reason="no_context",
-                    permission_scope=role,
                     source_version=contract_version,
                     claim_use="context_only",
                 )
@@ -987,7 +954,6 @@ class ConversationRuntime:
                 "can_support_bi_claim": has_claim_support and claim_safe and not artifact_context_blocked,
             },
             snapshot_version=current_snapshot,
-            permission_context={"role": role},
             analysis_assets=list(analysis_assets),
             accepted_assumptions=[dict(item) for item in accepted_assumptions],
             contract_versions={"runtime": contract_version},
@@ -1001,8 +967,7 @@ class ConversationRuntime:
         turn_id: str,
         message: str,
         intent: str,
-        owner_scope: str,
-        role: str,
+        owner_id: str,
     ) -> tuple[MemoryProposal, ...]:
         if intent != "memory_update":
             return ()
@@ -1013,8 +978,7 @@ class ConversationRuntime:
                 thread_id=thread_id,
                 text=action,
                 source_ref=turn_id,
-                owner_scope=owner_scope,
-                visibility=role,
+                owner_id=owner_id,
             ),
         )
 
@@ -1032,18 +996,9 @@ def evaluate_reuse_candidate(
     *,
     source_snapshot: str | None,
     current_snapshot: str | None,
-    permission_match: bool,
     semantic_scope_match: bool,
     source_ref: str = "candidate",
 ) -> ReuseDecision:
-    if not permission_match:
-        return ReuseDecision(
-            "blocked",
-            source_ref,
-            "permission_scope_mismatch",
-            can_support_claim=False,
-            requires_rerun=True,
-        )
     if source_snapshot != current_snapshot:
         return ReuseDecision(
             "context_only",
@@ -1063,7 +1018,7 @@ def evaluate_reuse_candidate(
     return ReuseDecision(
         "candidate",
         source_ref,
-        "candidate_same_thread_scope",
+        "candidate_same_snapshot_and_semantic_scope",
         can_support_claim=False,
         requires_rerun=False,
     )
@@ -1494,7 +1449,14 @@ def _is_write_action_request(text: str) -> bool:
 def _is_unsupported_request(text: str) -> bool:
     raw_identifier = _has_all_concepts(
         text,
-        ("用户 ID", "用户ID", "用户标识", "设备 ID", "设备ID", "IP"),
+        (
+            "用户 ID",
+            "用户ID",
+            "用户标识",
+            "订单 ID",
+            "订单ID",
+            "订单标识",
+        ),
         ("原始", "明细", "逐条", "导出", "列出"),
     )
     raw_sql = _has_all_concepts(
@@ -2455,10 +2417,6 @@ def _runtime_budget(message: str) -> dict[str, int | str]:
     return {"mode": "deep_attribution" if deep else "normal", "soft_limit": 100 if deep else 50}
 
 
-def _can_read_scope(role: str, permission_scope: str) -> bool:
-    return _can_read_permission_scope(role, permission_scope)
-
-
 def _topic_title(message: str) -> str:
     return message[:28] or "新业务问题"
 
@@ -2469,7 +2427,7 @@ def _intent_summary(intent: str, message: str) -> str:
     if intent == "capability_question":
         return "用户在询问系统能力或证据边界。"
     if intent == "unsupported_request":
-        return "用户请求触达权限或安全边界。"
+        return "用户请求触达固定敏感输出、源访问或执行安全边界。"
     if intent == "mixed_question":
         return "用户把多个业务动作放在同一轮输入里。"
     if intent == "memory_update":
@@ -2481,6 +2439,6 @@ def _response_boundary(intent: str) -> str:
     return {
         "off_topic": "只回答 BI Agent 的业务分析范围。",
         "capability_question": "说明系统能力、数据边界和证据边界。",
-        "unsupported_request": "拒绝越权或不安全请求，并给出聚合替代路径。",
+        "unsupported_request": "拒绝越过固定敏感输出、源访问或执行安全边界的请求，并给出聚合替代路径。",
         "memory_update": "生成可审计记忆提案，不直接写入长期记忆。",
     }.get(intent, "进入受控 BI workflow，所有 claim 需要证据和 verifier。")

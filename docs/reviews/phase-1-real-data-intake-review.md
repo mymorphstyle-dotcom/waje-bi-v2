@@ -132,7 +132,7 @@ Pattern example sanity check:
 
 ## Confirmation Order
 
-1. Data owner confirms fields, source watermark, payment status enum, `订单ID` uniqueness, and permission enforcement.
+1. Data owner confirms fields, source watermark, payment status enum, `订单ID` uniqueness, fixed restricted-output enforcement, and service source access.
 2. Business owner and data owner use the accepted initial materiality thresholds by query grain and version future tuning when needed.
 3. Prepare a draft source contract for owner review, or record concrete backlog blockers.
 

@@ -957,7 +957,6 @@ def _market_context(*, target_metrics=("active_users",)):
         catalog=DatasetCatalog(released, release_resolver=release_resolver),
         registry=registry,
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        permission_scope="analyst",
         release_resolver=release_resolver,
     )
     contract = next(
@@ -1047,7 +1046,6 @@ def _market_request(context, **overrides):
         "filters": {},
         "dimensions": (),
         "contract_versions": {},
-        "role": "analyst",
         "budget_state": BudgetState("ordinary", 0, 50, 100),
         "llm_business_reason": "Compare authoritative reviewed windows.",
         "params": {},

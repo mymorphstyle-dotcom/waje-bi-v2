@@ -11,7 +11,7 @@ The main workflow is the fixed LangGraph runtime lifecycle for a WAJE BI Agent r
 - Main workflow: how the Agent runs, loops, asks, repairs, verifies, and persists.
 - Accepted graph: the concrete business analysis graph accepted for one user question, including recipe variants, subgraphs, capability nodes, metric, scope, baseline, time window, dependencies, evidence needs, and degraded or skipped paths.
 - Run trace: the actual node path, branches, loops, retries, and stop reasons for one run.
-- Answer Package: the draft business answer, evidence refs, limitations, verifier result, role visibility, and audit material.
+- Answer Package: the draft business answer, evidence refs, limitations, verifier result, fixed customer-safe projection, and audit material.
 
 ## Main Workflow
 
@@ -19,14 +19,14 @@ The main workflow is the fixed LangGraph runtime lifecycle for a WAJE BI Agent r
 flowchart TD
   A["开始一次经营分析<br/>LLM: 否"] --> B["理解用户业务意图<br/>输出: question_family / metric / scope候选 / baseline候选 / claim目标<br/>LLM: 是"]
 
-  B --> C["生成边界判定包<br/>判断 scope / baseline / 时间语义 / claim强度 / 权限 / 成本是否明确<br/>输出: clear | low_risk_assumption | needs_question | cannot_answer<br/>LLM: 是"]
+  B --> C["生成边界判定包<br/>判断 scope / baseline / 时间语义 / claim强度 / 数据源 / 成本是否明确<br/>输出: clear | low_risk_assumption | needs_question | cannot_answer<br/>LLM: 是"]
 
   C --> D{"澄清策略门禁<br/>只判断是否要打断用户<br/>LLM: 否"}
 
   D -->|clear| E["确认本次业务理解<br/>记录明确边界<br/>LLM: 是"]
   D -->|low_risk_assumption| F["采用推荐推断继续<br/>写入 accepted graph / Answer Package / verifier checks<br/>LLM: 是"]
   D -->|needs_question| G["生成澄清问题<br/>2-3个业务选项 + 推荐推断 + tell agent differently<br/>LLM: 是"]
-  D -->|cannot_answer| X["阻断或降级说明<br/>权限/合同/数据不可满足<br/>LLM: 条件"]
+  D -->|cannot_answer| X["阻断或降级说明<br/>固定输出安全/数据源/合同/数据不可满足<br/>LLM: 条件"]
 
   G --> H["等待用户选择<br/>LangGraph interrupt/resume<br/>LLM: 否"]
   H --> I{"用户选择类型<br/>LLM: 否"}
@@ -40,7 +40,7 @@ flowchart TD
 
   E --> L["设计分析路线<br/>选择recipe、能力节点、依赖、证据需求、旁路、降级规则<br/>LLM: 是"]
 
-  L --> M{"分析路线验收<br/>合同/权限/能力/预算/证据输出<br/>LLM: 否"}
+  L --> M{"分析路线验收<br/>合同/固定输出安全/数据源访问/能力/预算/证据输出<br/>LLM: 否"}
   M -->|accepted| N["确认真实数据可覆盖范围<br/>LLM读取业务摘要，本地不暴露raw schema<br/>LLM: 是"]
   M -->|repair_requested| O["修正分析路线<br/>补节点/删节点/改依赖/解释跳过<br/>LLM: 是，最多2次"]
   M -->|needs_question| G
@@ -63,7 +63,7 @@ flowchart TD
   S -->|证据足够| U["解释证据和业务含义<br/>主pattern、例外、候选机制、边界<br/>LLM: 是"]
   S -->|证据不足| Y
 
-  T --> V{"组合归因门禁<br/>样本/稀疏/权限/合同/预算<br/>LLM: 否"}
+  T --> V{"组合归因门禁<br/>样本/稀疏/固定输出安全/数据源访问/合同/预算<br/>LLM: 否"}
   V -->|accepted| W["执行组合归因<br/>LLM: 否"]
   V -->|skip_with_supported_pattern| U
   V -->|degraded| Y
@@ -102,10 +102,10 @@ flowchart TD
 - LLM decides business intent, boundary clarity, clarification options, route design, route repair, next analytical action, promotion need, evidence interpretation, causal audit, answer drafting, semantic audit, answer repair, and business-facing degraded or blocked explanation.
 - `audit_causal_implications` runs after evidence interpretation and before answer drafting.
 - Causal Auditor LLM independently reviews implication and mechanism claims from a structured dossier.
-- Local verifier checks refs, numbers, scope, permissions, and auditor wording boundary; it does not decide whether a mechanism is insightful.
+- Local verifier checks refs, numbers, scope, fixed restricted-output safety, source access, and auditor wording boundary; it does not decide whether a mechanism is insightful.
 - The business intent node must decide `question_family` autonomously from the user question and bound business context. Runtime inputs may pass metric, scope, baseline, target, time window, pattern family, and pattern params as context, but must not pass `question_family`, `question_family_hint`, or a default family into the LLM input. Caller-provided family values can be used only after LLM binding through local compiler or policy validation.
 - The analysis route node must decide requested capability nodes from the accepted intent, capability cards, evidence needs, and budget state. Runtime must not pass caller-provided `requested_nodes` as an LLM hint or fallback route.
-- Local policy and validators decide hard gates only: contracts, permissions, SQL safety, data coverage, metric/time/grain validity, sample red lines, sparse-cell red lines, budget, evidence completeness, and final hard verifier checks.
+- Local policy and validators decide hard gates only: contracts, fixed restricted-output safety, source-connection access, SQL safety, data coverage, metric/time/grain validity, sample red lines, sparse-cell red lines, budget, evidence completeness, and final hard verifier checks. User identity never chooses BI analysis capability.
 - Clarification is a loop. User answers, accepted recommendation, and "tell agent differently" all return to boundary rebinding before analysis continues.
 - Route repair is a loop with max 2 repair attempts.
 - Answer repair is a loop with max 1 repair attempt.
@@ -126,7 +126,7 @@ Harness reference in `docs/phase-4-sql-capability-harness.md`.
 
 - LLM route planning sees capability cards, evidence summaries, and budget state.
 - Local compiler, policy, validators, and capability APIs own SQL compilation,
-  physical bindings, permissions, evidence strength, and accepted graph state.
+  physical bindings, fixed restricted-output safety, source-connection access, evidence strength, and accepted graph state.
 - During R&D, cost mechanism is recorded and visible as tiers, but it does not
   pressure the LLM toward cheaper evidence paths.
 - R&D exploration defaults are 50 capability calls for ordinary questions and

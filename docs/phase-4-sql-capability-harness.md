@@ -9,7 +9,7 @@ Status: accepted working reference for the Phase 4 architecture repair.
 The SQL Capability Harness is the WAJE-owned execution layer between an accepted
 business analysis graph and physical analytical queries. It gives the LLM a
 business-readable tool catalog while keeping SQL compilation, physical bindings,
-permission checks, evidence strength, and answer verification inside local WAJE
+fixed restricted-output checks, source-connection access, evidence strength, and answer verification inside local WAJE
 components.
 
 This harness must support the general retrospective `付费金额` problem space. Eval
@@ -21,7 +21,7 @@ cases are verification samples only; they do not define the public API surface.
 flowchart TD
   A["用户业务问题"] --> B["LLM 绑定业务意图<br/>metric / scope / baseline / claim"]
   B --> C["LLM 生成候选 analysis_graph<br/>选择 capability cards"]
-  C --> D{"Local compiler / policy<br/>合同 / 权限 / 粒度 / 预算 / 证据需求"}
+  C --> D{"Local compiler / policy<br/>合同 / 固定输出安全 / 数据源访问 / 粒度 / 预算 / 证据需求"}
   D -->|accepted| E["SQL Capability Harness"]
   D -->|repair| C
   D -->|ask question| Q["业务澄清"]
@@ -98,7 +98,7 @@ mechanical operations such as raw bucketing or arithmetic.
 | --- | --- | --- |
 | `metric_coverage_profile` | Check whether a metric has enough data for a requested scope, grain, and window. | coverage, freshness, missing windows, row/period counts |
 | `metric_timeseries` | Produce a reusable aggregate time series for one metric and grain. | result refs, completeness, outlier flags |
-| `data_quality_profile` | Review status, dedup, nulls, sparse periods, freshness, and permission limits. | quality limitations and trust boundaries |
+| `data_quality_profile` | Review status, dedup, nulls, sparse periods, freshness, restricted-output safety, and source availability. | quality limitations and trust boundaries |
 | `compare_periods` | Compare target and baseline periods for a metric. | absolute delta, percent delta, daily average, total, coverage |
 | `compare_period_phases` | Compare phases inside a period, such as month start/middle/end. | phase ranking, phase uplift, exceptions |
 | `rolling_window_compare` | Compare rolling windows and detect sustained movement. | rolling deltas, stability, trend exceptions |
@@ -153,7 +153,7 @@ runtime_tier: short
 preconditions:
   - metric_contract_active
   - target_and_baseline_windows_bound
-  - aggregate_permission_allowed
+  - customer_safe_aggregate_output_allowed
 failure_modes:
   - coverage_gap
   - unsupported_grain
@@ -265,7 +265,7 @@ Default stop and escalation rules:
   exception explanations.
 - Stop when candidate uplift, residual reduction, coverage, or stability cannot
   change the main conclusion.
-- Degrade when coverage, sample size, sparse cells, permission, or contracts are
+- Degrade when coverage, sample size, sparse cells, fixed output safety, source availability, or contracts are
   insufficient.
 - Ask the user when the next step changes scope, baseline, claim type, or
   business action.

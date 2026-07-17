@@ -26,7 +26,7 @@ parameters:
 non_uses:
   - Does not expose raw identifiers.
   - Does not claim causal mechanism for segment changes.
-  - Does not run visible segment claims on unsupported or permission-blocked dimensions.
+  - Does not run visible segment claims on unsupported grains or restricted-output fields.
 
 evidence_outputs:
   typed_payload: segment_contribution_result
@@ -47,7 +47,7 @@ evidence_outputs:
 
 limitations:
   - Sparse or incomplete segments are skipped and must be visible.
-  - Permission-limited dimensions can block visible contribution output.
+  - Raw identifiers, restricted detail, and sparse cells can block only the affected visible contribution output.
   - Segment contribution remains accounting evidence unless paired with mechanism evidence.
 
 degradation_rules:

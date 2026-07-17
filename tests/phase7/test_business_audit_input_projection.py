@@ -163,7 +163,7 @@ def _audit_state() -> dict:
         "authority_verified_claims": [claim],
         "follow_up_questions": ["要继续查看渠道差异吗？"],
         "validator_results": [
-            {"validator": "permission", "ok": True},
+            {"validator": "sensitive_output_policy", "ok": True},
             {"validator": "sql_safety", "ok": True},
         ],
         "verifier": {

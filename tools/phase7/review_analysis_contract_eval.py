@@ -168,9 +168,9 @@ def _review_payload(
                 for item in turn_reviews
             ),
         },
-        "clarification_resume": supplied_coverage.get("clarification_resume") or {
+        "clarification_attempt": supplied_coverage.get("clarification_attempt") or {
             "required": 0,
-            "resumed": 0,
+            "completed": 0,
         },
         "reuse_coverage": supplied_coverage.get("reuse_coverage") or {
             "required": 0,
@@ -259,19 +259,13 @@ def _load_internal_final_audit(
     turn: Mapping[str, Any],
     eval_artifact_path: Path,
 ) -> tuple[Mapping[str, Any] | None, str]:
-    resumed = bool(turn.get("resumed_status"))
-    client_package = (
-        turn.get("resumed_answer_package") if resumed else turn.get("answer_package")
-    )
+    client_package = turn.get("answer_package")
     if not isinstance(client_package, Mapping):
         client_package = {}
     raw_path = (
-        (turn.get("resumed_artifact_path") if resumed else turn.get("artifact_path"))
-        or client_package.get("artifact_path")
+        turn.get("artifact_path") or client_package.get("artifact_path")
     )
-    expected_run_id = str(
-        (turn.get("resumed_run_id") if resumed else turn.get("run_id")) or ""
-    )
+    expected_run_id = str(turn.get("run_id") or "")
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None, "artifact_path_missing"
     artifact_root = _artifact_root(eval_artifact_path)

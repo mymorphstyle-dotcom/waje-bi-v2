@@ -46,12 +46,18 @@ class RevenueRuntimePlanTest(unittest.TestCase):
             accepted_graph=(
                 "data_quality_profile",
                 "compare_periods",
-                "rolling_window_compare",
                 "driver_decomposition",
                 "answer_verify",
             ),
             diagnostic_axes=("multi_baseline",),
             question_text="相比前一天、近 7 日均值、上周同日，昨天付费金额为什么变化？",
+            bound_context={
+                "baselines": (
+                    "previous_day",
+                    "rolling_7_day_baseline",
+                    "same_weekday_last_week",
+                )
+            },
             prior_assets=(),
         )
 
@@ -60,11 +66,41 @@ class RevenueRuntimePlanTest(unittest.TestCase):
             plan["baselines"],
             ("previous_day", "rolling_7_day_baseline", "same_weekday_last_week"),
         )
-        self.assertEqual(
-            plan["capability_params"]["rolling_window_compare"]["window_days"],
-            7,
-        )
+        self.assertNotIn("rolling_window_compare", plan["capability_params"])
         self.assertIn("daily_metric_baselines", plan["query_intents"])
+
+    def test_multi_baseline_diagnostic_does_not_inject_rolling_window(self):
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=("compare_periods",),
+            diagnostic_axes=("multi_baseline",),
+            question_text="按季度比较付费金额变化。",
+            prior_assets=(),
+        )
+
+        self.assertEqual(plan["baselines"], ())
+        self.assertNotIn("rolling_window_compare", plan["capability_params"])
+
+    def test_selected_context_capability_uses_typed_window_spec(self):
+        spec = {
+            "capability_id": "rolling_window_compare",
+            "relation": "trailing_complete_periods",
+            "unit": "day",
+            "count": 14,
+        }
+        plan = build_revenue_runtime_plan(
+            target_metric="paid_amount",
+            accepted_graph=("rolling_window_compare",),
+            diagnostic_axes=(),
+            question_text="补充观察此前14个完整日。",
+            bound_context={"context_window_specs": [spec]},
+            prior_assets=(),
+        )
+
+        self.assertEqual(
+            plan["capability_params"]["rolling_window_compare"],
+            {"context_window_specs": (spec,)},
+        )
 
     def test_factor_topk_compiles_dimension_candidates(self):
         plan = build_revenue_runtime_plan(
@@ -277,7 +313,6 @@ class RevenueRuntimePlanTest(unittest.TestCase):
                 "time_window": "2026-07-08",
                 "windows": {"target": "2026-07-08", "baseline": "2026-07-07"},
                 "baselines": ("previous_day",),
-                "permission_scope": "analyst",
                 "snapshot_version": "2026H1",
                 "contract_versions": {"runtime": "contract-v1"},
                 "schema_fingerprint": "schema-v1",
@@ -334,7 +369,6 @@ class RevenueRuntimePlanTest(unittest.TestCase):
                 "time_window": "2026-07-08",
                 "windows": {"target": "2026-07-08", "baseline": "2026-07-07"},
                 "baselines": ("previous_day",),
-                "permission_scope": "analyst",
                 "snapshot_version": "2026H1",
                 "contract_versions": {"runtime": "contract-v1"},
                 "schema_fingerprint": "schema-v1",
@@ -402,7 +436,6 @@ class RevenueRuntimePlanTest(unittest.TestCase):
                 "time_window": "2026-07-09",
                 "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
                 "baselines": ("previous_day",),
-                "permission_scope": "analyst",
                 "snapshot_version": "2026H1",
             },
             prior_assets=(
@@ -417,68 +450,12 @@ class RevenueRuntimePlanTest(unittest.TestCase):
                         "time_window": "2026-07-09",
                         "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
                         "baselines": ("previous_day",),
-                        "permission_scope": "analyst",
-                        "snapshot_version": "2026H1",
+                                "snapshot_version": "2026H1",
                         "contract_signature": "scan:channel:paid_amount:full_sample",
                     },
                     "created_at": "2026-07-07T08:00:00+00:00",
                     "expires_at": "2026-07-08T08:00:00+00:00",
                     "row_payload": {"rows": (), "row_count": 0, "truncated": False},
-                },
-            ),
-        )
-
-        self.assertEqual(plan["asset_inputs_used"], ())
-        self.assertEqual(plan["asset_row_inputs"], ())
-        self.assertIn("dimension_scan", plan["query_intents"])
-
-    def test_permission_mismatch_does_not_reuse_prior_dimension_scan(self):
-        plan = build_revenue_runtime_plan(
-            target_metric="paid_amount",
-            accepted_graph=("segment_contribution", "answer_verify"),
-            diagnostic_axes=("factor_topk",),
-            question_text="继续看哪个渠道影响最大",
-            bound_context={
-                "scope": "full_sample",
-                "time_window": "2026-07-09",
-                "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
-                "baselines": ("previous_day",),
-                "permission_scope": "business_reader",
-                "snapshot_version": "2026H1",
-            },
-            prior_assets=(
-                {
-                    "asset_type": "dimension_scan",
-                    "dimensions": ("channel",),
-                    "status": "usable",
-                    "query_ref": "query:analyst-channel-scan",
-                    "reuse_contract": {
-                        "target_metric": "paid_amount",
-                        "scope": "full_sample",
-                        "time_window": "2026-07-09",
-                        "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
-                        "baselines": ("previous_day",),
-                        "permission_scope": "analyst",
-                        "snapshot_version": "2026H1",
-                        "contract_signature": "scan:channel:paid_amount:full_sample",
-                    },
-                    "created_at": "2026-07-09T08:00:00+00:00",
-                    "expires_at": "2026-07-10T08:00:00+00:00",
-                    "row_payload": {
-                        "rows": (
-                            {
-                                "period": "2026-07-09",
-                                "group": "target",
-                                "amount": 130,
-                                "paid_users": 11,
-                                "orders": 14,
-                                "first_paid_users": 4,
-                                "channel": "A",
-                            },
-                        ),
-                        "row_count": 1,
-                        "truncated": False,
-                    },
                 },
             ),
         )
@@ -498,7 +475,6 @@ class RevenueRuntimePlanTest(unittest.TestCase):
                 "time_window": "2026-07-09",
                 "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
                 "baselines": ("previous_day",),
-                "permission_scope": "analyst",
                 "snapshot_version": "2026H1",
             },
             prior_assets=(
@@ -513,8 +489,7 @@ class RevenueRuntimePlanTest(unittest.TestCase):
                         "time_window": "2026-07-09",
                         "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
                         "baselines": ("previous_day",),
-                        "permission_scope": "analyst",
-                        "snapshot_version": "2026H1",
+                                "snapshot_version": "2026H1",
                         "contract_signature": "scan:channel:paid_amount:full_sample",
                     },
                     "created_at": "2026-07-09T08:00:00+00:00",
@@ -553,7 +528,6 @@ class RevenueRuntimePlanTest(unittest.TestCase):
                 "time_window": "2026-07-09",
                 "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
                 "baselines": ("previous_day",),
-                "permission_scope": "analyst",
                 "snapshot_version": "2026H1",
             },
             prior_assets=(
@@ -568,8 +542,7 @@ class RevenueRuntimePlanTest(unittest.TestCase):
                         "time_window": "2026-07-09",
                         "windows": {"target": "2026-07-09", "baseline": "2026-07-08"},
                         "baselines": ("previous_day",),
-                        "permission_scope": "analyst",
-                        "snapshot_version": "2026H1",
+                                "snapshot_version": "2026H1",
                         "contract_signature": "scan:channel:paid_amount:full_sample",
                     },
                     "created_at": "2026-07-09T08:00:00+00:00",

@@ -859,5 +859,5 @@ known_gaps:
 
 review_notes:
   - This contract is source-level and does not define final database tables or SQL.
-  - Physical fields, joins, freshness checks, and permission rules are added in later phases.
+  - Physical fields, joins, freshness checks, service-connection source access, and fixed output-safety rules are maintained in runtime contracts.
   - "`formula_decompose` may reference only declared decomposition paths and must report unsupported paths."

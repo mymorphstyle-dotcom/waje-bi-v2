@@ -39,13 +39,13 @@ This is an LLM judgment layer. It should not be replaced by local regex or rigid
 The local checker has a narrower role:
 
 - SQL safety
-- permission and visibility
+- fixed restricted-output safety and source availability
 - schema, metric, grain, and time-window validity
 - evidence refs exist
 - numbers in claims match evidence payloads
 - final text does not publish a stronger claim than the Causal Auditor classification allows
 
-The local checker does not decide whether a mechanism is insightful. It only prevents unsupported facts, missing references, and permission leaks.
+The local checker does not decide whether a mechanism is insightful. It prevents unsupported facts, missing references, restricted-output leaks, and use of unavailable sources.
 
 ## Evidence Dossier
 
@@ -118,7 +118,7 @@ flowchart TD
   E --> G["Causal Auditor LLM<br/>audit_causal_implications<br/>独立审计因果和 implication"]
   F --> G
   G --> H["Answer Composer LLM<br/>融合事实、洞察和审计意见"]
-  H --> I["Local Evidence Checker<br/>数字/ref/scope/权限/口径一致性"]
+  H --> I["Local Evidence Checker<br/>数字/ref/scope/固定输出安全/数据源/口径一致性"]
   I -->|通过| J["最终业务答案"]
   I -->|失败| K["LLM Repair<br/>只修机械不一致"]
   K --> I
@@ -133,8 +133,8 @@ The old `degrade` bucket is too coarse. Runtime should move toward these answer 
 - `mixed_answer`: evidence supports part of the hypothesis, with material exceptions or segment differences.
 - `candidate_insight`: evidence suggests a mechanism worth mentioning, but it is not proven.
 - `needs_clarification`: user boundary can change the conclusion or evidence path.
-- `cannot_execute`: SQL, permission, schema, metric contract, grain, or data availability prevents execution.
-- `unsafe_to_publish`: answer wording exceeds evidence, references, permission, or metric facts and must be repaired.
+- `cannot_execute`: SQL safety, source availability, schema, metric contract, grain, or data availability prevents the dependent path from executing.
+- `unsafe_to_publish`: answer wording exceeds evidence, references, fixed restricted-output safety, or metric facts and must be repaired.
 
 Local code may detect `cannot_execute` and `unsafe_to_publish`. The LLM judge should classify `supported_answer`, `negative_answer`, `mixed_answer`, and `candidate_insight`.
 
@@ -153,7 +153,7 @@ Prompts should ask for concise decision notes, not hidden chain-of-thought. The 
 
 The local checker should remain mechanical:
 
-- it may reject a final answer if a numeric value, scope, time window, evidence ref, permission, or metric id is inconsistent
+- it may reject a final answer if a numeric value, scope, time window, evidence ref, restricted-output boundary, source reference, or metric id is inconsistent
 - it may reject a proven-cause wording when the Causal Auditor output classifies the mechanism below `causal_supported`
 - it must not reject a candidate implication only because local rules cannot prove it
 - it should return repair feedback to the LLM instead of rewriting the business answer

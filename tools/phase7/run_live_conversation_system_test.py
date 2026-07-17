@@ -63,7 +63,6 @@ from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
 )
-from bi_agent.runtime.permission_roles import PRODUCT_ROLE_PERMISSION_SCOPES
 from bi_agent.runtime.runtime_publication_index import (
     RUNTIME_PUBLICATION_INDEX_SCHEMA_VERSION,
     RUNTIME_PUBLICATION_RECORD_GROUPS,
@@ -102,17 +101,6 @@ def load_cases(path: str) -> list[dict[str, Any]]:
             }],
         })
     return loaded
-
-
-def _permission_role_for_scope(permission_scope: str) -> str:
-    matches = tuple(
-        role
-        for role, scope in PRODUCT_ROLE_PERMISSION_SCOPES.items()
-        if scope == permission_scope
-    )
-    if len(matches) != 1:
-        raise ValueError("eval_permission_scope_invalid")
-    return matches[0]
 
 
 def select_cases(cases: list[dict[str, Any]], case_id: str | None) -> list[dict[str, Any]]:
@@ -187,21 +175,6 @@ def _strip_env_value(value: str) -> str:
 
 
 def _effective_result(turn_record: dict[str, Any]) -> dict[str, Any]:
-    if turn_record.get("resumed_status"):
-        return {
-            "status": turn_record.get("resumed_status"),
-            "run_id": turn_record.get("resumed_run_id"),
-            "topic_id": turn_record.get("resumed_topic_id"),
-            "intent": turn_record.get("resumed_intent"),
-            "topic_relation": turn_record.get("resumed_topic_relation"),
-            "failure_reason": turn_record.get("resumed_failure_reason"),
-            "answer_package": turn_record.get("resumed_answer_package"),
-            "context_manifest": turn_record.get("resumed_context_manifest"),
-            "accepted_graph": turn_record.get("resumed_accepted_graph") or [],
-            "llm_calls": turn_record.get("resumed_llm_calls", []),
-            "quality_review": turn_record.get("resumed_quality_review"),
-            "artifact_path": turn_record.get("resumed_artifact_path"),
-        }
     return {
         "status": turn_record.get("status"),
         "run_id": turn_record.get("run_id"),
@@ -229,11 +202,7 @@ _RUNTIME_CORRECTNESS_KEYS = (
 def _run_failure_evaluation(
     turn_record: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    if turn_record.get("resumed_status") == "failed":
-        stage = "clarification_resume"
-        run_id = turn_record.get("resumed_run_id")
-        reason = turn_record.get("resumed_failure_reason")
-    elif turn_record.get("status") == "failed":
+    if turn_record.get("status") == "failed":
         stage = "run"
         run_id = turn_record.get("run_id")
         reason = turn_record.get("failure_reason")
@@ -330,24 +299,12 @@ def review_case_obligations(
         registry,
         authored_family=authored_family,
     )
-    authored_permission_scope = str(
-        scenario.get("permission_scope") or "analyst"
-    )
-    persisted_permission_scope, permission_authority_status = (
-        _persisted_permission_scope_authority(
-            authority,
-            authored_scope=authored_permission_scope,
-        )
-    )
     family = families[0] if families else ""
-    request = ObligationRequest(
-        question_families=families,
-        diagnostic_tags=tuple(scenario.get("diagnostic_tags") or ()),
-        target_metrics=tuple(scenario.get("target_metrics") or ()),
-        requested_dimensions=tuple(scenario.get("requested_dimensions") or ()),
-        baselines=tuple(scenario.get("baselines") or ()),
-        context_sources=tuple(scenario.get("context_sources") or ()),
-        claim_intents=tuple(scenario.get("claim_intents") or ()),
+    request = _accepted_obligation_request(
+        turn_record,
+        authority=authority,
+        families=families,
+        conversation_store=conversation_store,
     )
     resolution, capability_family_provenance = _resolve_family_set_obligations(
         request, registry
@@ -495,11 +452,10 @@ def review_case_obligations(
         terminal_scenario,
         observed_states,
     )
-    clarification_required = scenario.get("clarification_resume") == "required"
+    clarification_required = scenario.get("clarification_attempt") == "required"
     clarification_passed = (
         not clarification_required
-        or turn_record.get("resumed_status") == "completed"
-        and turn_record.get("resumed_topic_id") == turn_record.get("topic_id")
+        or turn_record.get("status") == "completed"
     )
     reuse_required = scenario.get("reuse") == "required"
     reuse_review = (
@@ -532,7 +488,6 @@ def review_case_obligations(
     )
     hard_passed = (
         family_authority_status == "matched"
-        and permission_authority_status == "matched"
         and not nonterminal_capabilities
         and not capability_state_mismatches
         and not unresolved_authority_capabilities
@@ -551,9 +506,6 @@ def review_case_obligations(
         "question_families": list(families),
         "question_family_authority_status": family_authority_status,
         "question_family_mismatch": family_authority_status == "mismatch",
-        "authored_permission_scope": authored_permission_scope,
-        "permission_scope": persisted_permission_scope,
-        "permission_scope_authority_status": permission_authority_status,
         "capability_family_provenance": {
             capability_id: list(source_families)
             for capability_id, source_families in capability_family_provenance.items()
@@ -620,7 +572,7 @@ def review_case_obligations(
         "claim_ceiling_passed": claim_review["passed"],
         "terminal_outcome": terminal_review["outcome"],
         "terminal_boundary_passed": terminal_review["passed"],
-        "clarification_resume_passed": clarification_passed,
+        "clarification_attempt_passed": clarification_passed,
         "reuse_review": reuse_review,
         "reuse_passed": reuse_passed,
         "hard_acceptance_passed": hard_passed,
@@ -657,32 +609,159 @@ def _persisted_question_family_authority(
     return families, "matched" if authored_family in families else "mismatch"
 
 
-def _persisted_permission_scope_authority(
-    authority: Mapping[str, Any],
+def _accepted_obligation_request(
+    turn_record: Mapping[str, Any],
     *,
-    authored_scope: str,
-) -> tuple[str, str]:
-    try:
-        _permission_role_for_scope(authored_scope)
-    except ValueError:
-        return "", "invalid_authored"
-    authority_error = str(authority.get("_authority_error") or "")
-    if authority_error:
-        return "", authority_error
+    authority: Mapping[str, Any],
+    families: tuple[str, ...],
+    conversation_store: Any,
+) -> ObligationRequest:
+    """Build executable obligations from accepted runtime material only."""
+    contract = _persisted_obligation_contract(authority)
+    material = _resolved_obligation_material(
+        turn_record,
+        conversation_store=conversation_store,
+    )
+    intent = turn_record.get("intent")
+    accepted_intent = intent if isinstance(intent, Mapping) else {}
+
+    route_material = (
+        material.get("route_material_slots")
+        if isinstance(material, Mapping)
+        else None
+    )
+    accepted_slots = route_material if isinstance(route_material, Mapping) else {}
+
+    target_metrics = _accepted_axis(
+        accepted_slots.get("target_metrics"),
+        accepted_intent.get("target_metric"),
+        _contract_target_metric_ids(contract),
+    )
+    dimension_ids = _accepted_axis(
+        accepted_slots.get("dimension_ids"),
+        accepted_intent.get("dimension_ids"),
+        contract.scope.get("requested_dimension_ids") if contract else (),
+    )
+    baselines = _accepted_axis(
+        accepted_slots.get("baselines"),
+        accepted_intent.get("baseline_candidates")
+        or accepted_intent.get("baselines"),
+        (
+            tuple(
+                window.window_id
+                for window in contract.resolved_windows
+                if window.role != "target"
+            )
+            if contract
+            else ()
+        ),
+    )
+    claim_types = _accepted_axis(
+        accepted_slots.get("claim_types"),
+        accepted_intent.get("publishable_claim_types"),
+        contract.claim_intents if contract else (),
+    )
+    return ObligationRequest(
+        question_families=families,
+        diagnostic_tags=_accepted_axis(
+            accepted_slots.get("diagnostic_tags"),
+            accepted_intent.get("diagnostic_tags"),
+        ),
+        target_metrics=target_metrics,
+        dimension_ids=dimension_ids,
+        baselines=baselines,
+        context_sources=_accepted_axis(
+            accepted_slots.get("context_sources"),
+            accepted_intent.get("context_sources"),
+        ),
+        analysis_axis_ids=_accepted_axis(
+            accepted_slots.get("analysis_axis_ids"),
+            accepted_intent.get("analysis_axis_ids"),
+        ),
+        required_outcomes=_accepted_axis(
+            accepted_slots.get("required_outcomes"),
+            accepted_intent.get("required_outcomes"),
+        ),
+        claim_types=claim_types,
+    )
+
+
+def _persisted_obligation_contract(authority: Mapping[str, Any]):
     admin = authority.get("admin_audit") or authority
     if not isinstance(admin, Mapping):
-        return "", "missing"
+        return None
     raw_contract = admin.get("analysis_contract")
     if not isinstance(raw_contract, Mapping):
-        return "", "missing"
+        return None
+    payload = dict(raw_contract)
+    payload.pop("contract_signature", None)
     try:
-        contract = analysis_contract_from_dict(raw_contract)
-        _permission_role_for_scope(contract.permission_scope)
+        return analysis_contract_from_dict(payload)
     except (KeyError, TypeError, ValueError):
-        return "", "invalid_contract"
-    return (
-        contract.permission_scope,
-        "matched" if contract.permission_scope == authored_scope else "mismatch",
+        return None
+
+
+def _resolved_obligation_material(
+    turn_record: Mapping[str, Any],
+    *,
+    conversation_store: Any,
+) -> Mapping[str, Any] | None:
+    resolver = getattr(
+        conversation_store,
+        "resolve_completed_material_authority",
+        None,
+    )
+    run_id = str(turn_record.get("run_id") or "")
+    thread_id = str(turn_record.get("thread_id") or "")
+    topic_id = str(turn_record.get("topic_id") or "")
+    if not callable(resolver) or not run_id or not thread_id or not topic_id:
+        return None
+    resolved = resolver(
+        source_run_id=run_id,
+        thread_id=thread_id,
+        topic_id=topic_id,
+    )
+    if not isinstance(resolved, Mapping):
+        raise ValueError("runtime_material_authority_invalid")
+    material = resolved.get("material_authority")
+    if not isinstance(material, Mapping):
+        raise ValueError("runtime_material_authority_invalid")
+    return material
+
+
+def _accepted_axis(*candidates: Any) -> tuple[str, ...]:
+    for candidate in candidates:
+        if candidate in (None, ""):
+            continue
+        values = (
+            (candidate,)
+            if isinstance(candidate, str)
+            else candidate
+            if isinstance(candidate, (list, tuple))
+            else ()
+        )
+        normalized = tuple(
+            dict.fromkeys(
+                str(item)
+                for item in values
+                if isinstance(item, str) and item
+            )
+        )
+        if normalized or isinstance(candidate, (list, tuple)):
+            return normalized
+    return ()
+
+
+def _contract_target_metric_ids(contract: Any) -> tuple[str, ...]:
+    if contract is None:
+        return ()
+    target_refs = set(contract.target_metric_refs)
+    return tuple(
+        dict.fromkeys(
+            binding.metric_id
+            for binding in contract.metric_bindings
+            if binding.contract_ref in target_refs
+        )
     )
 
 
@@ -707,10 +786,12 @@ def _resolve_family_set_obligations(
                 question_families=(family,),
                 diagnostic_tags=supported_tags,
                 target_metrics=request.target_metrics,
-                requested_dimensions=request.requested_dimensions,
+                dimension_ids=request.dimension_ids,
                 baselines=request.baselines,
                 context_sources=request.context_sources,
-                claim_intents=request.claim_intents,
+                analysis_axis_ids=request.analysis_axis_ids,
+                required_outcomes=request.required_outcomes,
+                claim_types=request.claim_types,
             ),
             registry,
         )
@@ -879,8 +960,6 @@ def _authority_resolved_terminal_boundary(
     expected_states: Mapping[str, str],
 ) -> str:
     states = set(expected_states.values())
-    if "permission_blocked" in states:
-        return "permission_blocked"
     if states and states != {"executable"}:
         return "contract_allowed_partial"
     return authored_boundary
@@ -893,7 +972,6 @@ def _authority_resolved_expected_gaps(
     gap_states = {
         "source_unbound",
         "contract_partial",
-        "permission_blocked",
         "snapshot_unavailable_as_of",
     }
     resolved: dict[str, str] = {}
@@ -937,7 +1015,6 @@ def _derive_capability_outcomes(
         "contract_absent",
         "contract_partial",
         "dataset_snapshot_unavailable_as_of",
-        "permission_blocked",
         "source_unbound",
         "unsupported_grain",
         "window_data_unavailable",
@@ -1260,7 +1337,6 @@ def _query_contract_from_mapping(value: Mapping[str, Any]) -> QueryContract:
         ),
         result_shape=result_shape,
         completeness_assertions=tuple(value.get("completeness_assertions") or ()),
-        permission_scope=str(value["permission_scope"]),
         workload_class=str(value["workload_class"]),
         contract_signature=str(value["contract_signature"]),
         query_parameters=dict(value.get("query_parameters") or {}),
@@ -1577,7 +1653,6 @@ def _gap_identity_matches_contract(gap: Any, contract: Any) -> bool:
         )
     if gap.gap_type in {
         "dataset_snapshot_unavailable_as_of",
-        "permission_blocked",
         "source_unbound",
     }:
         return (
@@ -1670,7 +1745,6 @@ _DATASET_STATE_PRECEDENCE = {
     "source_unbound": 2,
     "contract_partial": 3,
     "snapshot_unavailable_as_of": 4,
-    "permission_blocked": 5,
 }
 
 
@@ -1869,7 +1943,6 @@ def _set_dataset_state(states: dict[str, str], dataset_id: str, state: str) -> N
 
 def _normalized_gap_state(gap_type: str) -> str:
     aliases = {
-        "permission_blocked": "permission_blocked",
         "contract_partial": "contract_partial",
         "contract_absent": "source_unbound",
         "missing_contract": "source_unbound",
@@ -2300,20 +2373,13 @@ def _review_terminal_boundary(
     observed_states: Mapping[str, str],
 ) -> dict[str, Any]:
     boundary = str(scenario.get("terminal_boundary") or "")
-    status = str(turn_record.get("resumed_status") or turn_record.get("status") or "")
-    answer_package = (
-        turn_record.get("resumed_answer_package")
-        if turn_record.get("resumed_status")
-        else turn_record.get("answer_package")
-    )
+    status = str(turn_record.get("status") or "")
+    answer_package = turn_record.get("answer_package")
     has_answer = bool(
         answer_package or (turn_record.get("runtime_authority") or {}).get("verified_claims")
     )
     matches = {
         "verified_answer": status == "completed" and has_answer,
-        "permission_blocked": (
-            status == "completed" and "permission_blocked" in observed_states.values()
-        ),
         "contract_allowed_partial": status == "completed" and any(
             state in {
                 "contract_partial",
@@ -2545,8 +2611,6 @@ def _review_published_source_candidate(
         != str(candidate.get("runtime_snapshot_id") or "")
         or str(result_ref_record.get("contract_version") or "")
         != str(candidate.get("runtime_contract_version") or "")
-        or str(result_ref_record.get("permission_scope") or "")
-        != str(candidate.get("permission_scope") or "")
         or str(result_ref_record.get("semantic_scope") or "")
         != str(candidate.get("semantic_scope_signature") or "")
     ):
@@ -2999,8 +3063,6 @@ def _review_required_reuse_candidate(
             or source_record.query_hash != current_record.query_hash
             or source_record.source_snapshot_refs
             != current_record.source_snapshot_refs
-            or source_record.contract.permission_scope
-            != current_record.contract.permission_scope
         ):
             errors.append("reuse_source_query_material_mismatch")
         if (
@@ -3089,8 +3151,7 @@ def _expectation_review(
     if expect.get("allow_clarification"):
         clarification_ok = (
             turn_record.get("status") == "waiting_for_clarification"
-            and bool(turn_record.get("clarification_response"))
-            and bool(turn_record.get("resumed_status"))
+            and bool(turn_record.get("clarification"))
         )
     intent_ok = not expect.get("intent") or actual_intent == expect.get("intent")
     relation_ok = _topic_relation_matches(expect.get("topic_relation"), actual_relation)
@@ -3511,8 +3572,6 @@ def _real_clickhouse_review(
                     continue
                 snapshot = snapshot_record.snapshot
                 observed_datasets.add(snapshot.dataset_id)
-                if query_record.contract.permission_scope not in snapshot.permission_scopes:
-                    issues.append(f"snapshot_permission_mismatch:{query_ref}")
                 for window in query_record.contract.resolved_windows:
                     required_watermark = (
                         date.fromisoformat(window.end_exclusive) - timedelta(days=1)
@@ -5641,17 +5700,16 @@ def _coverage_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             "total": len(evaluated_turns),
         },
-        "clarification_resume": {
+        "clarification_attempt": {
             "required": sum(
-                (turn.get("scenario") or {}).get("clarification_resume") == "required"
+                (turn.get("scenario") or {}).get("clarification_attempt") == "required"
                 for turn in evaluated_turns
             ),
             "passed": sum(
-                (turn.get("scenario") or {}).get("clarification_resume") == "required"
+                (turn.get("scenario") or {}).get("clarification_attempt") == "required"
                 and (turn.get("obligation_review") or {}).get("hard_acceptance_passed") is True
-                and (turn.get("obligation_review") or {}).get("clarification_resume_passed") is True
-                and turn.get("resumed_status") == "completed"
-                and turn.get("resumed_topic_id") == turn.get("topic_id")
+                and (turn.get("obligation_review") or {}).get("clarification_attempt_passed") is True
+                and turn.get("status") == "completed"
                 for turn in evaluated_turns
             ),
         },
@@ -5753,7 +5811,7 @@ def run_case(
     core_artifact_root = (ROOT / "artifacts" / "phase-7").resolve()
     analysis_context: dict[str, Any] = {}
     coverage_authority = None
-    coverage_authority_cache: dict[tuple[str, str], Mapping[str, Any]] = {}
+    coverage_authority_cache: dict[str, Mapping[str, Any]] = {}
     requires_coverage_authority = any(
         isinstance(turn.get("scenario"), Mapping)
         and bool((turn.get("scenario") or {}).get("expected_dataset_states"))
@@ -5771,13 +5829,9 @@ def run_case(
         scenario = turn.get("scenario") or {}
         if not isinstance(scenario, Mapping):
             raise ValueError("scenario_expectation_invalid")
-        permission_scope = str(scenario.get("permission_scope") or "analyst")
-        product_role = _permission_role_for_scope(permission_scope)
         result = core.run_message(
             thread_id=thread_id,
             user_message=turn["user"],
-            role=product_role,
-            runtime_permission_scope=permission_scope,
             artifact_root=str(core_artifact_root),
             analysis_context=analysis_context or None,
         )
@@ -5844,7 +5898,7 @@ def run_case(
                 raw_as_of = analysis_context.get("as_of")
                 if not isinstance(raw_as_of, str):
                     raise RuntimeError("eval_coverage_authority_as_of_required")
-                cache_key = (raw_as_of, permission_scope)
+                cache_key = raw_as_of
                 if cache_key not in coverage_authority_cache:
                     try:
                         coverage_authority_cache[cache_key] = audit_existing_data_coverage(
@@ -5854,7 +5908,6 @@ def run_case(
                             snapshot_records=core.store.list_dataset_snapshots(),
                             release_resolver=core.release_resolver,
                             as_of=datetime.fromisoformat(raw_as_of),
-                            permission_scope=permission_scope,
                         )
                     except Exception as exc:
                         raise RuntimeError("eval_coverage_authority_unavailable") from exc

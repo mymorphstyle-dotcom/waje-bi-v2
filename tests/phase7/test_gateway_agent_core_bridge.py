@@ -24,16 +24,9 @@ class GatewayAgentCoreBridgeTest(unittest.TestCase):
         self.assertIn("bi_agent.conversation.agent_core", helper)
         self.assertIn("WAJE_AGENT_CORE_COMMAND", helper)
         self.assertIn("agentCore", source)
-        self.assertIn("resolveGatewayRole", source)
-        self.assertIn("filterAgentCoreForRole", source)
-        self.assertIn("roleDecision.displayRole", source)
-        self.assertIn(
-            "runtimePermissionScope: roleDecision.runtimePermissionScope",
-            source,
-        )
+        self.assertIn("projectAgentCoreForCustomer", source)
         self.assertIn("agentCore: visibleAgentCore", source)
-        self.assertIn("export function filterAgentCoreForRole", store)
-        self.assertNotIn("body.role", source)
+        self.assertIn("export function projectAgentCoreForCustomer", store)
 
     def test_artifact_continue_route_invokes_shared_agent_core_command(self):
         helper = ROOT / "app" / "api" / "_agentCore.ts"

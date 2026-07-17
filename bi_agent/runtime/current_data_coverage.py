@@ -299,13 +299,6 @@ def _dimension_case(
     if missing:
         gap_type = "source_schema_mismatch"
         owner = "source_contract_owner"
-    elif any(
-        _permission_rank(str(item.get("permission_scope") or "analyst"))
-        > _permission_rank("analyst")
-        for item in dimension_contracts
-    ):
-        gap_type = "permission_blocked"
-        owner = "permission_contract_owner"
     elif not capability_supported:
         gap_type = "capability_contract_unsupported_metric"
         owner = "analysis_contract_owner"
@@ -431,13 +424,6 @@ def _capability_accepts_adapter(
     return not reviewed_metrics or metric_id in reviewed_metrics
 
 
-def _permission_rank(scope: str) -> int:
-    try:
-        return ("viewer", "analyst", "admin").index(scope)
-    except ValueError:
-        return 99
-
-
 def _bind_overall_channel_reconciliation(
     cases: list[CurrentDataCoverageCase],
 ) -> list[CurrentDataCoverageCase]:
@@ -520,7 +506,6 @@ def _supported_case(
             dimension_presence_policy=str(shape_contract["dimension_presence_policy"]),
         ),
         completeness_assertions=_COMPLETENESS,
-        permission_scope="analyst",
         workload_class="bounded_readonly",
         contract_signature="",
         query_parameters=dict(shape_contract.get("query_parameters") or {}),
@@ -579,7 +564,6 @@ def _dimension_binding(registry: RuntimeContractRegistry, dimension_id: str, dat
     return DimensionBinding(
         dimension_id, str(item["contract_ref"]), dataset_id, str(item["source_field"]),
         tuple(item["allowed_grains"]), str(item.get("null_bucket") or "Unknown"),
-        str(item.get("permission_scope") or "analyst"),
     )
 
 
@@ -611,7 +595,7 @@ def _snapshots(
                     dataset.get("schema_contract_ref")
                     or f"runtime-dataset:{dataset_id}"
                 ),
-                permission_scopes=("analyst",), loaded_at="2026-06-03T00:00:00Z", status="active",
+                loaded_at="2026-06-03T00:00:00Z", status="active",
                 evidence_state="claim_ready", reconciliation_status=("matched" if len(release_dataset_ids) > 1 else "not_applicable"),
                 reconciliation_ref=(f"reconciliation:{'-'.join(release_dataset_ids)}" if len(release_dataset_ids) > 1 else ""),
                 logical_snapshot_id="current-data-logical", load_revision="current-data-load:sha256:reviewed",
@@ -641,6 +625,7 @@ def _coverage_windows(
     return resolve_revenue_windows(
         target_semantic="2026-06-02",
         baselines=CURRENT_DATA_BASELINES,
+        context_window_specs=(),
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
         timezone_name=registry.business_timezone,
         dataset_watermarks={"coverage": date.fromisoformat("2026-06-02")},

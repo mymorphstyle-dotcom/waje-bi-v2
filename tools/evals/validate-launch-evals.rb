@@ -14,7 +14,6 @@ DATA_STATES = %w[
   static_assumption
   source_unbound
   missing_contract
-  permission_limited
   unsupported_grain
   out_of_scope_for_now
 ].freeze
@@ -24,7 +23,6 @@ BUSINESS_STATES = %w[
   candidate_mechanism
   contextual_evidence
   insufficient
-  permission_limited
   unsupported_grain
   out_of_scope
 ].freeze
@@ -50,7 +48,7 @@ BUSINESS_FAILURE_TYPES = %w[
   hidden_data_gap
   misleading_visualization
   unsupported_main_conclusion
-  permission_leak
+  restricted_output_leak
 ].freeze
 SYSTEM_POINTS = %w[
   LLM_reasoner
@@ -62,7 +60,7 @@ SYSTEM_POINTS = %w[
   answer_synthesizer
   answer_verifier
   visualization_planner
-  permission_policy
+  restricted_output_policy
 ].freeze
 
 def list(value)

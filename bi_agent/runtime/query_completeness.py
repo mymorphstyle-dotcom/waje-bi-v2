@@ -369,17 +369,6 @@ def _watermark_assertion(
     required = max(required_values) if required_values else None
     observed_by_ref = {}
     for snapshot in snapshots:
-        if contract.permission_scope not in snapshot.permission_scopes:
-            reasons.append(
-                "snapshot_permission_scope_mismatch:"
-                + (
-                    f"{snapshot.snapshot_ref}:"
-                    if len(snapshots) > 1
-                    else ""
-                )
-                + f"{contract.permission_scope}:"
-                f"{','.join(snapshot.permission_scopes)}"
-            )
         if snapshot.status != "active":
             reasons.append(
                 f"snapshot_status_invalid:{snapshot.snapshot_ref}:{snapshot.status}"
@@ -387,7 +376,8 @@ def _watermark_assertion(
         if snapshot.evidence_state != "claim_ready" and contract.query_intent not in {
             "data_quality_probe",
             "event_context_probe",
-            "gameplay_activity_probe",
+            "association_outcome_timeseries",
+            "association_candidate_timeseries",
             "channel_context_probe",
             "source_reconciliation_probe",
         }:
@@ -399,7 +389,8 @@ def _watermark_assertion(
             contract.dimension_bindings
             and contract.query_intent not in {
                 "data_quality_probe",
-                "gameplay_activity_probe",
+                "association_outcome_timeseries",
+                "association_candidate_timeseries",
                 "channel_context_probe",
                 "source_reconciliation_probe",
             }
@@ -1205,7 +1196,6 @@ def _total_reference(
     scope_fields = (
         "analysis_contract_ref",
         "filters",
-        "permission_scope",
         "window_refs",
         "resolved_windows",
         "workload_class",
@@ -1276,7 +1266,6 @@ def _statuses(
         "missing_query_hash",
         "missing_rows_ref",
         "missing_completeness_report_ref",
-        "snapshot_permission_scope_mismatch:",
         "snapshot_release_unverified:",
         "unreviewed_output_field:",
         "invalid_type:",

@@ -18,7 +18,6 @@ from bi_agent.runtime.langgraph_workflow import (
     _ensure_degraded_audit,
     _ensure_blocked_boundary_audit,
 )
-from bi_agent.runtime.artifacts import filter_artifact_for_role
 
 
 def _llm_input_payload(answer_package, task):
@@ -1043,6 +1042,60 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertEqual(diagnostics[0]["status"], "contract_absent")
         self.assertEqual(diagnostics[0]["data_presence"], "field_present")
 
+    def test_contract_gap_diagnostics_ignore_request_restricted_output_injection(self):
+        diagnostics = _contract_gap_diagnostics_from_state(
+            {
+                "request": {
+                    "available_fields": ("payment_status",),
+                    "contract_fields": (),
+                    "restricted_output_fields": ("payment_status",),
+                    "compiler_runtime_plan": {
+                        "row_shapes": (
+                            {
+                                "contract_gaps": (
+                                    {
+                                        "gap_id": "payment_status_contract_missing",
+                                        "fields": ("payment_status",),
+                                    },
+                                )
+                            },
+                        )
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(diagnostics[0]["status"], "contract_absent")
+
+    def test_contract_gap_diagnostics_use_fixed_contract_restricted_output_policy(self):
+        diagnostics = _contract_gap_diagnostics_from_state(
+            {
+                "request": {
+                    "available_fields": ("user_id",),
+                    "contract_fields": ("user_id",),
+                    "restricted_output_fields": (),
+                    "compiler_runtime_plan": {
+                        "row_shapes": (
+                            {
+                                "contract_gaps": (
+                                    {
+                                        "gap_id": "raw_user_identifier_output",
+                                        "fields": ("user_id",),
+                                    },
+                                )
+                            },
+                        )
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(diagnostics[0]["status"], "restricted_output_blocked")
+        self.assertEqual(
+            diagnostics[0]["claim_effect"],
+            "block_sensitive_detail_claim",
+        )
+
     def test_contract_gap_diagnostics_use_real_compiler_gap_descriptors(self):
         compiled = compile_graph(
             question_family="data_quality_or_evidence_review",
@@ -1188,27 +1241,6 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
         self.assertEqual(summary["visualization_plan"]["blocks"], [])
         self.assertEqual(package["admin_audit"]["verifier"]["status"], "failed")
 
-    def test_role_visibility_hides_admin_sql_from_business_reader(self):
-        artifact = {
-            "sections": [
-                {
-                    "section_id": "summary",
-                    "visibility": "business_summary",
-                    "payload": {"text": "draft"},
-                },
-                {
-                    "section_id": "sql",
-                    "visibility": "admin_audit",
-                    "payload": {"sql": "SELECT 1"},
-                },
-            ]
-        }
-        filtered = filter_artifact_for_role(artifact, "business_reader")
-        self.assertEqual(
-            [section["section_id"] for section in filtered["sections"]],
-            ["summary"],
-        )
-
     def test_verifier_allows_negated_causal_boundary_wording(self):
         verifier = verify_answer_package(
             draft_claims=[
@@ -1313,7 +1345,7 @@ class WorkflowArtifactsAnswerTest(unittest.TestCase):
             "run_id": "blocked-validator-audit",
             "intent": {"scope": "full_sample", "time_window": "2026-01..2026-06"},
             "validator_results": [
-                {"validator": "permission", "ok": False, "reason": "当前聚合结果受权限限制，不能发布主业务结论。"}
+                {"validator": "sensitive_output_policy", "ok": False, "reason": "当前结果包含受限输出，不能发布主业务结论。"}
             ],
             "coverage_interpretation": {
                 "coverage_status": "blocked",

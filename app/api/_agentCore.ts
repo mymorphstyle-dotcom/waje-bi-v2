@@ -9,16 +9,14 @@ type AgentCoreResult = {
 };
 
 type AgentCoreOptions = {
-  runtimePermissionScope?: "viewer" | "analyst" | "admin";
   clarification?: {
-    runId: string;
-    answer: string;
-    selectedOptionId?: string | null;
-    source?: "user";
-  };
-  clarificationDispatch?: {
     sourceRunId: string;
-    ownerId: string;
+    resolutionId: string;
+    attemptRunId: string;
+    answer: string;
+    selectedOptionId: string | null;
+    source: "user";
+    retryAttempt: boolean;
   };
   runDispatch?: {
     ownerId: string;
@@ -32,20 +30,12 @@ export async function runAgentCore(
   threadId: string,
   runId: string,
   message: string,
-  role = "business_reader",
+  actorId: string,
   options: AgentCoreOptions = {},
 ): Promise<AgentCoreResult> {
   if (process.env.WAJE_AGENT_CORE_COMMAND && process.env.WAJE_AGENT_CORE_COMMAND !== "python3") {
     return agentCoreSpawnFailure();
   }
-  const expectedPermissionScope = runtimePermissionScopeForRole(role);
-  if (
-    options.runtimePermissionScope &&
-    options.runtimePermissionScope !== expectedPermissionScope
-  ) {
-    throw new Error("runtime_permission_scope_mismatch");
-  }
-  const runtimePermissionScope = options.runtimePermissionScope ?? expectedPermissionScope;
   const args = [
     "-m",
     "bi_agent.conversation.agent_core",
@@ -55,21 +45,11 @@ export async function runAgentCore(
     runId,
     "--message",
     message,
-    "--role",
-    role,
-    "--runtime-permission-scope",
-    runtimePermissionScope,
+    "--user-id",
+    actorId,
   ];
   if (options.clarification) {
     args.push("--clarification", JSON.stringify(options.clarification));
-  }
-  if (options.clarificationDispatch) {
-    args.push(
-      "--clarification-dispatch-source-run-id",
-      options.clarificationDispatch.sourceRunId,
-      "--clarification-dispatch-owner-id",
-      options.clarificationDispatch.ownerId,
-    );
   }
   if (options.runDispatch) {
     args.push(
@@ -85,12 +65,6 @@ export async function runAgentCore(
   }
 
   return await runAgentCoreDetached(args, options.onDetachedWorkerExit);
-}
-
-function runtimePermissionScopeForRole(role: string) {
-  if (role === "analyst") return "analyst" as const;
-  if (role === "data_owner_admin") return "admin" as const;
-  return "viewer" as const;
 }
 
 function runAgentCoreDetached(

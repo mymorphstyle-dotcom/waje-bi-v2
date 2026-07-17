@@ -22,6 +22,7 @@ class AnalysisContractsTest(unittest.TestCase):
         result = resolve_revenue_windows(
             target_semantic="yesterday",
             baselines=("previous_day", "rolling_7_day_baseline", "same_weekday_last_week"),
+            context_window_specs=(),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
             timezone_name="Africa/Lagos",
             dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
@@ -38,10 +39,109 @@ class AnalysisContractsTest(unittest.TestCase):
         self.assertTrue(all(window.membership_policy == "allow_overlap" for window in result.windows))
         self.assertEqual(result.gaps, ())
 
+    def test_resolves_typed_fourteen_day_context_separately_from_primary_baseline(self):
+        result = resolve_revenue_windows(
+            target_semantic="2026-06-02",
+            baselines=("previous_day",),
+            context_window_specs=(
+                {
+                    "capability_id": "rolling_window_compare",
+                    "relation": "trailing_complete_periods",
+                    "unit": "day",
+                    "count": 14,
+                },
+            ),
+            as_of=datetime.fromisoformat("2026-07-17T12:00:00+01:00"),
+            timezone_name="Africa/Lagos",
+            dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
+            affected_capabilities=("compare_periods",),
+            affected_claim_types=("comparative_change",),
+        )
+
+        windows = {window.window_id: window for window in result.windows}
+        self.assertEqual(windows["previous_day"].start_inclusive, "2026-06-01")
+        context = next(window for window in result.windows if window.role == "reference")
+        self.assertEqual(context.start_inclusive, "2026-05-19")
+        self.assertEqual(context.end_exclusive, "2026-06-02")
+        self.assertEqual(context.required_complete_days, 14)
+        self.assertEqual(context.capability_refs, ("rolling_window_compare",))
+        self.assertNotIn("rolling_7_day_baseline", windows)
+
+    def test_resolves_quarter_context_on_calendar_boundaries(self):
+        result = resolve_revenue_windows(
+            target_semantic="2026-06-01",
+            baselines=("previous_day",),
+            context_window_specs=(
+                {
+                    "capability_id": "compare_period_phases",
+                    "relation": "trailing_complete_periods",
+                    "unit": "quarter",
+                    "count": 1,
+                },
+            ),
+            as_of=datetime.fromisoformat("2026-07-17T12:00:00+01:00"),
+            timezone_name="Africa/Lagos",
+            dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
+            affected_capabilities=("compare_period_phases",),
+            affected_claim_types=("recurring_pattern_existence",),
+        )
+
+        context = next(window for window in result.windows if window.role == "reference")
+        self.assertEqual(context.start_inclusive, "2026-01-01")
+        self.assertEqual(context.end_exclusive, "2026-04-01")
+        self.assertEqual(context.capability_refs, ("compare_period_phases",))
+        self.assertNotIn("rolling_7_day_baseline", {item.window_id for item in result.windows})
+
+    def test_fixed_resume_bounds_accept_only_an_existing_dynamic_context_window(self):
+        context_window_id = (
+            "context__compare_period_phases__"
+            "trailing_complete_periods__1_quarter"
+        )
+        shared = {
+            "target_semantic": "2026-06-01",
+            "baselines": ("previous_day",),
+            "context_window_specs": (
+                {
+                    "capability_id": "compare_period_phases",
+                    "relation": "trailing_complete_periods",
+                    "unit": "quarter",
+                    "count": 1,
+                },
+            ),
+            "as_of": datetime.fromisoformat("2026-07-17T12:00:00+01:00"),
+            "timezone_name": "Africa/Lagos",
+            "dataset_watermarks": {"paid_order_success": date(2026, 7, 4)},
+            "affected_capabilities": ("compare_period_phases",),
+            "affected_claim_types": ("recurring_pattern_existence",),
+        }
+
+        result = resolve_revenue_windows(
+            **shared,
+            fixed_window_bounds={
+                context_window_id: ("2026-01-01", "2026-03-31"),
+            },
+        )
+
+        context = next(
+            window for window in result.windows if window.window_id == context_window_id
+        )
+        self.assertEqual(context.capability_refs, ("compare_period_phases",))
+        with self.assertRaisesRegex(ValueError, "fixed_window_unknown"):
+            resolve_revenue_windows(
+                **shared,
+                fixed_window_bounds={
+                    "context__unselected__trailing_complete_periods__1_quarter": (
+                        "2026-01-01",
+                        "2026-03-31",
+                    ),
+                },
+            )
+
     def test_fixed_eval_adds_pattern_and_anomaly_history_windows(self):
         result = resolve_revenue_windows(
             target_semantic="yesterday",
             baselines=(),
+            context_window_specs=(),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
             timezone_name="Africa/Lagos",
             dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
@@ -81,6 +181,7 @@ class AnalysisContractsTest(unittest.TestCase):
         result = resolve_revenue_windows(
             target_semantic="yesterday",
             baselines=("previous_day",),
+            context_window_specs=(),
             as_of=datetime.fromisoformat("2026-07-10T12:00:00+01:00"),
             timezone_name="Africa/Lagos",
             dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
@@ -108,6 +209,7 @@ class AnalysisContractsTest(unittest.TestCase):
     def test_gap_identity_includes_requested_target_window(self):
         shared = {
             "baselines": ("previous_day",),
+            "context_window_specs": (),
             "as_of": datetime.fromisoformat("2026-07-10T12:00:00+01:00"),
             "timezone_name": "Africa/Lagos",
             "dataset_watermarks": {"paid_order_success": date(2026, 7, 4)},
@@ -126,6 +228,7 @@ class AnalysisContractsTest(unittest.TestCase):
         common = {
             "target_semantic": "2026-07-09",
             "baselines": ("previous_day",),
+            "context_window_specs": (),
             "as_of": datetime.fromisoformat("2026-07-10T12:00:00+01:00"),
             "timezone_name": "Africa/Lagos",
             "dataset_watermarks": {"paid_order_success": date(2026, 7, 4)},
@@ -149,6 +252,7 @@ class AnalysisContractsTest(unittest.TestCase):
             resolve_revenue_windows(
                 target_semantic="yesterday",
                 baselines=("previous_day", "previous_day"),
+                context_window_specs=(),
                 as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
                 timezone_name="Africa/Lagos",
                 dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
@@ -232,7 +336,6 @@ class AnalysisContractsTest(unittest.TestCase):
             dimension_bindings=(),
             dataset_requirements=("paid_order_success",),
             capability_requirements=("capability:compare_periods@1",),
-            permission_scope="analyst",
         )
         query = QueryContract(
             query_contract_id="query:run-1:daily:1",
@@ -251,7 +354,6 @@ class AnalysisContractsTest(unittest.TestCase):
                 ("target_day",),
             ),
             completeness_assertions=("required_windows",),
-            permission_scope="analyst",
             workload_class="interactive_aggregate",
             contract_signature="signature",
         )
@@ -288,7 +390,6 @@ class AnalysisContractsTest(unittest.TestCase):
             "filters": (),
             "result_shape": ResultShape((), (), (), ()),
             "completeness_assertions": (),
-            "permission_scope": "analyst",
             "workload_class": "interactive_aggregate",
             "contract_signature": "ignored",
             "query_parameters": {

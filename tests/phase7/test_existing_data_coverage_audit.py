@@ -51,7 +51,6 @@ def _analysis_contract_gap_authority(
             )
         ),
         capability_requirements=tuple(required_capabilities),
-        permission_scope="analyst",
         contract_gaps=typed_gaps,
     ).to_dict()
 
@@ -92,7 +91,6 @@ def _authoritative_reuse_review_fixture():
             proposal=_proposal(("rolling_7_day_baseline", "previous_day")),
             accepted_graph=("compare_periods",),
             as_of="2026-06-03T12:00:00+01:00",
-            permission_scope="analyst",
             reuse_candidates=(candidate,),
         )
     )
@@ -152,134 +150,6 @@ def _authoritative_reuse_review_fixture():
         source_binding=source_binding,
         current_binding=binding,
         signed_snapshots=signed,
-    )
-
-
-def _authoritative_market_reuse_review_fixture():
-    from bi_agent.conversation.store import InMemoryConversationStore
-    from bi_agent.runtime.analysis_runtime import AnalysisRuntime, AnalysisRuntimeRequest
-    from bi_agent.runtime.evidence_authority import RuntimeEvidenceAuthority
-    from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
-    from tests.phase4.test_analysis_contract_compiler import (
-        _market_dashboard_snapshots,
-        canonical_release_catalog,
-    )
-    from tests.phase7.test_analysis_runtime_reuse import (
-        _CountingRowsRuntime,
-        _candidate,
-        _publish_source,
-    )
-
-    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
-    evidence_authority = RuntimeEvidenceAuthority(runtime_registry=registry)
-    market, channel = _market_dashboard_snapshots()
-    catalog, release_resolver, signed = canonical_release_catalog(market, channel)
-    provider = _CountingRowsRuntime()
-    store = InMemoryConversationStore()
-    store.create_thread("thread-reuse", owner_id="analyst-1")
-    topic = store.create_topic("thread-reuse", title="经营盘基线复用")
-    runtime = AnalysisRuntime(
-        catalog=catalog,
-        registry=registry,
-        executor=ClickHouseQueryExecutor(
-            provider,
-            evidence_resolver=evidence_authority,
-            rows_loader=evidence_authority.rows_loader,
-            evidence_writer=evidence_authority._runtime_writer(),
-            release_resolver=release_resolver,
-        ),
-        release_resolver=release_resolver,
-        evidence_authority=evidence_authority,
-        store=store,
-    )
-
-    def request(run_id, baselines, *, reuse_candidates=()):
-        return AnalysisRuntimeRequest.create(
-            run_id=run_id,
-            topic_id=topic.topic_id,
-            proposal={
-                "question_families": ["custom_baseline_comparison"],
-                "target_metrics": ["paid_amount"],
-                "claim_intents": ["comparative_change"],
-                "scope": {"type": "full_sample"},
-                "target_semantic": "yesterday",
-                "baselines": list(baselines),
-            },
-            accepted_graph=("market_health_compare",),
-            as_of="2026-06-03T12:00:00+01:00",
-            permission_scope="analyst",
-            reuse_candidates=reuse_candidates,
-        )
-
-    source = runtime.execute(
-        request(
-            "run-market-reuse-review-source",
-            ("previous_day", "rolling_7_day_baseline"),
-        )
-    )
-    candidate = _candidate(runtime, source, signed)
-    _publish_source(
-        runtime,
-        store,
-        topic.topic_id,
-        source,
-        candidate,
-        accepted_graph=("market_health_compare",),
-    )
-    current = runtime.execute(
-        request(
-            "run-market-reuse-review-current",
-            ("rolling_7_day_baseline", "previous_day"),
-            reuse_candidates=(candidate,),
-        )
-    )
-    store.upsert_run(
-        "run-market-reuse-review-current",
-        thread_id="thread-reuse",
-        topic_id=topic.topic_id,
-        status="completed",
-        request={},
-    )
-    binding = next(
-        item
-        for item in current.persistence_records["capability_binding_records"]
-        if item.capability_id == "market_health_compare"
-    )
-    authority = _run_matched_contract_authority(
-        current.analysis_contract.to_dict(),
-        run_id="run-market-reuse-review-current",
-    )
-    authority["admin_audit"]["reuse_decisions"] = [
-        dict(current.reuse_decisions[0])
-    ]
-    authority["sections"] = [{
-        "section_id": "evidence",
-        "payload": {
-            "evidence": [{
-                "evidence_ref": "evidence:market-reuse-review-current",
-                "binding_manifest_ref": binding.record_ref,
-                "binding_manifest_digest": binding.binding_digest,
-                "result_refs": [
-                    *binding.result_refs,
-                    *binding.validation_result_refs,
-                ],
-            }]
-        },
-    }]
-    return SimpleNamespace(
-        authority=authority,
-        registry=registry,
-        resolver=evidence_authority,
-        rows_loader=evidence_authority.rows_loader,
-        release_resolver=release_resolver,
-        store=store,
-        thread_id="thread-reuse",
-        topic_id=topic.topic_id,
-        source_run_id="run-market-reuse-review-source",
-        current_run_id="run-market-reuse-review-current",
-        source_result_ref=source.query_results[0].result_ref,
-        current_result_ref=current.query_results[0].result_ref,
-        query_contract_ref=current.query_contracts[0].query_contract_id,
     )
 
 
@@ -350,7 +220,6 @@ def _runtime_evaluation_projection_fixture(*, artifact_path=None):
             "run_id": run_id,
             "thread_id": fixture.thread_id,
             "topic_id": fixture.topic_id,
-            "permission_context": {"role": "analyst"},
             "reuse_decisions": [dict(fixture.current.reuse_decisions[0])],
         },
         artifact_path="artifacts/phase7/runtime-eval/answer_package.json",
@@ -1147,48 +1016,6 @@ def test_required_reuse_review_rejects_invalid_exact_expectation_schema(expected
     assert review["errors"] == ["expected_reuse_schema_invalid"]
 
 
-def test_required_reuse_review_accepts_actual_market_dashboard_provenance():
-    from tools.phase7.run_live_conversation_system_test import _review_required_reuse
-
-    fixture = _authoritative_market_reuse_review_fixture()
-    signed_candidate = fixture.store.resolve_result_candidate_authority(
-        result_ref=fixture.source_result_ref,
-        topic_id=fixture.topic_id,
-    )["result_ref_record"]["payload"]
-    decision = fixture.authority["admin_audit"]["reuse_decisions"][0]
-    current_record = fixture.resolver.resolve_query_execution(
-        fixture.current_result_ref
-    )
-    assert {
-        signed_candidate["candidate_signature"],
-        decision["candidate_signature"],
-        current_record.result_payload["provider_stats"]["candidate_signature"],
-    } == {signed_candidate["candidate_signature"]}
-    review = _review_required_reuse(
-        fixture.authority,
-        {
-            "capability_id": "market_health_compare",
-            "dataset_ids": ["market_dashboard"],
-        },
-        registry=fixture.registry,
-        evidence_resolver=fixture.resolver,
-        rows_loader=fixture.rows_loader,
-        release_resolver=fixture.release_resolver,
-        conversation_store=fixture.store,
-        case_lineage=_reuse_case_lineage(fixture),
-    )
-
-    assert review == {
-        "passed": True,
-        "errors": [],
-        "source_result_ref": fixture.source_result_ref,
-        "current_result_ref": fixture.current_result_ref,
-        "query_contract_ref": fixture.query_contract_ref,
-        "capability_id": "market_health_compare",
-        "dataset_ids": ["market_dashboard"],
-    }
-
-
 def test_required_reuse_review_rejects_decision_candidate_signature_tamper():
     from tools.phase7.run_live_conversation_system_test import _review_required_reuse
 
@@ -1983,7 +1810,6 @@ def test_obligation_review_fails_missing_current_data_obligation():
         ("source_unbound", []),
         ("contract_partial", []),
         ("snapshot_unavailable_as_of", []),
-        ("permission_blocked", ["paid_order_success:degraded"]),
         ("unobserved", ["paid_order_success:degraded"]),
     ],
 )
@@ -2059,8 +1885,6 @@ def test_legacy_degraded_dataset_gate_uses_typed_state_relation(
     [
         ("verified_answer", [], "observed", "completed", False),
         ("verified_answer", [], "strong", "completed", False),
-        ("permission_blocked", [{"dataset_id": "market_dashboard_channel", "gap_type": "permission_blocked"}], "insufficient", "completed", True),
-        ("permission_blocked", [], "insufficient", "completed", False),
         ("contract_allowed_partial", [{"dataset_id": "gameplay_channel", "gap_type": "contract_partial"}], "context_only", "completed", True),
         ("contract_allowed_partial", [], "context_only", "completed", False),
     ],
@@ -2071,8 +1895,8 @@ def test_obligation_review_enforces_claim_ceiling_and_terminal_boundary(
     from tools.phase7.run_live_conversation_system_test import review_case_obligations
 
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
-    dataset = "market_dashboard_channel" if boundary == "permission_blocked" else "gameplay_channel"
-    expected_state = "permission_blocked" if boundary == "permission_blocked" else "contract_partial"
+    dataset = "gameplay_channel"
+    expected_state = "contract_partial"
     if boundary == "verified_answer":
         dataset, expected_state = "paid_order_success", "executable"
     required_capabilities = [
@@ -3212,7 +3036,6 @@ def test_obligation_review_resolves_current_state_from_release_authority():
     }
     coverage_authority = {
         "as_of": "2026-06-03T12:00:00+01:00",
-        "permission_scope": "analyst",
         "cells": {
             "data_quality_profile:paid_order_success": {
                 "capability": "data_quality_profile",
@@ -3281,7 +3104,7 @@ def test_authority_resolution_uses_dataset_role_cell_when_route_is_independent()
             "scenario": {
                 "question_family": "pattern_explanation",
                 "target_metrics": ["paid_amount"],
-                "requested_dimensions": ["channel"],
+                "dimension_ids": ["channel"],
                 "expected_dataset_states": {"market_dashboard_channel": "executable"},
                 "allowed_claim_ceiling": "directional",
                 "terminal_boundary": "contract_allowed_partial",
@@ -3366,19 +3189,10 @@ def test_ambiguous_dataset_role_resolution_uses_conservative_authority_state():
     assert review["missing_current_data_obligations"] == []
 
 
-def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
+def test_coverage_summary_counts_exact_reuse_only():
     from tools.phase7.run_live_conversation_system_test import _coverage_summary
 
     turns = [
-        {
-            "topic_id": "topic-1",
-            "resumed_topic_id": "topic-1",
-            "resumed_status": "completed",
-            "scenario": {"clarification_resume": "required"},
-            "obligation_review": {"hard_acceptance_passed": True, "clarification_resume_passed": True},
-            "quality_review": {"display_status": "", "direct_answer": False},
-            "real_clickhouse_review": {"runtime_correctness": {"all_required_queries_complete": True, "all_capabilities_bound": True, "all_claims_traceable": True}},
-        },
         {
             "topic_id": "topic-1",
             "prior_topic_id": "topic-1",
@@ -3394,19 +3208,15 @@ def test_coverage_summary_counts_declared_clarification_and_exact_reuse_only():
             "quality_review": {"display_status": "ready", "direct_answer": True},
             "real_clickhouse_review": {"runtime_correctness": {"all_required_queries_complete": True, "all_capabilities_bound": True, "all_claims_traceable": True}},
         },
-        {"topic_id": "topic-2", "resumed_topic_id": "topic-2", "resumed_status": "completed", "scenario": {}},
+        {"topic_id": "topic-2", "status": "completed", "scenario": {}},
     ]
     summary = _coverage_summary(turns)
-    assert summary["final_answer_audit_coverage"] == {"reviewed": 0, "total": 3}
-    assert summary["clarification_resume"] == {"required": 1, "passed": 1}
+    assert summary["final_answer_audit_coverage"] == {"reviewed": 0, "total": 2}
     assert summary["reuse_coverage"] == {"required": 1, "passed": 1}
-    turns[0]["resumed_status"] = "failed"
+    turns[0]["obligation_review"]["reuse_review"]["passed"] = False
+    turns[0]["obligation_review"]["reuse_passed"] = False
     turns[0]["obligation_review"]["hard_acceptance_passed"] = False
-    turns[1]["obligation_review"]["reuse_review"]["passed"] = False
-    turns[1]["obligation_review"]["reuse_passed"] = False
-    turns[1]["obligation_review"]["hard_acceptance_passed"] = False
     failed = _coverage_summary(turns)
-    assert failed["clarification_resume"] == {"required": 0, "passed": 0}
     assert failed["final_answer_audit_coverage"] == {"reviewed": 0, "total": 2}
     assert failed["reuse_coverage"] == {"required": 1, "passed": 0}
 
@@ -3446,10 +3256,10 @@ def test_coverage_summary_reads_run_matched_internal_audit_for_zero_claim_termin
     )
     turns = [
         {
-            "resumed_status": "completed",
-            "resumed_run_id": "run-boundary-only",
-            "resumed_artifact_path": str(internal_path),
-            "resumed_answer_package": {
+            "status": "completed",
+            "run_id": "run-boundary-only",
+            "artifact_path": str(internal_path),
+            "answer_package": {
                 "run_id": "run-boundary-only",
                 "final_answer": "当前数据边界不足，已给出负责方与下一步。",
                 "quality_gate": {
@@ -3465,8 +3275,8 @@ def test_coverage_summary_reads_run_matched_internal_audit_for_zero_claim_termin
 
     assert summary["final_answer_audit_coverage"] == {"reviewed": 1, "total": 1}
 
-    turns[0]["resumed_quality_review"] = {"display_status": "ready"}
-    turns[0]["resumed_run_id"] = "run-different"
+    turns[0]["quality_review"] = {"display_status": "ready"}
+    turns[0]["run_id"] = "run-different"
     mismatched = system_test._coverage_summary(turns)
     assert mismatched["final_answer_audit_coverage"] == {"reviewed": 0, "total": 1}
 
@@ -3931,11 +3741,10 @@ def test_coverage_audit_reports_current_and_excluded_cells():
         snapshot_records=snapshots,
         release_resolver=releases,
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        permission_scope="analyst",
     )
     assert audit["states"] == [
         "executable", "degraded", "source_unbound", "contract_partial",
-        "permission_blocked", "snapshot_unavailable_as_of",
+        "snapshot_unavailable_as_of",
     ]
     assert audit["cells"]["market_health_compare:market_dashboard"]["state"] == "executable"
     assert audit["cells"]["source_reconciliation:market_dashboard"]["state"] == "contract_partial"
@@ -3982,7 +3791,6 @@ def test_context_capability_dataset_roles_persist_terminal_contract_authority():
         catalog=catalog,
         registry=registry,
         as_of=as_of,
-        permission_scope="analyst",
         release_resolver=releases,
     )
     assert "market_dashboard_channel" in channel.analysis_contract.dataset_requirements
@@ -4030,7 +3838,6 @@ def test_context_capability_dataset_roles_persist_terminal_contract_authority():
         catalog=catalog,
         registry=registry,
         as_of=as_of,
-        permission_scope="analyst",
         release_resolver=releases,
     )
     assert "external_event" in event.analysis_contract.dataset_requirements
@@ -4059,7 +3866,6 @@ def test_metric_sources_are_resolved_per_capability_before_global_reconciliation
         catalog=DatasetCatalog(()),
         registry=registry,
         as_of=as_of,
-        permission_scope="analyst",
     )
 
     assert {
@@ -4114,7 +3920,6 @@ def _accepted_context_gap_authority(
         dimension_bindings=(),
         dataset_requirements=("market_dashboard_channel",),
         capability_requirements=("market_channel_context",),
-        permission_scope="analyst",
         contract_gaps=(gap,),
     ).to_dict()
     plan_contract = json.loads(json.dumps(contract))
@@ -4202,7 +4007,6 @@ def test_runtime_dataset_state_accepts_matching_context_only_contract():
 @pytest.mark.parametrize(
     "plan_mutation",
     [
-        lambda contract: contract.update(permission_scope="admin"),
         lambda contract: contract["contract_gaps"][0].update(
             gap_id="dataset:forged:contract_partial"
         ),
@@ -4267,24 +4071,25 @@ def test_queryless_checkpoint_uses_final_run_bound_matching_event():
     ) is False
 
 
-def test_coverage_audit_distinguishes_permission_future_and_partial_contract():
+def test_coverage_audit_distinguishes_future_snapshot_from_executable_data():
     from bi_agent.runtime.coverage_audit import audit_existing_data_coverage
 
     registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
     snapshots, releases = authority_inputs(registry)
-    changed = []
-    for snapshot in snapshots:
-        if snapshot.dataset_id == "market_dashboard":
-            snapshot = replace(snapshot, permission_scopes=("admin",))
-        elif snapshot.dataset_id == "external_event":
-            snapshot = replace(snapshot, loaded_at="2026-06-04T00:00:00+00:00")
-        changed.append(snapshot)
+    changed = tuple(
+        replace(snapshot, loaded_at="2026-06-04T00:00:00+00:00")
+        if snapshot.dataset_id == "external_event"
+        else snapshot
+        for snapshot in snapshots
+    )
     changed, changed_releases = releases_for(registry, changed)
     audit = audit_existing_data_coverage(
-        registry, changed, changed_releases,
-        datetime.fromisoformat("2026-06-03T12:00:00+01:00"), "analyst",
+        registry,
+        changed,
+        changed_releases,
+        datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
     )
-    assert audit["cells"]["market_health_compare:market_dashboard"]["state"] == "permission_blocked"
+    assert audit["cells"]["market_health_compare:market_dashboard"]["state"] == "executable"
     assert audit["cells"]["event_evidence:external_event"]["state"] == "snapshot_unavailable_as_of"
     future = audit["cells"]["event_evidence:external_event"]
     assert "advance the audit as_of" in future["next_action"]
@@ -4300,7 +4105,7 @@ def test_coverage_audit_fails_closed_on_release_integrity():
         next(iter(releases.records.values())), integrity_errors=("digest",)
     )
     with pytest.raises(ValueError, match="coverage_release_integrity"):
-        audit_existing_data_coverage(registry, snapshots, releases, datetime.fromisoformat("2026-06-03T12:00:00+01:00"), "analyst")
+        audit_existing_data_coverage(registry, snapshots, releases, datetime.fromisoformat("2026-06-03T12:00:00+01:00"))
 
 
 class EmptyStore:
@@ -4317,7 +4122,6 @@ def test_cli_writes_structurally_valid_source_unbound_artifact(tmp_path):
     output = tmp_path / "coverage.json"
     result = run_audit(SimpleNamespace(
         as_of="2026-06-03T12:00:00+01:00",
-        permission_scope="analyst",
         out=str(output),
     ), store=EmptyStore())
     artifact = json.loads(output.read_text())
@@ -4338,7 +4142,7 @@ def test_cli_maps_credential_bearing_resolver_failure_without_disclosure(tmp_pat
             raise RuntimeError(f"connection failed {secret} SELECT * FROM private")
 
     code = main(
-        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(tmp_path / "coverage.json")],
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--out", str(tmp_path / "coverage.json")],
         store_factory=lambda: BrokenStore(),
     )
     captured = capsys.readouterr()
@@ -4369,7 +4173,7 @@ def test_cli_maps_hard_release_integrity_failure_nonzero(tmp_path, capsys):
             raise RuntimeError("postgresql://user:password@host/db")
 
     code = main(
-        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(tmp_path / "coverage.json")],
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--out", str(tmp_path / "coverage.json")],
         store_factory=lambda: BrokenAuthorityStore(),
     )
     payload = json.loads(capsys.readouterr().err)
@@ -4386,7 +4190,7 @@ def test_cli_maps_contract_integrity_failure_nonzero(tmp_path, capsys, monkeypat
 
     monkeypatch.setattr(cli.RuntimeContractRegistry, "from_path", fail_contract)
     code = cli.main(
-        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(tmp_path / "coverage.json")],
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--out", str(tmp_path / "coverage.json")],
         store_factory=lambda: EmptyStore(),
     )
     payload = json.loads(capsys.readouterr().err)
@@ -4402,7 +4206,7 @@ def test_cli_maps_artifact_path_failure_without_echoing_path(tmp_path, capsys):
     secret_path = tmp_path / "secret-password-output"
     secret_path.mkdir()
     code = main(
-        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(secret_path)],
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--out", str(secret_path)],
         store_factory=lambda: EmptyStore(),
     )
     payload = json.loads(capsys.readouterr().err)
@@ -4423,7 +4227,7 @@ def test_cli_maps_credential_bearing_close_failure_nonzero(tmp_path, capsys):
     store = EmptyStore()
     store.connection = Connection()
     code = main(
-        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(tmp_path / "coverage.json")],
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--out", str(tmp_path / "coverage.json")],
         store_factory=lambda: store,
     )
     captured = capsys.readouterr()
@@ -4468,7 +4272,7 @@ def test_cli_preserves_primary_error_when_close_also_fails(tmp_path, capsys):
             raise RuntimeError("postgresql://read:password@read-host/db SELECT secret")
 
     code = main(
-        ["--as-of", "2026-06-03T12:00:00+01:00", "--permission-scope", "analyst", "--out", str(tmp_path / "coverage.json")],
+        ["--as-of", "2026-06-03T12:00:00+01:00", "--out", str(tmp_path / "coverage.json")],
         store_factory=lambda: BrokenStore(),
     )
     captured = capsys.readouterr()

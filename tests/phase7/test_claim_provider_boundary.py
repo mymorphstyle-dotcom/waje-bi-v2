@@ -142,8 +142,6 @@ def test_answer_repair_receives_business_projection_and_preserves_local_claims()
     with patch(
         "bi_agent.runtime.langgraph_workflow._invoke_llm",
         side_effect=invoke,
-    ), patch(
-        "bi_agent.runtime.langgraph_workflow._ensure_business_narrative_answer"
     ):
         workflow._repair_answer(state)
 
@@ -192,6 +190,35 @@ def test_final_summary_payload_receives_business_projection_without_claim_author
         "provenance_record_ref",
     ):
         assert internal not in visible
+
+
+def test_final_summary_binding_failure_projects_verified_authority_and_keeps_audit():
+    state = _state()
+    state["llm_calls"] = []
+    state["final_business_summary"] = "促销活动导致付费金额上涨50%。"
+    summary_payload = workflow._final_business_summary_payload(state)
+    authority_record = workflow._prepublication_narrative_authority_record(state)
+
+    workflow._apply_authority_safe_final_summary(
+        state,
+        authority_record=authority_record,
+        summary_payload=summary_payload,
+        reason="final_narrative_binding_provider_failed:test",
+    )
+
+    assert state["rejected_final_business_summary"] == (
+        "促销活动导致付费金额上涨50%。"
+    )
+    assert _authority_claim()["text"] in state["final_business_summary"]
+    assert "促销活动" not in state["final_business_summary"]
+    assert state["final_summary_publication_repair"]["status"] == (
+        "authority_projected"
+    )
+    assert [call["provider"] for call in state["llm_calls"]] == [
+        "local_deterministic",
+        "local_deterministic",
+    ]
+    assert state["final_narrative_statement_bindings"]
 
 
 def test_authority_context_falls_back_to_typed_payload_before_claim_writeback():

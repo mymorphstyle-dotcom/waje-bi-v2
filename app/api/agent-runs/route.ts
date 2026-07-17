@@ -3,30 +3,37 @@ import { NextResponse } from "next/server";
 import type { TraceRun } from "../../agent-run-workbench/contracts";
 import { listPersistedAnswerPackageRuns, listPersistedRuntimeRuns, type PersistedRuntimeRun } from "../_conversationStore";
 import { traceRunFromAnswerPackage } from "../replays/route";
+import { assertInternalRouteAvailable } from "../_customerActor";
+import { jsonError } from "../_conversationStore";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET() {
-  const [persistedAnswerPackageRuns, persistedRuntimeRuns] = await Promise.all([
-    listPersistedAnswerPackageRuns(),
-    listPersistedRuntimeRuns(),
-  ]);
-  const persistedRuns = persistedAnswerPackageRuns.map((row) =>
-    traceRunFromAnswerPackage(withRunNodes(row.answerPackage, row.runNodes), {
-      id: `persisted:${row.runId}`,
-      label: `${row.question || row.runId} · 实时运行`,
-      question: row.question,
-      sourceArtifact: `postgres:${row.runId}`,
-      generatedAt: Date.parse(row.createdAt) || 0,
-    }),
-  );
-  const runtimeRuns = persistedRuntimeRuns.map(traceRunFromRuntimeRun);
-  return NextResponse.json({
-    runs: [...runtimeRuns, ...persistedRuns].sort(
-      (left, right) => (right.generatedAt ?? 0) - (left.generatedAt ?? 0),
-    ),
-  });
+  try {
+    assertInternalRouteAvailable();
+    const [persistedAnswerPackageRuns, persistedRuntimeRuns] = await Promise.all([
+      listPersistedAnswerPackageRuns(),
+      listPersistedRuntimeRuns(),
+    ]);
+    const persistedRuns = persistedAnswerPackageRuns.map((row) =>
+      traceRunFromAnswerPackage(withRunNodes(row.answerPackage, row.runNodes), {
+        id: `persisted:${row.runId}`,
+        label: `${row.question || row.runId} · 实时运行`,
+        question: row.question,
+        sourceArtifact: `postgres:${row.runId}`,
+        generatedAt: Date.parse(row.createdAt) || 0,
+      }),
+    );
+    const runtimeRuns = persistedRuntimeRuns.map(traceRunFromRuntimeRun);
+    return NextResponse.json({
+      runs: [...runtimeRuns, ...persistedRuns].sort(
+        (left, right) => (right.generatedAt ?? 0) - (left.generatedAt ?? 0),
+      ),
+    });
+  } catch (error) {
+    return jsonError(error);
+  }
 }
 
 function withRunNodes(answerPackage: Record<string, unknown>, runNodes: Record<string, unknown>[]) {

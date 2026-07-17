@@ -19,7 +19,7 @@ Only these Phase 1 artifacts define Phase 2 BI semantics:
 - `docs/prd.md`
 - `docs/product-decisions.md`
 
-Recipes, LangGraph nodes, prompts, and UI process events can propose or display workflow. They cannot define metric meaning, factor support, permission, evidence strength, or final claim wording.
+Recipes, LangGraph nodes, prompts, and UI process events can propose or display workflow. They cannot define metric meaning, factor support, fixed restricted-output safety, source-connection access, evidence strength, or final claim wording.
 
 ## Phase 1 Vocabulary
 
@@ -31,7 +31,6 @@ Compiler output must reuse these vocabularies without inventing new claim tiers.
 - `evidence_linked`
 - `static_assumption`
 - `missing_contract`
-- `permission_limited`
 - `unsupported_grain`
 - `out_of_scope_for_now`
 
@@ -41,7 +40,6 @@ Compiler output must reuse these vocabularies without inventing new claim tiers.
 - `candidate_mechanism`
 - `contextual_evidence`
 - `insufficient`
-- `permission_limited`
 - `unsupported_grain`
 - `out_of_scope`
 
@@ -86,7 +84,7 @@ Field-level draft, not a runtime wire schema.
 | `clarification_state` | yes | question tool / local policy | Existing outcome or empty state. Low-risk inferred defaults must appear here as `system_inferred`. |
 | `candidate_graph` | yes | LLM | Proposed capability nodes with no execution authority until compiler accepts them. |
 | `contract_bundle` | yes | WAJE contracts | Metric, dimension, event, assumption, backlog, factor ledger, capability support, capability cards, PRD decision refs. |
-| `policy_context` | yes | local policy | Permission, budget, materiality, freshness, current-data basis, sparse-cell and launch thresholds. |
+| `policy_context` | yes | local policy | Fixed restricted-output safety, source-connection access, budget, materiality, freshness, current-data basis, sparse-cell and launch thresholds. User identity does not select a BI data capability tier. |
 | `prior_run_context` | no | run store | Reusable evidence refs, previous accepted graph, verifier findings, disabled/degraded/blocked path records. |
 
 `candidate_graph.nodes[]` minimum:
@@ -148,7 +146,8 @@ Hooks are local policy inputs to compiler decisions. They do not create BI truth
 
 | Hook | Inputs | Output into accepted graph | Default action |
 | --- | --- | --- | --- |
-| `permission` | user role, field sensitivity, requested output grain, permission context | `permission_status`, visible grains, blocked fields, limitation refs | Raw identifiers and permission failures block. Aggregate or masked paths may degrade when contracts allow. |
+| `restricted_output` | field sensitivity, requested output grain, sparse-cell policy | customer-safe grains, blocked raw fields, limitation refs | Raw identifiers, individual-level claims, and unsafe sparse outputs block their dependent output path. Contract-backed aggregate analysis remains available to every customer. |
+| `source_access` | source-connection authorization and availability | available sources, unavailable-source refs | An unavailable source connection blocks only dependent query paths and cannot create end-user BI capability tiers. |
 | `budget` | node priority, estimated cost, max depth, timeout, row/result budget | skipped or degraded paths with business impact | Skip low-value branches; ask question only when cost choice changes main answer or claim boundary. |
 | `materiality` | metric thresholds by grain from `paid_amount.materiality_policy` | required threshold id, sparse comparable-window status | Missing reviewed threshold degrades strong pattern/anomaly/health wording. |
 | `freshness` | snapshot, watermark, current-data basis, completeness | current-data limitation and verifier requirement | Stale or incomplete data degrades; destructive data-quality issue blocks dependent claim. |
@@ -205,7 +204,7 @@ Each compiler change records why it happened and what claim boundary changed.
 | `timestamp` | yes | Compile-time timestamp. |
 | `action` | yes | `accepted`, `auto_added`, `repaired`, `degraded`, `blocked`, `skipped`, `repair_requested`, `question_requested`. |
 | `node_ids` | yes | Affected nodes or empty for graph-level action. |
-| `reason_code` | yes | Examples: `contract_version_unpinned`, `missing_contract_with_backlog`, `permission_failure`. |
+| `reason_code` | yes | Examples: `contract_version_unpinned`, `missing_contract_with_backlog`, `restricted_output_blocked`, `source_access_unavailable`. |
 | `source_rule_ref` | yes | Contract path, support id, capability lint id, PRD section, or backlog id. |
 | `before` | no | Candidate params or claim boundary before mutation. |
 | `after` | no | Accepted params or claim boundary after mutation. |
@@ -236,7 +235,7 @@ Low-risk defaults can be auto-added only when this log has a deterministic reaso
 | `strength` | yes | Phase 1 vocab. |
 | `wording_limit` | yes | Phase 1 vocab. |
 | `backlog_refs` | yes when gap exists | Required for `missing_contract` degrade. |
-| `limitation_refs` | yes when permission/out-of-scope exists | Example: `pii_dimension_output_limit`. |
+| `limitation_refs` | yes when restricted-output/source-access/out-of-scope boundary exists | Example: `pii_dimension_output_limit`. |
 | `block_reason` | yes for blocked paths | Examples below. |
 | `upgrade_path` | yes when known | From backlog or factor ledger. |
 | `answer_package_visibility` | yes | `first_screen`, `limitations`, `follow_up`, or `internal_only`. |
@@ -244,7 +243,8 @@ Low-risk defaults can be auto-added only when this log has a deterministic reaso
 
 Hard `block_reason` examples:
 
-- `permission_failure`
+- `restricted_output_blocked`
+- `source_access_unavailable`
 - `raw_sql_or_physical_schema_request`
 - `raw_identifier_output`
 - `invalid_metric_contract`
@@ -264,7 +264,7 @@ Question tool packages are compiler artifacts, even when the LLM drafts the opti
 | --- | --- | --- |
 | `clarification_id` | yes | Stable id. |
 | `insert_point` | yes | `intent_binding`, `graph_compile`, `graph_repair`, or `final_verification`. |
-| `trigger_reason` | yes | Baseline, time semantics, permission path, claim strength, scope, business object, or budget ambiguity. |
+| `trigger_reason` | yes | Baseline, time semantics, claim strength, scope, business object, source choice, or budget ambiguity. Fixed output safety and user data capability are not clarification choices. |
 | `recommended_inference` | yes | Compiler-approved default if user accepts recommendation or no question opens. |
 | `business_options` | yes | Two or three options, plus escape option. |
 | `option_id` | yes per option | Stable id. |
@@ -308,7 +308,7 @@ Compiler produces constraints; synthesizer drafts text inside them; verifier enf
 | `allowed_strength` | yes | Phase 1 vocab. |
 | `wording_limit` | yes | Phase 1 vocab. |
 | `disallowed_wording` | yes | Example: confirmed cause wording for candidate mechanisms. |
-| `visible_limitations` | yes | Backlog, permission, unsupported grain, or data quality boundaries. |
+| `visible_limitations` | yes | Backlog, fixed restricted-output, source-access, unsupported grain, or data quality boundaries. |
 | `verifier_hooks` | yes | From capability cards. |
 
 ## Lint Rules
@@ -319,7 +319,8 @@ Compiler produces constraints; synthesizer drafts text inside them; verifier enf
 | `contract_version_unpinned` | Any used contract lacks pin | compiler contract | auto repair | mutation log with pin source. |
 | `current_data_snapshot_unbound` | Evidence node lacks snapshot basis | metric contract snapshot policy | auto repair when metadata exists; targeted repair or degrade when missing | mutation log and Answer Package snapshot requirement. |
 | `first_screen_quality_required` | First-screen or strong claim lacks quality check | data_quality_check card | auto repair | `data_quality_check` node `auto_added`. |
-| `permission_context_required` | Sensitive or permission-limited field used | dimension/factor ledger | block or degrade | permission limitation or `permission_failure`. |
+| `restricted_output_context_required` | Sensitive field, raw detail, individual-level claim, or sparse aggregate used | dimension/factor ledger and fixed output policy | block or degrade the dependent output path | restricted-output limitation and accepted customer-safe grain. |
+| `source_access_required` | Evidence path needs a source connection that is unavailable or unauthorized for the service | source contract | block the dependent query path | unavailable-source limitation; unrelated paths continue. |
 | `raw_identifier_output_forbidden` | Raw user id, IP, or device id output requested | product decision, ledger limitation | block | `pii_dimension_output_limit`. |
 | `raw_sql_or_physical_schema_request` | LLM or user asks compiler to emit raw SQL/schema | project boundary | block | blocked path, no repair prompt. |
 | `declared_path_required` | Formula path absent from metric contract | formula_decompose card | block | unsupported formula path record. |
@@ -341,7 +342,7 @@ Compiler produces constraints; synthesizer drafts text inside them; verifier enf
 
 | Condition | Default action | Example | Accepted graph effect |
 | --- | --- | --- | --- |
-| Missing deterministic guardrail | auto repair | Add `data_quality_check`, contract pins, snapshot binding, permission/freshness/materiality guards | Node or metadata `auto_added`, mutation reason recorded. |
+| Missing deterministic guardrail | auto repair | Add `data_quality_check`, contract pins, snapshot binding, restricted-output/source-access/freshness/materiality guards | Node or metadata `auto_added`, mutation reason recorded. |
 | Missing optional low-risk parameter | auto repair | Fill current-data basis from pinned contract | `system_inferred` assumption plus mutation log. |
 | Target claim unclear | targeted repair | LLM proposed pattern scan without target claim | `repair_requested`; LLM returns patch only. |
 | Baseline/window ambiguity can change conclusion | question tool or targeted repair | Month-to-date vs same month phase | Clarification package or repair patch. |
@@ -349,8 +350,9 @@ Compiler produces constraints; synthesizer drafts text inside them; verifier enf
 | Missing contract has backlog ref | degrade | `product_operation_event_contracts`, `timezone_policy`, `gameplay_metric_contracts` | Path stays visible with `missing_contract` and backlog refs. |
 | Missing contract has no backlog ref | block | Unregistered data source with no backlog trace | Blocked path. |
 | Unsupported grain has supported aggregate fallback | degrade | Raw geo/device request downgraded to aggregate-only when allowed | Accepted fallback grain plus limitation. |
-| Unsupported grain has no safe fallback | block | Raw IP/device output | Blocked path with permission limitation. |
-| Permission failure | block | User asks for raw user ids or individual-user claim | Blocked path and no evidence handoff. |
+| Unsupported grain has no safe fallback | block dependent path | Raw IP/device output | Blocked path with fixed restricted-output limitation; unrelated aggregate analysis continues. |
+| Fixed restricted-output violation | block dependent path | User asks for raw user ids or individual-user claim | Blocked raw-detail path and no evidence handoff for that claim; supported aggregate paths continue. |
+| Source connection unavailable | block dependent path | Planned capability requires an unbound source | Blocked query path with source-access limitation; unrelated paths continue. |
 | Weak, sparse, or low-materiality evidence | degrade | Pattern recurrence below strong threshold | Lower strength or `insufficient` wording. |
 | Budget branch cannot affect main conclusion | skip | Extra high-order attribution after stable one-dimensional result | Skipped path with follow-up option. |
 | Verifier finds over-strong wording | targeted repair, then degrade or block | Candidate mechanism written as confirmed cause | Repaired claim text or blocked claim group. |
@@ -372,7 +374,7 @@ The repair prompt must not receive:
 - raw SQL
 - physical schema instructions
 - unreviewed source fields as execution authority
-- permission-forbidden identifiers
+- customer-output-forbidden raw identifiers and individual-level detail
 - authority to change contracts, ledger states, evidence strength, or wording limits
 - authority to promote backlog gaps to supported paths
 
@@ -431,7 +433,7 @@ Verifier must block or repair when:
 - claim number, scope, baseline, or evidence ref is missing or mismatched
 - wording exceeds `wording_limit`
 - candidate mechanism is stated as confirmed cause
-- permission-limited path is hidden
+- material restricted-output or source-access path is hidden
 - disabled/degraded/blocked path materially affects the main answer but is omitted
 - visualization implies stronger evidence than allowed
 
@@ -510,7 +512,7 @@ Expected compile:
 Required path records:
 
 - Health judgment must name target/baseline and limitations.
-- Data risk is a visible claim group when freshness, completeness, permission, or missing contracts affect the answer.
+- Data risk is a visible claim group when freshness, completeness, fixed restricted-output safety, source access, or missing contracts affect the answer.
 
 ### 5. `segment_or_factor_attribution`: segment and factor contribution
 
@@ -527,7 +529,7 @@ Expected compile:
 Required path records:
 
 - Supported channel/payment method paths can use `accounting_contribution`, `strength: medium`, `wording_limit: quantified`.
-- Permission-limited geo/device paths must reference `pii_dimension_output_limit` when visible output is affected.
+- Geo/device paths constrained by the fixed output-safety policy must reference `pii_dimension_output_limit` when visible output is affected.
 
 ### 6. `anomaly_or_black_swan_review`: anomaly and external context
 
@@ -572,13 +574,13 @@ Expected compile:
 
 - Bind `data_quality_or_evidence_review`.
 - Accept `data_quality_check` and `answer_verify`; other capabilities are optional evidence refs, not required.
-- Output contract coverage, permission limits, freshness/current-data basis, missing contracts, unsupported grains, and blocked claim paths.
+- Output contract coverage, fixed restricted-output limits, source access, freshness/current-data basis, missing contracts, unsupported grains, and blocked claim paths.
 - Missing-contract records must link backlog refs; gaps without backlog ref block compile.
 - Raw identifier output requests block.
 
 Required path records:
 
-- `dq_contract_coverage_review`, `dq_materiality_threshold_policy`, and `dq_permission_sensitive_identifiers` appear when relevant.
+- `dq_contract_coverage_review`, `dq_materiality_threshold_policy`, and `dq_sensitive_identifier_output_boundary` appear when relevant.
 - Trust judgment must state affected claim groups and upgrade paths.
 
 ## Human Confirmation Still Required
@@ -588,8 +590,7 @@ Compiler design can proceed with degrade/block records for these. It must not pr
 - new business metric definitions, owner decisions, or final table structures
 - SQL, runtime service APIs, or physical schema
 - converting a current gap into `contract_backed`
-- raw user id, IP, device id, or individual-user output permission
+- any proposal to expose raw user id, IP, device id, or individual-user output
 - refund, reversal, chargeback, cancellation, net revenue, payment-order-to-gameplay linkage
 - campaign spend, bid, creative CTR/CVR, SEO/GEO, referral activity, server/Grafana/payment incident/product activity sources
 - raw external crawling or AnySearch-like connector claims before reviewed connector/source/evidence contracts
-

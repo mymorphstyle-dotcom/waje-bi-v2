@@ -2,7 +2,7 @@
 
 **Goal:** Turn the signed PRD into a production baseline implementation sequence for WAJE BI v2.
 
-**Architecture:** WAJE-owned contracts, compiler, capability APIs, evidence ledger, permissions, and verifier hold BI truth. LangGraph carries visible execution, checkpointing, loops, repairs, and process events. The first vertical slice proves the generalized `pattern_explanation` problem class, with the month-start payment pattern as its first regression case.
+**Architecture:** WAJE-owned contracts, compiler, capability APIs, evidence ledger, fixed restricted-output safety, source-connection access, and verifier hold BI truth. LangGraph carries visible execution, checkpointing, loops, repairs, and process events. The first vertical slice proves the generalized `pattern_explanation` problem class, with the month-start payment pattern as its first regression case.
 
 **Tech Stack:** TypeScript frontend/gateway, Python BI Agent Core, LangGraph adapter, Postgres runtime mirror, ClickHouse analytical query access, versioned contract source files.
 
@@ -13,7 +13,7 @@
 - Build a production baseline with full launch coverage.
 - Ship by business capability, with evidence, verifier, eval, and UI visibility included in each slice.
 - Keep table structures and final API schemas in technical design, while this roadmap defines build order and acceptance.
-- Treat recipe entries as starting templates. The accepted graph is compiled from user intent, contracts, evidence needs, policy, permissions, and budget.
+- Treat recipe entries as starting templates. The accepted graph is compiled from user intent, contracts, evidence needs, fixed safety policy, source availability, and budget.
 - Keep the first slice generic to same-class pattern questions. The month-start case is a regression example for the broader pattern workflow.
 
 ## Phases 0-4: Historical Baseline
@@ -45,7 +45,7 @@ Future phases should follow this order:
 1. **Phase 5: Answer safety and eval gates.** Harden claim groups, verifier behavior, implicit clarification, failure attribution, and route-drift measurement on the existing pattern slice.
 2. **Phase 6: Question-family expansion.** Add the remaining question families only after Phase 5 can classify wrong intent, wrong baseline, weak evidence, route drift, and unsupported claims without manual log reading.
 3. **Phase 7: Frontend agent shell.** Build user-facing investigation UX on top of stable Answer Package and replay semantics.
-4. **Phase 8: Production gates.** Add release-grade observability, permissions, rerun comparability, rollback, and health checks after the workflow and UI contract are stable.
+4. **Phase 8: Production gates.** Add release-grade observability, personal ownership, fixed output safety, source access, rerun comparability, rollback, and health checks after the workflow and UI contract are stable.
 
 Deliberate deferrals:
 
@@ -68,7 +68,7 @@ Historical note (superseded): the 2026-07-08 node-by-node run remains an investi
 - [x] Claim group contract implemented and emitted in Answer Package summary.
 - [x] Answer verifier blocks unsupported strong claims and records visible limitations.
 - [x] Independent Causal Auditor LLM reviews causal implications and mechanism hypotheses from a structured evidence dossier.
-- [x] Local verifier remains a mechanical evidence checker for refs, numbers, scope, permissions, metric contracts, and auditor wording boundary.
+- [x] Local verifier remains a mechanical evidence checker for refs, numbers, scope, fixed restricted-output safety, source access, metric contracts, and auditor wording boundary.
 - [x] Launch eval harness uses real user wording plus structured expectation packages.
 - [x] Failure attribution labels include business failure type and system responsibility point.
 - [x] Implicit clarification eval suite covers latent ambiguity that can change claim quality.
@@ -103,7 +103,7 @@ Phase 6 starts only after Phase 5 eval gates can classify wrong intent, wrong ba
 - [x] `revenue_health_review`: trend, target, structure, funnel/formula, anomaly, data quality, risk wording.
 - [x] `anomaly_or_black_swan_review`: pseudo-anomaly rejection, local segment anomaly, metric-chain anomaly, internal/external candidate explanations.
 - [x] `custom_baseline_comparison`: user baseline, recommended baseline, multiple-baseline disagreement, comparability checks.
-- [x] `data_quality_or_evidence_review`: trust judgment, affected claims, degradation, contract and permission fixes.
+- [x] `data_quality_or_evidence_review`: trust judgment, affected claims, degradation, contract, restricted-output, and source-access fixes.
 
 **Acceptance:**
 
@@ -118,7 +118,7 @@ Phase 6 starts only after Phase 5 eval gates can classify wrong intent, wrong ba
 
 **Business reason:** Users need to see what the agent understood, what it checked, where evidence degraded, and what answer is safe to trust.
 
-Current progress (2026-07-08): Phase 7 runtime foundation now has conversation contracts, Postgres conversation schema, Python Postgres store with audit writes, production-safe TypeScript gateway store selection, thread/topic/turn/run context assembly, result reuse decisions, memory proposals, Python Agent Core bridge, and the public gateway routes for threads, messages, run events, clarifications, artifact continue, artifact read/export, and memory proposal accept/reject. Conversation routing now has an LLM-backed orchestrator for turn intent and topic relation, with local enum validation, pending-clarification checks, running-run queue normalization, and hard guards for off-topic and unsupported requests. Context manifests now record result refs as first-class context sources, mark whether each source can support claims, and carry permission scope, source version, expiry, and claim-use metadata; memory items carry TTL, refresh rule, confidence, and revocation path. Answer Package now includes a validated `visualization_plan` derived from verified claim groups, and the workbench renders those visual blocks through the existing TraceRun UI contract. Clarification answers now bind back to the pending topic, clear pending state, record the clarification outcome, and resume the same run through Agent Core. Runtime question tool now blocks ambiguous runs with a structured clarification payload, recommended inference, `tell the agent to do differently`, pending clarification state, and run-level audit events; no-answer runs waiting for clarification now appear in the agent workbench as business-readable process traces. Run event streams now include a business-facing `process` summary while retaining raw payloads for audit/debug; persisted run nodes are also emitted as business process events for intent, accepted plan, capability progress, repair/degrade/block, and verifier stages, and completed Postgres Answer Package runs now inject recorded run nodes into the workbench timeline. The ordinary workbench hides raw audit JSON by default, with debug audit available only through an explicit `processSummary.debugAudit` gate. Artifact access now persists refs in Postgres, validates role visibility before open/continue/export, records allow/block/open/export audit events, and passes claim support only when result refs, snapshot, contract, and permission checks match. Current business acceptance questions and review focus live in `evals/phase7/business_question_expectations.yaml`; execution enters through the real Gateway one question at a time.
+Current progress (2026-07-08, updated to current access semantics): Phase 7 runtime foundation has conversation contracts, Postgres conversation schema, Python Postgres store with audit writes, production-safe TypeScript gateway store selection, thread/topic/turn/run context assembly, result reuse decisions, memory proposals, Python Agent Core bridge, and the public gateway routes for threads, messages, run events, clarifications, artifact continue, artifact read/export, and memory proposal accept/reject. Conversation routing has an LLM-backed orchestrator for turn intent and topic relation, with local enum validation, pending-clarification checks, running-run queue normalization, and hard guards for off-topic and unsupported requests. Context manifests record result refs as first-class context sources, mark whether each source can support claims, and carry source version, expiry, claim-use, restricted-output, and source-access metadata; memory items carry TTL, refresh rule, confidence, and revocation path. Answer Package includes a validated `visualization_plan` derived from verified claim groups, and the workbench renders those visual blocks through the existing TraceRun UI contract. Clarification answers bind back to the pending topic, clear pending state, record the clarification outcome, and resume the same run through Agent Core. Runtime question tool blocks ambiguous runs with a structured clarification payload, recommended inference, `tell the agent to do differently`, pending clarification state, and run-level audit events; no-answer runs waiting for clarification appear in the agent workbench as business-readable process traces. Run event streams include a business-facing `process` summary while retaining raw payloads for audit/debug; persisted run nodes are emitted as business process events for intent, accepted plan, capability progress, repair/degrade/block, and verifier stages, and completed Postgres Answer Package runs inject recorded run nodes into the workbench timeline. The ordinary workbench hides raw audit JSON by default, with debug audit available only through an explicit `processSummary.debugAudit` gate. Artifact access persists refs in Postgres, validates personal ownership before open/continue/export, records allow/block/open/export audit events, and applies the same fixed customer-safe projection to every normal user. Claim support still requires matching result refs, snapshot, contract, restricted-output, and source-access checks. Current business acceptance questions and review focus live in `evals/phase7/business_question_expectations.yaml`; execution enters through the real Gateway one question at a time.
 
 **Deliverables:**
 
@@ -129,17 +129,17 @@ Current progress (2026-07-08): Phase 7 runtime foundation now has conversation c
 - [x] Answer Package emits validated visualization plan blocks from verified claim groups.
 - [x] Agent run workbench consumes persisted Postgres Answer Packages through the existing TraceRun contract.
 - [x] Clarification answer resume path with pending-topic binding, outcome audit, and same-run Agent Core execution.
-- [x] Continue investigation from saved artifacts with Postgres artifact refs, permission filtering, audit events, and shared Agent Core execution.
-- [x] Artifact read-only open and Markdown export with role-filtered Answer Package sections and audit records.
+- [x] Continue investigation from saved artifacts with Postgres artifact refs, personal ownership checks, fixed customer-safe projection, audit events, and shared Agent Core execution.
+- [x] Artifact read-only open and Markdown export with personal ownership checks, fixed customer-safe Answer Package projection, and audit records.
 - [x] SDK decision for 21st Agent Elements or a better-fitting alternative.
 - [x] Process event rendering for intent, accepted plan, capability progress, question tool, repair/degrade/block/skip, evidence summary, verifier result.
 - [x] Dynamic first-screen answer cards from verified claim groups and validated visualization plan.
-- [x] Artifact read-only sharing, permission-filtered section rendering, and static export.
+- [x] Artifact read-only sharing, fixed customer-safe section rendering, and static export.
 - [x] Replace the in-memory-only gateway/runtime store handoff with Postgres persistence and audit writes; development fallback remains local-only.
 
 **Acceptance:**
 
-- [x] Conversation scenario suite covers at least 60 natural-language cases across follow-up, mixed questions, off-topic/tool/unsupported inputs, permissions/snapshots/memory, correction/challenge/clarification.
+- [x] Conversation scenario suite covers at least 60 natural-language cases across follow-up, mixed questions, off-topic/tool/unsupported inputs, ownership/source-access/snapshots/memory, correction/challenge/clarification.
 - [x] Frontend renders WAJE-owned Answer Package and visualization plan.
 - [x] Frontend does not infer business truth from raw evidence payloads.
 - [x] Question tool supports up to 3-4 short questions, up to 3 options each, recommended inference, and `tell the agent to do differently`.
@@ -147,25 +147,25 @@ Current progress (2026-07-08): Phase 7 runtime foundation now has conversation c
 
 ## Phase 8: Production Gates
 
-**Goal:** Make launch behavior observable, auditable, repeatable, and permission-safe.
+**Goal:** Make launch behavior observable, auditable, repeatable, owner-safe, and customer-output-safe.
 
 **Business reason:** BI claims affect business decisions, so failures must be visible and reruns must be explainable.
 
-Current progress (2026-07-08): Phase 8 production gates are in place. `GET /api/runs/:runId/audit-trace` returns the run, latest Answer Package, claim groups, verifier output, run nodes, evidence refs, result/query refs, contract versions, snapshot ids, and audit events from the Postgres runtime store. `GET /api/runs/:runId/rerun-comparability?candidateRunId=...` compares snapshot ids, contract versions, and query/result refs between two runs so reruns can state whether they are comparable to the original run. `GET /api/runs/launch-dashboard` lists slow, failed, degraded, blocked, verifier-failed, capability-error, compiler-blocked, permission-spike, contract-mismatch, and ledger-mismatch runs for launch review. Artifact open, export, and continue-investigation paths now enforce role visibility, audit allowed and blocked access, and filter summary claims, claim groups, and visualization blocks with the same permission rules as artifact sections. `GET /api/health` checks the gateway route, Python BI Agent Core import, Postgres runtime store, ClickHouse access, and LangGraph adapter readiness. Capability execution now turns call budget exhaustion, row budget excess, result-ref budget excess, and timeout markers into blocked evidence envelopes that flow into Answer Package visible limitations. `bi_agent/runtime/release_manifest.json` records rollback refs, owners, paths, and required checks for contracts, ledgers, capability cards, prompt/recipe, and verifier policy. The release-candidate launch eval passed for all 8 expectation packages; see `docs/reviews/phase8-release-candidate-eval-20260708.md`.
+Current progress (2026-07-08, updated to current access semantics): Phase 8 production gates are in place. `GET /api/runs/:runId/audit-trace` returns the run, latest Answer Package, claim groups, verifier output, run nodes, evidence refs, result/query refs, contract versions, snapshot ids, and audit events from the Postgres runtime store. `GET /api/runs/:runId/rerun-comparability?candidateRunId=...` compares snapshot ids, contract versions, and query/result refs between two runs so reruns can state whether they are comparable to the original run. `GET /api/runs/launch-dashboard` lists slow, failed, degraded, blocked, verifier-failed, capability-error, compiler-blocked, contract-mismatch, and ledger-mismatch runs for launch review. Artifact open, export, and continue-investigation paths enforce personal ownership, audit allowed and blocked access, and apply one fixed customer-safe projection to summary claims, claim groups, and visualization blocks. `GET /api/health` checks the gateway route, Python BI Agent Core import, Postgres runtime store, ClickHouse access, and LangGraph adapter readiness. Capability execution turns call budget exhaustion, row budget excess, result-ref budget excess, and timeout markers into blocked evidence envelopes that flow into Answer Package visible limitations. `bi_agent/runtime/release_manifest.json` records rollback refs, owners, paths, and required checks for contracts, ledgers, capability cards, prompt/recipe, and verifier policy. The release-candidate launch eval passed for all 8 expectation packages; see `docs/reviews/phase8-release-candidate-eval-20260708.md`.
 
 **Deliverables:**
 
-- [x] Permission-blocked claim behavior and permission-filtered artifacts.
+- [x] Fixed restricted-output behavior, source-access isolation, personal artifact ownership, and customer-safe artifact projection.
 - [x] Audit trace from answer to run, contract version, evidence, claim, verifier result, and query refs.
 - [x] Snapshot and rerun comparability rules.
 - [x] Capability timeout, row/result budget, and degradation behavior.
 - [x] Health checks for frontend/gateway, Python BI Agent Core, Postgres runtime mirror, ClickHouse access, and LangGraph adapter.
 - [x] Version rollback for contract, ledger, capability card, prompt/recipe, and verifier policy.
-- [x] Launch dashboard for slow run, capability error, compiler block, verifier failure, permission spike, contract mismatch, and ledger mismatch.
+- [x] Launch dashboard for slow run, capability error, compiler block, verifier failure, contract mismatch, and ledger mismatch.
 
 **Acceptance:**
 
-- [x] Slow, failed, degraded, blocked, verifier-failed, capability-error, compiler-blocked, permission-spike, contract-mismatch, and ledger-mismatch runs are locatable.
+- [x] Slow, failed, degraded, blocked, verifier-failed, capability-error, compiler-blocked, contract-mismatch, and ledger-mismatch runs are locatable.
 - [x] Budget skips enter Answer Package limitations or follow-up.
 - [x] Reruns state whether they are comparable to the original run.
 - [x] Release candidate runs full acceptance eval.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime, timedelta, timezone
+import re
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -25,6 +26,9 @@ from bi_agent.runtime.evidence_authority import (
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
+)
+from bi_agent.conversation.clarification_options import (
+    clarification_labels_match,
 )
 
 
@@ -55,11 +59,16 @@ _INTENT_MATERIAL_KEYS = frozenset(
         "question_families",
         "primary_target_metric",
         "target_metrics",
-        "requested_components",
-        "requested_dimensions",
+        "goal_bindings",
+        "explicit_focus",
+        "component_ids",
+        "association_metric_ids",
+        "dimension_ids",
         "baselines",
         "context_sources",
-        "claim_intents",
+        "claim_types",
+        "required_outcomes",
+        "analysis_axis_ids",
         "scope",
         "time_window",
     }
@@ -67,22 +76,28 @@ _INTENT_MATERIAL_KEYS = frozenset(
 _ROUTE_MATERIAL_KEYS = frozenset(
     {
         "target_metrics",
-        "requested_components",
-        "requested_dimensions",
+        "component_ids",
+        "association_metric_ids",
+        "dimension_ids",
         "baselines",
         "context_sources",
-        "claim_intents",
+        "claim_types",
+        "required_outcomes",
+        "analysis_axis_ids",
         "diagnostic_tags",
         "scope",
     }
 )
 _MATERIAL_LIST_AXES = (
     "target_metrics",
-    "requested_components",
-    "requested_dimensions",
+    "component_ids",
+    "association_metric_ids",
+    "dimension_ids",
     "baselines",
     "context_sources",
-    "claim_intents",
+    "claim_types",
+    "required_outcomes",
+    "analysis_axis_ids",
 )
 _EXECUTION_MATERIAL_KEYS = frozenset(
     {
@@ -90,7 +105,7 @@ _EXECUTION_MATERIAL_KEYS = frozenset(
         "target_semantic",
         "as_of",
         "business_timezone",
-        "permission_scope",
+        "context_window_specs",
         "fixed_window_bounds",
         "filters",
         "grain",
@@ -160,7 +175,6 @@ _PRIOR_TOPIC_MATERIAL_CONTEXT_KEYS = frozenset(
         "topic_id",
         "source_run_ids",
         "source_result_refs",
-        "permission_scope",
         "material_projection",
         "authorities",
         "context_digest",
@@ -191,7 +205,7 @@ def build_material_authority(
         route_material=route_material,
     )
     body = {
-        "schema_version": "3",
+        "schema_version": "4",
         "source_run_id": _required(source_run_id, "source_run_id"),
         "thread_id": _required(thread_id, "thread_id"),
         "topic_id": _required(topic_id, "topic_id"),
@@ -222,7 +236,7 @@ def validate_material_authority(
 ) -> dict[str, Any]:
     if not isinstance(value, Mapping) or set(value) != _MATERIAL_AUTHORITY_KEYS:
         raise EvidenceIntegrityError("material_authority_shape_invalid")
-    if str(value.get("schema_version") or "") != "3":
+    if str(value.get("schema_version") or "") != "4":
         raise EvidenceIntegrityError("material_authority_version_invalid")
     if (
         str(value.get("source_run_id") or "") != source_run_id
@@ -279,7 +293,6 @@ def build_execution_material(
     proposal: Mapping[str, Any],
     accepted_graph: Iterable[str],
     as_of: str | datetime,
-    permission_scope: str,
     run_mode: str,
     runtime_contract_version: str,
     runtime_registry_digest: str,
@@ -291,18 +304,17 @@ def build_execution_material(
     contract_runtime = _contract_runtime_projection(typed_contract)
     if not _same_as_of(as_of, contract_runtime["as_of"]):
         raise EvidenceIntegrityError("execution_material_as_of_mismatch")
-    if str(permission_scope or "") != contract_runtime["permission_scope"]:
-        raise EvidenceIntegrityError(
-            "execution_material_permission_scope_mismatch"
-        )
     raw_proposal = dict(proposal)
     canonical_accepted_graph = _exact_string_values(
         accepted_graph,
         reason="execution_material_accepted_graph_invalid",
     )
     material = {
-        "schema_version": "1",
+        "schema_version": "3",
         **contract_runtime,
+        "context_window_specs": _canonical_context_window_specs(
+            raw_proposal.get("context_window_specs")
+        ),
         "filters": _canonical_filters(raw_proposal.get("filters")),
         "grain": canonical_execution_grain(raw_proposal.get("grain")),
         "dataset_requirements": list(
@@ -375,15 +387,14 @@ def _contract_runtime_projection(
         raise EvidenceIntegrityError(
             "execution_material_business_timezone_invalid"
         ) from exc
-    permission_scope = _required_execution_token(
-        contract.permission_scope,
-        "permission_scope",
-    )
     windows: dict[str, list[str]] = {}
     legacy_windows: list[tuple[str, str, date, date]] = []
     for window in contract.resolved_windows:
         window_id = str(window.window_id or "")
-        if window_id not in {*_FIXED_WINDOW_IDS, "target", "baseline"}:
+        if (
+            window_id not in {*_FIXED_WINDOW_IDS, "target", "baseline"}
+            and not _is_context_window_id(window_id)
+        ):
             raise EvidenceIntegrityError(
                 "execution_material_fixed_window_bounds_invalid"
             )
@@ -399,7 +410,15 @@ def _contract_runtime_projection(
             raise EvidenceIntegrityError(
                 "execution_material_fixed_window_bounds_invalid"
             )
-        if window_id in _FIXED_WINDOW_IDS:
+        if _is_context_window_id(window_id) and (
+            str(window.role or "") != "reference"
+            or tuple(window.capability_refs)
+            != (window_id.split("__", 2)[1],)
+        ):
+            raise EvidenceIntegrityError(
+                "execution_material_fixed_window_bounds_invalid"
+            )
+        if window_id in _FIXED_WINDOW_IDS or _is_context_window_id(window_id):
             if window_id in windows:
                 raise EvidenceIntegrityError(
                     "execution_material_fixed_window_bounds_invalid"
@@ -447,10 +466,16 @@ def _contract_runtime_projection(
         "target_semantic": target[0],
         "as_of": as_of,
         "business_timezone": timezone_name,
-        "permission_scope": permission_scope,
         "fixed_window_bounds": {
             window_id: windows[window_id]
-            for window_id in _FIXED_WINDOW_IDS
+            for window_id in (
+                *_FIXED_WINDOW_IDS,
+                *sorted(
+                    item
+                    for item in windows
+                    if item not in _FIXED_WINDOW_IDS
+                ),
+            )
             if window_id in windows
         },
     }
@@ -667,6 +692,28 @@ def validate_material_authority_contract_overlap(
         route_material, Mapping
     ):
         raise EvidenceIntegrityError("material_authority_shape_invalid")
+    execution_material = material_authority.get("execution_material")
+    if not isinstance(execution_material, Mapping):
+        raise EvidenceIntegrityError(
+            "material_authority_execution_material_missing"
+        )
+    runtime_registry = runtime_registry or RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
+    if (
+        execution_material.get("runtime_contract_version")
+        != runtime_registry.contract_version
+        or execution_material.get("runtime_registry_digest")
+        != runtime_registry.source_payload_digest
+    ):
+        raise EvidenceIntegrityError(
+            "material_authority_contract_runtime_registry_mismatch"
+        )
+    _validate_goal_plan_material_overlap(
+        intent_material,
+        route_material,
+        runtime_registry,
+    )
     if tuple(intent_material.get("question_families") or ()) != tuple(
         analysis_contract.question_families
     ):
@@ -682,23 +729,6 @@ def validate_material_authority_contract_overlap(
         )
     }
     if unresolved_target_refs:
-        execution_material = material_authority.get("execution_material")
-        if not isinstance(execution_material, Mapping):
-            raise EvidenceIntegrityError(
-                "material_authority_execution_material_missing"
-            )
-        runtime_registry = runtime_registry or RuntimeContractRegistry.from_path(
-            CANONICAL_RUNTIME_BINDINGS_PATH
-        )
-        if (
-            execution_material.get("runtime_contract_version")
-            != runtime_registry.contract_version
-            or execution_material.get("runtime_registry_digest")
-            != runtime_registry.source_payload_digest
-        ):
-            raise EvidenceIntegrityError(
-                "material_authority_contract_runtime_registry_mismatch"
-            )
         try:
             from bi_agent.runtime.runtime_persistence import (
                 _validate_analysis_target_metric_refs,
@@ -730,6 +760,54 @@ def validate_material_authority_contract_overlap(
         raise EvidenceIntegrityError(
             "material_authority_contract_target_metrics_mismatch"
         )
+    route_component_ids = tuple(route_material.get("component_ids") or ())
+    route_association_metric_ids = tuple(
+        route_material.get("association_metric_ids") or ()
+    )
+    contract_requested_metric_ids = tuple(
+        analysis_contract.scope.get("requested_metric_ids") or ()
+    )
+    expected_requested_metric_ids = tuple(
+        dict.fromkeys(
+            (
+                *route_target_metrics,
+                *route_component_ids,
+                *route_association_metric_ids,
+            )
+        )
+    )
+    if contract_requested_metric_ids != expected_requested_metric_ids:
+        raise EvidenceIntegrityError(
+            "material_authority_contract_component_ids_mismatch"
+        )
+    route_dimension_ids = tuple(route_material.get("dimension_ids") or ())
+    if tuple(
+        analysis_contract.scope.get("requested_dimension_ids") or ()
+    ) != route_dimension_ids:
+        raise EvidenceIntegrityError(
+            "material_authority_contract_dimension_ids_mismatch"
+        )
+    route_claim_types = tuple(route_material.get("claim_types") or ())
+    contract_claim_types = tuple(analysis_contract.claim_intents)
+    gap_claim_types = {
+        claim_type
+        for gap in analysis_contract.contract_gaps
+        for claim_type in gap.affected_claim_types
+    }
+    if (
+        any(
+            claim_type not in set(contract_claim_types) | gap_claim_types
+            for claim_type in route_claim_types
+        )
+        or any(
+            claim_type != "unbound_claim_intent"
+            and claim_type not in set(route_claim_types)
+            for claim_type in contract_claim_types
+        )
+    ):
+        raise EvidenceIntegrityError(
+            "material_authority_contract_claim_types_mismatch"
+        )
     contract_scope = _contract_material_scope(analysis_contract.scope)
     if any(
         _material_scope(scope) != contract_scope
@@ -741,17 +819,11 @@ def validate_material_authority_contract_overlap(
         raise EvidenceIntegrityError(
             "material_authority_contract_scope_mismatch"
         )
-    execution_material = material_authority.get("execution_material")
-    if not isinstance(execution_material, Mapping):
-        raise EvidenceIntegrityError(
-            "material_authority_execution_material_missing"
-        )
     expected_runtime = _contract_runtime_projection(analysis_contract)
     for axis in (
         "target_semantic",
         "as_of",
         "business_timezone",
-        "permission_scope",
         "fixed_window_bounds",
     ):
         if canonical_value(execution_material.get(axis)) != canonical_value(
@@ -1142,33 +1214,15 @@ def build_prior_topic_material_context(
     )
     if any(projection != projections[0] for projection in projections[1:]):
         raise EvidenceIntegrityError("prior_topic_material_conflict")
-    permission_scopes = {
-        str(item["analysis_contract"].get("permission_scope") or "")
-        for item in validated
-    }
-    permission_scopes.update(
-        str(
-            item["material_authority"]["execution_material"].get(
-                "permission_scope"
-            )
-            or ""
-        )
-        for item in validated
-    )
-    if len(permission_scopes) != 1 or "" in permission_scopes:
-        raise EvidenceIntegrityError(
-            "prior_topic_permission_scope_mismatch"
-        )
     result_refs = sorted({str(ref) for ref in source_result_refs if str(ref)})
     if not result_refs:
         raise EvidenceIntegrityError("prior_topic_result_refs_missing")
     body = {
-        "schema_version": "prior-topic-material.v1",
+        "schema_version": "prior-topic-material.v2",
         "thread_id": thread_id,
         "topic_id": topic_id,
         "source_run_ids": source_run_ids,
         "source_result_refs": result_refs,
-        "permission_scope": next(iter(permission_scopes)),
         "material_projection": projections[0],
         "authorities": list(validated),
     }
@@ -1184,7 +1238,7 @@ def validate_prior_topic_material_context(
     if (
         not isinstance(value, Mapping)
         or set(value) != _PRIOR_TOPIC_MATERIAL_CONTEXT_KEYS
-        or value.get("schema_version") != "prior-topic-material.v1"
+        or value.get("schema_version") != "prior-topic-material.v2"
         or value.get("thread_id") != thread_id
         or value.get("topic_id") != topic_id
     ):
@@ -1215,497 +1269,12 @@ def validate_prior_topic_material_context(
     return rebuilt
 
 
-def validate_terminal_resume_proposal_overlap(
-    material_authority: Mapping[str, Any],
-    proposal: Mapping[str, Any],
-) -> None:
-    intent_material = material_authority.get("intent_material")
-    route_material = material_authority.get("route_material_slots")
-    execution_material = material_authority.get("execution_material")
-    if (
-        not isinstance(intent_material, Mapping)
-        or not isinstance(route_material, Mapping)
-        or not isinstance(execution_material, Mapping)
-    ):
-        raise EvidenceIntegrityError("material_authority_shape_invalid")
-    _validate_repeated_family_axes(intent_material, proposal)
-    _validate_repeated_target_axes(intent_material, proposal)
-    for axis in (
-        "requested_components",
-        "requested_dimensions",
-        "claim_intents",
-        "diagnostic_tags",
-    ):
-        _validate_repeated_sequence_axis(
-            proposal,
-            axis,
-            route_material.get(axis),
-            reason_axis=axis,
-        )
-    _validate_repeated_baseline_axis(
-        proposal,
-        "baselines",
-        route_material.get("baselines"),
-    )
-    for alias in ("context_sources", "requested_context_sources"):
-        _validate_repeated_sequence_axis(
-            proposal,
-            alias,
-            route_material.get("context_sources"),
-            reason_axis="context_sources",
-        )
-    if "scope" in proposal:
-        _validate_repeated_scope(
-            proposal.get("scope"),
-            route_material.get("scope"),
-        )
-    if "time_window" in proposal and canonical_value(
-        proposal.get("time_window")
-    ) != canonical_value(intent_material.get("time_window")):
-        raise EvidenceIntegrityError(
-            "terminal_resume_proposal_time_window_mismatch"
-        )
-    for alias in ("target_semantic", "target_window"):
-        if alias in proposal:
-            _validate_repeated_target_semantic(
-                proposal.get(alias), execution_material
-            )
-    if "fixed_window_bounds" in proposal:
-        if _canonical_fixed_window_bounds(
-            proposal.get("fixed_window_bounds")
-        ) != execution_material.get("fixed_window_bounds"):
-            raise EvidenceIntegrityError(
-                "terminal_resume_proposal_fixed_window_bounds_mismatch"
-            )
-    for axis in (
-        "filters",
-        "grain",
-        "dataset_requirements",
-        "metric_dataset_overrides",
-        "dimension_dataset_overrides",
-    ):
-        if axis not in proposal:
-            continue
-        candidate = _canonical_execution_proposal_axis(
-            axis, proposal.get(axis)
-        )
-        if canonical_value(candidate) != canonical_value(
-            execution_material.get(axis)
-        ):
-            raise EvidenceIntegrityError(
-                f"terminal_resume_proposal_{axis}_mismatch"
-            )
-
-
-def validate_terminal_clarification_choice_overlap(
-    material_authority: Mapping[str, Any],
-    choice: Mapping[str, Any],
-) -> None:
-    intent_material = material_authority.get("intent_material")
-    route_material = material_authority.get("route_material_slots")
-    execution_material = material_authority.get("execution_material")
-    if (
-        not isinstance(intent_material, Mapping)
-        or not isinstance(route_material, Mapping)
-        or not isinstance(execution_material, Mapping)
-    ):
-        raise EvidenceIntegrityError("material_authority_shape_invalid")
-    _validate_repeated_family_axes(intent_material, choice)
-    _validate_repeated_target_axes(intent_material, choice)
-    for axis in (
-        "requested_components",
-        "requested_dimensions",
-        "claim_intents",
-        "diagnostic_tags",
-    ):
-        _validate_repeated_sequence_axis(
-            choice,
-            axis,
-            route_material.get(axis),
-            reason_axis=axis,
-        )
-    _validate_repeated_baseline_axis(
-        choice,
-        "baselines",
-        route_material.get("baselines"),
-    )
-    if "baseline_candidates" in choice:
-        _validate_repeated_baseline_axis(
-            choice,
-            "baseline_candidates",
-            intent_material.get("baselines"),
-        )
-    for alias in ("context_sources", "requested_context_sources"):
-        _validate_repeated_sequence_axis(
-            choice,
-            alias,
-            route_material.get("context_sources"),
-            reason_axis="context_sources",
-        )
-    if "scope" in choice:
-        _validate_repeated_scope(
-            choice.get("scope"), route_material.get("scope")
-        )
-    if "time_window" in choice and canonical_value(
-        choice.get("time_window")
-    ) != canonical_value(intent_material.get("time_window")):
-        raise EvidenceIntegrityError(
-            "terminal_resume_proposal_time_window_mismatch"
-        )
-    for alias in ("target_semantic", "target_window"):
-        if alias in choice:
-            _validate_repeated_target_semantic(
-                choice.get(alias), execution_material
-            )
-    for axis in (
-        "filters",
-        "grain",
-        "dataset_requirements",
-        "metric_dataset_overrides",
-        "dimension_dataset_overrides",
-        "fixed_window_bounds",
-    ):
-        if axis not in choice:
-            continue
-        candidate = (
-            _canonical_fixed_window_bounds(choice.get(axis))
-            if axis == "fixed_window_bounds"
-            else _canonical_execution_proposal_axis(axis, choice.get(axis))
-        )
-        if canonical_value(candidate) != canonical_value(
-            execution_material.get(axis)
-        ):
-            raise EvidenceIntegrityError(
-                f"terminal_resume_proposal_{axis}_mismatch"
-            )
-
-
-def bind_terminal_resume_proposal_material(
-    material_authority: Mapping[str, Any],
-    proposal: Mapping[str, Any],
-) -> dict[str, Any]:
-    validate_terminal_resume_proposal_overlap(material_authority, proposal)
-    intent_material = material_authority["intent_material"]
-    route_material = material_authority["route_material_slots"]
-    execution_material = material_authority["execution_material"]
-    bound = dict(proposal)
-    bound.update(
-        {
-            "question_families": list(intent_material["question_families"]),
-            "target_metrics": list(route_material["target_metrics"]),
-            "requested_components": list(
-                route_material["requested_components"]
-            ),
-            "requested_dimensions": list(
-                route_material["requested_dimensions"]
-            ),
-            "baselines": list(route_material["baselines"]),
-            "context_sources": list(route_material["context_sources"]),
-            "requested_context_sources": list(
-                route_material["context_sources"]
-            ),
-            "claim_intents": list(route_material["claim_intents"]),
-            "diagnostic_tags": list(route_material["diagnostic_tags"]),
-            "scope": (
-                canonical_value(route_material["scope"])
-                if route_material["scope"] not in (None, "", {}, [])
-                else "full_sample"
-            ),
-            "time_window": canonical_value(intent_material["time_window"]),
-            "target_semantic": execution_material["target_semantic"],
-            "fixed_window_bounds": canonical_value(
-                execution_material["fixed_window_bounds"]
-            ),
-            "filters": canonical_value(execution_material["filters"]),
-            "grain": execution_material["grain"],
-            "dataset_requirements": list(
-                execution_material["dataset_requirements"]
-            ),
-            "metric_dataset_overrides": canonical_value(
-                execution_material["metric_dataset_overrides"]
-            ),
-            "dimension_dataset_overrides": canonical_value(
-                execution_material["dimension_dataset_overrides"]
-            ),
-        }
-    )
-    return bound
-
-
-def validate_terminal_runtime_context_overlap(
-    material_authority: Mapping[str, Any],
-    *,
-    analysis_context: Mapping[str, Any],
-    permission_scope: str,
-    accepted_graph: Iterable[str],
-    accepted_choice: Mapping[str, Any],
-    run_mode: str,
-    runtime_contract_version: str,
-    runtime_registry_digest: str,
-) -> dict[str, Any]:
-    execution_material = material_authority.get("execution_material")
-    if not isinstance(execution_material, Mapping):
-        raise EvidenceIntegrityError(
-            "material_authority_execution_material_missing"
-        )
-    if str(permission_scope or "") != str(
-        execution_material.get("permission_scope") or ""
-    ):
-        raise EvidenceIntegrityError(
-            "terminal_resume_runtime_permission_scope_mismatch"
-        )
-    if _run_mode_class(run_mode) != execution_material.get("run_mode_class"):
-        raise EvidenceIntegrityError(
-            "terminal_resume_runtime_run_mode_class_mismatch"
-        )
-    if str(runtime_contract_version or "") != str(
-        execution_material.get("runtime_contract_version") or ""
-    ):
-        raise EvidenceIntegrityError(
-            "terminal_resume_runtime_contract_version_mismatch"
-        )
-    if str(runtime_registry_digest or "") != str(
-        execution_material.get("runtime_registry_digest") or ""
-    ):
-        raise EvidenceIntegrityError(
-            "terminal_resume_runtime_registry_digest_mismatch"
-        )
-    _validate_terminal_accepted_graph(
-        execution_material,
-        accepted_graph=accepted_graph,
-        accepted_choice=accepted_choice,
-    )
-    context = dict(analysis_context)
-    if "as_of" in context and not _same_as_of(
-        context.get("as_of"), execution_material["as_of"]
-    ):
-        raise EvidenceIntegrityError(
-            "terminal_resume_runtime_as_of_mismatch"
-        )
-    signed_bounds = execution_material["fixed_window_bounds"]
-    for context_key, (window_id, index) in (
-        _ANALYSIS_CONTEXT_WINDOW_FIELDS.items()
-    ):
-        if context_key not in context:
-            continue
-        expected = signed_bounds.get(window_id)
-        if (
-            not isinstance(context.get(context_key), str)
-            or expected is None
-            or context[context_key] != expected[index]
-        ):
-            raise EvidenceIntegrityError(
-                "terminal_resume_runtime_fixed_window_bounds_mismatch:"
-                + window_id
-            )
-    return dict(execution_material)
-
-
-def validate_terminal_compile_overlap(
-    material_authority: Mapping[str, Any],
-    *,
-    analysis_contract: AnalysisContract | Mapping[str, Any],
-    query_contracts: Iterable[Mapping[str, Any] | Any],
-    accepted_graph: Iterable[str],
-    accepted_choice: Mapping[str, Any],
-) -> None:
-    execution_material = material_authority.get("execution_material")
-    if not isinstance(execution_material, Mapping):
-        raise EvidenceIntegrityError(
-            "material_authority_execution_material_missing"
-        )
-    current_runtime = _contract_runtime_projection(
-        _typed_analysis_contract(analysis_contract)
-    )
-    for axis in (
-        "target_semantic",
-        "as_of",
-        "business_timezone",
-        "permission_scope",
-        "fixed_window_bounds",
-    ):
-        if canonical_value(current_runtime[axis]) != canonical_value(
-            execution_material[axis]
-        ):
-            raise EvidenceIntegrityError(
-                f"terminal_resume_compile_{axis}_mismatch"
-            )
-    current_graph = _exact_string_values(
-        accepted_graph,
-        reason="terminal_resume_runtime_accepted_graph_mismatch",
-    )
-    _validate_terminal_accepted_graph(
-        execution_material,
-        accepted_graph=current_graph,
-        accepted_choice=accepted_choice,
-    )
-    current_capabilities = set(current_graph)
-    expected_queries = {
-        str(record["contract_signature"]): tuple(
-            record["dataset_snapshot_refs"]
-        )
-        for record in execution_material["source_query_contracts"]
-        if current_capabilities.intersection(
-            record["owner_capability_ids"]
-        )
-    }
-    current_queries = _current_query_contract_projection(query_contracts)
-    if current_queries != expected_queries:
-        raise EvidenceIntegrityError(
-            "terminal_resume_compile_query_contract_projection_mismatch"
-        )
-
-
-def _validate_terminal_accepted_graph(
-    execution_material: Mapping[str, Any],
-    *,
-    accepted_graph: Iterable[str],
-    accepted_choice: Mapping[str, Any],
-) -> None:
-    source = tuple(execution_material.get("accepted_graph") or ())
-    current = _exact_string_values(
-        accepted_graph,
-        reason="terminal_resume_runtime_accepted_graph_mismatch",
-    )
-    affected = _exact_string_values(
-        accepted_choice.get("affected_capabilities"),
-        reason="terminal_resume_runtime_accepted_graph_mismatch",
-    )
-    source_set = set(source)
-    current_set = set(current)
-    required = source_set - set(affected)
-    if not required.issubset(current_set) or not current_set.issubset(
-        source_set
-    ):
-        raise EvidenceIntegrityError(
-            "terminal_resume_runtime_accepted_graph_mismatch"
-        )
-
-
-def _validate_repeated_family_axes(
-    intent_material: Mapping[str, Any],
-    candidate: Mapping[str, Any],
-) -> None:
-    signed = tuple(intent_material.get("question_families") or ())
-    primary = str(intent_material.get("primary_question_family") or "")
-    reason = "terminal_resume_proposal_question_families_mismatch"
-    if "question_families" in candidate and _proposal_axis_values(
-        candidate.get("question_families")
-    ) != signed:
-        raise EvidenceIntegrityError(reason)
-    for alias in ("question_family", "primary_question_family"):
-        if alias in candidate and candidate.get(alias) != primary:
-            raise EvidenceIntegrityError(reason)
-    if "secondary_question_families" in candidate and _proposal_axis_values(
-        candidate.get("secondary_question_families")
-    ) != signed[1:]:
-        raise EvidenceIntegrityError(reason)
-
-
-def _validate_repeated_target_axes(
-    intent_material: Mapping[str, Any],
-    candidate: Mapping[str, Any],
-) -> None:
-    signed = tuple(intent_material.get("target_metrics") or ())
-    primary = str(intent_material.get("primary_target_metric") or "")
-    reason = "terminal_resume_proposal_target_metrics_mismatch"
-    if "target_metrics" in candidate and _proposal_axis_values(
-        candidate.get("target_metrics")
-    ) != signed:
-        raise EvidenceIntegrityError(reason)
-    if "target_metric" in candidate and candidate.get("target_metric") != primary:
-        raise EvidenceIntegrityError(reason)
-
-
-def _validate_repeated_sequence_axis(
-    candidate: Mapping[str, Any],
-    key: str,
-    expected: Any,
-    *,
-    reason_axis: str,
-) -> None:
-    if key not in candidate:
-        return
-    if _proposal_axis_values(candidate.get(key)) != tuple(expected or ()):
-        raise EvidenceIntegrityError(
-            f"terminal_resume_proposal_{reason_axis}_mismatch"
-        )
-
-
-def _validate_repeated_baseline_axis(
-    candidate: Mapping[str, Any],
-    key: str,
-    expected: Any,
-) -> None:
-    if key not in candidate:
-        return
-    try:
-        actual = _canonical_baseline_sequence(candidate.get(key))
-    except BaselineSemanticError as exc:
-        raise EvidenceIntegrityError(
-            "terminal_resume_proposal_baselines_mismatch"
-        ) from exc
-    if actual != tuple(expected or ()):
-        raise EvidenceIntegrityError(
-            "terminal_resume_proposal_baselines_mismatch"
-        )
-
-
-def _validate_repeated_scope(value: Any, expected: Any) -> None:
-    if value in (None, "", {}, []):
-        raise EvidenceIntegrityError(
-            "terminal_resume_proposal_scope_mismatch"
-        )
-    try:
-        matches = _material_scope(value) == _material_scope(expected)
-    except EvidenceIntegrityError as exc:
-        raise EvidenceIntegrityError(
-            "terminal_resume_proposal_scope_mismatch"
-        ) from exc
-    if not matches:
-        raise EvidenceIntegrityError(
-            "terminal_resume_proposal_scope_mismatch"
-        )
-
-
-def _validate_repeated_target_semantic(
-    value: Any,
-    execution_material: Mapping[str, Any],
-) -> None:
-    try:
-        actual = _resolve_target_semantic(
-            value,
-            as_of=execution_material["as_of"],
-            timezone_name=execution_material["business_timezone"],
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise EvidenceIntegrityError(
-            "terminal_resume_proposal_time_window_mismatch"
-        ) from exc
-    if actual != execution_material["target_semantic"]:
-        raise EvidenceIntegrityError(
-            "terminal_resume_proposal_time_window_mismatch"
-        )
-
-
-def _proposal_axis_values(value: Any) -> tuple[str, ...]:
-    if isinstance(value, (str, bytes)):
-        values = (value,)
-    elif isinstance(value, Iterable) and not isinstance(value, Mapping):
-        values = value
-    else:
-        values = ()
-    return tuple(
-        dict.fromkeys(str(item).strip() for item in values if str(item).strip())
-    )
-
-
 def _execution_material_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping) or set(value) != _EXECUTION_MATERIAL_KEYS:
         raise EvidenceIntegrityError(
             "material_authority_execution_material_shape_invalid"
         )
-    if str(value.get("schema_version") or "") != "1":
+    if str(value.get("schema_version") or "") != "3":
         raise EvidenceIntegrityError(
             "material_authority_execution_material_version_invalid"
         )
@@ -1720,9 +1289,6 @@ def _execution_material_projection(value: Mapping[str, Any]) -> dict[str, Any]:
         raise EvidenceIntegrityError(
             "execution_material_business_timezone_invalid"
         ) from exc
-    permission_scope = _required_execution_token(
-        value.get("permission_scope"), "permission_scope"
-    )
     fixed_bounds = _canonical_fixed_window_bounds(
         value.get("fixed_window_bounds")
     )
@@ -1794,11 +1360,13 @@ def _execution_material_projection(value: Mapping[str, Any]) -> dict[str, Any]:
             "execution_material_source_query_contracts_invalid"
         )
     return {
-        "schema_version": "1",
+        "schema_version": "3",
         "target_semantic": target_semantic,
         "as_of": as_of,
         "business_timezone": timezone_name,
-        "permission_scope": permission_scope,
+        "context_window_specs": _canonical_context_window_specs(
+            value.get("context_window_specs")
+        ),
         "fixed_window_bounds": fixed_bounds,
         "filters": _canonical_filters(value.get("filters")),
         "grain": canonical_execution_grain(value.get("grain")),
@@ -1847,7 +1415,7 @@ def _canonical_execution_proposal_axis(axis: str, value: Any) -> Any:
         return list(
             _exact_string_values(
                 value,
-                reason="terminal_resume_proposal_dataset_requirements_mismatch",
+                reason="clarification_source_material_dataset_requirements_mismatch",
             )
         )
     if axis in {
@@ -1856,10 +1424,10 @@ def _canonical_execution_proposal_axis(axis: str, value: Any) -> Any:
     }:
         return _canonical_overrides(
             value,
-            reason=f"terminal_resume_proposal_{axis}_mismatch",
+            reason=f"clarification_source_material_{axis}_mismatch",
         )
     raise EvidenceIntegrityError(
-        f"terminal_resume_proposal_{axis}_mismatch"
+        f"clarification_source_material_{axis}_mismatch"
     )
 
 
@@ -1907,18 +1475,90 @@ def _canonical_overrides(value: Any, *, reason: str) -> dict[str, str]:
     return {key: output[key] for key in sorted(output)}
 
 
+def _canonical_context_window_specs(value: Any) -> list[dict[str, Any]]:
+    if value in (None, (), []):
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise EvidenceIntegrityError(
+            "execution_material_context_window_specs_invalid"
+        )
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, int]] = set()
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {
+            "capability_id",
+            "relation",
+            "unit",
+            "count",
+        }:
+            raise EvidenceIntegrityError(
+                "execution_material_context_window_specs_invalid"
+            )
+        capability_id = str(item.get("capability_id") or "")
+        relation = str(item.get("relation") or "")
+        unit = str(item.get("unit") or "")
+        count = item.get("count")
+        identity = (capability_id, relation, unit, count)
+        if (
+            not re.fullmatch(r"[a-z][a-z0-9_]*", capability_id)
+            or relation != "trailing_complete_periods"
+            or unit not in {"day", "week", "month", "quarter"}
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count <= 0
+            or identity in seen
+        ):
+            raise EvidenceIntegrityError(
+                "execution_material_context_window_specs_invalid"
+            )
+        seen.add(identity)
+        output.append(
+            {
+                "capability_id": capability_id,
+                "relation": relation,
+                "unit": unit,
+                "count": count,
+            }
+        )
+    return output
+
+
+def _is_context_window_id(window_id: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"context__[a-z][a-z0-9_]*__"
+            r"trailing_complete_periods__[1-9][0-9]*_"
+            r"(?:day|week|month|quarter)",
+            window_id,
+        )
+    )
+
+
 def _canonical_fixed_window_bounds(value: Any) -> dict[str, list[str]]:
     if not isinstance(value, Mapping) or not value:
         raise EvidenceIntegrityError(
             "execution_material_fixed_window_bounds_invalid"
         )
-    unknown = set(value) - set(_FIXED_WINDOW_IDS)
+    unknown = {
+        window_id
+        for window_id in set(value) - set(_FIXED_WINDOW_IDS)
+        if not isinstance(window_id, str)
+        or not _is_context_window_id(window_id)
+    }
     if unknown:
         raise EvidenceIntegrityError(
             "execution_material_fixed_window_bounds_invalid"
         )
     output: dict[str, list[str]] = {}
-    for window_id in _FIXED_WINDOW_IDS:
+    ordered_window_ids = (
+        *_FIXED_WINDOW_IDS,
+        *sorted(
+            window_id
+            for window_id in value
+            if window_id not in _FIXED_WINDOW_IDS
+        ),
+    )
+    for window_id in ordered_window_ids:
         if window_id not in value:
             continue
         bounds = value[window_id]
@@ -2239,33 +1879,36 @@ def _intent_material_projection(
         raise EvidenceIntegrityError("material_authority_question_families_invalid")
     target_metrics = list(route_material["target_metrics"])
     primary_target = str(original.get("target_metric") or "")
-    if not primary_target or primary_target != target_metrics[0]:
+    if (
+        not primary_target
+        or target_metrics != [primary_target]
+    ):
         raise EvidenceIntegrityError("material_authority_target_metrics_invalid")
+    goal_bindings = _goal_bindings(original.get("goal_bindings"))
+    explicit_focus = _explicit_focus(original.get("explicit_focus"))
+    goal_material = _compiled_goal_material_projection(
+        goal_bindings=goal_bindings,
+        target_metric=primary_target,
+        explicit_focus=explicit_focus,
+    )
     return {
         "primary_question_family": primary_family,
         "question_families": families,
         "primary_target_metric": primary_target,
         "target_metrics": target_metrics,
-        "requested_components": _string_sequence(
-            original.get("requested_components"),
-            reason="material_authority_requested_components_invalid",
-        ),
-        "requested_dimensions": _string_sequence(
-            original.get("requested_dimensions"),
-            reason="material_authority_requested_dimensions_invalid",
-        ),
+        "goal_bindings": goal_bindings,
+        "explicit_focus": explicit_focus,
+        "component_ids": goal_material["component_ids"],
+        "association_metric_ids": goal_material["association_metric_ids"],
+        "dimension_ids": goal_material["dimension_ids"],
         "baselines": _intent_baseline_projection(
             original,
             route_baselines=route_material["baselines"],
         ),
-        "context_sources": _string_sequence(
-            original.get("context_sources"),
-            reason="material_authority_context_sources_invalid",
-        ),
-        "claim_intents": _string_sequence(
-            original.get("claim_intents"),
-            reason="material_authority_claim_intents_invalid",
-        ),
+        "context_sources": goal_material["context_sources"],
+        "claim_types": goal_material["claim_types"],
+        "required_outcomes": goal_material["required_outcomes"],
+        "analysis_axis_ids": goal_material["analysis_axis_ids"],
         "scope": _canonical_scope(original.get("scope")),
         "time_window": _canonical_time_window(original.get("time_window")),
     }
@@ -2273,7 +1916,8 @@ def _intent_material_projection(
 
 def _route_material_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     unknown = set(value) - _ROUTE_MATERIAL_KEYS
-    if unknown:
+    required = set(_MATERIAL_LIST_AXES) | {"scope"}
+    if unknown or not required.issubset(value):
         raise EvidenceIntegrityError("material_authority_route_shape_invalid")
     projected = {
         axis: _string_sequence(
@@ -2307,12 +1951,17 @@ def _validate_intent_material(value: Mapping[str, Any]) -> None:
     )
     if str(value.get("primary_target_metric") or "") != targets[0]:
         raise EvidenceIntegrityError("material_authority_target_metrics_invalid")
+    _goal_bindings(value.get("goal_bindings"))
+    _explicit_focus(value.get("explicit_focus"))
     for axis in (
-        "requested_components",
-        "requested_dimensions",
+        "component_ids",
+        "association_metric_ids",
+        "dimension_ids",
         "baselines",
         "context_sources",
-        "claim_intents",
+        "claim_types",
+        "required_outcomes",
+        "analysis_axis_ids",
     ):
         _string_sequence(
             value.get(axis),
@@ -2351,6 +2000,224 @@ def _string_sequence(
     ):
         raise EvidenceIntegrityError(reason)
     return list(raw)
+
+
+def _goal_bindings(value: Any) -> list[dict[str, str]]:
+    if (
+        not isinstance(value, (list, tuple))
+        or not value
+        or any(
+            not isinstance(item, Mapping)
+            or set(item) != {"goal_id", "role"}
+            or not isinstance(item.get("goal_id"), str)
+            or not str(item.get("goal_id") or "").strip()
+            or item.get("role") not in {"primary", "supporting"}
+            for item in value
+        )
+        or len({str(item["goal_id"]) for item in value}) != len(value)
+        or sum(item.get("role") == "primary" for item in value) != 1
+    ):
+        raise EvidenceIntegrityError(
+            "material_authority_goal_bindings_invalid"
+        )
+    return [
+        {"goal_id": str(item["goal_id"]), "role": str(item["role"])}
+        for item in value
+    ]
+
+
+def _explicit_focus(value: Any) -> dict[str, list[str]]:
+    fields = {"component_ids", "dimension_ids", "context_source_ids"}
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise EvidenceIntegrityError(
+            "material_authority_explicit_focus_invalid"
+        )
+    return {
+        field: _string_sequence(
+            value.get(field),
+            reason=f"material_authority_explicit_focus_{field}_invalid",
+        )
+        for field in sorted(fields)
+    }
+
+
+def _compiled_goal_material_projection(
+    *,
+    goal_bindings: Any,
+    target_metric: str,
+    explicit_focus: Any,
+    runtime_registry: RuntimeContractRegistry | None = None,
+) -> dict[str, Any]:
+    registry = runtime_registry or RuntimeContractRegistry.from_path(
+        CANONICAL_RUNTIME_BINDINGS_PATH
+    )
+    try:
+        plan = registry.compile_goal_analysis_plan(
+            goal_bindings=goal_bindings,
+            target_metric=target_metric,
+            explicit_focus=explicit_focus,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        reason = str(exc)
+        axis = (
+            "explicit_focus"
+            if "explicit_focus" in reason
+            else "goal_bindings"
+            if "goal" in reason
+            else "target_metrics"
+        )
+        raise EvidenceIntegrityError(
+            f"material_authority_{axis}_invalid"
+        ) from exc
+    axes = tuple(
+        axis
+        for axis in plan.get("analysis_axes") or ()
+        if isinstance(axis, Mapping)
+    )
+    dimension_ids = list(
+        dict.fromkeys(
+            str(dimension_id)
+            for axis in axes
+            for dimension_id in axis.get("dimension_refs") or ()
+            if str(dimension_id)
+        )
+    )
+    component_ids = list(
+        dict.fromkeys(
+            str(metric_id)
+            for axis in axes
+            if str(axis.get("axis_kind") or "") == "formula_tree"
+            for metric_id in axis.get("metric_refs") or ()
+            if str(metric_id) and str(metric_id) != target_metric
+        )
+    )
+    association_metric_ids = list(
+        dict.fromkeys(
+            str(metric_id)
+            for axis in axes
+            if str(axis.get("axis_kind") or "") == "cross_source_context"
+            for metric_id in axis.get("metric_refs") or ()
+            if str(metric_id) and str(metric_id) != target_metric
+        )
+    )
+    claim_types_by_role: dict[str, list[str]] = {
+        "required": [],
+        "auxiliary": [],
+        "conditional": [],
+    }
+    for axis in axes:
+        role = str(axis.get("role") or "")
+        if role not in claim_types_by_role:
+            continue
+        for capability_id in axis.get("capability_refs") or ():
+            try:
+                capability = registry.capability_inputs(str(capability_id))
+            except KeyError as exc:
+                raise EvidenceIntegrityError(
+                    "material_authority_analysis_axis_ids_invalid"
+                ) from exc
+            claim_types_by_role[role].extend(
+                str(claim_type)
+                for claim_type in capability.get("supported_claim_types") or ()
+                if str(claim_type)
+            )
+    required_claim_types = list(
+        dict.fromkeys(claim_types_by_role["required"])
+    )
+    auxiliary_claim_types = [
+        claim_type
+        for claim_type in dict.fromkeys(
+            (
+                *claim_types_by_role["auxiliary"],
+                *claim_types_by_role["conditional"],
+            )
+        )
+        if claim_type not in set(required_claim_types)
+    ]
+    return {
+        "goal_bindings": _goal_bindings(plan.get("goal_bindings")),
+        "explicit_focus": _explicit_focus(plan.get("explicit_focus")),
+        "component_ids": component_ids,
+        "association_metric_ids": association_metric_ids,
+        "dimension_ids": dimension_ids,
+        "context_sources": list(explicit_focus["context_source_ids"]),
+        "claim_types": list(
+            dict.fromkeys((*required_claim_types, *auxiliary_claim_types))
+        ),
+        "required_claim_types": required_claim_types,
+        "required_outcomes": _string_sequence(
+            plan.get("required_outcomes"),
+            reason="material_authority_required_outcomes_invalid",
+            required=True,
+        ),
+        "analysis_axis_ids": _string_sequence(
+            [str(axis.get("axis_id") or "") for axis in axes],
+            reason="material_authority_analysis_axis_ids_invalid",
+            required=True,
+        ),
+    }
+
+
+def _validate_goal_plan_material_overlap(
+    intent_material: Mapping[str, Any],
+    route_material: Mapping[str, Any],
+    runtime_registry: RuntimeContractRegistry,
+) -> None:
+    expected = _compiled_goal_material_projection(
+        goal_bindings=intent_material.get("goal_bindings"),
+        target_metric=str(intent_material.get("primary_target_metric") or ""),
+        explicit_focus=intent_material.get("explicit_focus"),
+        runtime_registry=runtime_registry,
+    )
+    for axis in (
+        "goal_bindings",
+        "explicit_focus",
+        "component_ids",
+        "association_metric_ids",
+        "dimension_ids",
+        "context_sources",
+        "claim_types",
+        "required_outcomes",
+        "analysis_axis_ids",
+    ):
+        if canonical_value(intent_material.get(axis)) != canonical_value(
+            expected[axis]
+        ):
+            raise EvidenceIntegrityError(
+                f"material_authority_contract_{axis}_mismatch"
+            )
+    for axis in (
+        "component_ids",
+        "association_metric_ids",
+        "dimension_ids",
+        "context_sources",
+        "required_outcomes",
+        "analysis_axis_ids",
+    ):
+        if canonical_value(route_material.get(axis)) != canonical_value(
+            expected[axis]
+        ):
+            raise EvidenceIntegrityError(
+                f"material_authority_contract_{axis}_mismatch"
+            )
+    route_claim_types = tuple(route_material.get("claim_types") or ())
+    known_claim_types = {
+        str(claim_type)
+        for capability_id in runtime_registry.capability_ids
+        for claim_type in runtime_registry.capability_inputs(
+            capability_id
+        ).get("supported_claim_types", ())
+    }
+    if (
+        any(claim_type not in known_claim_types for claim_type in route_claim_types)
+        or any(
+            claim_type not in set(route_claim_types)
+            for claim_type in expected["required_claim_types"]
+        )
+    ):
+        raise EvidenceIntegrityError(
+            "material_authority_contract_claim_types_mismatch"
+        )
 
 
 def _intent_baseline_projection(
@@ -2451,128 +2318,433 @@ def _canonical_scope(value: Any) -> Any:
     return canonical_value(value)
 
 
-def build_clarification_outcome(
+def clarification_resolution_source_request_digest(
+    source_request: Mapping[str, Any],
+) -> str:
+    """Bind one accepted clarification to the exact source request it answered."""
+
+    if not isinstance(source_request, Mapping):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_source_request_invalid"
+        )
+    return canonical_digest(dict(source_request))
+
+
+def clarification_resolution_digest(
     *,
+    resolution_id: str,
     source_run_id: str,
     thread_id: str,
     topic_id: str,
-    choice: Mapping[str, Any],
-) -> dict[str, Any]:
-    body = {
-        "source_run_id": _required(source_run_id, "source_run_id"),
-        "thread_id": _required(thread_id, "thread_id"),
-        "topic_id": _required(topic_id, "topic_id"),
-        "choice": canonical_value(dict(choice)),
-    }
-    digest = stable_contract_signature(body)
-    payload = {
-        "outcome_ref": f"clarification-outcome:{digest}",
-        **body,
-    }
-    payload["outcome_signature"] = stable_contract_signature(payload)
-    return payload
+    owner_id: str,
+    submission: Mapping[str, Any],
+    message_id: str,
+    source_request_digest: str,
+    accepted_choice: Mapping[str, Any],
+) -> str:
+    """Sign the durable user decision independently from execution attempts."""
 
-
-def validate_clarification_resume_authority(
-    *,
-    source_run_id: str,
-    thread_id: str,
-    topic_id: str,
-    choice: Mapping[str, Any],
-    outcome_ref: str,
-    analysis_contract: Mapping[str, Any],
-    stored_contract_signature: str,
-    analysis_run_id: str,
-    run_status: str,
-    run_thread_id: str,
-    run_topic_id: str,
-    clarification_outcome: Mapping[str, Any],
-    outcome_run_id: str,
-    outcome_thread_id: str,
-    outcome_topic_id: str,
-    material_authority: Mapping[str, Any],
-) -> dict[str, Any]:
-    if analysis_run_id != source_run_id:
-        raise EvidenceIntegrityError("clarification_resume_source_run_mismatch")
-    if run_status != "waiting_for_clarification":
-        raise EvidenceIntegrityError("clarification_resume_source_run_stale")
-    owners = (
-        run_thread_id,
-        run_topic_id,
-        outcome_thread_id,
-        outcome_topic_id,
-    )
-    if owners != (thread_id, topic_id, thread_id, topic_id):
-        raise EvidenceIntegrityError("clarification_resume_owner_mismatch")
-    if outcome_run_id != source_run_id:
-        raise EvidenceIntegrityError("clarification_resume_outcome_run_mismatch")
-    if not isinstance(material_authority, Mapping):
-        raise EvidenceIntegrityError("material_authority_missing")
-    validated_material_authority = validate_material_authority(
-        material_authority,
-        source_run_id=source_run_id,
-        thread_id=thread_id,
-        topic_id=topic_id,
-        require_execution_material=True,
-    )
-    contract_payload = dict(analysis_contract)
-    embedded_signature = str(contract_payload.pop("contract_signature", "") or "")
-    try:
-        typed_contract = analysis_contract_from_dict(contract_payload)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise EvidenceIntegrityError("clarification_resume_contract_payload_invalid") from exc
-    expected_signature = analysis_contract_signature(typed_contract)
-    if (
-        not stored_contract_signature
-        or expected_signature != stored_contract_signature
-        or (embedded_signature and embedded_signature != stored_contract_signature)
-    ):
-        raise EvidenceIntegrityError("clarification_resume_contract_signature_invalid")
-    if typed_contract.analysis_contract_id != f"analysis:{source_run_id}:1":
-        raise EvidenceIntegrityError("clarification_resume_contract_run_mismatch")
-    validate_material_authority_contract_overlap(
-        validated_material_authority,
-        typed_contract,
-    )
-
-    outcome = dict(clarification_outcome)
-    signature = str(outcome.pop("outcome_signature", "") or "")
-    if not signature or stable_contract_signature(outcome) != signature:
-        raise EvidenceIntegrityError("clarification_resume_outcome_signature_invalid")
-    if str(outcome.get("outcome_ref") or "") != outcome_ref:
-        raise EvidenceIntegrityError("clarification_resume_outcome_ref_mismatch")
-    expected_outcome_ref = "clarification-outcome:" + stable_contract_signature(
-        {
-            "source_run_id": source_run_id,
-            "thread_id": thread_id,
-            "topic_id": topic_id,
-            "choice": canonical_value(dict(choice)),
-        }
-    )
-    if outcome_ref != expected_outcome_ref:
-        raise EvidenceIntegrityError("clarification_resume_outcome_ref_invalid")
-    if (
-        str(outcome.get("source_run_id") or "") != source_run_id
-        or str(outcome.get("thread_id") or "") != thread_id
-        or str(outcome.get("topic_id") or "") != topic_id
-    ):
-        raise EvidenceIntegrityError("clarification_resume_outcome_owner_mismatch")
-    if canonical_value(outcome.get("choice")) != canonical_value(dict(choice)):
-        raise EvidenceIntegrityError("clarification_resume_choice_mismatch")
-    outcome["outcome_signature"] = signature
-    return {
+    fields = {
+        "resolution_id": resolution_id,
         "source_run_id": source_run_id,
         "thread_id": thread_id,
         "topic_id": topic_id,
-        "analysis_contract": typed_contract.to_dict(),
-        "analysis_contract_signature": stored_contract_signature,
-        "material_authority": validated_material_authority,
-        "clarification_outcome": outcome,
+        "owner_id": owner_id,
+        "message_id": message_id,
+        "source_request_digest": source_request_digest,
     }
+    normalized = {
+        key: str(value or "").strip() for key, value in fields.items()
+    }
+    if any(not value for value in normalized.values()):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_digest_material_invalid"
+        )
+    if not isinstance(submission, Mapping) or not isinstance(
+        accepted_choice, Mapping
+    ):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_digest_material_invalid"
+        )
+    body = {
+        "schema_version": "clarification-resolution.v1",
+        **normalized,
+        "submission": canonical_value(dict(submission)),
+        "accepted_choice": canonical_value(dict(accepted_choice)),
+    }
+    return canonical_digest(body)
+
+
+def clarification_attempt_request_digest(
+    *,
+    producer_kind: str,
+    scope_ref: str,
+    thread_id: str,
+    text: str,
+    request_payload: Mapping[str, Any],
+) -> str:
+    """Reproduce the Gateway dispatch digest from durable request material."""
+
+    tokens = tuple(
+        str(value or "").strip()
+        for value in (producer_kind, scope_ref, thread_id, text)
+    )
+    if any(not value for value in tokens) or not isinstance(
+        request_payload, Mapping
+    ):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_attempt_request_invalid"
+        )
+    return canonical_digest(
+        {
+            "producerKind": tokens[0],
+            "scopeRef": tokens[1],
+            "threadId": tokens[2],
+            "text": tokens[3],
+            "requestPayload": dict(request_payload),
+        }
+    )
+
+
+def validate_clarification_resolution_choice(
+    *,
+    source_request: Mapping[str, Any],
+    submission: Mapping[str, Any],
+    accepted_choice: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Prove that a persisted choice is one action offered by the source run."""
+
+    if not all(
+        isinstance(value, Mapping)
+        for value in (source_request, submission, accepted_choice)
+    ):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_choice_material_invalid"
+        )
+    envelope = source_request.get("clarification_source_envelope")
+    clarification = (
+        envelope.get("clarification")
+        if isinstance(envelope, Mapping)
+        else None
+    )
+    actions = tuple(
+        canonical_value(dict(action))
+        for action in (
+            clarification.get("choice_actions")
+            if isinstance(clarification, Mapping)
+            else ()
+        )
+        if isinstance(action, Mapping)
+    )
+    if not actions:
+        raise EvidenceIntegrityError(
+            "clarification_resolution_source_choices_missing"
+        )
+
+    selected_option_id = submission.get("selectedOptionId")
+    if selected_option_id is not None:
+        selected_option_id = str(selected_option_id).strip()
+        if not selected_option_id:
+            raise EvidenceIntegrityError(
+                "clarification_resolution_selected_option_invalid"
+            )
+        matches = tuple(
+            action
+            for action in actions
+            if str(action.get("choice_id") or "") == selected_option_id
+        )
+    else:
+        answer = str(submission.get("answer") or "").strip()
+        if not answer:
+            raise EvidenceIntegrityError(
+                "clarification_resolution_answer_invalid"
+            )
+        matches = tuple(
+            action
+            for action in actions
+            if clarification_labels_match(
+                action.get("business_label")
+                or action.get("business_semantics"),
+                answer,
+            )
+        )
+        if not matches:
+            matches = tuple(
+                action
+                for action in actions
+                if str(action.get("action_kind") or "")
+                == "user_redirect"
+            )
+
+    if len(matches) != 1:
+        raise EvidenceIntegrityError(
+            "clarification_resolution_choice_ambiguous"
+        )
+    expected = matches[0]
+    if canonical_value(dict(accepted_choice)) != expected:
+        raise EvidenceIntegrityError(
+            "clarification_resolution_accepted_choice_mismatch"
+        )
+    return expected
+
+
+def validate_clarification_resolution_attempt(
+    *,
+    resolution: Mapping[str, Any],
+    attempt: Mapping[str, Any],
+    source_run: Mapping[str, Any],
+    attempt_run: Mapping[str, Any],
+    dispatch: Mapping[str, Any],
+    source_run_id: str,
+    attempt_run_id: str,
+    thread_id: str,
+    owner_id: str,
+    answer: str,
+    selected_option_id: str | None,
+    source: str,
+) -> dict[str, Any]:
+    """Validate one initial or retry attempt against one durable resolution."""
+
+    if not all(
+        isinstance(value, Mapping)
+        for value in (resolution, attempt, source_run, attempt_run, dispatch)
+    ):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_attempt_material_invalid"
+        )
+    normalized_inputs = {
+        "source_run_id": str(source_run_id or "").strip(),
+        "attempt_run_id": str(attempt_run_id or "").strip(),
+        "thread_id": str(thread_id or "").strip(),
+        "owner_id": str(owner_id or "").strip(),
+        "answer": str(answer or "").strip(),
+        "source": str(source or "").strip(),
+    }
+    if any(not value for value in normalized_inputs.values()):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_attempt_input_invalid"
+        )
+
+    resolution_id = str(resolution.get("resolution_id") or "")
+    resolution_status = str(resolution.get("status") or "")
+    attempt_number = attempt.get("attempt_number")
+    previous_attempt_run_id = attempt.get("previous_attempt_run_id")
+    submission = resolution.get("submission")
+    accepted_choice = resolution.get("accepted_choice")
+    source_request = source_run.get("request")
+    if (
+        not resolution_id
+        or resolution_status != "accepted"
+        or not str(resolution.get("accepted_at") or "")
+        or not isinstance(attempt_number, int)
+        or isinstance(attempt_number, bool)
+        or attempt_number <= 0
+        or not isinstance(submission, Mapping)
+        or not isinstance(accepted_choice, Mapping)
+        or not isinstance(source_request, Mapping)
+    ):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_attempt_material_invalid"
+        )
+    if (
+        str(source_run.get("status") or "")
+        != "waiting_for_clarification"
+        or str(resolution.get("message_thread_id") or "")
+        != normalized_inputs["thread_id"]
+        or str(resolution.get("message_role") or "") != "user"
+        or str(resolution.get("message_text") or "").strip()
+        != normalized_inputs["answer"]
+    ):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_source_state_invalid"
+        )
+
+    owners = (
+        str(resolution.get("source_run_id") or ""),
+        str(resolution.get("thread_id") or ""),
+        str(resolution.get("topic_id") or ""),
+        str(resolution.get("owner_id") or ""),
+        str(attempt.get("resolution_id") or ""),
+        str(attempt.get("attempt_run_id") or ""),
+        str(source_run.get("run_id") or ""),
+        str(source_run.get("thread_id") or ""),
+        str(source_run.get("topic_id") or ""),
+        str(source_run.get("owner_id") or ""),
+        str(attempt_run.get("run_id") or ""),
+        str(attempt_run.get("thread_id") or ""),
+        str(dispatch.get("run_id") or ""),
+        str(dispatch.get("thread_id") or ""),
+    )
+    expected_owners = (
+        normalized_inputs["source_run_id"],
+        normalized_inputs["thread_id"],
+        str(resolution.get("topic_id") or ""),
+        normalized_inputs["owner_id"],
+        resolution_id,
+        normalized_inputs["attempt_run_id"],
+        normalized_inputs["source_run_id"],
+        normalized_inputs["thread_id"],
+        str(resolution.get("topic_id") or ""),
+        normalized_inputs["owner_id"],
+        normalized_inputs["attempt_run_id"],
+        normalized_inputs["thread_id"],
+        normalized_inputs["attempt_run_id"],
+        normalized_inputs["thread_id"],
+    )
+    if owners != expected_owners or not expected_owners[2]:
+        raise EvidenceIntegrityError(
+            "clarification_resolution_attempt_owner_mismatch"
+        )
+
+    stored_selected = submission.get("selectedOptionId")
+    if stored_selected is not None:
+        stored_selected = str(stored_selected)
+    if (
+        set(submission)
+        != {"sourceRunId", "answer", "selectedOptionId", "source"}
+        or str(submission.get("sourceRunId") or "")
+        != normalized_inputs["source_run_id"]
+        or str(submission.get("answer") or "").strip()
+        != normalized_inputs["answer"]
+        or stored_selected != selected_option_id
+        or str(submission.get("source") or "")
+        != normalized_inputs["source"]
+    ):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_submission_mismatch"
+        )
+
+    computed_source_digest = clarification_resolution_source_request_digest(
+        source_request
+    )
+    if str(resolution.get("source_request_digest") or "") != computed_source_digest:
+        raise EvidenceIntegrityError(
+            "clarification_resolution_source_request_digest_mismatch"
+        )
+    validated_choice = validate_clarification_resolution_choice(
+        source_request=source_request,
+        submission=submission,
+        accepted_choice=accepted_choice,
+    )
+    computed_resolution_digest = clarification_resolution_digest(
+        resolution_id=resolution_id,
+        source_run_id=normalized_inputs["source_run_id"],
+        thread_id=normalized_inputs["thread_id"],
+        topic_id=str(resolution.get("topic_id") or ""),
+        owner_id=normalized_inputs["owner_id"],
+        submission=submission,
+        message_id=str(resolution.get("message_id") or ""),
+        source_request_digest=computed_source_digest,
+        accepted_choice=validated_choice,
+    )
+    if str(resolution.get("resolution_digest") or "") != computed_resolution_digest:
+        raise EvidenceIntegrityError(
+            "clarification_resolution_digest_mismatch"
+        )
+
+    dispatch_kind = str(dispatch.get("producer_kind") or "")
+    expected_request_payload = {
+        "sourceRunId": normalized_inputs["source_run_id"],
+        "resolutionId": resolution_id,
+        "attemptRunId": normalized_inputs["attempt_run_id"],
+        "answer": normalized_inputs["answer"],
+        "selectedOptionId": selected_option_id,
+        "source": normalized_inputs["source"],
+        "retryAttempt": attempt_number > 1,
+    }
+    if attempt_number > 1:
+        expected_request_payload["previousAttemptRunId"] = str(
+            previous_attempt_run_id or ""
+        )
+    if canonical_value(dispatch.get("request_payload") or {}) != canonical_value(
+        expected_request_payload
+    ):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_attempt_request_payload_mismatch"
+        )
+    dispatch_digest = clarification_attempt_request_digest(
+        producer_kind=dispatch_kind,
+        scope_ref=str(dispatch.get("scope_ref") or ""),
+        thread_id=str(dispatch.get("thread_id") or ""),
+        text=str(dispatch.get("text") or ""),
+        request_payload=dispatch.get("request_payload") or {},
+    )
+    if (
+        str(attempt.get("request_identity") or "")
+        != str(dispatch.get("request_identity") or "")
+        or str(attempt.get("request_digest") or "")
+        != str(dispatch.get("request_digest") or "")
+        or str(dispatch.get("request_digest") or "") != dispatch_digest
+        or not str(attempt.get("request_identity") or "")
+        or not str(attempt.get("request_digest") or "")
+        or str(dispatch.get("dispatch_state") or "") != "running"
+        or str(attempt_run.get("status") or "") != "running"
+    ):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_attempt_dispatch_mismatch"
+        )
+    if attempt_number == 1:
+        if (
+            previous_attempt_run_id not in (None, "")
+            or dispatch_kind != "clarification_resume"
+            or str(dispatch.get("scope_ref") or "")
+            != resolution_id
+        ):
+            raise EvidenceIntegrityError(
+                "clarification_resolution_initial_attempt_invalid"
+            )
+    else:
+        if (
+            not str(previous_attempt_run_id or "")
+            or dispatch_kind != "clarification_retry"
+            or str(dispatch.get("scope_ref") or "") != resolution_id
+            or str(attempt.get("previous_resolution_id") or "")
+            != resolution_id
+            or attempt.get("previous_attempt_number")
+            != attempt_number - 1
+            or str(attempt.get("previous_attempt_status") or "")
+            != "failed"
+        ):
+            raise EvidenceIntegrityError(
+                "clarification_resolution_retry_attempt_invalid"
+            )
+
+    raw_material_patch = validated_choice.get("material_patch") or {}
+    if not isinstance(raw_material_patch, Mapping):
+        raise EvidenceIntegrityError(
+            "clarification_resolution_material_patch_invalid"
+        )
+    material_patch = canonical_value(dict(raw_material_patch))
+    return canonical_value(
+        {
+            "resolution_id": resolution_id,
+            "source_run_id": normalized_inputs["source_run_id"],
+            "attempt_run_id": normalized_inputs["attempt_run_id"],
+            "previous_attempt_run_id": (
+                str(previous_attempt_run_id)
+                if previous_attempt_run_id not in (None, "")
+                else None
+            ),
+            "attempt_number": attempt_number,
+            "thread_id": normalized_inputs["thread_id"],
+            "topic_id": str(resolution.get("topic_id") or ""),
+            "owner_id": normalized_inputs["owner_id"],
+            "request_identity": str(attempt.get("request_identity") or ""),
+            "answer": normalized_inputs["answer"],
+            "selected_option_id": selected_option_id,
+            "source": normalized_inputs["source"],
+            "accepted_choice": validated_choice,
+            "source_request_digest": computed_source_digest,
+            "resolution_digest": computed_resolution_digest,
+            "retry_attempt": attempt_number > 1,
+            "material_patch": material_patch,
+            "resolution_status": resolution_status,
+        }
+    )
 
 
 def _required(value: str, field: str) -> str:
     normalized = str(value or "").strip()
     if not normalized:
-        raise EvidenceIntegrityError(f"clarification_outcome_{field}_missing")
+        raise EvidenceIntegrityError(f"clarification_authority_{field}_missing")
     return normalized

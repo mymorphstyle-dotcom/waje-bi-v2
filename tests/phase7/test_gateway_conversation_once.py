@@ -20,6 +20,23 @@ def _status_event(status: str) -> dict:
 
 
 class GatewayConversationOnceTest(unittest.TestCase):
+    def test_json_request_sends_authenticated_user_header(self):
+        with patch.object(gateway_once, "urlopen") as opener:
+            opener.return_value.__enter__.return_value.read.return_value = b"{}"
+
+            result = gateway_once._json_request(
+                "http://gateway.test",
+                "/api/threads",
+                user_id="user-test",
+            )
+
+        request = opener.call_args.args[0]
+        self.assertEqual(result, {})
+        self.assertEqual(
+            request.get_header("X-waje-authenticated-user-id"),
+            "user-test",
+        )
+
     def test_poll_collects_persisted_events_until_user_checkpoint(self):
         node_event = {
             "event": "node_process",
@@ -36,6 +53,7 @@ class GatewayConversationOnceTest(unittest.TestCase):
         ), patch.object(gateway_once, "sleep"):
             result = gateway_once._poll_run_events(
                 base_url="http://gateway.test",
+                user_id="user-test",
                 run_id="run-checkpoint",
                 events_url="/api/runs/run-checkpoint/events",
                 timeout_seconds=10,
@@ -57,6 +75,7 @@ class GatewayConversationOnceTest(unittest.TestCase):
         ), patch.object(gateway_once, "sleep") as sleeper:
             result = gateway_once._poll_run_events(
                 base_url="http://gateway.test",
+                user_id="user-test",
                 run_id="run-checkpoint",
                 events_url="/api/runs/run-checkpoint/events",
                 timeout_seconds=1,
@@ -86,9 +105,72 @@ class GatewayConversationOnceTest(unittest.TestCase):
             gateway_once._gateway_run_id(
                 {
                     "run": {"id": "run-one"},
-                    "resumedRunId": "run-two",
+                    "attemptRunId": "run-two",
                 }
             )
+
+    def test_thread_creation_uses_authenticated_user_header_without_owner_body(self):
+        with patch.object(
+            gateway_once,
+            "_json_request",
+            return_value={"thread": {"id": "thread-one"}},
+        ) as request:
+            thread_id = gateway_once._create_thread(
+                "http://gateway.test",
+                "user-test",
+            )
+
+        self.assertEqual(thread_id, "thread-one")
+        request.assert_called_once_with(
+            "http://gateway.test",
+            "/api/threads",
+            method="POST",
+            user_id="user-test",
+        )
+
+    def test_retry_creates_attempt_without_submitting_clarification_again(self):
+        response = {
+            "attemptRunId": "run-attempt-2",
+            "previousAttemptRunId": "run-attempt-1",
+            "eventsUrl": "/api/runs/run-attempt-2/events",
+        }
+        observation = {
+            "run_id": "run-attempt-2",
+            "events_url": response["eventsUrl"],
+            "checkpoint_reached": True,
+            "terminal_status": "completed",
+            "timed_out": False,
+            "poll_attempts": 1,
+            "events": [],
+        }
+        with patch.object(
+            gateway_once,
+            "_json_request",
+            return_value=response,
+        ) as request, patch.object(
+            gateway_once,
+            "_observe_gateway_response",
+            return_value=observation,
+        ):
+            result = gateway_once._retry_clarification_attempt(
+                base_url="http://gateway.test",
+                user_id="user-test",
+                failed_run_id="run-attempt-1",
+                request_identity="retry-attempt-2",
+                timeout_seconds=30,
+                poll_interval_seconds=0.1,
+            )
+
+        self.assertEqual(result["operation"], "clarification_retry")
+        self.assertEqual(result["previous_attempt_run_id"], "run-attempt-1")
+        request.assert_called_once_with(
+            "http://gateway.test",
+            "/api/runs/run-attempt-1/retry",
+            method="POST",
+            payload={},
+            user_id="user-test",
+            request_identity="retry-attempt-2",
+        )
 
     def test_events_only_writes_checkpoint_artifact_and_uses_no_request_identity(self):
         checkpoint = {
@@ -127,6 +209,7 @@ class GatewayConversationOnceTest(unittest.TestCase):
         self.assertNotIn("request_identity", saved)
         poll.assert_called_once_with(
             base_url="http://gateway.test",
+            user_id="human-led-test",
             run_id="run-checkpoint",
             timeout_seconds=gateway_once.DEFAULT_TIMEOUT_SECONDS,
             poll_interval_seconds=gateway_once.DEFAULT_POLL_INTERVAL_SECONDS,

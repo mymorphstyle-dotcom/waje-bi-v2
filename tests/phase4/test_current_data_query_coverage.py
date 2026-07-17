@@ -150,7 +150,9 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
 
         self.assertEqual(covered_cells, expected_cells)
         paid_dimensions = {
-            "channel", "payment_method", "region", "device_brand",
+            dimension_id
+            for dimension_id in registry.dimension_ids
+            if "paid_order_success" in registry.dimension_sources(dimension_id)
         }
         paid_independent = {
             frozenset(case.dimension_ids)
@@ -195,7 +197,12 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             "allowed_grains": ["day", "window_id"],
         }
 
-        cases = current_data_coverage_cases(RuntimeContractRegistry(payload))
+        registry = RuntimeContractRegistry(payload)
+        cases = current_data_coverage_cases(registry)
+        paid_dimension_count = sum(
+            "paid_order_success" in registry.dimension_sources(dimension_id)
+            for dimension_id in registry.dimension_ids
+        )
 
         paid_amount = [
             case
@@ -218,7 +225,7 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
                 for case in paid_amount
                 if case.query_family == "dimension_contribution_scan"
             }),
-            5,
+            paid_dimension_count,
         )
         self.assertEqual(
             len({
@@ -226,7 +233,7 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
                 for case in paid_amount
                 if case.query_family == "joint_candidate_scan"
             }),
-            31,
+            (2 ** paid_dimension_count) - 1,
         )
 
     def test_dimension_grain_and_query_family_legality_degrade_every_affected_set(self):
@@ -293,13 +300,11 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
                 ):
                     RuntimeContractRegistry(payload)
 
-    def test_dimension_schema_and_permission_boundaries_are_retained_as_typed_gaps(self):
+    def test_dimension_schema_boundary_is_retained_as_typed_gap(self):
         payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
         payload["datasets"]["paid_order_success"]["schema_fields"].remove(
             "channel"
         )
-        payload["dimensions"]["region"]["permission_scope"] = "admin"
-
         cases = current_data_coverage_cases(RuntimeContractRegistry(payload))
         paid_amount = [
             case
@@ -313,12 +318,6 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             and case.gap_type == "source_schema_mismatch"
             for case in paid_amount
         ))
-        self.assertTrue(any(
-            case.dimension_ids == ("region",)
-            and case.gap_type == "permission_blocked"
-            for case in paid_amount
-        ))
-
     def test_new_registered_adapter_pair_is_generated_without_case_code(self):
         payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
         payload["metrics"]["profit"]["source_adapters"] = {

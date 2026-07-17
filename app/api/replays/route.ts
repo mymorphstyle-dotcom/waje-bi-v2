@@ -1,6 +1,8 @@
 import { readdir, readFile, stat as fsStat } from "fs/promises";
 import path from "path";
 import { NextResponse } from "next/server";
+import { assertInternalRouteAvailable } from "../_customerActor";
+import { jsonError } from "../_conversationStore";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -88,8 +90,13 @@ const todos = [
 ];
 
 export async function GET() {
-  const replays = await readAllReplays();
-  return NextResponse.json({ replays });
+  try {
+    assertInternalRouteAvailable();
+    const replays = await readAllReplays();
+    return NextResponse.json({ replays });
+  } catch (error) {
+    return jsonError(error);
+  }
 }
 
 async function readAllReplays() {
@@ -572,7 +579,7 @@ function dataToolEvent(artifact: JsonObject, checkpoints: JsonObject[]) {
     todoId: "data",
     title: "验证数据口径和安全边界",
     completedTitle: "数据口径和安全边界已验证",
-    summary: "查询安全、数据绑定、权限边界均已检查",
+    summary: "查询安全、数据绑定、固定敏感输出与源访问边界均已检查",
     tools: (artifact.admin_audit?.validator_results ?? []).map((result: JsonObject) =>
       tool(validatorLabel(result.validator), result.ok ? "completed" : "blocked", reasonLabel(result.reason), result),
     ),
@@ -1020,7 +1027,7 @@ function validatorLabel(value: unknown) {
     {
       sql_safety: "查询安全检查",
       runtime_binding: "数据绑定检查",
-      permission: "权限边界检查",
+      sensitive_output_policy: "敏感输出安全检查",
     } as Record<string, string>
   )[String(value)] ?? String(value ?? "校验项");
 }

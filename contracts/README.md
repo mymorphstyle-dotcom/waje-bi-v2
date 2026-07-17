@@ -8,7 +8,7 @@ This directory stores reviewable contract source files for WAJE BI v2. These fil
 - `contracts/source-templates/` stores source file templates and mechanical extracts used for contract review.
 - `contracts/sources/` stores draft or accepted source contracts that bind real source fields to WAJE metric semantics.
 - `contracts/metrics/` stores metric identity, formula paths, time semantics, supported grains, and known gaps.
-- `contracts/dimensions/` stores dimension meanings, supported grains, permission notes, and review status.
+- `contracts/dimensions/` stores dimension meanings, supported grains, fixed output-safety rules, and review status.
 - `contracts/events/` stores event and business object definitions such as campaigns, product versions, holidays, payday, policy, weather, and external context.
 - `contracts/assumptions/` stores reviewed static or semi-static assumptions with owner, source, valid window, refresh rule, and wording limit.
 - `contracts/backlog/` stores missing contracts and upgrade paths.
@@ -27,7 +27,6 @@ This state describes what kind of business conclusion a factor/capability/questi
 - `candidate_mechanism`: can support a plausible business mechanism with visible evidence limits.
 - `contextual_evidence`: can provide relevant background or timing context, with limited explanatory weight.
 - `insufficient`: current data, coverage, method, or stability cannot support the intended claim.
-- `permission_limited`: evidence may exist, but access policy limits the claim or execution path.
 - `unsupported_grain`: evidence may support another grain, while the requested grain is not supported.
 - `out_of_scope`: the factor is outside the current product scope.
 
@@ -39,7 +38,6 @@ This state describes why WAJE BI can or cannot execute an analysis path.
 - `evidence_linked`: connected to a source, manual event record, external evidence, or reviewed static assumption.
 - `static_assumption`: represented as a reviewed assumption with owner, source, valid window, refresh rule, and wording limit.
 - `missing_contract`: relevant to the business question, but no usable contract exists yet.
-- `permission_limited`: contract or data exists, but permission policy limits access or output.
 - `unsupported_grain`: contract exists for another grain, but the requested grain is not supported.
 - `out_of_scope_for_now`: explicitly deferred from the current production baseline.
 
@@ -71,7 +69,7 @@ This field constrains final answer language.
 - `candidate`: may state plausible mechanism or candidate explanation with evidence boundary.
 - `context`: may mention background, timing overlap, or supporting context.
 - `insufficient`: must state that evidence is not enough and name the limiting path.
-- `blocked`: must state the permission, contract, grain, or scope block.
+- `blocked`: must state the restricted-output, contract, grain, or scope block.
 
 ## Claim Boundary Rules
 
@@ -79,10 +77,11 @@ This field constrains final answer language.
 - `causal_evidence` requires an approved design or contract that supports causal wording.
 - `static_assumption` can support candidate or context wording. It cannot lift a claim to confirmed cause by itself.
 - `missing_contract` requires a backlog record before the path can appear as a known gap.
-- `permission_limited` must surface in the Answer Package and cannot be hidden by fallback wording.
+- Raw identifiers, restricted detail, and sparse aggregates are governed by one fixed output-safety policy for every normal user. They never create user-specific data capability tiers.
+- Service-account or source-connection authorization may block source availability. It is an operational data-access condition and cannot be converted into a user-role choice.
 - `unsupported_grain` must name the supported grain and the requested grain that is blocked.
 - `out_of_scope_for_now` must include a business reason and launch impact.
 
 ## Review Rule
 
-Business owners approve business meaning, claim boundary, and wording. Data/engineering owners approve contract state, grain support, permissions, and execution feasibility. Runtime execution must read accepted contract sources or their approved mirror, not ad hoc notes.
+Business owners approve business meaning, claim boundary, and wording. Data/engineering owners approve contract state, grain support, source-connection access, fixed output-safety policy, and execution feasibility. Runtime execution must read accepted contract sources or their approved mirror, not ad hoc notes.

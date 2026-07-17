@@ -9,12 +9,12 @@ def diagnose_contract_gaps(
     contract_gaps: Iterable[str | Mapping[str, Any]],
     available_fields: Iterable[str],
     contract_fields: Iterable[str],
-    permission_denied_fields: Iterable[str],
+    restricted_output_fields: Iterable[str],
     unsupported_grains: Iterable[str],
 ) -> tuple[dict[str, Any], ...]:
     available = {str(field) for field in available_fields if field}
     contracted = {str(field) for field in contract_fields if field}
-    denied = {str(field) for field in permission_denied_fields if field}
+    restricted = {str(field) for field in restricted_output_fields if field}
     unsupported = {str(field) for field in unsupported_grains if field}
     diagnostics: list[dict[str, Any]] = []
     seen: set[tuple[str, str, tuple[str, ...]]] = set()
@@ -31,7 +31,7 @@ def diagnose_contract_gaps(
                 fields=fields,
                 available=available,
                 contracted=contracted,
-                denied=denied,
+                restricted=restricted,
                 unsupported=unsupported,
             )
         )
@@ -69,7 +69,7 @@ def _diagnose_gap(
     fields: tuple[str, ...],
     available: set[str],
     contracted: set[str],
-    denied: set[str],
+    restricted: set[str],
     unsupported: set[str],
 ) -> dict[str, Any]:
     if not fields:
@@ -79,26 +79,29 @@ def _diagnose_gap(
             data_presence="field_unknown",
             contract_presence="unknown",
             owner="运行时 owner",
-            repair_path="补充 gap 字段元数据，或检查 schema probe、合同注册和权限绑定是否完整。",
+            repair_path="补充 gap 字段元数据，或检查 schema probe、合同注册和固定输出策略是否完整。",
             claim_effect="degrade_claim_strength",
         )
 
     present = tuple(field for field in fields if field in available)
     covered = tuple(field for field in fields if field in contracted)
-    denied_fields = tuple(field for field in fields if field in denied)
+    restricted_fields = tuple(field for field in fields if field in restricted)
+    present_restricted_fields = tuple(
+        field for field in restricted_fields if field in available
+    )
     unsupported_fields = tuple(field for field in fields if field in unsupported)
     if field_mode == "any":
         data_presence = "field_present" if present else "field_missing"
         contract_presence = "present" if covered else "missing"
 
-        if denied_fields:
+        if present_restricted_fields:
             return _item(
                 gap_id=gap_id,
-                status="permission_blocked",
+                status="restricted_output_blocked",
                 data_presence=data_presence,
                 contract_presence=contract_presence,
-                owner="权限或安全策略 owner",
-                repair_path="使用允许的聚合粒度，或由权限 owner 开放对应聚合输出。",
+                owner="数据输出安全策略 owner",
+                repair_path="仅使用合同允许的聚合字段；原始标识符或受限明细不进入业务答案。",
                 claim_effect="block_sensitive_detail_claim",
             )
         if unsupported_fields:
@@ -137,7 +140,7 @@ def _diagnose_gap(
             data_presence="field_present",
             contract_presence="present",
             owner="运行时 owner",
-            repair_path="检查 gap 元数据、schema probe、合同注册和权限绑定是否一致。",
+            repair_path="检查 gap 元数据、schema probe、合同注册和固定输出策略是否一致。",
             claim_effect="degrade_claim_strength",
         )
 
@@ -148,14 +151,14 @@ def _diagnose_gap(
         else "partial" if covered else "missing"
     )
 
-    if denied_fields:
+    if present_restricted_fields:
         return _item(
             gap_id=gap_id,
-            status="permission_blocked",
+            status="restricted_output_blocked",
             data_presence=data_presence,
             contract_presence=contract_presence,
-            owner="权限或安全策略 owner",
-            repair_path="使用允许的聚合粒度，或由权限 owner 开放对应聚合输出。",
+            owner="数据输出安全策略 owner",
+            repair_path="仅使用合同允许的聚合字段；原始标识符或受限明细不进入业务答案。",
             claim_effect="block_sensitive_detail_claim",
         )
     if unsupported_fields:
@@ -204,7 +207,7 @@ def _diagnose_gap(
         data_presence="field_present",
         contract_presence="present",
         owner="运行时 owner",
-        repair_path="检查 gap 元数据、schema probe、合同注册和权限绑定是否一致。",
+        repair_path="检查 gap 元数据、schema probe、合同注册和固定输出策略是否一致。",
         claim_effect="degrade_claim_strength",
     )
 

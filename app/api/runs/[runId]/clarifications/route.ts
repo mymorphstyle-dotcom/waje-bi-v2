@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { runAgentCore } from "../../../_agentCore";
+import { resolveCustomerActor } from "../../../_customerActor";
 import {
   acquireRunDispatchLease,
-  claimClarificationResume,
+  claimClarificationResolutionAttempt,
   completeOwnedRunDispatch,
   failOwnedRunDispatch,
-  filterAgentCoreForRole,
   gatewayError,
   jsonError,
-  resolveGatewayRole,
+  projectAgentCoreForCustomer,
   runDispatchRequestIdentity,
 } from "../../../_conversationStore";
 
@@ -45,42 +45,45 @@ export async function POST(request: NextRequest, context: RouteContext) {
   let dispatchOwnerId = "";
   let dispatchLeaseEpoch = 0;
   try {
-    const roleDecision = resolveGatewayRole(
-      process.env.WAJE_GATEWAY_ROLE,
-      process.env.NODE_ENV,
-    );
-    const clarificationPayload = {
-      runId,
-      answer,
-      selectedOptionId,
-      source: "user" as const,
-    };
+    const actorId = resolveCustomerActor(request);
     const requestIdentity = runDispatchRequestIdentity(request, body);
-    const claim = await claimClarificationResume({
+    const claim = await claimClarificationResolutionAttempt({
       sourceRunId: runId,
       requestIdentity,
       answer,
-      selectedOptionId: clarificationPayload.selectedOptionId,
-      source: clarificationPayload.source,
-      runtimePermissionScope: roleDecision.runtimePermissionScope,
+      selectedOptionId,
+      source: "user",
+      actorId,
     });
-    claimedRunId = claim.resumedRunId;
+    claimedRunId = claim.attemptRunId;
+    const clarificationPayload = {
+      sourceRunId: claim.sourceRunId,
+      resolutionId: claim.resolutionId,
+      attemptRunId: claim.attemptRunId,
+      answer,
+      selectedOptionId,
+      source: "user" as const,
+      retryAttempt: false,
+    };
     const clarification = {
       ...clarificationPayload,
       threadId: claim.threadId,
       status: "accepted",
       requestIdentity: claim.requestIdentity,
-      resumedRunId: claim.resumedRunId,
+      attemptNumber: claim.attemptNumber,
     };
     const dispatch = await acquireRunDispatchLease({
-      runId: claim.resumedRunId,
+      runId: claim.attemptRunId,
       requestIdentity: claim.requestIdentity,
     });
     if (!dispatch.acquired || !dispatch.ownerId) {
       return NextResponse.json({
         sourceRunId: runId,
-        resumedRunId: claim.resumedRunId,
-        topicId: null,
+        resolutionId: claim.resolutionId,
+        attemptRunId: claim.attemptRunId,
+        previousAttemptRunId: claim.previousAttemptRunId,
+        attemptNumber: claim.attemptNumber,
+        topicId: claim.topicId,
         status: dispatch.run.status,
         answerPackagePreview: null,
         message: claim.message,
@@ -90,7 +93,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
             ? "dispatch_in_progress"
             : "replayed",
         },
-        eventsUrl: `/api/runs/${claim.resumedRunId}/events`,
+        eventsUrl: `/api/runs/${claim.attemptRunId}/events`,
       });
     }
     dispatchAcquired = true;
@@ -98,11 +101,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
     dispatchLeaseEpoch = dispatch.leaseEpoch;
     const agentCore = await runAgentCore(
       claim.threadId,
-      claim.resumedRunId,
+      claim.attemptRunId,
       answer,
-      roleDecision.displayRole,
+      actorId,
       {
-        runtimePermissionScope: roleDecision.runtimePermissionScope,
         clarification: clarificationPayload,
         runDispatch: {
           ownerId: dispatch.ownerId,
@@ -113,7 +115,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
     );
     if (agentCore.error) {
       await failOwnedRunDispatch({
-        runId: claim.resumedRunId,
+        runId: claim.attemptRunId,
         ownerId: dispatch.ownerId,
         leaseEpoch: dispatch.leaseEpoch,
         failureReason: agentCore.error,
@@ -123,9 +125,9 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const rawResult = agentCore.result && typeof agentCore.result === "object"
       ? agentCore.result as Record<string, unknown>
       : {};
-    if (rawResult.run_id !== claim.resumedRunId) {
+    if (rawResult.run_id !== claim.attemptRunId) {
       await failOwnedRunDispatch({
-        runId: claim.resumedRunId,
+        runId: claim.attemptRunId,
         ownerId: dispatch.ownerId,
         leaseEpoch: dispatch.leaseEpoch,
         failureReason: "agent_core_run_id_mismatch",
@@ -142,14 +144,13 @@ export async function POST(request: NextRequest, context: RouteContext) {
       throw gatewayError("agent_core_output_status_invalid");
     }
     await completeOwnedRunDispatch({
-      runId: claim.resumedRunId,
+      runId: claim.attemptRunId,
       ownerId: dispatch.ownerId,
       leaseEpoch: dispatch.leaseEpoch,
       runStatus: rawStatus,
     });
-    const visibleAgentCore = filterAgentCoreForRole(
+    const visibleAgentCore = projectAgentCoreForCustomer(
       agentCore as unknown as Record<string, unknown>,
-      roleDecision.displayRole,
     );
     const visibleResult = visibleAgentCore.result && typeof visibleAgentCore.result === "object"
       ? visibleAgentCore.result as Record<string, unknown>
@@ -157,14 +158,17 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const answerPackagePreview = visibleResult.answer_package ?? null;
     return NextResponse.json({
       sourceRunId: runId,
-      resumedRunId: claim.resumedRunId,
+      resolutionId: claim.resolutionId,
+      attemptRunId: claim.attemptRunId,
+      previousAttemptRunId: claim.previousAttemptRunId,
+      attemptNumber: claim.attemptNumber,
       topicId: visibleResult.topic_id ?? null,
       status: visibleAgentCore.status,
       answerPackagePreview,
       message: claim.message,
       clarification,
       agentCore: visibleAgentCore,
-      eventsUrl: `/api/runs/${claim.resumedRunId}/events`,
+      eventsUrl: `/api/runs/${claim.attemptRunId}/events`,
     });
   } catch (error) {
     if (claimedRunId && dispatchAcquired) {

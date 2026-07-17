@@ -17,7 +17,6 @@ COVERAGE_STATES = (
     "degraded",
     "source_unbound",
     "contract_partial",
-    "permission_blocked",
     "snapshot_unavailable_as_of",
 )
 
@@ -27,11 +26,10 @@ def audit_existing_data_coverage(
     snapshot_records: Sequence[Any],
     release_resolver: Any,
     as_of: datetime,
-    permission_scope: str,
 ) -> dict[str, Any]:
     if type(registry) is not RuntimeContractRegistry:
         raise ValueError("coverage_registry_invalid")
-    if as_of.tzinfo is None or not permission_scope:
+    if as_of.tzinfo is None:
         raise ValueError("coverage_context_invalid")
     snapshots = tuple(_snapshot(item) for item in snapshot_records)
     _validate_release_authority(snapshots, release_resolver)
@@ -43,7 +41,7 @@ def audit_existing_data_coverage(
         datasets = _datasets(registry, contract)
         for dataset_id in datasets:
             state, selected = _state(
-                registry, cases, contract, dataset_id, snapshots, as_of, permission_scope
+                registry, cases, contract, dataset_id, snapshots, as_of
             )
             owner = _owner(state, dataset_id)
             cells[f"{capability_id}:{dataset_id}"] = {
@@ -70,14 +68,13 @@ def audit_existing_data_coverage(
                 "state": state,
                 "owner": owner,
                 "impact": _impact(state, capability_id, dataset_id),
-                "next_action": _next_action(state, dataset_id, permission_scope),
+                "next_action": _next_action(state, dataset_id),
             }
     ordered = {key: cells[key] for key in sorted(cells)}
     summary = {state: sum(cell["state"] == state for cell in ordered.values()) for state in COVERAGE_STATES}
     return {
-        "schema_version": "existing-data-coverage-v1",
+        "schema_version": "existing-data-coverage-v2",
         "as_of": as_of.isoformat(),
-        "permission_scope": permission_scope,
         "registry_contract_version": registry.contract_version,
         "states": list(COVERAGE_STATES),
         "summary": summary,
@@ -112,17 +109,14 @@ def _validate_release_authority(snapshots: tuple[DatasetSnapshot, ...], resolver
             raise ValueError(f"coverage_release_membership:{snapshot.dataset_id}")
 
 
-def _state(registry, cases, contract, dataset_id, snapshots, as_of, permission_scope):
+def _state(registry, cases, contract, dataset_id, snapshots, as_of):
     candidates = tuple(item for item in snapshots if item.dataset_id == dataset_id and item.status == "active")
     if not candidates:
         return "source_unbound", ()
     available = tuple(item for item in candidates if _loaded_at(item) <= as_of.astimezone(timezone.utc))
     if not available:
         return "snapshot_unavailable_as_of", candidates
-    permitted = tuple(item for item in available if permission_scope in item.permission_scopes)
-    if not permitted:
-        return "permission_blocked", available
-    selected = (max(permitted, key=lambda item: (_loaded_at(item), item.snapshot_ref)),)
+    selected = (max(available, key=lambda item: (_loaded_at(item), item.snapshot_ref)),)
     if selected[0].evidence_state != "claim_ready":
         return "degraded", selected
     query_families = set(str(item) for item in contract.get("query_families", ()))
@@ -189,8 +183,6 @@ def _capability_families(registry):
 def _owner(state, dataset_id):
     if state == "contract_partial":
         return "analysis_contract_owner"
-    if state == "permission_blocked":
-        return "data_access_owner"
     if state in {"source_unbound", "snapshot_unavailable_as_of"}:
         return "data_operations_owner"
     if state == "degraded":
@@ -207,13 +199,12 @@ def _impact(state, capability, dataset):
     return "current capability path is executable" if state == "executable" else f"{capability} cannot publish at its configured claim ceiling from {dataset}"
 
 
-def _next_action(state, dataset, permission_scope):
+def _next_action(state, dataset):
     actions = {
         "executable": "retain release and contract monitoring",
         "degraded": f"review {dataset} evidence readiness",
         "source_unbound": f"publish an authoritative {dataset} snapshot release",
         "contract_partial": f"complete the reviewed query contract for {dataset}",
-        "permission_blocked": f"grant or select a release visible to {permission_scope}",
         "snapshot_unavailable_as_of": (
             f"select an existing {dataset} release with loaded_at at or before the audit as_of; "
             "if current coverage is intended, advance the audit as_of to the current authority visible time; "

@@ -405,8 +405,12 @@ def _result_candidate_publication_bundle(
 class PostgresConversationStore:
     def __init__(self, connection: Any) -> None:
         self.connection = connection
+        self._actor_id = "system"
         self._active_run_dispatches: dict[str, tuple[str, int]] = {}
         self._run_dispatch_heartbeat_stops: dict[str, threading.Event] = {}
+
+    def set_actor_id(self, actor_id: str) -> None:
+        self._actor_id = actor_id or "system"
 
     @classmethod
     def from_env(cls) -> "PostgresConversationStore":
@@ -2252,365 +2256,220 @@ class PostgresConversationStore:
             }
         )
 
-    def claim_clarification_dispatch(
+    def resolve_clarification_attempt_authority(
         self,
         *,
         source_run_id: str,
-        resumed_run_id: str,
+        attempt_run_id: str,
         thread_id: str,
-        dispatch_owner_id: str,
-    ) -> dict[str, Any]:
-        from bi_agent.runtime.evidence_authority import (
-            EvidenceIntegrityError,
-            canonical_value,
-        )
-
-        if not all(
-            isinstance(value, str) and value.strip()
-            for value in (
-                source_run_id,
-                resumed_run_id,
-                thread_id,
-                dispatch_owner_id,
-            )
-        ):
-            raise EvidenceIntegrityError(
-                "clarification_dispatch_claim_invalid"
-            )
-        try:
-            row = self._fetchone(
-                """
-                /* clarification_dispatch_owner_lock */
-                SELECT c.source_run_id, c.resumed_run_id, c.thread_id,
-                       c.dispatch_state, c.dispatch_owner_id,
-                       r.status, r.request
-                FROM waje_runtime.clarification_resume_claims c
-                JOIN waje_runtime.analysis_runs r
-                  ON r.run_id = c.resumed_run_id
-                WHERE c.source_run_id = %(source_run_id)s
-                  AND c.resumed_run_id = %(resumed_run_id)s
-                FOR UPDATE OF c, r
-                """,
-                {
-                    "source_run_id": source_run_id,
-                    "resumed_run_id": resumed_run_id,
-                },
-            )
-            if row is None:
-                raise EvidenceIntegrityError(
-                    "clarification_dispatch_claim_missing"
-                )
-            resolved = {
-                "source_run_id": str(_field(row, "source_run_id", 0) or ""),
-                "resumed_run_id": str(_field(row, "resumed_run_id", 1) or ""),
-                "thread_id": str(_field(row, "thread_id", 2) or ""),
-                "dispatch_state": str(
-                    _field(row, "dispatch_state", 3) or ""
-                ),
-                "dispatch_owner_id": str(
-                    _field(row, "dispatch_owner_id", 4) or ""
-                ),
-                "run_status": str(_field(row, "status", 5) or ""),
-                "request": _json_value(_field(row, "request", 6)),
-            }
-            if (
-                resolved["source_run_id"] != source_run_id
-                or resolved["resumed_run_id"] != resumed_run_id
-                or resolved["thread_id"] != thread_id
-                or resolved["dispatch_state"] != "leased"
-                or resolved["dispatch_owner_id"] != dispatch_owner_id
-                or resolved["run_status"] != "queued"
-                or not isinstance(resolved["request"], Mapping)
-            ):
-                raise EvidenceIntegrityError(
-                    "clarification_dispatch_claim_rejected"
-                )
-            updated_run = self._execute(
-                """
-                /* clarification_dispatch_run_claim_cas */
-                UPDATE waje_runtime.analysis_runs
-                SET status = 'running', updated_at = now()
-                WHERE run_id = %(resumed_run_id)s
-                  AND thread_id = %(thread_id)s
-                  AND status = 'queued'
-                RETURNING status
-                """,
-                {
-                    "resumed_run_id": resumed_run_id,
-                    "thread_id": thread_id,
-                },
-                commit=False,
-            ).fetchone()
-            updated_dispatch = self._execute(
-                """
-                /* clarification_dispatch_owner_consume_cas */
-                UPDATE waje_runtime.clarification_resume_claims
-                SET dispatch_state = 'dispatched',
-                    dispatch_lease_expires_at = NULL,
-                    dispatched_at = now()
-                WHERE source_run_id = %(source_run_id)s
-                  AND resumed_run_id = %(resumed_run_id)s
-                  AND dispatch_state = 'leased'
-                  AND dispatch_owner_id = %(dispatch_owner_id)s
-                RETURNING dispatch_state
-                """,
-                {
-                    "source_run_id": source_run_id,
-                    "resumed_run_id": resumed_run_id,
-                    "dispatch_owner_id": dispatch_owner_id,
-                },
-                commit=False,
-            ).fetchone()
-            if updated_run is None or updated_dispatch is None:
-                raise EvidenceIntegrityError(
-                    "clarification_dispatch_claim_rejected"
-                )
-            self._audit(
-                "run_status_changed",
-                thread_id=thread_id,
-                run_id=resumed_run_id,
-                ref=resumed_run_id,
-                payload={
-                    "status": "running",
-                    "dispatch_owner_id": dispatch_owner_id,
-                },
-                commit=False,
-            )
-            self.connection.commit()
-            return canonical_value(
-                {
-                    "source_run_id": source_run_id,
-                    "resumed_run_id": resumed_run_id,
-                    "thread_id": thread_id,
-                    "dispatch_owner_id": dispatch_owner_id,
-                    "status": "running",
-                }
-            )
-        except Exception:
-            self.connection.rollback()
-            raise
-
-    def resolve_clarification_resume_claim(
-        self,
-        *,
-        source_run_id: str,
-        resumed_run_id: str,
-        thread_id: str,
+        owner_id: str,
         answer: str,
         selected_option_id: str | None,
         source: str,
     ) -> dict[str, Any]:
-        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
-
-        row = self._fetchone(
-            """
-            /* clarification_resume_claim_explicit_mapping */
-            SELECT source_run_id, resumed_run_id, thread_id, request_identity,
-                   submission ->> 'answer' AS answer,
-                   submission ->> 'selectedOptionId' AS selected_option_id,
-                   submission ->> 'source' AS source
-            FROM waje_runtime.clarification_resume_claims
-            WHERE source_run_id = %(source_run_id)s
-              AND resumed_run_id = %(resumed_run_id)s
-            """,
-            {
-                "source_run_id": source_run_id,
-                "resumed_run_id": resumed_run_id,
-            },
-        )
-        if row is None:
-            raise EvidenceIntegrityError("clarification_resume_claim_missing")
-        resolved = {
-            "source_run_id": str(_field(row, "source_run_id", 0) or ""),
-            "resumed_run_id": str(_field(row, "resumed_run_id", 1) or ""),
-            "thread_id": str(_field(row, "thread_id", 2) or ""),
-            "request_identity": str(
-                _field(row, "request_identity", 3) or ""
-            ),
-            "answer": str(_field(row, "answer", 4) or ""),
-            "selected_option_id": (
-                str(_field(row, "selected_option_id", 5))
-                if _field(row, "selected_option_id", 5) is not None
-                else None
-            ),
-            "source": str(_field(row, "source", 6) or ""),
-        }
-        if (
-            resolved["source_run_id"] != source_run_id
-            or resolved["resumed_run_id"] != resumed_run_id
-            or resolved["thread_id"] != thread_id
-            or resolved["answer"] != answer.strip()
-            or resolved["selected_option_id"] != selected_option_id
-            or resolved["source"] != source
-            or not resolved["request_identity"]
-        ):
-            raise EvidenceIntegrityError("clarification_resume_claim_conflict")
-        return resolved
-
-    def record_clarification_outcome(
-        self,
-        *,
-        source_run_id: str,
-        thread_id: str,
-        topic_id: str,
-        choice: Mapping[str, Any],
-    ) -> str:
         from bi_agent.conversation.clarification_authority import (
-            build_clarification_outcome,
-        )
-        from bi_agent.runtime.evidence_authority import (
-            EvidenceIntegrityError,
-            canonical_value,
-        )
-
-        owner = self._fetchone(
-            """
-            /* clarification_outcome_owner_lock */
-            SELECT thread_id, topic_id, status
-            FROM waje_runtime.analysis_runs
-            WHERE run_id = %(source_run_id)s
-            FOR UPDATE
-            """,
-            {"source_run_id": source_run_id},
-        )
-        if owner is None:
-            self.connection.rollback()
-            raise EvidenceIntegrityError("clarification_outcome_source_run_missing")
-        if str(_field(owner, "status", 2) or "") != "waiting_for_clarification":
-            self.connection.rollback()
-            raise EvidenceIntegrityError("clarification_outcome_source_run_stale")
-        if (
-            str(_field(owner, "thread_id", 0) or "") != thread_id
-            or str(_field(owner, "topic_id", 1) or "") != topic_id
-        ):
-            self.connection.rollback()
-            raise EvidenceIntegrityError("clarification_outcome_owner_mismatch")
-
-        payload = build_clarification_outcome(
-            source_run_id=source_run_id,
-            thread_id=thread_id,
-            topic_id=topic_id,
-            choice=choice,
-        )
-        existing = self._fetchall(
-            """
-            /* clarification_outcome_existing */
-            SELECT ref, payload, run_id, thread_id, topic_id
-            FROM waje_runtime.audit_events
-            WHERE event_type = 'clarification_outcome_recorded'
-              AND run_id = %(source_run_id)s
-            ORDER BY created_at
-            """,
-            {"source_run_id": source_run_id},
-        )
-        if existing:
-            if len(existing) != 1:
-                self.connection.rollback()
-                raise EvidenceIntegrityError("clarification_outcome_ambiguous")
-            event = existing[0]
-            if (
-                str(_field(event, "ref", 0) or "") == payload["outcome_ref"]
-                and canonical_value(
-                    _json_value(_field(event, "payload", 1)) or {}
-                )
-                == canonical_value(payload)
-                and str(_field(event, "run_id", 2) or "") == source_run_id
-                and str(_field(event, "thread_id", 3) or "") == thread_id
-                and str(_field(event, "topic_id", 4) or "") == topic_id
-            ):
-                self.connection.commit()
-                return str(payload["outcome_ref"])
-            self.connection.rollback()
-            raise EvidenceIntegrityError("clarification_outcome_conflict")
-        self._audit(
-            "clarification_outcome_recorded",
-            thread_id=thread_id,
-            topic_id=topic_id,
-            run_id=source_run_id,
-            ref=payload["outcome_ref"],
-            payload=payload,
-        )
-        return str(payload["outcome_ref"])
-
-    def resolve_clarification_resume_authority(
-        self,
-        *,
-        source_run_id: str,
-        thread_id: str,
-        topic_id: str,
-        choice: Mapping[str, Any],
-        outcome_ref: str,
-    ) -> dict[str, Any]:
-        from bi_agent.conversation.clarification_authority import (
-            validate_clarification_resume_authority,
+            validate_clarification_resolution_attempt,
         )
         from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
 
         try:
-            rows = self._fetchall(
+            row = self._fetchone(
                 """
-            /* clarification_resume_authority_all_outcomes */
-            SELECT ac.analysis_contract_id,
-                   ac.run_id AS analysis_run_id,
-                   ac.contract_signature AS stored_contract_signature,
-                   ac.payload AS contract_payload,
-                   r.status AS run_status,
-                   r.thread_id AS run_thread_id,
-                   r.topic_id AS run_topic_id,
-                   r.request AS run_request,
-                   e.payload AS outcome_payload,
-                   e.ref AS outcome_ref,
-                   e.run_id AS outcome_run_id,
-                   e.thread_id AS outcome_thread_id,
-                   e.topic_id AS outcome_topic_id
-            FROM waje_runtime.analysis_runs r
-            JOIN waje_runtime.analysis_contracts ac
-              ON ac.run_id = r.run_id
-             AND ac.analysis_contract_id = %(analysis_contract_id)s
-            JOIN waje_runtime.audit_events e
-              ON e.event_type = 'clarification_outcome_recorded'
-             AND e.run_id = r.run_id
-            WHERE r.run_id = %(source_run_id)s
-            FOR UPDATE OF r
+                /* clarification_attempt_authority_lock */
+                SELECT
+                  resolution.resolution_id,
+                  resolution.source_run_id,
+                  resolution.thread_id,
+                  resolution.topic_id,
+                  resolution.owner_id,
+                  resolution.submission,
+                  resolution.accepted_choice,
+                  resolution.message_id,
+                  resolution.source_request_digest,
+                  resolution.resolution_digest,
+                  resolution.status AS resolution_status,
+                  attempt.attempt_run_id,
+                  attempt.previous_attempt_run_id,
+                  attempt.attempt_number,
+                  attempt.request_identity AS attempt_request_identity,
+                  attempt.request_digest AS attempt_request_digest,
+                  previous_attempt.resolution_id AS previous_resolution_id,
+                  previous_attempt.attempt_number AS previous_attempt_number,
+                  previous_run.status AS previous_attempt_status,
+                  source_run.status AS source_run_status,
+                  source_run.request AS source_run_request,
+                  source_run.thread_id AS source_run_thread_id,
+                  source_run.topic_id AS source_run_topic_id,
+                  source_thread.owner_id AS source_thread_owner_id,
+                  attempt_run.status AS attempt_run_status,
+                  attempt_run.request AS attempt_run_request,
+                  attempt_run.thread_id AS attempt_run_thread_id,
+                  attempt_run.topic_id AS attempt_run_topic_id,
+                  dispatch.producer_kind,
+                  dispatch.scope_ref,
+                  dispatch.request_identity AS dispatch_request_identity,
+                  dispatch.request_digest AS dispatch_request_digest,
+                  dispatch.request_payload,
+                  dispatch.thread_id AS dispatch_thread_id,
+                  dispatch.run_id AS dispatch_run_id,
+                  dispatch.dispatch_state,
+                  COALESCE(message.text, resolution.submission ->> 'answer')
+                    AS dispatch_text,
+                  resolution_message.thread_id AS resolution_message_thread_id,
+                  resolution_message.role AS resolution_message_role,
+                  resolution_message.text AS resolution_message_text,
+                  resolution.accepted_at
+                FROM waje_runtime.clarification_resolutions resolution
+                JOIN waje_runtime.clarification_execution_attempts attempt
+                  ON attempt.resolution_id = resolution.resolution_id
+                JOIN waje_runtime.analysis_runs source_run
+                  ON source_run.run_id = resolution.source_run_id
+                JOIN waje_runtime.investigation_threads source_thread
+                  ON source_thread.thread_id = resolution.thread_id
+                JOIN waje_runtime.analysis_runs attempt_run
+                  ON attempt_run.run_id = attempt.attempt_run_id
+                JOIN waje_runtime.conversation_messages resolution_message
+                  ON resolution_message.message_id = resolution.message_id
+                JOIN waje_runtime.run_dispatches dispatch
+                  ON dispatch.run_id = attempt.attempt_run_id
+                LEFT JOIN waje_runtime.conversation_messages message
+                  ON message.message_id = dispatch.message_id
+                LEFT JOIN waje_runtime.clarification_execution_attempts
+                  previous_attempt
+                  ON previous_attempt.attempt_run_id =
+                     attempt.previous_attempt_run_id
+                LEFT JOIN waje_runtime.analysis_runs previous_run
+                  ON previous_run.run_id = attempt.previous_attempt_run_id
+                WHERE resolution.source_run_id = %(source_run_id)s
+                  AND attempt.attempt_run_id = %(attempt_run_id)s
+                FOR UPDATE OF resolution
                 """,
                 {
                     "source_run_id": source_run_id,
-                    "analysis_contract_id": f"analysis:{source_run_id}:1",
+                    "attempt_run_id": attempt_run_id,
                 },
             )
-            if not rows:
-                raise EvidenceIntegrityError("clarification_resume_authority_missing")
-            if len(rows) != 1:
+            if row is None:
                 raise EvidenceIntegrityError(
-                    "clarification_resume_outcome_ambiguous"
+                    "clarification_attempt_authority_missing"
                 )
-            row = rows[0]
-            if str(_field(row, "outcome_ref", 9) or "") != outcome_ref:
-                raise EvidenceIntegrityError(
-                    "clarification_resume_outcome_missing"
-                )
-            run_request = _json_value(_field(row, "run_request", 7)) or {}
-            resolved = validate_clarification_resume_authority(
-                source_run_id=source_run_id,
-                thread_id=thread_id,
-                topic_id=topic_id,
-                choice=choice,
-                outcome_ref=outcome_ref,
-                analysis_contract=_json_value(_field(row, "contract_payload", 3)) or {},
-                stored_contract_signature=str(_field(row, "stored_contract_signature", 2) or ""),
-                analysis_run_id=str(_field(row, "analysis_run_id", 1) or ""),
-                run_status=str(_field(row, "run_status", 4) or ""),
-                run_thread_id=str(_field(row, "run_thread_id", 5) or ""),
-                run_topic_id=str(_field(row, "run_topic_id", 6) or ""),
-                clarification_outcome=_json_value(_field(row, "outcome_payload", 8)) or {},
-                outcome_run_id=str(_field(row, "outcome_run_id", 10) or ""),
-                outcome_thread_id=str(_field(row, "outcome_thread_id", 11) or ""),
-                outcome_topic_id=str(_field(row, "outcome_topic_id", 12) or ""),
-                material_authority=(
-                    run_request.get("material_authority")
-                    if isinstance(run_request, Mapping)
-                    else None
+            resolution = {
+                "resolution_id": str(_field(row, "resolution_id", 0) or ""),
+                "source_run_id": str(_field(row, "source_run_id", 1) or ""),
+                "thread_id": str(_field(row, "thread_id", 2) or ""),
+                "topic_id": str(_field(row, "topic_id", 3) or ""),
+                "owner_id": str(_field(row, "owner_id", 4) or ""),
+                "submission": _json_value(_field(row, "submission", 5)),
+                "accepted_choice": _json_value(
+                    _field(row, "accepted_choice", 6)
                 ),
+                "message_id": str(_field(row, "message_id", 7) or ""),
+                "source_request_digest": str(
+                    _field(row, "source_request_digest", 8) or ""
+                ),
+                "resolution_digest": str(
+                    _field(row, "resolution_digest", 9) or ""
+                ),
+                "status": str(
+                    _field(row, "resolution_status", 10) or ""
+                ),
+                "message_thread_id": str(
+                    _field(row, "resolution_message_thread_id", 37) or ""
+                ),
+                "message_role": str(
+                    _field(row, "resolution_message_role", 38) or ""
+                ),
+                "message_text": str(
+                    _field(row, "resolution_message_text", 39) or ""
+                ),
+                "accepted_at": _field(row, "accepted_at", 40),
+            }
+            attempt = {
+                "attempt_run_id": str(
+                    _field(row, "attempt_run_id", 11) or ""
+                ),
+                "previous_attempt_run_id": _field(
+                    row, "previous_attempt_run_id", 12
+                ),
+                "attempt_number": int(
+                    _field(row, "attempt_number", 13) or 0
+                ),
+                "request_identity": str(
+                    _field(row, "attempt_request_identity", 14) or ""
+                ),
+                "request_digest": str(
+                    _field(row, "attempt_request_digest", 15) or ""
+                ),
+                "resolution_id": resolution["resolution_id"],
+                "previous_resolution_id": _field(
+                    row, "previous_resolution_id", 16
+                ),
+                "previous_attempt_number": _field(
+                    row, "previous_attempt_number", 17
+                ),
+                "previous_attempt_status": _field(
+                    row, "previous_attempt_status", 18
+                ),
+            }
+            source_run = {
+                "run_id": resolution["source_run_id"],
+                "status": str(_field(row, "source_run_status", 19) or ""),
+                "request": _json_value(_field(row, "source_run_request", 20)),
+                "thread_id": str(
+                    _field(row, "source_run_thread_id", 21) or ""
+                ),
+                "topic_id": str(
+                    _field(row, "source_run_topic_id", 22) or ""
+                ),
+                "owner_id": str(
+                    _field(row, "source_thread_owner_id", 23) or ""
+                ),
+            }
+            attempt_run = {
+                "run_id": attempt["attempt_run_id"],
+                "status": str(_field(row, "attempt_run_status", 24) or ""),
+                "request": _json_value(_field(row, "attempt_run_request", 25)),
+                "thread_id": str(
+                    _field(row, "attempt_run_thread_id", 26) or ""
+                ),
+                "topic_id": str(
+                    _field(row, "attempt_run_topic_id", 27) or ""
+                ),
+            }
+            dispatch = {
+                "producer_kind": str(_field(row, "producer_kind", 28) or ""),
+                "scope_ref": str(_field(row, "scope_ref", 29) or ""),
+                "request_identity": str(
+                    _field(row, "dispatch_request_identity", 30) or ""
+                ),
+                "request_digest": str(
+                    _field(row, "dispatch_request_digest", 31) or ""
+                ),
+                "request_payload": _json_value(
+                    _field(row, "request_payload", 32)
+                ),
+                "thread_id": str(
+                    _field(row, "dispatch_thread_id", 33) or ""
+                ),
+                "run_id": str(_field(row, "dispatch_run_id", 34) or ""),
+                "dispatch_state": str(
+                    _field(row, "dispatch_state", 35) or ""
+                ),
+                "text": str(_field(row, "dispatch_text", 36) or ""),
+            }
+            resolved = validate_clarification_resolution_attempt(
+                resolution=resolution,
+                attempt=attempt,
+                source_run=source_run,
+                attempt_run=attempt_run,
+                dispatch=dispatch,
+                source_run_id=source_run_id,
+                attempt_run_id=attempt_run_id,
+                thread_id=thread_id,
+                owner_id=owner_id,
+                answer=answer,
+                selected_option_id=selected_option_id,
+                source=source,
             )
             self.connection.commit()
             return resolved
@@ -3145,7 +3004,6 @@ class PostgresConversationStore:
                 topic_id=str(topic_id),
                 follow_up_context=_follow_up_context(package),
                 snapshot_id=str(package.get("snapshot_id") or package.get("snapshot") or "unknown"),
-                permission_scope=str(package.get("permission_scope") or package.get("visibility") or "analyst"),
                 run_id=run_id,
                 payload=package,
             )
@@ -3593,30 +3451,35 @@ class PostgresConversationStore:
                 """
                 /* runtime_publication_postcheck */
                 SELECT p.bundle_digest,
-                       count(DISTINCT q.query_contract_id) AS query_contract_count,
-                       count(DISTINCT qr.result_ref) AS query_run_count,
-                       count(DISTINCT qe.record_ref) AS query_authority_count,
-                       count(DISTINCT c.record_ref) AS completeness_count,
-                       count(DISTINCT b.record_ref) AS binding_count,
-                       count(DISTINCT e.evidence_ref) AS evidence_count,
-                       count(DISTINCT apa.artifact_ref) AS answer_package_artifact_count,
-                       count(DISTINCT vc.claim_ref) AS verified_claim_count,
-                       count(DISTINCT l.claim_ref || E'\\x1f' || l.evidence_ref) AS claim_link_count
+                       (SELECT count(*) FROM waje_runtime.query_contracts q
+                         WHERE q.run_id = p.run_id) AS query_contract_count,
+                       (SELECT count(*) FROM waje_runtime.query_runs qr
+                         WHERE qr.run_id = p.run_id) AS query_run_count,
+                       (SELECT count(*) FROM waje_runtime.query_execution_authority qe
+                         WHERE qe.run_id = p.run_id) AS query_authority_count,
+                       (SELECT count(*) FROM waje_runtime.query_completeness_reports c
+                         WHERE c.run_id = p.run_id) AS completeness_count,
+                       (SELECT count(*) FROM waje_runtime.capability_binding_authority b
+                         WHERE b.run_id = p.run_id) AS binding_count,
+                       (SELECT count(*) FROM waje_runtime.evidence_manifests e
+                         WHERE e.run_id = p.run_id) AS evidence_count,
+                       (SELECT count(*) FROM waje_runtime.answer_package_artifacts apa
+                         WHERE apa.run_id = p.run_id) AS answer_package_artifact_count,
+                       (SELECT count(*) FROM waje_runtime.verified_claims vc
+                         WHERE vc.run_id = p.run_id) AS verified_claim_count,
+                       (SELECT count(*)
+                          FROM waje_runtime.claim_evidence_links l
+                          JOIN waje_runtime.verified_claims vc
+                            ON vc.claim_ref = l.claim_ref
+                         WHERE vc.run_id = p.run_id) AS claim_link_count
                 FROM waje_runtime.analysis_runtime_publications p
-                JOIN waje_runtime.analysis_contracts a
-                  ON a.analysis_contract_id = p.analysis_contract_id
-                 AND a.run_id = p.run_id
-                LEFT JOIN waje_runtime.query_contracts q ON q.run_id = p.run_id
-                LEFT JOIN waje_runtime.query_runs qr ON qr.run_id = p.run_id
-                LEFT JOIN waje_runtime.query_execution_authority qe ON qe.run_id = p.run_id
-                LEFT JOIN waje_runtime.query_completeness_reports c ON c.run_id = p.run_id
-                LEFT JOIN waje_runtime.capability_binding_authority b ON b.run_id = p.run_id
-                LEFT JOIN waje_runtime.evidence_manifests e ON e.run_id = p.run_id
-                LEFT JOIN waje_runtime.answer_package_artifacts apa ON apa.run_id = p.run_id
-                LEFT JOIN waje_runtime.verified_claims vc ON vc.run_id = p.run_id
-                LEFT JOIN waje_runtime.claim_evidence_links l ON l.claim_ref = vc.claim_ref
                 WHERE p.run_id = %(run_id)s
-                GROUP BY p.bundle_digest
+                  AND EXISTS (
+                    SELECT 1
+                    FROM waje_runtime.analysis_contracts a
+                    WHERE a.analysis_contract_id = p.analysis_contract_id
+                      AND a.run_id = p.run_id
+                  )
                 """,
                 {
                     "run_id": run_id,
@@ -3841,13 +3704,13 @@ class PostgresConversationStore:
                 """
                 INSERT INTO waje_runtime.dataset_snapshots(
                   snapshot_ref, dataset_id, physical_table, watermark, schema_fingerprint,
-                  schema_fields, contract_ref, permission_scopes, loaded_at, status,
+                  schema_fields, contract_ref, loaded_at, status,
                   logical_snapshot_id, load_revision, evidence_state,
                   reconciliation_status, reconciliation_ref, payload
                 ) VALUES (
                   %(snapshot_ref)s, %(dataset_id)s, %(physical_table)s, %(watermark)s,
                   %(schema_fingerprint)s, %(schema_fields)s::jsonb, %(contract_ref)s,
-                  %(permission_scopes)s::jsonb, %(loaded_at)s, %(status)s,
+                  %(loaded_at)s, %(status)s,
                   %(logical_snapshot_id)s, %(load_revision)s, %(evidence_state)s,
                   %(reconciliation_status)s, %(reconciliation_ref)s, %(payload)s::jsonb
                 )
@@ -3858,7 +3721,6 @@ class PostgresConversationStore:
                   schema_fingerprint = EXCLUDED.schema_fingerprint,
                   schema_fields = EXCLUDED.schema_fields,
                   contract_ref = EXCLUDED.contract_ref,
-                  permission_scopes = EXCLUDED.permission_scopes,
                   loaded_at = EXCLUDED.loaded_at,
                   status = EXCLUDED.status,
                   logical_snapshot_id = EXCLUDED.logical_snapshot_id,
@@ -3878,7 +3740,6 @@ class PostgresConversationStore:
                     ),
                     "reconciliation_ref": payload.get("reconciliation_ref", ""),
                     "schema_fields": _json(payload.get("schema_fields", [])),
-                    "permission_scopes": _json(payload.get("permission_scopes", [])),
                     "payload": _json(payload),
                 },
                 commit=False,
@@ -4014,7 +3875,6 @@ class PostgresConversationStore:
                  AND s.schema_fingerprint = e.payload->>'schema_fingerprint'
                  AND s.schema_fields = e.payload->'schema_fields'
                  AND s.contract_ref = e.payload->>'contract_ref'
-                 AND s.permission_scopes = e.payload->'permission_scopes'
                  AND s.loaded_at = (e.payload->>'loaded_at')::timestamptz
                  AND s.status = e.payload->>'status'
                  AND s.logical_snapshot_id = e.payload->>'logical_snapshot_id'
@@ -4052,20 +3912,19 @@ class PostgresConversationStore:
             ),
             "reconciliation_ref": payload.get("reconciliation_ref", ""),
             "schema_fields": _json(payload.get("schema_fields", [])),
-            "permission_scopes": _json(payload.get("permission_scopes", [])),
             "payload": _json(payload),
         }
         self._execute(
             """
             INSERT INTO waje_runtime.dataset_snapshots(
               snapshot_ref, dataset_id, physical_table, watermark, schema_fingerprint,
-              schema_fields, contract_ref, permission_scopes, loaded_at, status,
+              schema_fields, contract_ref, loaded_at, status,
               logical_snapshot_id, load_revision, evidence_state,
               reconciliation_status, reconciliation_ref, payload
             ) VALUES (
               %(snapshot_ref)s, %(dataset_id)s, %(physical_table)s, %(watermark)s,
               %(schema_fingerprint)s, %(schema_fields)s::jsonb, %(contract_ref)s,
-              %(permission_scopes)s::jsonb, %(loaded_at)s, %(status)s,
+              %(loaded_at)s, %(status)s,
               %(logical_snapshot_id)s, %(load_revision)s, %(evidence_state)s,
               %(reconciliation_status)s, %(reconciliation_ref)s, %(payload)s::jsonb
             )
@@ -4077,7 +3936,6 @@ class PostgresConversationStore:
               AND waje_runtime.dataset_snapshots.schema_fingerprint = EXCLUDED.schema_fingerprint
               AND waje_runtime.dataset_snapshots.schema_fields = EXCLUDED.schema_fields
               AND waje_runtime.dataset_snapshots.contract_ref = EXCLUDED.contract_ref
-              AND waje_runtime.dataset_snapshots.permission_scopes = EXCLUDED.permission_scopes
               AND waje_runtime.dataset_snapshots.loaded_at = EXCLUDED.loaded_at
               AND waje_runtime.dataset_snapshots.status = EXCLUDED.status
               AND waje_runtime.dataset_snapshots.logical_snapshot_id = EXCLUDED.logical_snapshot_id
@@ -4141,7 +3999,6 @@ class PostgresConversationStore:
                        'schema_fingerprint', s.schema_fingerprint,
                        'schema_fields', s.schema_fields,
                        'contract_ref', s.contract_ref,
-                       'permission_scopes', s.permission_scopes,
                        'loaded_at', to_char(s.loaded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'),
                        'evidence_state', s.evidence_state,
                        'reconciliation_status', s.reconciliation_status,
@@ -4261,7 +4118,6 @@ class PostgresConversationStore:
         result_ref: str,
         snapshot_id: str,
         contract_version: str,
-        permission_scope: str,
         semantic_scope: str,
         payload: Mapping[str, Any] | None = None,
     ) -> None:
@@ -4274,7 +4130,6 @@ class PostgresConversationStore:
             candidate_payload["result_ref"] != result_ref
             or candidate_payload["runtime_snapshot_id"] != snapshot_id
             or candidate_payload["runtime_contract_version"] != contract_version
-            or candidate_payload["permission_scope"] != permission_scope
             or candidate_payload["semantic_scope_signature"] != semantic_scope
         ):
             raise EvidenceIntegrityError("result_ref_candidate_projection_mismatch")
@@ -4283,7 +4138,6 @@ class PostgresConversationStore:
             "topic_id": topic_id,
             "snapshot_id": snapshot_id,
             "contract_version": contract_version,
-            "permission_scope": permission_scope,
             "semantic_scope": semantic_scope,
             "payload": _json(candidate_payload),
         }
@@ -4293,19 +4147,17 @@ class PostgresConversationStore:
                 /* result_ref_immutable_write */
                 INSERT INTO waje_runtime.result_refs AS current(
                   result_ref, topic_id, snapshot_id, contract_version,
-                  permission_scope, semantic_scope, payload
+                  semantic_scope, payload
                 )
                 VALUES (
                   %(result_ref)s, %(topic_id)s, %(snapshot_id)s,
-                  %(contract_version)s, %(permission_scope)s,
-                  %(semantic_scope)s, %(payload)s::jsonb
+                  %(contract_version)s, %(semantic_scope)s, %(payload)s::jsonb
                 )
                 ON CONFLICT (result_ref) DO UPDATE
                 SET result_ref = current.result_ref
                 WHERE current.topic_id = EXCLUDED.topic_id
                   AND current.snapshot_id = EXCLUDED.snapshot_id
                   AND current.contract_version = EXCLUDED.contract_version
-                  AND current.permission_scope = EXCLUDED.permission_scope
                   AND current.semantic_scope = EXCLUDED.semantic_scope
                   AND current.payload = EXCLUDED.payload
                 RETURNING result_ref
@@ -4331,7 +4183,7 @@ class PostgresConversationStore:
         rows = self._fetchall(
             """
             SELECT topic_id, result_ref, snapshot_id, contract_version,
-                   permission_scope, semantic_scope, payload
+                   semantic_scope, payload
             FROM waje_runtime.result_refs
             WHERE topic_id = %(topic_id)s
             ORDER BY created_at DESC
@@ -4344,9 +4196,8 @@ class PostgresConversationStore:
                 result_ref=_field(row, "result_ref", 1),
                 snapshot_id=_field(row, "snapshot_id", 2),
                 contract_version=_field(row, "contract_version", 3),
-                permission_scope=_field(row, "permission_scope", 4),
-                semantic_scope=_field(row, "semantic_scope", 5),
-                payload=_json_value(_field(row, "payload", 6)) or {},
+                semantic_scope=_field(row, "semantic_scope", 4),
+                payload=_json_value(_field(row, "payload", 5)) or {},
             )
             for row in rows
         )
@@ -4375,7 +4226,6 @@ class PostgresConversationStore:
                    rr.result_ref,
                    rr.snapshot_id,
                    rr.contract_version,
-                   rr.permission_scope,
                    rr.semantic_scope,
                    rr.payload AS result_ref_payload,
                    r.run_id AS source_run_id,
@@ -4404,17 +4254,17 @@ class PostgresConversationStore:
         if row is None:
             raise EvidenceIntegrityError("result_candidate_authority_missing")
         payload = validate_result_reuse_candidate(
-            _json_value(_field(row, "result_ref_payload", 6)) or {}
+            _json_value(_field(row, "result_ref_payload", 5)) or {}
         )
-        contract = _json_value(_field(row, "analysis_contract", 12)) or {}
+        contract = _json_value(_field(row, "analysis_contract", 11)) or {}
         stored_signature = str(
-            _field(row, "stored_analysis_contract_signature", 13) or ""
+            _field(row, "stored_analysis_contract_signature", 12) or ""
         )
         publication_payload = _json_value(
-            _field(row, "source_publication_payload", 14)
+            _field(row, "source_publication_payload", 13)
         ) or {}
         publication_digest = str(
-            _field(row, "source_publication_digest", 15) or ""
+            _field(row, "source_publication_digest", 14) or ""
         )
         if not isinstance(publication_payload, Mapping) or len(
             publication_digest
@@ -4426,7 +4276,7 @@ class PostgresConversationStore:
             payload,
             publication_payload,
         )
-        source_run_id = str(_field(row, "source_run_id", 7) or "")
+        source_run_id = str(_field(row, "source_run_id", 6) or "")
         ordered_refs = validated_publication_index["ordered_refs"]
         publication_bundle = _result_candidate_publication_bundle(
             run_id=source_run_id,
@@ -4444,9 +4294,9 @@ class PostgresConversationStore:
             raise EvidenceIntegrityError(
                 "result_candidate_source_publication_mismatch:digest"
             )
-        source_request = _json_value(_field(row, "source_run_request", 11)) or {}
-        run_thread_id = str(_field(row, "run_thread_id", 8) or "")
-        run_topic_id = str(_field(row, "run_topic_id", 9) or "")
+        source_request = _json_value(_field(row, "source_run_request", 10)) or {}
+        run_thread_id = str(_field(row, "run_thread_id", 7) or "")
+        run_topic_id = str(_field(row, "run_topic_id", 8) or "")
         try:
             completed_authority = self.resolve_completed_material_authority(
                 source_run_id=source_run_id,
@@ -4483,9 +4333,7 @@ class PostgresConversationStore:
             != payload["runtime_snapshot_id"]
             or str(_field(row, "contract_version", 3) or "")
             != payload["runtime_contract_version"]
-            or str(_field(row, "permission_scope", 4) or "")
-            != payload["permission_scope"]
-            or str(_field(row, "semantic_scope", 5) or "")
+            or str(_field(row, "semantic_scope", 4) or "")
             != payload["semantic_scope_signature"]
             or not isinstance(context_manifest, Mapping)
             or str(context_manifest.get("snapshot_version") or "")
@@ -4504,8 +4352,7 @@ class PostgresConversationStore:
             result_ref=str(_field(row, "result_ref", 1) or ""),
             snapshot_id=str(_field(row, "snapshot_id", 2) or ""),
             contract_version=str(_field(row, "contract_version", 3) or ""),
-            permission_scope=str(_field(row, "permission_scope", 4) or ""),
-            semantic_scope=str(_field(row, "semantic_scope", 5) or ""),
+            semantic_scope=str(_field(row, "semantic_scope", 4) or ""),
             payload=payload,
         )
         return canonical_value(
@@ -4514,7 +4361,7 @@ class PostgresConversationStore:
                 "source_run_id": payload["source_run_id"],
                 "run_thread_id": run_thread_id,
                 "run_topic_id": run_topic_id,
-                "run_status": str(_field(row, "run_status", 10) or ""),
+                "run_status": str(_field(row, "run_status", 9) or ""),
                 "source_run_request": source_request,
                 "analysis_contract": contract,
                 "stored_analysis_contract_signature": stored_signature,
@@ -4529,23 +4376,21 @@ class PostgresConversationStore:
         topic_id: str,
         follow_up_context: str,
         snapshot_id: str,
-        permission_scope: str,
         run_id: Optional[str] = None,
         payload: Optional[dict[str, Any]] = None,
     ) -> None:
         self._execute(
             """
             INSERT INTO waje_runtime.investigation_artifacts(
-              artifact_id, thread_id, topic_id, run_id, snapshot_id, permission_scope, follow_up_context, payload
+              artifact_id, thread_id, topic_id, run_id, snapshot_id, follow_up_context, payload
             )
             SELECT
               %(artifact_id)s, thread_id, topic_id, %(run_id)s, %(snapshot_id)s,
-              %(permission_scope)s, %(follow_up_context)s, %(payload)s::jsonb
+              %(follow_up_context)s, %(payload)s::jsonb
             FROM waje_runtime.conversation_topics
             WHERE topic_id = %(topic_id)s
             ON CONFLICT (artifact_id) DO UPDATE
             SET snapshot_id = EXCLUDED.snapshot_id,
-                permission_scope = EXCLUDED.permission_scope,
                 follow_up_context = EXCLUDED.follow_up_context,
                 payload = EXCLUDED.payload
             """,
@@ -4554,7 +4399,6 @@ class PostgresConversationStore:
                 "topic_id": topic_id,
                 "run_id": run_id,
                 "snapshot_id": snapshot_id,
-                "permission_scope": permission_scope,
                 "follow_up_context": follow_up_context,
                 "payload": _json(payload or {}),
             },
@@ -4566,7 +4410,6 @@ class PostgresConversationStore:
             payload={
                 "follow_up_context": follow_up_context,
                 "snapshot_id": snapshot_id,
-                "permission_scope": permission_scope,
             },
         )
 
@@ -4575,7 +4418,7 @@ class PostgresConversationStore:
             return None
         row = self._fetchone(
             """
-            SELECT artifact_id, topic_id, follow_up_context, snapshot_id, permission_scope
+            SELECT artifact_id, topic_id, follow_up_context, snapshot_id
             FROM waje_runtime.investigation_artifacts
             WHERE topic_id = %(topic_id)s
             ORDER BY created_at DESC
@@ -4590,26 +4433,23 @@ class PostgresConversationStore:
             topic_id=_field(row, "topic_id", 1),
             follow_up_context=_field(row, "follow_up_context", 2),
             snapshot_id=_field(row, "snapshot_id", 3),
-            permission_scope=_field(row, "permission_scope", 4),
         )
 
     def add_memory_item(
         self,
         *,
-        owner_scope: str,
+        owner_id: str,
         text: str,
         source_ref: str,
-        visibility: str,
         status: str,
-        refresh_rule: str = "refresh_on_contract_or_scope_change",
+        refresh_rule: str = "refresh_on_contract_or_owner_change",
         revocation_path: str = "memory_proposal_revoke_or_admin_action",
     ) -> MemoryItem:
         item = MemoryItem(
             memory_id=f"memory-{uuid4().hex[:12]}",
-            owner_scope=owner_scope,
+            owner_id=owner_id,
             text=text,
             source_ref=source_ref,
-            visibility=visibility,
             status=status,
             refresh_rule=refresh_rule,
             revocation_path=revocation_path,
@@ -4617,43 +4457,42 @@ class PostgresConversationStore:
         self._execute(
             """
             INSERT INTO waje_runtime.memory_items(
-              memory_id, owner_scope, text, source_ref, visibility, status,
+              memory_id, owner_id, text, source_ref, status,
               ttl, confidence, refresh_rule, revocation_path
             )
             VALUES (
-              %(memory_id)s, %(owner_scope)s, %(text)s, %(source_ref)s,
-              %(visibility)s, %(status)s, %(ttl)s, %(confidence)s,
+              %(memory_id)s, %(owner_id)s, %(text)s, %(source_ref)s,
+              %(status)s, %(ttl)s, %(confidence)s,
               %(refresh_rule)s, %(revocation_path)s
             )
             """,
             item.__dict__,
         )
-        self._audit("memory_item_recorded", ref=item.memory_id, payload={"owner_scope": owner_scope})
+        self._audit("memory_item_recorded", ref=item.memory_id, payload={"owner_id": owner_id})
         return item
 
-    def long_term_memory(self, owner_scope: str) -> tuple[MemoryItem, ...]:
+    def long_term_memory(self, owner_id: str) -> tuple[MemoryItem, ...]:
         rows = self._fetchall(
             """
-            SELECT memory_id, owner_scope, text, source_ref, visibility, status,
+            SELECT memory_id, owner_id, text, source_ref, status,
                    ttl, confidence, refresh_rule, revocation_path
             FROM waje_runtime.memory_items
-            WHERE owner_scope = %(owner_scope)s AND status = 'accepted' AND revoked_at IS NULL
+            WHERE owner_id = %(owner_id)s AND status = 'accepted' AND revoked_at IS NULL
             ORDER BY created_at DESC
             """,
-            {"owner_scope": owner_scope},
+            {"owner_id": owner_id},
         )
         return tuple(
             MemoryItem(
                 memory_id=_field(row, "memory_id", 0),
-                owner_scope=_field(row, "owner_scope", 1),
+                owner_id=_field(row, "owner_id", 1),
                 text=_field(row, "text", 2),
                 source_ref=_field(row, "source_ref", 3),
-                visibility=_field(row, "visibility", 4),
-                status=_field(row, "status", 5),
-                ttl=_field(row, "ttl", 6),
-                confidence=_field(row, "confidence", 7),
-                refresh_rule=_field(row, "refresh_rule", 8),
-                revocation_path=_field(row, "revocation_path", 9),
+                status=_field(row, "status", 4),
+                ttl=_field(row, "ttl", 5),
+                confidence=_field(row, "confidence", 6),
+                refresh_rule=_field(row, "refresh_rule", 7),
+                revocation_path=_field(row, "revocation_path", 8),
             )
             for row in rows
         )
@@ -4662,11 +4501,11 @@ class PostgresConversationStore:
         self._execute(
             """
             INSERT INTO waje_runtime.memory_proposals(
-              proposal_id, thread_id, text, source_ref, owner_scope, visibility, status
+              proposal_id, thread_id, text, source_ref, owner_id, status
             )
             VALUES (
               %(proposal_id)s, %(thread_id)s, %(text)s, %(source_ref)s,
-              %(owner_scope)s, %(visibility)s, %(status)s
+              %(owner_id)s, %(status)s
             )
             ON CONFLICT (proposal_id) DO UPDATE
             SET status = EXCLUDED.status
@@ -4677,7 +4516,7 @@ class PostgresConversationStore:
             "memory_proposal_recorded",
             thread_id=proposal.thread_id,
             ref=proposal.proposal_id,
-            payload={"owner_scope": proposal.owner_scope},
+            payload={"owner_id": proposal.owner_id},
         )
 
     def accept_memory_proposal(self, proposal_id: str) -> Optional[MemoryItem]:
@@ -4714,7 +4553,7 @@ class PostgresConversationStore:
         self,
         event_type: str,
         *,
-        actor_id: str = "",
+        actor_id: str | None = None,
         thread_id: Optional[str] = None,
         topic_id: Optional[str] = None,
         run_id: Optional[str] = None,
@@ -4734,7 +4573,7 @@ class PostgresConversationStore:
             """,
             {
                 "event_type": event_type,
-                "actor_id": actor_id,
+                "actor_id": actor_id or self._actor_id,
                 "thread_id": thread_id,
                 "topic_id": topic_id,
                 "run_id": run_id,
@@ -4800,9 +4639,7 @@ def _context_manifest_from_row(row: Any) -> ContextManifest:
                 source_ref=item.get("source_ref") or item.get("ref", ""),
                 summary=item.get("summary", ""),
                 can_support_claims=bool(item.get("can_support_claims")),
-                visibility=item.get("visibility", "analyst"),
                 reason=item.get("reason", ""),
-                permission_scope=item.get("permission_scope", ""),
                 source_version=item.get("source_version", ""),
                 expired=bool(item.get("expired")),
                 claim_use=item.get("claim_use", "context_only"),
@@ -4813,7 +4650,6 @@ def _context_manifest_from_row(row: Any) -> ContextManifest:
         sources=list(payload.get("sources") or []),
         claim_use_policy=dict(payload.get("claim_use_policy") or {}),
         snapshot_version=payload.get("snapshot_version"),
-        permission_context=dict(payload.get("permission_context") or {}),
         analysis_assets=list(payload.get("analysis_assets") or []),
         accepted_assumptions=list(payload.get("accepted_assumptions") or []),
         contract_versions=dict(payload.get("contract_versions") or {}),

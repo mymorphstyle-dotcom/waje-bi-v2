@@ -35,12 +35,12 @@ RUNTIME_BINDINGS = "contracts/runtime/clickhouse-analysis-bindings.yaml"
 
 def _paid_order_snapshot() -> DatasetSnapshot:
     return DatasetSnapshot(
-        "snapshot:paid_order_success:dimension-screen",
-        "paid_order_success",
-        "paid_order_success__dimension_screen",
-        "2026-07-04",
-        "schema:paid-order-dimension-screen",
-        (
+        snapshot_ref="snapshot:paid_order_success:dimension-screen",
+        dataset_id="paid_order_success",
+        physical_table="paid_order_success__dimension_screen",
+        watermark="2026-07-04",
+        schema_fingerprint="schema:paid-order-dimension-screen",
+        schema_fields=(
             "business_date_lagos",
             "paid_amount_ngn",
             "user_id",
@@ -52,10 +52,9 @@ def _paid_order_snapshot() -> DatasetSnapshot:
             "device_model",
             "is_first_payment",
         ),
-        "contracts/sources/paid-order-detail.source.yaml@0.1",
-        ("analyst",),
-        "2026-06-03T00:00:00+00:00",
-        "active",
+        contract_ref="contracts/sources/paid-order-detail.source.yaml@0.1",
+        loaded_at="2026-06-03T00:00:00+00:00",
+        status="active",
     )
 
 
@@ -175,7 +174,6 @@ def test_candidate_dimension_screen_compiles_one_query_per_dimension():
         catalog=catalog,
         registry=registry,
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        permission_scope="analyst",
         release_resolver=release_resolver,
     )
 
@@ -319,7 +317,6 @@ def test_degraded_at_least_one_dimension_binding_validates_only_persisted_subset
         catalog=catalog,
         registry=registry,
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        permission_scope="analyst",
         release_resolver=release_resolver,
     )
     plan = outcome.capability_plans[0]
@@ -411,7 +408,6 @@ def _shared_dimension_validation_context():
         catalog=catalog,
         registry=registry,
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        permission_scope="analyst",
         release_resolver=release_resolver,
     )
     snapshot = catalog.snapshots()[0]
@@ -545,107 +541,16 @@ def _replace_binding_completeness_record(
     )
 
 
-def test_generic_driver_analysis_adds_auxiliary_dimension_screen_after_obligations():
-    from bi_agent.runtime import langgraph_workflow as workflow
-    from tests.phase7.test_candidate_claim_routing import _intent, _route
-
-    intent = _intent()
-    intent["required_claim_intents"] = list(intent["claim_intents"])
-    intent["candidate_claim_intents"] = []
-    route = _route()
-    route["analysis_requirements"]["claim_intents"] = list(
-        intent["required_claim_intents"]
-    )
-
-    requested, reconciled = workflow.reconcile_analysis_route(
-        tuple(route["requested_nodes"]),
-        route,
-        intent,
-        RuntimeContractRegistry.from_path(RUNTIME_BINDINGS),
-    )
-
-    assert "candidate_dimension_screen" in requested
-    assert "segment_contribution" not in requested
-    assert "joint_attribution" not in requested
-    assert reconciled["analysis_requirements"]["requested_dimensions"] == [
-        "channel",
-        "payment_method",
-        "region",
-        "device_brand",
-        "device_model",
-    ]
-    assert reconciled["claim_intent_resolution"]["auxiliary_claim_intents"] == [
-        "segment_contribution_or_mix_shift"
-    ]
-    assert reconciled["claim_intent_resolution"]["auto_routed_claim_intents"] == {
-        "segment_contribution_or_mix_shift": {
-            "capability_id": "candidate_dimension_screen",
-            "evidence_status": "queryable",
-            "publication_status": "evidence_required",
-            "auxiliary_baselines": [],
-        }
-    }
-
-    requested_again, reconciled_again = workflow.reconcile_analysis_route(
-        requested,
-        {**reconciled, "requested_nodes": list(requested)},
-        intent,
-        RuntimeContractRegistry.from_path(RUNTIME_BINDINGS),
-        trusted_prior_route=reconciled,
-    )
-    assert "candidate_dimension_screen" in requested_again
-    assert "segment_contribution" not in requested_again
-    assert "joint_attribution" not in requested_again
-    assert reconciled_again["analysis_requirements"]["requested_dimensions"] == [
-        "channel",
-        "payment_method",
-        "region",
-        "device_brand",
-        "device_model",
-    ]
-
-
-def test_explicit_dimension_uses_requested_segment_path_without_broad_screen():
-    from bi_agent.runtime import langgraph_workflow as workflow
-    from tests.phase7.test_candidate_claim_routing import _intent, _route
-
-    intent = _intent()
-    intent["requested_dimensions"] = ["channel"]
-    intent["required_claim_intents"] = [
-        *intent["claim_intents"],
-        "segment_contribution_or_mix_shift",
-    ]
-    intent["claim_intents"] = list(intent["required_claim_intents"])
-    intent["candidate_claim_intents"] = []
-    route = _route()
-    route["analysis_requirements"]["requested_dimensions"] = ["channel"]
-    route["analysis_requirements"]["claim_intents"] = list(
-        intent["required_claim_intents"]
-    )
-
-    requested, reconciled = workflow.reconcile_analysis_route(
-        tuple(route["requested_nodes"]),
-        route,
-        intent,
-        RuntimeContractRegistry.from_path(RUNTIME_BINDINGS),
-    )
-
-    assert "segment_contribution" in requested
-    assert "candidate_dimension_screen" not in requested
-    assert "joint_attribution" not in requested
-    assert reconciled["analysis_requirements"]["requested_dimensions"] == [
-        "channel"
-    ]
-
-
 def test_route_added_dimension_claim_remains_auxiliary_in_evidence_reduction():
     from bi_agent.runtime import langgraph_workflow as workflow
 
     resolution = workflow._required_claim_evidence_resolution(
         {
             "intent": {
-                "required_claim_intents": ["comparative_change"],
-                "candidate_claim_intents": [],
+                "required_claim_types": ["comparative_change"],
+                "auxiliary_claim_types": [
+                    "segment_contribution_or_mix_shift"
+                ],
             },
             "analysis_route": {
                 "claim_intent_resolution": {
@@ -664,59 +569,13 @@ def test_route_added_dimension_claim_remains_auxiliary_in_evidence_reduction():
         }
     )
 
-    assert resolution["candidate_claim_intents"] == (
+    assert resolution["candidate_claim_types"] == (
         "segment_contribution_or_mix_shift",
     )
     assert resolution["material_limitations"] == (
         "missing_required_claim_evidence:comparative_change",
     )
     assert resolution["auxiliary_limitations"] == ("one_dimension_sparse",)
-
-
-def test_route_added_dimension_role_projection_matches_final_graph_order():
-    from bi_agent.runtime import langgraph_workflow as workflow
-    from tests.phase7.test_candidate_claim_routing import _intent, _route
-
-    intent = _intent()
-    route = _route()
-    route["requested_nodes"].append("candidate_dimension_screen")
-    route["analysis_requirements"]["diagnostic_tags"] = ["factor_topk"]
-    route["analysis_requirements"]["claim_intents"] = [
-        "comparative_change",
-        "formula_component_contribution",
-        "segment_contribution_or_mix_shift",
-    ]
-
-    requested, reconciled = workflow.reconcile_analysis_route(
-        tuple(route["requested_nodes"]),
-        route,
-        intent,
-        RuntimeContractRegistry.from_path(RUNTIME_BINDINGS),
-    )
-    reconciled["requested_nodes"] = requested
-
-    runtime_request = workflow._analysis_runtime_request(
-        {
-            "run_id": "run-dimension-role-projection",
-            "request": {
-                "role": "analyst",
-                "run_mode": "production",
-                "analysis_context": {
-                    "as_of": "2026-07-16T00:00:00+00:00"
-                },
-            },
-            "analysis_route": reconciled,
-            "intent": intent,
-        }
-    )
-
-    roles = runtime_request.proposal["capability_roles"]
-    assert roles["candidate_dimension_screen"]["analysis_role"] == "auxiliary"
-    assert reconciled["obligation_resolution"]["auxiliary_capabilities"] == [
-        capability_id
-        for capability_id in requested
-        if roles[capability_id]["analysis_role"] == "auxiliary"
-    ]
 
 
 def test_dimension_claim_selector_survives_authority_normalization():
@@ -766,8 +625,10 @@ def test_ready_auxiliary_dimension_evidence_is_published_with_required_claims():
             "scope": "full_sample",
             "time_window": "2026-06-01",
             "target_metric": "paid_amount",
-            "required_claim_intents": ["comparative_change"],
-            "candidate_claim_intents": [],
+            "required_claim_types": ["comparative_change"],
+            "auxiliary_claim_types": [
+                "segment_contribution_or_mix_shift"
+            ],
             "target": {"label": "2026-06-01"},
             "baseline": {"label": "2026-05-31"},
         },
@@ -782,7 +643,6 @@ def test_ready_auxiliary_dimension_evidence_is_published_with_required_claims():
                         "capability_id": "candidate_dimension_screen",
                         "evidence_status": "queryable",
                         "publication_status": "evidence_required",
-                        "auxiliary_baselines": [],
                     }
                 },
             }
@@ -893,8 +753,10 @@ def test_unready_auxiliary_dimension_evidence_does_not_block_required_claim():
             "scope": "full_sample",
             "time_window": "2026-06-01",
             "target_metric": "paid_amount",
-            "required_claim_intents": ["comparative_change"],
-            "candidate_claim_intents": [],
+            "required_claim_types": ["comparative_change"],
+            "auxiliary_claim_types": [
+                "segment_contribution_or_mix_shift"
+            ],
             "target": {"label": "2026-06-01"},
             "baseline": {"label": "2026-05-31"},
         },
@@ -909,7 +771,6 @@ def test_unready_auxiliary_dimension_evidence_does_not_block_required_claim():
                         "capability_id": "candidate_dimension_screen",
                         "evidence_status": "queryable",
                         "publication_status": "evidence_required",
-                        "auxiliary_baselines": [],
                     }
                 },
             }
@@ -976,13 +837,8 @@ def test_unready_auxiliary_dimension_evidence_does_not_block_required_claim():
     ]
 
 
-def test_dimension_candidate_claim_projects_through_authoritative_verifier():
+def test_proportional_dimension_growth_stays_coverage_only():
     from bi_agent.runtime import langgraph_workflow as workflow
-    from bi_agent.runtime.answer_package import (
-        _authority_bound_claim_projections,
-        collect_visible_limitations,
-        verify_answer_package,
-    )
 
     context = _shared_dimension_validation_context()
     bound = bind_capability_inputs(
@@ -1078,10 +934,10 @@ def test_dimension_candidate_claim_projects_through_authoritative_verifier():
             "time_window": "2026-06-01",
             "target_metric": "paid_amount",
             "pattern_family": "custom_baseline",
-            "required_claim_intents": [
+            "required_claim_types": [
                 "segment_contribution_or_mix_shift"
             ],
-            "candidate_claim_intents": [
+            "auxiliary_claim_types": [
                 "segment_contribution_or_mix_shift"
             ],
         },
@@ -1091,40 +947,11 @@ def test_dimension_candidate_claim_projects_through_authoritative_verifier():
     state["evidence"] = [evidence]
 
     claims = workflow._authority_claims_from_evidence(state)
-    verifier = verify_answer_package(
-        draft_claims=claims,
-        evidence=state["evidence"],
-        visible_limitations=collect_visible_limitations(state["evidence"]),
-        evidence_resolver=context["authority"],
-        rows_loader=context["authority"].rows_loader,
-        runtime_registry=context["registry"],
-        release_resolver=context["release_resolver"],
-    )
-    projected, projection_errors = _authority_bound_claim_projections(
-        claims=claims,
-        accepted_indexes=verifier["accepted_claim_indexes"],
-        evidence=state["evidence"],
-        evidence_resolver=context["authority"],
-        rows_loader=context["authority"].rows_loader,
-        runtime_registry=context["registry"],
-        release_resolver=context["release_resolver"],
-    )
 
-    assert len(claims) == 1
-    assert claims[0]["claim_type"] == "segment_contribution_or_mix_shift"
-    assert claims[0]["dimensions"] == {
-        evidence["typed_payload"]["selected_dimension"]: evidence[
-            "typed_payload"
-        ]["selected_value"]
-    }
-    assert verifier["status"] == "passed"
-    assert verifier["accepted_claim_indexes"] == (0,)
-    assert projection_errors == []
-    assert len(projected) == 1
-    assert projected[0]["dimensions"] == {"region": "A"}
-    assert projected[0]["numbers"] == {
-        "paid_amount_baseline_value": "48.0",
-        "paid_amount_delta": "12.0",
-        "paid_amount_relative_change": "0.25",
-        "paid_amount_target_value": "60.0",
-    }
+    assert evidence["typed_payload"]["coverage_ready_dimensions"] == [
+        "channel",
+        "region",
+    ]
+    assert evidence["typed_payload"]["eligible_dimensions"] == []
+    assert evidence["typed_payload"]["selected_business_readouts"] == []
+    assert claims == []

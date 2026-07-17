@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { runAgentCore } from "../../../_agentCore";
+import { resolveCustomerActor } from "../../../_customerActor";
 import {
   acquireRunDispatchLease,
   addUserMessage,
@@ -8,10 +9,9 @@ import {
   completeOwnedRunDispatch,
   createMemoryProposal,
   failOwnedRunDispatch,
-  filterAgentCoreForRole,
   gatewayError,
   jsonError,
-  resolveGatewayRole,
+  projectAgentCoreForCustomer,
   runDispatchRequestIdentity,
 } from "../../../_conversationStore";
 
@@ -25,10 +25,6 @@ export async function POST(request: NextRequest, context: RouteContext) {
   const body = await request.json().catch(() => ({})) as Record<string, unknown>;
   const text = typeof body.message === "string" ? body.message : "";
   if (!text.trim()) return NextResponse.json({ error: "message_required" }, { status: 400 });
-  const roleDecision = resolveGatewayRole(
-    process.env.WAJE_GATEWAY_ROLE,
-    process.env.NODE_ENV,
-  );
   let ownedDispatch: {
     runId: string;
     ownerId: string;
@@ -36,10 +32,11 @@ export async function POST(request: NextRequest, context: RouteContext) {
   } | null = null;
 
   try {
+    const actorId = resolveCustomerActor(request);
     const recordsMemory = text.includes("记住") || text.includes("以后默认");
     if (recordsMemory) {
-      const message = await addUserMessage(threadId, text);
-      const memoryProposal = await createMemoryProposal(threadId, text);
+      const message = await addUserMessage(threadId, text, actorId);
+      const memoryProposal = await createMemoryProposal(threadId, text, actorId);
       return NextResponse.json(
         {
           message,
@@ -58,9 +55,9 @@ export async function POST(request: NextRequest, context: RouteContext) {
       requestIdentity,
       threadId,
       text,
+      actorId,
       requestPayload: {
         message: text.trim(),
-        runtimePermissionScope: roleDecision.runtimePermissionScope,
       },
     });
     const dispatch = await acquireRunDispatchLease({
@@ -93,9 +90,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
       threadId,
       claim.run.id,
       text,
-      roleDecision.displayRole,
+      actorId,
       {
-        runtimePermissionScope: roleDecision.runtimePermissionScope,
         runDispatch: {
           ownerId: dispatchOwnerId,
           leaseEpoch: dispatch.leaseEpoch,
@@ -109,10 +105,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
       },
     );
     const visibleAgentCore = agentCore
-      ? filterAgentCoreForRole(
-          agentCore as unknown as Record<string, unknown>,
-          roleDecision.displayRole,
-        )
+      ? projectAgentCoreForCustomer(agentCore as unknown as Record<string, unknown>)
       : null;
     let effectiveRun = claim.run;
     const agentResult = agentCore?.result && typeof agentCore.result === "object"

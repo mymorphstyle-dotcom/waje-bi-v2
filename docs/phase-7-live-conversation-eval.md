@@ -14,7 +14,7 @@ business case passed.
 Normal questions use the current server time and the active release visible at
 execution time. The user does not select an authority mode. A business date can
 be queried only when the current authority chain resolves a valid release,
-snapshot, permission scope, contract, and complete query result for that date.
+snapshot, source connection, contract, fixed customer-safe output path, and complete query result for that date.
 
 An explicit historical `as_of` is an operator audit input. It is excluded from
 normal user acceptance and must not be silently injected by an eval file or test
@@ -51,6 +51,7 @@ run reaches `completed`, `completed_without_workflow`,
 ```bash
 python3 tools/phase7/run_gateway_conversation_once.py \
   --base-url http://127.0.0.1:3000 \
+  --user-id human-led-test \
   --question '2026年6月1日付费金额为什么上涨？主要由哪些指标变化导致？' \
   --output artifacts/phase7/human-led-q1/case-b/first-turn.json
 ```
@@ -62,6 +63,7 @@ checkpoint in the same way:
 ```bash
 python3 tools/phase7/run_gateway_conversation_once.py \
   --base-url http://127.0.0.1:3000 \
+  --user-id human-led-test \
   --run-id RUN_ID \
   --clarification-answer '采用前一天作为基线' \
   --selected-option-id OPTION_ID \
@@ -73,6 +75,7 @@ To observe an existing run without submitting a message or clarification:
 ```bash
 python3 tools/phase7/run_gateway_conversation_once.py \
   --base-url http://127.0.0.1:3000 \
+  --user-id human-led-test \
   --run-id RUN_ID \
   --events-only \
   --output artifacts/phase7/human-led-q1/case-b/checkpoint.json
@@ -92,7 +95,7 @@ A completed status alone shows that the agent lifecycle completed. A business
 conclusion is publishable only when its claims survive the current hard
 boundaries:
 
-- permission and SQL safety;
+- fixed restricted-output, source-access, and SQL safety;
 - current semantic and data contracts;
 - active release and snapshot provenance;
 - complete query/result bindings at the requested grain;

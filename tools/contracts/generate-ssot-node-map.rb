@@ -33,7 +33,7 @@ end
 def scope_status(group, label)
   return "out_of_scope_for_now" if label.match?(/抓取|论坛|新闻网站/)
   return "missing_contract" if label.match?(/预算|出价|campaign|CTR|CVR|SEO|GEO|用户推荐|服务器|Grafana|日志|产品更新|首充礼包|充值活动|返奖率|玩法付费|玩法icon|支付订单到玩法/)
-  return "permission_limited" if label.match?(/用户|IP|设备ID/)
+  return "missing_contract" if label.match?(/IP|设备ID/)
 
   {
     "paid_amount_metric_source" => "contract_backed",
@@ -42,7 +42,7 @@ def scope_status(group, label)
     "calendar_time_and_payday" => "static_assumption",
     "external_context_events" => "evidence_linked",
     "gameplay_ggr_and_betting" => "evidence_linked",
-    "geo_device_environment" => "permission_limited"
+    "geo_device_environment" => label.match?(/电力波动|极端天气/) ? "evidence_linked" : "contract_backed"
   }.fetch(group, "missing_contract")
 end
 

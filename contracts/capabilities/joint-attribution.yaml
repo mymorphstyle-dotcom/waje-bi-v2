@@ -5,7 +5,7 @@ review_status: draft
 
 responsibilities:
   - Screen registered, discoverable, and validated hypothesized candidates for explanatory power.
-  - Evaluate one-dimensional and higher-order factor combinations within grain, permission, sparsity, and budget limits.
+  - Evaluate one-dimensional and higher-order factor combinations within grain, fixed output-safety, sparsity, and budget limits.
   - Return local contribution, association, residual reduction, stability, and candidate promotion evidence.
 
 parameters:
@@ -48,16 +48,16 @@ evidence_outputs:
     - coverage
     - stability
     - sparse_warnings
-    - permission_blocks
+    - restricted_output_blocks
 
 limitations:
-  - Permission and sparse-cell rules can block visible segment claims.
+  - Fixed restricted-output and sparse-cell rules can block visible segment claims for every user.
   - Statistical attribution cannot produce confirmed causal wording by itself.
   - Higher-order search must stop on budget, weak fit, sparsity, or insufficient evidence.
 
 degradation_rules:
-  - when: permission_limited
-    output: aggregate-only or blocked attribution path.
+  - when: restricted_output_blocked
+    output: aggregate-only or blocked restricted-detail attribution path.
   - when: unsupported_grain
     output: downgrade to supported grain or limitation.
   - when: weak_incremental_power
@@ -77,7 +77,7 @@ lint_rules:
 verifier_hooks:
   - attribution_claim_must_state_scope_and_grain
   - local_exception_cannot_be_globalized
-  - permission_blocks_must_be_visible
+  - restricted_output_blocks_must_be_visible
 
 typical_question_families:
   - segment_or_factor_attribution

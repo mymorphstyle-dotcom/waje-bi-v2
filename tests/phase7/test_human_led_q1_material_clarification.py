@@ -236,6 +236,71 @@ def test_unconfirmed_provider_baseline_cannot_enter_analysis_route_material():
     assert "baselines" in conflicts
 
 
+def test_clarification_retry_recompiles_derived_claim_roles_from_current_intent():
+    from bi_agent.runtime import langgraph_workflow as workflow
+
+    intent = {
+        "target_metric": "paid_amount",
+        "baseline_candidates": ["previous_day"],
+        "baseline_binding": {
+            "confirmed": True,
+            "source": "user_clarification",
+            "candidates": ["previous_day"],
+        },
+        "scope": "full_sample",
+        "publishable_claim_types": [
+            "comparative_change",
+            "formula_component_contribution",
+        ],
+        "required_outcomes": ["change_direction", "factor_contribution"],
+        "analysis_axis_ids": ["change_validation", "formula_tree"],
+    }
+    stale_source_material = {
+        "target_metrics": ["paid_amount"],
+        "component_ids": [],
+        "association_metric_ids": [],
+        "dimension_ids": [],
+        "baselines": ["previous_day"],
+        "context_sources": [],
+        "claim_types": [
+            "comparative_change",
+            "formula_component_contribution",
+            "contract_coverage_and_trust_boundary",
+        ],
+        "required_outcomes": ["change_direction", "factor_contribution"],
+        "analysis_axis_ids": [
+            "change_validation",
+            "formula_tree",
+            "data_quality",
+        ],
+        "scope": "full_sample",
+    }
+
+    merged, conflicts = workflow._merge_confirmed_material_requirements(
+        {"analysis_requirements": {}},
+        {
+            "intent": intent,
+            "request": {
+                "clarification_attempt_context": {
+                    "material_slots": stale_source_material,
+                }
+            },
+        },
+    )
+
+    requirements = merged["analysis_requirements"]
+    assert requirements["baselines"] == ["previous_day"]
+    assert requirements["claim_types"] == [
+        "comparative_change",
+        "formula_component_contribution",
+    ]
+    assert requirements["analysis_axis_ids"] == [
+        "change_validation",
+        "formula_tree",
+    ]
+    assert conflicts == ()
+
+
 def _waiting_baseline_result(
     request: dict,
     *,
@@ -601,7 +666,8 @@ def test_gateway_selected_option_id_projects_typed_baseline_choice():
         ],
     }
     source_run_id = "run-human-q1-baseline-source"
-    resumed_run_id = "run-human-q1-baseline-resumed"
+    resolution_id = "resolution-human-q1-baseline"
+    attempt_run_id = "run-human-q1-baseline-attempt-1"
     store.upsert_run(
         source_run_id,
         thread_id=thread.thread_id,
@@ -645,13 +711,21 @@ def test_gateway_selected_option_id_projects_typed_baseline_choice():
             ],
         )
     )
-    store.resolve_clarification_resume_claim = lambda **values: {
+    store.resolve_clarification_attempt_authority = lambda **values: {
+        "resolution_id": resolution_id,
         "source_run_id": values["source_run_id"],
-        "resumed_run_id": values["resumed_run_id"],
+        "attempt_run_id": values["attempt_run_id"],
+        "previous_attempt_run_id": None,
+        "attempt_number": 1,
         "thread_id": values["thread_id"],
+        "topic_id": topic.topic_id,
+        "owner_id": thread.owner_id,
         "answer": values["answer"],
         "selected_option_id": values["selected_option_id"],
         "source": values["source"],
+        "retry_attempt": False,
+        "accepted_choice": deepcopy(selected_action),
+        "material_patch": deepcopy(selected_action["material_patch"]),
     }
     workflow_requests = []
 
@@ -668,13 +742,16 @@ def test_gateway_selected_option_id_projects_typed_baseline_choice():
         workflow_runner=workflow_runner,
     ).run_message(
         thread_id=thread.thread_id,
-        run_id=resumed_run_id,
+        run_id=attempt_run_id,
         user_message=selected_action["business_label"],
         clarification={
-            "runId": source_run_id,
+            "sourceRunId": source_run_id,
+            "resolutionId": resolution_id,
+            "attemptRunId": attempt_run_id,
             "answer": selected_action["business_label"],
             "selectedOptionId": selected_action["choice_id"],
             "source": "user",
+            "retryAttempt": False,
         },
     )
 
@@ -683,47 +760,9 @@ def test_gateway_selected_option_id_projects_typed_baseline_choice():
         "answer_text": selected_action["business_label"],
         "baseline_candidates": ["previous_day"],
     }
-    assert workflow_requests[0]["clarification_resume_context"][
+    assert workflow_requests[0]["clarification_attempt_context"][
         "selected_material_action"
     ] == selected_action
-
-
-def test_typed_user_baseline_overrides_fresh_provider_inference_on_resume():
-    from bi_agent.runtime import langgraph_workflow as workflow
-
-    original = _paid_amount_change_intent()
-    original["ambiguous_slots"] = ["baseline"]
-    provider_inference = {
-        **deepcopy(original),
-        "baseline_candidates": ["same_weekday_last_week"],
-        "ambiguous_slots": [],
-    }
-    request = {
-        "thread_id": "thread-material-authority",
-        "topic_id": "topic-material-authority",
-        "question": original["question"],
-        "clarification_choice": {
-            "answer_text": "跟前一天（昨日变化）",
-            "baseline_candidates": ["previous_day"],
-        },
-        "clarification_resume_context": {
-            "resume_run_id": "run-material-authority-source",
-            "source_thread_id": "thread-material-authority",
-            "source_topic_id": "topic-material-authority",
-            "question": original["question"],
-            "original_intent": original,
-            "material_slots": _material_slots(original),
-        },
-    }
-
-    bound = workflow._bind_clarification_resume_intent(
-        provider_inference,
-        request,
-        RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
-    )
-
-    assert bound["baseline_candidates"] == ["previous_day"]
-    assert "baseline" not in workflow._ambiguous_slot_names(bound)
 
 
 def test_bound_baseline_cannot_be_reopened_by_a_stale_provider_question():

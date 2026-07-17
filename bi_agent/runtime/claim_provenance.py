@@ -27,13 +27,10 @@ _UNTRUSTED_PROVENANCE_FIELDS = frozenset(
         "provenance_record_ref",
     }
 )
-_CONTEXT_MANIFEST_SCHEMA_VERSION = "2"
-_LEGACY_CONTEXT_KEYS = {
-    "run_id", "thread_id", "topic_id", "sources", "permission_context",
+_CONTEXT_MANIFEST_SCHEMA_VERSION = "3"
+_CONTEXT_KEYS = {
+    "run_id", "thread_id", "topic_id", "sources",
     "can_support_claims", "manifest_id", "manifest_digest",
-}
-_CURRENT_CONTEXT_KEYS = {
-    *_LEGACY_CONTEXT_KEYS,
     "accepted_assumptions",
     "manifest_schema_version",
 }
@@ -45,7 +42,6 @@ def build_context_manifest_record(
     thread_id: str,
     topic_id: str,
     sources: Sequence[Mapping[str, Any]],
-    permission_context: Mapping[str, Any] | None = None,
     accepted_assumptions: Sequence[Mapping[str, Any]] = (),
     can_support_claims: bool = True,
 ) -> dict[str, Any]:
@@ -63,7 +59,6 @@ def build_context_manifest_record(
             "thread_id": thread_id,
             "topic_id": topic_id,
             "sources": normalized_sources,
-            "permission_context": dict(permission_context or {}),
             "accepted_assumptions": [
                 dict(item) for item in accepted_assumptions if isinstance(item, Mapping)
             ],
@@ -194,26 +189,7 @@ def validated_context_manifest_record(
     record: Mapping[str, Any],
 ) -> dict[str, Any]:
     keys = set(record)
-    if keys == _LEGACY_CONTEXT_KEYS and "manifest_schema_version" not in record:
-        payload = canonical_value(
-            {
-                key: record[key]
-                for key in (
-                    "run_id", "thread_id", "topic_id", "sources",
-                    "permission_context", "can_support_claims",
-                )
-            }
-        )
-        digest = canonical_digest(payload)
-        expected = {
-            **payload,
-            "manifest_id": f"context-manifest:sha256:{digest}",
-            "manifest_digest": digest,
-        }
-        if canonical_value(record) != canonical_value(expected):
-            raise EvidenceIntegrityError("context_manifest_integrity_invalid")
-        return {**dict(expected), "accepted_assumptions": []}
-    if keys != _CURRENT_CONTEXT_KEYS:
+    if keys != _CONTEXT_KEYS:
         raise EvidenceIntegrityError("context_manifest_payload_keys_invalid")
     if record.get("manifest_schema_version") != _CONTEXT_MANIFEST_SCHEMA_VERSION:
         raise EvidenceIntegrityError("context_manifest_schema_version_invalid")
@@ -222,7 +198,6 @@ def validated_context_manifest_record(
         thread_id=str(record.get("thread_id") or ""),
         topic_id=str(record.get("topic_id") or ""),
         sources=record.get("sources") or (),
-        permission_context=record.get("permission_context") or {},
         accepted_assumptions=record.get("accepted_assumptions") or (),
         can_support_claims=record.get("can_support_claims") is True,
     )

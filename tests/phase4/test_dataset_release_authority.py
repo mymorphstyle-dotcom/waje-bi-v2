@@ -37,7 +37,6 @@ class DatasetReleaseAuthorityTest(unittest.TestCase):
         mutations = (
             ("watermark", "2026-06-01"),
             ("contract_ref", "contracts/sources/market-dashboard.source.yaml@drift"),
-            ("permission_scopes", ["admin"]),
             ("loaded_at", "2026-06-03T01:00:00+00:00"),
         )
 
@@ -76,7 +75,6 @@ class DatasetReleaseAuthorityTest(unittest.TestCase):
         selected = catalog.resolve(
             "market_dashboard",
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+00:00"),
-            permission_scope="analyst",
         )
         self.assertIn(":new", selected.snapshot_ref)
 
@@ -84,7 +82,6 @@ class DatasetReleaseAuthorityTest(unittest.TestCase):
         mutations = (
             ("watermark", "2026-06-01"),
             ("contract_ref", "contract:drift"),
-            ("permission_scopes", ["admin"]),
             ("loaded_at", "2026-06-03T01:00:00+00:00"),
         )
         for field, value in mutations:
@@ -172,7 +169,6 @@ class DatasetReleaseAuthorityTest(unittest.TestCase):
             staged.resolve(
                 "market_dashboard_channel",
                 as_of=as_of,
-                permission_scope="analyst",
                 evidence_states=("context_only",),
             )
 
@@ -180,7 +176,6 @@ class DatasetReleaseAuthorityTest(unittest.TestCase):
         resolved = published.resolve(
             "market_dashboard_channel",
             as_of=as_of,
-            permission_scope="analyst",
             evidence_states=("context_only",),
         )
         self.assertEqual(resolved.snapshot_ref, payloads[1]["snapshot_ref"])
@@ -357,7 +352,6 @@ def _payload(snapshot_ref, dataset_id, physical_table, rows_hash, schema, eviden
         "schema_fingerprint": schema,
         "schema_fields": ["snapshot_id", "load_revision", "business_date", "paid_amount"],
         "contract_ref": "contracts/sources/market-dashboard.source.yaml@0.1",
-        "permission_scopes": ["analyst"],
         "loaded_at": "2026-06-03T00:00:00+00:00",
         "status": "active",
         "evidence_state": evidence,
@@ -380,7 +374,6 @@ def _snapshot_from_payload(payload, authority_record_ref):
         schema_fingerprint=payload["schema_fingerprint"],
         schema_fields=tuple(payload["schema_fields"]),
         contract_ref=payload["contract_ref"],
-        permission_scopes=tuple(payload["permission_scopes"]),
         loaded_at=payload["loaded_at"],
         status=payload["status"],
         evidence_state=payload["evidence_state"],

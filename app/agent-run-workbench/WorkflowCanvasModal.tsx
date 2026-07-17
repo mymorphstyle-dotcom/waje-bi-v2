@@ -53,7 +53,7 @@ const STAGES: { id: StageId; label: string; summary: string }[] = [
   { id: "intent", label: "意图和边界", summary: "理解用户问题，确认是否需要追问。" },
   { id: "route", label: "分析路径", summary: "设计候选路径，并验收为可执行证据路径。" },
   { id: "accepted", label: "已验收证据路径", summary: "本轮被接受、会进入证据生成的能力组合。" },
-  { id: "data", label: "数据边界", summary: "确认口径、权限、安全和覆盖范围。" },
+  { id: "data", label: "数据边界", summary: "确认口径、固定敏感输出、源访问安全和覆盖范围。" },
   { id: "evidence", label: "证据生成", summary: "执行能力并整理证据简报。" },
   { id: "business", label: "业务解释", summary: "解释证据、判断下一步，并形成业务含义。" },
   { id: "audit", label: "答案审计", summary: "检查语义边界，必要时修正或收敛答案。" },

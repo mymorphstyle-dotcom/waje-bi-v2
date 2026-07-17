@@ -12,7 +12,6 @@ from bi_agent.runtime.dataset_catalog import build_dataset_release_authority_rec
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     canonical_digest,
-    canonical_value,
 )
 
 
@@ -78,7 +77,6 @@ class ConversationPersistenceTest(unittest.TestCase):
             "result_ref": "result:pg",
             "snapshot_id": "2026H1",
             "contract_version": "contracts-v1",
-            "permission_scope": "analyst",
             "semantic_scope": payload["semantic_scope_signature"],
             "payload": json.dumps(payload, ensure_ascii=False, sort_keys=True),
         }
@@ -114,130 +112,35 @@ class ConversationPersistenceTest(unittest.TestCase):
             _add_result_candidate(collision, payload)
 
     def test_result_candidate_authority_resolves_source_run_and_contract(self):
-        from tests.phase7.test_analysis_runtime_persistence import (
-            _authority_bundle,
+        from tests.phase7.test_conversation_runtime import (
+            _add_authoritative_result_candidate,
         )
 
-        bundle = _authority_bundle(
-            run_id="run-candidate",
-            thread_id="thread-candidate",
-            topic_id="topic-candidate",
-            analysis_contract_ref="analysis:run-candidate:1",
-        )
-        contract = bundle["analysis_contract"]
-        query = bundle["query_execution_records"][0]
-        rows = next(
-            item
-            for item in bundle["rows_records"]
-            if item.rows_ref == query.rows_ref
-        )
-        snapshots = {
-            item.snapshot_ref: item for item in bundle["snapshot_records"]
-        }
-        completeness = next(
-            item
-            for item in bundle["completeness_records"]
-            if item.report_ref == query.completeness_report_ref
-        )
-        binding = next(
-            item
-            for item in bundle["capability_binding_records"]
-            if query.result_ref
-            in (*item.result_refs, *item.validation_result_refs)
-        )
-        payload = {
-            "schema_version": "result-reuse-candidate.v1",
-            "source_run_id": "run-candidate",
-            "result_ref": query.result_ref,
-            "query_contract_ref": query.query_contract_ref,
-            "query_contract_signature": query.contract_signature,
-            "query_execution_record_ref": query.record_ref,
-            "query_execution_record_digest": query.record_digest,
-            "analysis_contract_ref": contract["analysis_contract_id"],
-            "analysis_contract_signature": contract["contract_signature"],
-            "runtime_snapshot_id": "2026H1",
-            "runtime_contract_version": "contracts-v1",
-            "source_snapshot_refs": list(query.source_snapshot_refs),
-            "source_snapshot_record_refs": list(
-                query.source_snapshot_record_refs
-            ),
-            "source_snapshot_record_digests": list(
-                query.source_snapshot_record_digests
-            ),
-            "source_release_refs": [
-                snapshots[ref].snapshot.release_ref
-                for ref in query.source_snapshot_refs
-            ],
-            "source_release_authority_refs": [
-                snapshots[ref].snapshot.authority_record_ref
-                for ref in query.source_snapshot_refs
-            ],
-            "source_schema_fingerprints": [
-                snapshots[ref].snapshot.schema_fingerprint
-                for ref in query.source_snapshot_refs
-            ],
-            "permission_scope": query.contract.permission_scope,
-            "semantic_scope_signature": (
-                "analysis-contract:sha256:"
-                + contract["contract_signature"]
-            ),
-            "rows_ref": rows.rows_ref,
-            "rows_record_ref": rows.record_ref,
-            "rows_record_digest": rows.record_digest,
-            "rows_content_hash": rows.rows_content_hash,
-            "completeness_report_ref": completeness.report_ref,
-            "completeness_record_refs": [completeness.record_ref],
-            "completeness_record_digests": [completeness.report_digest],
-            "binding_record_refs": [binding.record_ref],
-            "binding_record_digests": [binding.binding_digest],
-        }
-        payload["candidate_signature"] = canonical_digest(payload)
         store = InMemoryConversationStore()
-        source_request = {
-            "context_manifest": {
-                "snapshot_version": "2026H1",
-                "contract_versions": {"runtime": "contracts-v1"},
-            }
-        }
-        store.upsert_run(
-            payload["source_run_id"],
-            thread_id="thread-candidate",
-            topic_id="topic-candidate",
-            status="running_workflow",
-            request=source_request,
+        store.create_thread("thread-candidate", owner_id="user-1")
+        topic = store.create_topic(
+            "thread-candidate",
+            title="付费金额变化",
+            summary="已完成付费金额变化分析。",
         )
-        store.save_analysis_runtime_records(
-            run_id=payload["source_run_id"],
-            **bundle,
+        payload = _add_authoritative_result_candidate(
+            store,
+            topic_id=topic.topic_id,
+            result_ref="result:candidate",
+            source_run_id="run-candidate",
         )
-        from tests.phase7.test_agent_core_bridge import (
-            _completed_material_authority_for_records,
-        )
-
-        store.finalize_completed_material_authority(
-            run_id=payload["source_run_id"],
-            thread_id="thread-candidate",
-            topic_id="topic-candidate",
-            request=source_request,
-            material_authority=_completed_material_authority_for_records(
-                {
-                    "run_id": payload["source_run_id"],
-                    "thread_id": "thread-candidate",
-                    "topic_id": "topic-candidate",
-                },
-                bundle,
-            ),
-        )
-        _add_result_candidate(store, payload)
 
         authority = store.resolve_result_candidate_authority(
             result_ref=payload["result_ref"],
-            topic_id="topic-candidate",
+            topic_id=topic.topic_id,
         )
 
         self.assertEqual(authority["source_run_id"], payload["source_run_id"])
-        self.assertEqual(authority["run_topic_id"], "topic-candidate")
-        self.assertEqual(authority["analysis_contract"], canonical_value(contract))
+        self.assertEqual(authority["run_topic_id"], topic.topic_id)
+        self.assertEqual(
+            authority["analysis_contract"]["analysis_contract_id"],
+            payload["analysis_contract_ref"],
+        )
         self.assertEqual(
             authority["stored_analysis_contract_signature"],
             payload["analysis_contract_signature"],
@@ -262,6 +165,24 @@ class ConversationPersistenceTest(unittest.TestCase):
         request = postgres.get_run_request("run-owner")
         self.assertEqual(request["thread_id"], "thread-owner")
         self.assertEqual(request["topic_id"], "topic-owner")
+
+    def test_thread_owner_identity_persists_without_a_data_access_role(self):
+        memory = InMemoryConversationStore()
+        memory.create_thread("thread-personal", owner_id="user-42")
+        self.assertEqual(memory.get_thread("thread-personal").owner_id, "user-42")
+
+        connection = FakeConnection()
+        postgres = PostgresConversationStore(connection)
+        thread = postgres.create_thread("thread-personal", owner_id="user-42")
+
+        self.assertEqual(thread.owner_id, "user-42")
+        _, params = next(
+            (statement, params)
+            for statement, params in connection.statements
+            if "investigation_threads" in statement
+        )
+        self.assertEqual(params["owner_id"], "user-42")
+        self.assertNotIn("role", params)
 
     def test_in_memory_single_save_checks_release_membership_before_dataset_policy(self):
         store = InMemoryConversationStore()
@@ -462,7 +383,6 @@ class ConversationPersistenceTest(unittest.TestCase):
             sources=[{"type": "answer_package", "ref": "artifact-1", "can_support_claim": True}],
             claim_use_policy={"requires_evidence_ref": True},
             snapshot_version="2026-H1",
-            permission_context={"role": "analyst"},
             created_at="2026-07-08T00:00:00Z",
         )
 
@@ -481,7 +401,6 @@ class ConversationPersistenceTest(unittest.TestCase):
             sources=[{"type": "policy", "ref": "source-1", "can_support_claim": False}],
             claim_use_policy={"requires_evidence_ref": True},
             snapshot_version="snapshot-v2",
-            permission_context={"role": "analyst"},
             analysis_assets=[{"asset_id": "asset-1"}],
             accepted_assumptions=[{"action_kind": "omit_unavailable_context"}],
             contract_versions={"runtime": "v2", "semantic": "v3"},
@@ -526,7 +445,6 @@ class ConversationPersistenceTest(unittest.TestCase):
         decision = evaluate_reuse_candidate(
             source_snapshot="2026-H1",
             current_snapshot="2026-H2",
-            permission_match=True,
             semantic_scope_match=True,
         )
 
@@ -537,34 +455,27 @@ class ConversationPersistenceTest(unittest.TestCase):
         stale = evaluate_reuse_candidate(
             source_snapshot="2026-H1",
             current_snapshot="2026-H2",
-            permission_match=True,
-            semantic_scope_match=True,
-        )
-        blocked = evaluate_reuse_candidate(
-            source_snapshot="2026-H1",
-            current_snapshot="2026-H1",
-            permission_match=False,
             semantic_scope_match=True,
         )
         scoped = evaluate_reuse_candidate(
             source_snapshot="2026-H1",
             current_snapshot="2026-H1",
-            permission_match=True,
             semantic_scope_match=False,
         )
         reusable = evaluate_reuse_candidate(
             source_snapshot="2026-H1",
             current_snapshot="2026-H1",
-            permission_match=True,
             semantic_scope_match=True,
         )
 
         self.assertEqual(stale.reason, "snapshot_mismatch")
-        self.assertEqual(blocked.reason, "permission_scope_mismatch")
         self.assertEqual(scoped.reason, "semantic_scope_mismatch")
         self.assertEqual(reusable.decision, "candidate")
         self.assertIs(reusable.can_support_claim, False)
-        self.assertEqual(reusable.reason, "candidate_same_thread_scope")
+        self.assertEqual(
+            reusable.reason,
+            "candidate_same_snapshot_and_semantic_scope",
+        )
 
     def test_schema_declares_required_runtime_tables(self):
         required_tables = {
@@ -608,7 +519,6 @@ class ConversationPersistenceTest(unittest.TestCase):
                 "schema_fingerprint": "schema-1",
                 "schema_fields": ["business_date_lagos", "paid_amount_ngn"],
                 "contract_ref": "contracts/sources/paid-order-detail.source.yaml@0.2",
-                "permission_scopes": ["analyst"],
                 "loaded_at": "2026-07-05T00:00:00+00:00",
                 "status": "active",
             }
@@ -704,7 +614,6 @@ class ConversationPersistenceTest(unittest.TestCase):
             "schema_fingerprint",
             "schema_fields",
             "contract_ref",
-            "permission_scopes",
             "loaded_at",
             "status",
             "payload",
@@ -724,10 +633,6 @@ class ConversationPersistenceTest(unittest.TestCase):
             with self.subTest(payload_column=column):
                 self.assertEqual(params[column], persisted_payload[column])
         self.assertEqual(json.loads(params["schema_fields"]), persisted_payload["schema_fields"])
-        self.assertEqual(
-            json.loads(params["permission_scopes"]),
-            persisted_payload["permission_scopes"],
-        )
         self.assertEqual(connection.commits, 2)
 
     def test_in_memory_store_replaces_the_full_snapshot_for_a_reused_ref(self):
@@ -867,21 +772,17 @@ class ConversationPersistenceTest(unittest.TestCase):
 
         store.save_dataset_snapshot(payload)
         payload["schema_fields"].append("input_mutation")
-        payload["permission_scopes"].append("admin")
 
         first_read = store.list_dataset_snapshots()[0]
         self.assertEqual(first_read["schema_fields"], ["business_date_lagos", "paid_amount_ngn"])
-        self.assertEqual(first_read["permission_scopes"], ["analyst"])
 
         first_read["schema_fields"].append("read_mutation")
-        first_read["permission_scopes"].append("owner")
         audit_read = store.audit_events[0]
         audit_read["payload"]["schema_fields"].append("audit_read_mutation")
 
         second_read = store.list_dataset_snapshots()[0]
         second_audit_read = store.audit_events[0]
         self.assertEqual(second_read["schema_fields"], ["business_date_lagos", "paid_amount_ngn"])
-        self.assertEqual(second_read["permission_scopes"], ["analyst"])
         self.assertEqual(
             second_audit_read["payload"]["schema_fields"],
             ["business_date_lagos", "paid_amount_ngn"],
@@ -891,7 +792,7 @@ class ConversationPersistenceTest(unittest.TestCase):
         connection = FakeConnection()
         store = PostgresConversationStore(connection)
 
-        thread = store.create_thread("thread-pg", owner_id="analyst-1")
+        thread = store.create_thread("thread-pg", owner_id="user-1")
         topic = store.create_topic(thread.thread_id, title="Q2 vs Q1", summary="Q2 变化")
         store.set_current_topic(thread.thread_id, topic.topic_id)
         store.add_turn(thread.thread_id, {"turn_id": "turn-1", "intent": "new_topic"})
@@ -900,7 +801,6 @@ class ConversationPersistenceTest(unittest.TestCase):
             result_ref="result-1",
             snapshot_id="2026H1",
             contract_version="contracts-v1",
-            permission_scope="analyst",
             semantic_scope="q2_vs_q1_paid_amount",
         )
         store.add_memory_proposal(
@@ -909,8 +809,7 @@ class ConversationPersistenceTest(unittest.TestCase):
                 thread_id=thread.thread_id,
                 text="默认单独看 WajeSpecial",
                 source_ref="turn-1",
-                owner_scope="org-default",
-                visibility="analyst",
+                owner_id="user-1",
             )
         )
 
@@ -1076,7 +975,6 @@ def _dataset_snapshot_payload(snapshot_ref, dataset_id):
         "schema_fingerprint": "schema-1",
         "schema_fields": ["business_date_lagos", "paid_amount_ngn"],
         "contract_ref": f"contracts/sources/{dataset_id}.source.yaml@0.2",
-        "permission_scopes": ["analyst"],
         "loaded_at": "2026-07-05T00:00:00+00:00",
         "status": "active",
     }
@@ -1088,7 +986,7 @@ def _result_candidate_payload(
     source_run_id: str = "run-candidate",
 ) -> dict:
     payload = {
-        "schema_version": "result-reuse-candidate.v1",
+        "schema_version": "result-reuse-candidate.v2",
         "source_run_id": source_run_id,
         "result_ref": result_ref,
         "query_contract_ref": "query-contract:candidate",
@@ -1105,7 +1003,6 @@ def _result_candidate_payload(
         "source_release_refs": ["release:paid-success"],
         "source_release_authority_refs": ["release-authority:paid-success"],
         "source_schema_fingerprints": ["schema:paid-success"],
-        "permission_scope": "analyst",
         "semantic_scope_signature": "analysis-contract:sha256:analysis-signature",
         "rows_ref": "rows:candidate",
         "rows_record_ref": "rows-record:candidate",
@@ -1127,7 +1024,6 @@ def _add_result_candidate(store, payload: dict) -> None:
         result_ref=payload["result_ref"],
         snapshot_id=payload["runtime_snapshot_id"],
         contract_version=payload["runtime_contract_version"],
-        permission_scope=payload["permission_scope"],
         semantic_scope=payload["semantic_scope_signature"],
         payload=deepcopy(payload),
     )

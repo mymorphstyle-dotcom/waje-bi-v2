@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
-from bi_agent.conversation.models import RESULT_REUSE_CANDIDATE_FIELDS
+from bi_agent.conversation.models import (
+    RESULT_REUSE_CANDIDATE_SCHEMA_VERSION,
+    validate_result_reuse_candidate,
+)
 from bi_agent.runtime.analysis_contract_compiler import (
     AnalysisCompileOutcome,
     compile_analysis_contract,
@@ -27,7 +30,6 @@ from bi_agent.runtime.capability_execution import (
     BoundCapabilityInput,
     bind_capability_inputs,
     capability_plan_has_executable_query_contracts,
-    degradation_action_is_non_blocking,
 )
 from bi_agent.runtime.claim_provenance import (
     build_context_manifest_record,
@@ -59,27 +61,10 @@ from bi_agent.runtime.reuse_decision import (
     validated_physical_query_reuse_decision_record,
     validated_query_reuse_decision,
 )
-from bi_agent.runtime.permission_roles import runtime_permission_scope_from_request
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
     runtime_registry_integrity_error,
-)
-
-
-_REUSE_CANDIDATE_V1_FIELDS = frozenset(RESULT_REUSE_CANDIDATE_FIELDS)
-
-_REUSE_CANDIDATE_SEQUENCE_FIELDS = (
-    "source_snapshot_refs",
-    "source_snapshot_record_refs",
-    "source_snapshot_record_digests",
-    "source_release_refs",
-    "source_release_authority_refs",
-    "source_schema_fingerprints",
-    "completeness_record_refs",
-    "completeness_record_digests",
-    "binding_record_refs",
-    "binding_record_digests",
 )
 
 
@@ -96,7 +81,6 @@ class AnalysisRuntimeRequest:
     proposal: Mapping[str, Any]
     accepted_graph: tuple[str, ...]
     as_of: datetime
-    permission_scope: str
     topic_id: str = ""
     reuse_candidates: tuple[Mapping[str, Any], ...] = ()
     attempted_signatures: tuple[str, ...] = ()
@@ -110,7 +94,6 @@ class AnalysisRuntimeRequest:
         proposal: Mapping[str, Any],
         accepted_graph: Sequence[str],
         as_of: str | datetime,
-        permission_scope: str,
         topic_id: str = "",
         reuse_candidates: Sequence[Mapping[str, Any]] = (),
         attempted_signatures: Sequence[str] = (),
@@ -121,8 +104,6 @@ class AnalysisRuntimeRequest:
         parsed = datetime.fromisoformat(as_of) if isinstance(as_of, str) else as_of
         if not isinstance(parsed, datetime) or parsed.tzinfo is None:
             raise ValueError("analysis_runtime_as_of_invalid")
-        if permission_scope not in {"viewer", "analyst", "admin"}:
-            raise PermissionError("analysis_runtime_permission_scope_invalid")
         if run_mode not in {"production", "live"}:
             raise ValueError("analysis_runtime_run_mode_invalid")
         return cls(
@@ -130,7 +111,6 @@ class AnalysisRuntimeRequest:
             proposal=MappingProxyType(dict(proposal)),
             accepted_graph=tuple(dict.fromkeys(str(item) for item in accepted_graph if item)),
             as_of=parsed,
-            permission_scope=permission_scope,
             topic_id=str(topic_id or ""),
             reuse_candidates=tuple(
                 MappingProxyType(dict(item))
@@ -185,7 +165,6 @@ class AnswerPackageBuildContext:
                 {
                     "thread_id": str(request.get("thread_id") or ""),
                     "topic_id": str(request.get("topic_id") or ""),
-                    "permission_context": dict(request.get("permission_context") or {}),
                 }
             ),
             trusted_provenance=MappingProxyType(
@@ -219,10 +198,7 @@ def _has_omitted_auxiliary_gap_with_ready_sibling(
         if not isinstance(context, Mapping):
             continue
         action = str(context.get("degradation_action") or "")
-        if (
-            context.get("analysis_role") != "auxiliary"
-            or not degradation_action_is_non_blocking(action)
-        ):
+        if context.get("analysis_role") != "auxiliary":
             continue
         affected = {
             str(capability_id)
@@ -247,6 +223,56 @@ def _has_omitted_auxiliary_gap_with_ready_sibling(
     return False
 
 
+def _runtime_capability_roles(
+    proposal: Mapping[str, Any],
+) -> Mapping[str, str]:
+    raw = proposal.get("capability_roles")
+    if not isinstance(raw, Mapping):
+        return MappingProxyType({})
+    return MappingProxyType(
+        {
+            str(capability_id): str(role.get("analysis_role") or "required")
+            for capability_id, role in raw.items()
+            if isinstance(role, Mapping)
+        }
+    )
+
+
+def _decision_affects_only_auxiliary_capabilities(
+    result: "AnalysisRuntimeResult",
+    decision: QueryRepairDecision,
+) -> bool:
+    owners = {
+        plan.capability_id
+        for plan in result.capability_plans
+        for slot in (*plan.required_input_slots, *plan.optional_input_slots)
+        if decision.failed_query_contract_ref
+        in (
+            *slot.query_contract_refs,
+            *slot.validation_query_contract_refs,
+        )
+    }
+    return bool(owners) and all(
+        result.capability_roles.get(owner) == "auxiliary"
+        for owner in owners
+    )
+
+
+def _has_auxiliary_query_failure_with_ready_sibling(
+    result: "AnalysisRuntimeResult",
+) -> bool:
+    if not any(
+        binding.status == "ready"
+        for capability_id, binding in result.bound_capability_inputs.items()
+        if result.capability_roles.get(capability_id, "required") != "auxiliary"
+    ):
+        return False
+    return any(
+        _decision_affects_only_auxiliary_capabilities(result, decision)
+        for decision in result.repair_decisions
+    )
+
+
 @dataclass(frozen=True)
 class AnalysisRuntimeResult:
     analysis_contract: AnalysisContract
@@ -260,6 +286,9 @@ class AnalysisRuntimeResult:
     persistence_records: Mapping[str, Any]
     reuse_decisions: tuple[Mapping[str, Any], ...] = ()
     auxiliary_terminal_records: tuple[Mapping[str, Any], ...] = ()
+    capability_roles: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def status(self) -> str:
@@ -275,14 +304,25 @@ class AnalysisRuntimeResult:
             ):
                 return "degraded"
             return "blocked"
-        if any(item.action == "clarify" for item in self.repair_decisions):
+        if any(
+            item.action == "clarify"
+            and not _decision_affects_only_auxiliary_capabilities(self, item)
+            for item in self.repair_decisions
+        ):
             return "clarify"
         if any(bool(item.get("requires_clarification")) for item in self.typed_gaps):
             return "clarify"
-        if any(item.action == "recompile" for item in self.repair_decisions):
+        if any(
+            item.action == "recompile"
+            and not _decision_affects_only_auxiliary_capabilities(self, item)
+            for item in self.repair_decisions
+        ):
             return "recompile"
         if any(item.status == "ready" for item in self.bound_capability_inputs.values()):
-            if _has_omitted_auxiliary_gap_with_ready_sibling(self):
+            if (
+                _has_omitted_auxiliary_gap_with_ready_sibling(self)
+                or _has_auxiliary_query_failure_with_ready_sibling(self)
+            ):
                 return "degraded"
             return "ready"
         if any(
@@ -626,7 +666,6 @@ class AnalysisRuntime:
             catalog=catalog,
             registry=self.registry,
             as_of=request.as_of,
-            permission_scope=request.permission_scope,
             release_resolver=self.release_resolver,
         )
 
@@ -649,7 +688,6 @@ class AnalysisRuntime:
                 as_of=(request.get("analysis_context") or {}).get("as_of")
                 or request.get("as_of")
                 or "",
-                permission_scope=runtime_permission_scope_from_request(request),
                 topic_id=str(request.get("topic_id") or ""),
                 reuse_candidates=request.get("reuse_candidates") or (),
                 attempted_signatures=request.get("attempted_signatures") or (),
@@ -686,6 +724,7 @@ class AnalysisRuntime:
                     for item in compiled.analysis_contract.contract_gaps
                 ),
                 persistence_records=MappingProxyType(persistence),
+                capability_roles=_runtime_capability_roles(typed.proposal),
             )
         results: list[QueryResultEnvelope] = []
         reports: list[CompletenessReport] = []
@@ -885,6 +924,7 @@ class AnalysisRuntime:
             persistence_records=MappingProxyType(persistence),
             reuse_decisions=tuple(reuse_decisions),
             auxiliary_terminal_records=auxiliary_terminal_records,
+            capability_roles=_runtime_capability_roles(typed.proposal),
         )
 
     def _validated_reuse_candidate(
@@ -945,33 +985,9 @@ class AnalysisRuntime:
         contract: QueryContract,
         snapshots: Mapping[str, DatasetSnapshot],
     ) -> _ValidatedReuseCandidate:
-        if set(candidate) != _REUSE_CANDIDATE_V1_FIELDS:
-            raise EvidenceIntegrityError("reuse_candidate_shape_invalid")
-        if str(candidate.get("schema_version") or "") != (
-            "result-reuse-candidate.v1"
-        ):
+        candidate = validate_result_reuse_candidate(candidate)
+        if candidate["schema_version"] != RESULT_REUSE_CANDIDATE_SCHEMA_VERSION:
             raise EvidenceIntegrityError("reuse_candidate_schema_version_invalid")
-        for field in _REUSE_CANDIDATE_V1_FIELDS.difference(
-            _REUSE_CANDIDATE_SEQUENCE_FIELDS
-        ):
-            if not isinstance(candidate.get(field), str) or not candidate[field]:
-                raise EvidenceIntegrityError(
-                    f"reuse_candidate_scalar_invalid:{field}"
-                )
-        for field in _REUSE_CANDIDATE_SEQUENCE_FIELDS:
-            value = candidate.get(field)
-            if (
-                not isinstance(value, (list, tuple))
-                or isinstance(value, (str, bytes))
-                or any(not isinstance(item, str) or not item for item in value)
-            ):
-                raise EvidenceIntegrityError(
-                    f"reuse_candidate_sequence_invalid:{field}"
-                )
-        unsigned = dict(candidate)
-        candidate_signature = str(unsigned.pop("candidate_signature") or "")
-        if candidate_signature != canonical_digest(unsigned):
-            raise EvidenceIntegrityError("reuse_candidate_signature_invalid")
         if str(candidate["source_run_id"]) == request.run_id:
             raise EvidenceIntegrityError("reuse_candidate_source_run_alias")
 
@@ -1038,7 +1054,6 @@ class AnalysisRuntime:
             "topic_id": request.topic_id,
             "snapshot_id": str(candidate["runtime_snapshot_id"]),
             "contract_version": str(candidate["runtime_contract_version"]),
-            "permission_scope": str(candidate["permission_scope"]),
             "semantic_scope": str(candidate["semantic_scope_signature"]),
         }
         if any(
@@ -1245,8 +1260,6 @@ class AnalysisRuntime:
         if canonical_digest(indexed_payload) != canonical_digest(candidate):
             raise EvidenceIntegrityError("reuse_candidate_result_index_payload_mismatch")
 
-        if request.permission_scope != str(candidate["permission_scope"]):
-            raise PermissionError("reuse_permission_scope_mismatch")
         if tuple(contract.dataset_snapshot_refs) != candidate_snapshot_refs:
             raise EvidenceIntegrityError("reuse_snapshot_ref_mismatch")
         current_snapshots = tuple(snapshots[ref] for ref in contract.dataset_snapshot_refs)
@@ -1550,9 +1563,6 @@ class AnalysisRuntime:
                 thread_id=str(build_context.context_owner.get("thread_id") or ""),
                 topic_id=str(build_context.context_owner.get("topic_id") or ""),
                 sources=sources,
-                permission_context=(
-                    build_context.context_owner.get("permission_context") or {}
-                ),
                 accepted_assumptions=tuple(
                     dict(item)
                     for item in (

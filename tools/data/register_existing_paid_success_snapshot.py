@@ -240,7 +240,6 @@ def build_paid_success_snapshot_payload(
         "schema_fingerprint": inspection.schema_fingerprint,
         "schema_fields": list(inspection.schema_fields),
         "contract_ref": CONTRACT_REF,
-        "permission_scopes": ["analyst"],
         "loaded_at": loaded_at,
         "status": "active",
         "evidence_state": "claim_ready",

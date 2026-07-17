@@ -13,6 +13,95 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class GatewayTypeScriptContractTest(unittest.TestCase):
+    def test_customer_actor_is_server_injected_and_required_in_production(self):
+        result = _run_typescript(
+            textwrap.dedent(
+                """
+                const { resolveCustomerActor } = await import(
+                  "./app/api/_customerActor.ts"
+                );
+                const originalNodeEnv = process.env.NODE_ENV;
+                process.env.NODE_ENV = "production";
+                let missing = {};
+                try {
+                  resolveCustomerActor(new Request("http://localhost/api/threads"));
+                } catch (error) {
+                  missing = { code: error.code, status: error.httpStatus };
+                }
+                const spoofed = resolveCustomerActor(new Request(
+                  "http://localhost/api/threads",
+                  { headers: {
+                    "x-user-id": "spoofed-user",
+                    "x-waje-authenticated-user-id": "authenticated-user",
+                  } },
+                ));
+                process.env.NODE_ENV = originalNodeEnv;
+                const local = resolveCustomerActor(
+                  new Request("http://localhost/api/threads"),
+                );
+                console.log(JSON.stringify({ missing, spoofed, local }));
+                """
+            )
+        )
+
+        self.assertEqual(result["missing"], {
+            "code": "customer_identity_required",
+            "status": 401,
+        })
+        self.assertEqual(result["spoofed"], "authenticated-user")
+        self.assertEqual(result["local"], "local-user")
+
+    def test_personal_resources_are_filtered_by_thread_owner(self):
+        result = _run_typescript(
+            textwrap.dedent(
+                """
+                const store = await import("./app/api/_conversationStore.ts");
+                const threadA = await store.createThread("actor-a");
+                const threadB = await store.createThread("actor-b");
+                const runA = await store.createRun(threadA.id, "actor-a");
+                const proposalA = await store.createMemoryProposal(
+                  threadA.id,
+                  "记住我的偏好",
+                  "actor-a",
+                );
+                const visibleA = await store.listThreads("actor-a");
+                const visibleB = await store.listThreads("actor-b");
+                const failures = {};
+                for (const [key, action] of Object.entries({
+                  thread: () => store.requireThread(threadA.id, "actor-b"),
+                  run: () => store.requireRun(runA.id, "actor-b"),
+                  memory: () => store.updateMemoryProposal(
+                    proposalA.id,
+                    "accepted",
+                    "actor-b",
+                  ),
+                })) {
+                  try { await action(); }
+                  catch (error) {
+                    failures[key] = { code: error.code, status: error.httpStatus };
+                  }
+                }
+                console.log(JSON.stringify({
+                  visibleA: visibleA.map((thread) => thread.id),
+                  visibleB: visibleB.map((thread) => thread.id),
+                  threadA: threadA.id,
+                  threadB: threadB.id,
+                  proposalOwner: proposalA.ownerId,
+                  failures,
+                }));
+                """
+            )
+        )
+
+        self.assertEqual(result["visibleA"], [result["threadA"]])
+        self.assertEqual(result["visibleB"], [result["threadB"]])
+        self.assertEqual(result["proposalOwner"], "actor-a")
+        self.assertEqual(result["failures"], {
+            "thread": {"code": "thread_owner_mismatch", "status": 403},
+            "run": {"code": "run_owner_mismatch", "status": 403},
+            "memory": {"code": "memory_owner_mismatch", "status": 403},
+        })
+
     def test_gateway_store_fails_closed_without_postgres_or_unit_test_injection(self):
         result = _run_typescript(
             textwrap.dedent(
@@ -48,7 +137,7 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                   requireRun,
                 } = await import("./app/api/_conversationStore.ts");
                 const thread = await createThread("dispatch-owner");
-                const run = await createRun(thread.id);
+                const run = await createRun(thread.id, "dispatch-owner");
                 const failed = await failQueuedRunDispatch(
                   run.id,
                   "agent_core_spawn_failed",
@@ -57,7 +146,7 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                   run.id,
                   "agent_core_spawn_failed",
                 );
-                const persisted = await requireRun(run.id);
+                const persisted = await requireRun(run.id, "dispatch-owner");
                 console.log(JSON.stringify({ failed, replay, persisted }));
                 """
             )
@@ -76,8 +165,8 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                   "thread-inline-spawn",
                   "run-inline-spawn",
                   "message",
-                  "business_reader",
-                  { forceInline: true, runtimePermissionScope: "viewer" },
+                  "actor-inline-spawn",
+                  { forceInline: true },
                 );
                 console.log(JSON.stringify(result));
                 """
@@ -101,8 +190,7 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                   "thread-detached-spawn",
                   "run-detached-spawn",
                   "message",
-                  "business_reader",
-                  { runtimePermissionScope: "viewer" },
+                  "actor-detached-spawn",
                 );
                 console.log(JSON.stringify(result));
                 """
@@ -246,17 +334,17 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
             ],
         )
 
-    def test_agent_core_omitted_role_uses_least_privilege(self):
+    def test_agent_core_forwards_analysis_run_identity_and_message(self):
         result = _run_agent_core_inline(
             None,
             node_source=textwrap.dedent(
                 """
                 const { runAgentCore } = await import("./app/api/_agentCore.ts");
                 const result = await runAgentCore(
-                  "thread-runtime-role",
-                  "run-runtime-role",
+                  "thread-analysis-run",
+                  "run-analysis-run",
                   "message",
-                  undefined,
+                  "actor-analysis-run",
                   { forceInline: true },
                 );
                 console.log(JSON.stringify(result));
@@ -268,46 +356,49 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                 import json
                 import sys
 
-                role_index = sys.argv.index("--role") + 1
-                scope_index = sys.argv.index("--runtime-permission-scope") + 1
                 print(json.dumps({
                     "status": "completed",
-                    "run_id": "run-runtime-role",
-                    "turn_id": "turn-runtime-role",
-                    "topic_id": "topic-runtime-role",
+                    "run_id": "run-analysis-run",
+                    "turn_id": "turn-analysis-run",
+                    "topic_id": "topic-analysis-run",
                     "context_manifest": {
-                        "manifest_id": "context-runtime-role",
-                        "thread_id": "thread-runtime-role",
-                        "turn_id": "turn-runtime-role",
-                        "topic_id": "topic-runtime-role",
+                        "manifest_id": "context-analysis-run",
+                        "thread_id": "thread-analysis-run",
+                        "turn_id": "turn-analysis-run",
+                        "topic_id": "topic-analysis-run",
                     },
-                    "answer_package": {"run_id": "run-runtime-role"},
-                    "received_role": sys.argv[role_index],
-                    "received_scope": sys.argv[scope_index],
+                    "answer_package": {"run_id": "run-analysis-run"},
+                    "received_args": sys.argv[1:],
                 }))
                 """
             ),
         )
 
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["result"]["received_role"], "business_reader")
-        self.assertEqual(result["result"]["received_scope"], "viewer")
+        self.assertEqual(
+            result["result"]["received_args"],
+            [
+                "-m",
+                "bi_agent.conversation.agent_core",
+                "--thread-id",
+                "thread-analysis-run",
+                "--run-id",
+                "run-analysis-run",
+                "--message",
+                "message",
+                "--user-id",
+                "actor-analysis-run",
+            ],
+        )
 
-    def test_role_resolver_and_business_reader_filter_execute_typescript(self):
+    def test_single_customer_projection_executes_typescript(self):
         result = _run_typescript(
             textwrap.dedent(
                 """
-                const {
-                  filterAgentCoreForRole,
-                  resolveGatewayRole,
-                } = await import("./app/api/_conversationStore.ts");
-                const decisions = {
-                  missing: resolveGatewayRole(undefined, "production"),
-                  unknown: resolveGatewayRole("unknown_role", "production"),
-                  productionAdmin: resolveGatewayRole("data_owner_admin", "production"),
-                  nonProductionAdmin: resolveGatewayRole("data_owner_admin", "test"),
-                };
-                const visible = filterAgentCoreForRole({
+                const { projectAgentCoreForCustomer } = await import(
+                  "./app/api/_conversationStore.ts"
+                );
+                const visible = projectAgentCoreForCustomer({
                   status: "completed",
                   command: "private-command",
                   output: "private-output",
@@ -342,29 +433,18 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                       ],
                     },
                   },
-                }, "business_reader");
-                console.log(JSON.stringify({ decisions, visible }));
+                });
+                console.log(JSON.stringify({ visible }));
                 """
             )
         )
 
-        least_privilege = {
-            "displayRole": "business_reader",
-            "runtimePermissionScope": "viewer",
-        }
-        self.assertEqual(result["decisions"]["missing"], least_privilege)
-        self.assertEqual(result["decisions"]["unknown"], least_privilege)
-        self.assertEqual(result["decisions"]["productionAdmin"], least_privilege)
-        self.assertEqual(
-            result["decisions"]["nonProductionAdmin"],
-            {"displayRole": "data_owner_admin", "runtimePermissionScope": "admin"},
-        )
         self.assertEqual(
             [
                 section["section_id"]
                 for section in result["visible"]["result"]["answer_package"]["sections"]
             ],
-            ["summary"],
+            ["summary", "diagnostics"],
         )
         serialized = json.dumps(result["visible"], ensure_ascii=False)
         for private_value in (
@@ -374,16 +454,15 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
             "private-agent-sibling",
             "private-quality-review",
             "private-audit",
-            "private-diagnostics",
             "private-admin",
         ):
             self.assertNotIn(private_value, serialized)
 
-    def test_business_reader_filter_projects_all_core_statuses_safely(self):
+    def test_customer_projection_projects_all_core_statuses_safely(self):
         result = _run_typescript(
             textwrap.dedent(
                 """
-                const { filterAgentCoreForRole } = await import("./app/api/_conversationStore.ts");
+                const { projectAgentCoreForCustomer } = await import("./app/api/_conversationStore.ts");
                 const waitingRaw = {
                   status: "waiting_for_clarification",
                   command: "private-command",
@@ -478,14 +557,12 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                   },
                 };
                 console.log(JSON.stringify({
-                  waiting: filterAgentCoreForRole(waitingRaw, "business_reader"),
-                  failed: filterAgentCoreForRole(failedRaw, "business_reader"),
-                  completedWithoutWorkflow: filterAgentCoreForRole(
+                  waiting: projectAgentCoreForCustomer(waitingRaw),
+                  failed: projectAgentCoreForCustomer(failedRaw),
+                  completedWithoutWorkflow: projectAgentCoreForCustomer(
                     completedWithoutWorkflowRaw,
-                    "business_reader",
                   ),
-                  completed: filterAgentCoreForRole(completedRaw, "business_reader"),
-                  adminPreserved: filterAgentCoreForRole(waitingRaw, "data_owner_admin") === waitingRaw,
+                  completed: projectAgentCoreForCustomer(completedRaw),
                 }));
                 """
             )
@@ -569,7 +646,6 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                 }
             ],
         )
-        self.assertTrue(result["adminPreserved"])
         serialized = json.dumps(result, ensure_ascii=False)
         for private_value in (
             "private-command",
@@ -600,15 +676,15 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
             node_source=textwrap.dedent(
                 """
                 const { runAgentCore } = await import("./app/api/_agentCore.ts");
-                const { filterAgentCoreForRole } = await import("./app/api/_conversationStore.ts");
+                const { projectAgentCoreForCustomer } = await import("./app/api/_conversationStore.ts");
                 const raw = await runAgentCore(
                   "thread-process-failure",
                   "run-process-failure",
                   "message",
-                  "business_reader",
-                  { forceInline: true, runtimePermissionScope: "viewer" },
+                  "actor-process-failure",
+                  { forceInline: true },
                 );
-                const visible = filterAgentCoreForRole(raw, "business_reader");
+                const visible = projectAgentCoreForCustomer(raw);
                 console.log(JSON.stringify({ raw, visible }));
                 """
             ),
@@ -661,7 +737,7 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
         result = _run_typescript(
             textwrap.dedent(
                 """
-                const { filterAgentCoreForRole } = await import("./app/api/_conversationStore.ts");
+                const { projectAgentCoreForCustomer } = await import("./app/api/_conversationStore.ts");
                 const common = {
                   run_id: "run-mismatch",
                   turn_id: "turn-mismatch",
@@ -707,7 +783,7 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                   { status: "waiting_for_clarification", result: inner.completed_without_workflow },
                 ];
                 console.log(JSON.stringify(cases.map((item) =>
-                  filterAgentCoreForRole(item, "business_reader")
+                  projectAgentCoreForCustomer(item)
                 )));
                 """
             )
@@ -737,11 +813,11 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
         ):
             self.assertNotIn(private_value, serialized)
 
-    def test_admin_status_mismatch_fails_closed_before_raw_bypass(self):
+    def test_status_mismatch_fails_closed_before_customer_projection(self):
         result = _run_typescript(
             textwrap.dedent(
                 """
-                const { filterAgentCoreForRole } = await import("./app/api/_conversationStore.ts");
+                const { projectAgentCoreForCustomer } = await import("./app/api/_conversationStore.ts");
                 const raw = {
                   status: "failed",
                   error: "agent_core_process_failed",
@@ -755,7 +831,7 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                     },
                   },
                 };
-                const visible = filterAgentCoreForRole(raw, "data_owner_admin");
+                const visible = projectAgentCoreForCustomer(raw);
                 console.log(JSON.stringify({ same: visible === raw, visible }));
                 """
             )
@@ -782,7 +858,7 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
         reasons = _run_typescript(
             textwrap.dedent(
                 """
-                const { filterAgentCoreForRole } = await import("./app/api/_conversationStore.ts");
+                const { projectAgentCoreForCustomer } = await import("./app/api/_conversationStore.ts");
                 const reasons = [
                   "material_authority_projection_failed",
                   "analysis_runtime_bundle_validation_failed",
@@ -790,7 +866,7 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                   "analysis_runtime_store_commit_failed",
                 ];
                 console.log(JSON.stringify(reasons.map((failure_reason, index) =>
-                  filterAgentCoreForRole({
+                  projectAgentCoreForCustomer({
                     status: "failed",
                     result: {
                       run_id: `run-stage-${index}`,
@@ -799,7 +875,7 @@ class GatewayTypeScriptContractTest(unittest.TestCase):
                       status: "failed",
                       failure_reason,
                     },
-                  }, "business_reader").result.failure_reason
+                  }).result.failure_reason
                 )));
                 """
             )
@@ -829,8 +905,8 @@ def _run_agent_core_inline(
           "thread-parser",
           "run-parser",
           "message",
-          "business_reader",
-          { forceInline: true, runtimePermissionScope: "viewer" },
+          "actor-parser",
+          { forceInline: true },
         );
         console.log(JSON.stringify(result));
         """
@@ -857,6 +933,7 @@ def _run_agent_core_inline(
             **os.environ,
             "PATH": f"{temporary_directory}{os.pathsep}{os.environ.get('PATH', '')}",
             "FAKE_AGENT_CORE_STDOUT": stdout or "",
+            "WAJE_AGENT_CORE_COMMAND": "python3",
         }
         return _run_typescript(source, env=env)
 

@@ -58,7 +58,7 @@ def segment_bridge(
         )
         return make_evidence_envelope(
             "segment_bridge",
-            evidence_type="permission_limited",
+            evidence_type="insufficient",
             strength="insufficient",
             wording_limit="blocked",
             typed_payload={

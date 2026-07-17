@@ -65,6 +65,7 @@ class ResolvedWindow:
     required_complete_days: int
     source_watermark_requirement: str
     membership_policy: str = "allow_overlap"
+    capability_refs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -97,7 +98,6 @@ class DimensionBinding:
     source_field: str
     allowed_grains: tuple[str, ...]
     null_bucket: str = "Unknown"
-    permission_scope: str = "analyst"
 
 
 @dataclass(frozen=True)
@@ -137,7 +137,6 @@ class QueryContract:
     filters: tuple[Mapping[str, Any], ...]
     result_shape: ResultShape
     completeness_assertions: tuple[str, ...]
-    permission_scope: str
     workload_class: str
     contract_signature: str
     query_parameters: Mapping[str, Any] = field(default_factory=dict)
@@ -159,7 +158,6 @@ _QUERY_CONTRACT_SEMANTIC_FIELDS = (
     "filters",
     "result_shape",
     "completeness_assertions",
-    "permission_scope",
     "workload_class",
     "query_parameters",
     "reconciliation_binding",
@@ -276,9 +274,7 @@ class AnalysisContract:
     dimension_bindings: tuple[DimensionBinding, ...]
     dataset_requirements: tuple[str, ...]
     capability_requirements: tuple[str, ...]
-    permission_scope: str
     contract_gaps: tuple[ContractGap, ...] = ()
-    clarification_outcome_ref: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -346,9 +342,6 @@ def analysis_contract_from_dict(value: Mapping[str, Any]) -> AnalysisContract:
             item["capability_requirements"],
             path="analysis_contract.capability_requirements",
         ),
-        permission_scope=_strict_string(
-            item["permission_scope"], path="analysis_contract.permission_scope"
-        ),
         contract_gaps=tuple(
             _contract_gap_from_dict(raw, index=index)
             for index, raw in enumerate(
@@ -356,11 +349,6 @@ def analysis_contract_from_dict(value: Mapping[str, Any]) -> AnalysisContract:
                     item["contract_gaps"], path="analysis_contract.contract_gaps"
                 )
             )
-        ),
-        clarification_outcome_ref=_strict_string(
-            item["clarification_outcome_ref"],
-            path="analysis_contract.clarification_outcome_ref",
-            allow_empty=True,
         ),
     )
     for name, values in (
@@ -414,6 +402,9 @@ def _resolved_window_from_dict(value: Any, *, index: int) -> ResolvedWindow:
         ),
         membership_policy=_strict_string(
             item["membership_policy"], path=f"{path}.membership_policy"
+        ),
+        capability_refs=_strict_string_sequence(
+            item["capability_refs"], path=f"{path}.capability_refs"
         ),
     )
 
@@ -478,9 +469,6 @@ def _dimension_binding_from_dict(value: Any, *, index: int) -> DimensionBinding:
             item["allowed_grains"], path=f"{path}.allowed_grains"
         ),
         null_bucket=_strict_string(item["null_bucket"], path=f"{path}.null_bucket"),
-        permission_scope=_strict_string(
-            item["permission_scope"], path=f"{path}.permission_scope"
-        ),
     )
 
 

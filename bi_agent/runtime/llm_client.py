@@ -687,6 +687,11 @@ NARRATIVE_KEYS = frozenset(
         "retry_instruction",
     }
 )
+SEQUENCE_NARRATIVE_KEYS = frozenset(
+    {
+        "supporting_reasons",
+    }
+)
 
 def _localize_narrative_fields(value: Any, key: str = "") -> Any:
     if key == "accepted_assumptions" and isinstance(value, str):
@@ -711,9 +716,22 @@ def _localize_narrative_fields(value: Any, key: str = "") -> Any:
             item_key: _localize_narrative_fields(item, item_key)
             for item_key, item in value.items()
         }
+    if key in SEQUENCE_NARRATIVE_KEYS:
+        if not isinstance(value, list):
+            raise LLMOutputError(f"llm_narrative_invalid:{key}")
+        normalized_items = []
+        for item in value:
+            if not isinstance(item, str):
+                raise LLMOutputError(f"llm_narrative_invalid:{key}")
+            normalized = _normalize_business_narrative(item.strip())
+            if not normalized or _contains_unlocalized_narrative_tokens(normalized):
+                raise LLMOutputError(f"llm_narrative_invalid:{key}")
+            normalized_items.append(normalized)
+        return normalized_items
     if (
         key in NARRATIVE_KEYS
         and key != "accepted_assumptions"
+        and key not in SEQUENCE_NARRATIVE_KEYS
         and not isinstance(value, str)
     ):
         raise LLMOutputError(f"llm_narrative_invalid:{key}")
@@ -785,7 +803,8 @@ def _normalize_business_narrative(value: str) -> str:
         "paid_amount": "付费金额",
         "metric_coverage_profile": "指标覆盖检查",
         "metric_timeseries": "指标时间序列",
-        "gameplay_activity_context": "玩法活动上下文",
+        "cross_source_association": "跨来源时序关联",
+        "cross_source_panel_association": "跨来源渠道面板关联",
         "data_quality_profile": "数据质量检查",
         "compare_periods": "周期对比",
         "compare_period_phases": "周期内阶段对比",
@@ -833,35 +852,37 @@ def _normalize_business_narrative(value: str) -> str:
     return value
 
 
-_BUSINESS_ENTITY_SUFFIX_PATTERN = (
-    r"渠道|产品|版本|活动|页面|地区|国家|市场|用户|客群|分群|人群|订单|"
-    r"方案|团队|公司|门店|城市|币种|广告|素材|来源|端|业务线|套餐|计划|等级|标签"
+_INTERNAL_NARRATIVE_TOKEN_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"evidence_refs?|query_refs?|result_refs?|source_refs?|sql_hash(?:es)?|"
+    r"response_id|prompt_version|model_tier|provider_metadata|"
+    r"analysis_contract_ref|capability_contract_ref|"
+    r"candidate_hypothesis|directional_association|not_supported|"
+    r"needs_more_evidence|mixed_or_confounded"
+    r")(?![A-Za-z0-9])",
+    flags=re.IGNORECASE,
 )
-
-_REVIEWED_BUSINESS_NARRATIVE_ACRONYMS = frozenset(
-    {"ARPPU", "DAU", "NGN", "ROI", "WAJE"}
+_SNAKE_CASE_NARRATIVE_TOKEN_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+(?![A-Za-z0-9_])"
 )
-
-
-def _strip_business_entity_tokens(value: str) -> str:
-    return re.sub(
-        rf"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*(?=({_BUSINESS_ENTITY_SUFFIX_PATTERN}))",
-        "",
-        value,
-    )
+_RAW_SQL_NARRATIVE_PATTERN = re.compile(
+    r"\bselect\b[\s\S]{0,2000}\bfrom\b",
+    flags=re.IGNORECASE,
+)
 
 
 def _contains_unlocalized_narrative_tokens(value: str) -> bool:
     if not re.search(r"[\u3400-\u9fff]", value):
         return True
-    value = _strip_business_entity_tokens(value)
-    for acronym in _REVIEWED_BUSINESS_NARRATIVE_ACRONYMS:
-        value = re.sub(
-            rf"(?<![A-Za-z0-9]){re.escape(acronym)}(?![A-Za-z0-9])",
-            "",
-            value,
-        )
-    return bool(re.search(r"[A-Za-z]{2,}", value))
+    # Product names, channels, device models, statistical methods, and units
+    # are legitimate business prose even when they use Latin characters.  The
+    # provider boundary only rejects machine-owned identifiers and raw SQL;
+    # claim strength and wording are reviewed sentence by sentence downstream.
+    return bool(
+        _INTERNAL_NARRATIVE_TOKEN_PATTERN.search(value)
+        or _SNAKE_CASE_NARRATIVE_TOKEN_PATTERN.search(value)
+        or _RAW_SQL_NARRATIVE_PATTERN.search(value)
+    )
 
 
 def _hash_json(value: Any) -> str:

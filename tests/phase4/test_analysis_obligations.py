@@ -39,7 +39,7 @@ class AnalysisObligationsTest(unittest.TestCase):
             ):
                 self.assertIn(family, get_capability_card(capability).supported_question_families)
 
-    def test_obligation_registry_covers_every_public_capability(self):
+    def test_analysis_registry_covers_every_public_capability(self):
         registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
         referenced = set()
         for family in registry.question_family_ids:
@@ -51,26 +51,36 @@ class AnalysisObligationsTest(unittest.TestCase):
         payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)
         for contract in payload["diagnostic_obligations"].values():
             referenced.update(contract["required_capabilities"])
+        for contract in payload["analysis_axis_catalog"].values():
+            referenced.update(contract["capability_refs"])
         self.assertEqual(referenced, set(public_capability_ids()))
 
-    def test_resolver_adds_contract_required_and_conditional_capabilities(self):
+    def test_dimension_axis_screens_all_dimensions_without_joint_attribution(self):
         result = resolve_analysis_obligations(
             ObligationRequest(
                 question_families=("segment_or_factor_attribution",),
                 diagnostic_tags=("factor_topk",),
                 target_metrics=("paid_amount",),
-                requested_dimensions=("channel",),
+                dimension_ids=("channel",),
                 baselines=("previous_day",),
                 context_sources=(),
-                claim_intents=("segment_contribution_or_mix_shift",),
+                analysis_axis_ids=("dimension_localization",),
+                required_outcomes=("ranked_drivers",),
+                claim_types=("segment_contribution_or_mix_shift",),
             ),
             RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
         )
         self.assertEqual(
             result.required_capabilities,
-            ("data_quality_profile", "segment_contribution", "joint_attribution", "answer_verify"),
+            (
+                "data_quality_profile",
+                "candidate_dimension_screen",
+                "answer_verify",
+            ),
         )
         self.assertIn("market_channel_context", result.conditional_capabilities)
+        self.assertNotIn("joint_attribution", result.required_capabilities)
+        self.assertNotIn("joint_attribution", result.conditional_capabilities)
         self.assertEqual(
             tuple(item["capability"] for item in result.mutations),
             (*result.required_capabilities, *result.conditional_capabilities),
@@ -85,10 +95,12 @@ class AnalysisObligationsTest(unittest.TestCase):
                 question_families=("business_object_impact_review",),
                 diagnostic_tags=(),
                 target_metrics=("paid_amount",),
-                requested_dimensions=("gameplay",),
+                dimension_ids=("gameplay",),
                 baselines=(),
                 context_sources=("gameplay",),
-                claim_intents=("candidate_mechanism",),
+                analysis_axis_ids=("business_context",),
+                required_outcomes=(),
+                claim_types=("candidate_mechanism",),
             ),
             registry,
         )
@@ -106,10 +118,12 @@ class AnalysisObligationsTest(unittest.TestCase):
                 question_families=("business_object_impact_review",),
                 diagnostic_tags=(),
                 target_metrics=("paid_amount",),
-                requested_dimensions=(),
+                dimension_ids=(),
                 baselines=(),
                 context_sources=("external_event",),
-                claim_intents=("candidate_mechanism",),
+                analysis_axis_ids=("business_context",),
+                required_outcomes=(),
+                claim_types=("candidate_mechanism",),
             ),
             registry,
         )
@@ -124,7 +138,18 @@ class AnalysisObligationsTest(unittest.TestCase):
             question_family="pattern_explanation",
             question_families=("pattern_explanation", "custom_baseline_comparison"),
             target_metric="paid_amount",
-            bound_context={"analysis_requirements": {"baselines": ["previous_day"]}},
+            bound_context={
+                "analysis_requirements": {
+                    "baselines": ["previous_day"],
+                    "dimension_ids": ["channel"],
+                    "analysis_axis_ids": [
+                        "change_validation",
+                        "dimension_localization",
+                    ],
+                    "required_outcomes": ["direction_and_magnitude"],
+                    "claim_types": ["comparative_change"],
+                }
+            },
         )
         self.assertEqual(
             request.question_families,
@@ -132,6 +157,16 @@ class AnalysisObligationsTest(unittest.TestCase):
         )
         self.assertEqual(request.target_metrics, ("paid_amount",))
         self.assertEqual(request.baselines, ("previous_day",))
+        self.assertEqual(request.dimension_ids, ("channel",))
+        self.assertEqual(
+            request.analysis_axis_ids,
+            ("change_validation", "dimension_localization"),
+        )
+        self.assertEqual(
+            request.required_outcomes,
+            ("direction_and_magnitude",),
+        )
+        self.assertEqual(request.claim_types, ("comparative_change",))
 
     def test_obligation_contract_rejects_eval_specific_keys(self):
         payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)
@@ -162,10 +197,12 @@ class AnalysisObligationsTest(unittest.TestCase):
             question_families=("pattern_explanation",),
             diagnostic_tags=(),
             target_metrics=("unreviewed_metric",),
-            requested_dimensions=(),
+            dimension_ids=(),
             baselines=(),
             context_sources=(),
-            claim_intents=(),
+            analysis_axis_ids=(),
+            required_outcomes=(),
+            claim_types=(),
         )
         with self.assertRaisesRegex(ValueError, "unknown_obligation_target_metric"):
             resolve_analysis_obligations(
@@ -242,7 +279,7 @@ class AnalysisObligationsTest(unittest.TestCase):
         payload["question_family_obligations"]["pattern_explanation"][
             "required_capabilities"
         ].remove("evidence_reduce")
-        with self.assertRaisesRegex(ValueError, "runtime_obligation_capability_coverage"):
+        with self.assertRaisesRegex(ValueError, "runtime_analysis_capability_coverage"):
             RuntimeContractRegistry(payload)
 
     def test_registry_rejects_capability_unsupported_by_question_family(self):
@@ -262,10 +299,12 @@ class AnalysisObligationsTest(unittest.TestCase):
                 ),
                 diagnostic_tags=(),
                 target_metrics=("paid_amount",),
-                requested_dimensions=(),
+                dimension_ids=(),
                 baselines=("previous_day",),
                 context_sources=(),
-                claim_intents=(),
+                analysis_axis_ids=("change_validation",),
+                required_outcomes=("direction_and_magnitude",),
+                claim_types=(),
             ),
             RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
         )
@@ -286,10 +325,12 @@ class AnalysisObligationsTest(unittest.TestCase):
                 question_families=("anomaly_or_black_swan_review",),
                 diagnostic_tags=("anomaly",),
                 target_metrics=("paid_amount",),
-                requested_dimensions=(),
+                dimension_ids=(),
                 baselines=(),
                 context_sources=(),
-                claim_intents=("external_shock_candidate_or_anomaly",),
+                analysis_axis_ids=(),
+                required_outcomes=(),
+                claim_types=("external_shock_candidate_or_anomaly",),
             ),
             RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
         )
@@ -305,10 +346,12 @@ class AnalysisObligationsTest(unittest.TestCase):
                 ),
                 diagnostic_tags=(),
                 target_metrics=("paid_amount",),
-                requested_dimensions=(),
+                dimension_ids=(),
                 baselines=(),
                 context_sources=(),
-                claim_intents=("contract_coverage_and_trust_boundary",),
+                analysis_axis_ids=("data_quality",),
+                required_outcomes=("evidence_boundaries",),
+                claim_types=("contract_coverage_and_trust_boundary",),
             ),
             RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
         )
@@ -339,7 +382,7 @@ class AnalysisObligationsTest(unittest.TestCase):
         payload = load_contract(CANONICAL_RUNTIME_BINDINGS_PATH)
         payload["diagnostic_obligations"]["factor_topk"][
             "supported_question_families"
-        ].append("pattern_explanation")
+        ].append("business_object_impact_review")
         with self.assertRaisesRegex(ValueError, "runtime_diagnostic_unsupported_family"):
             RuntimeContractRegistry(payload)
 
@@ -348,10 +391,12 @@ class AnalysisObligationsTest(unittest.TestCase):
             question_families=("paid_amount_change_explanation",),
             diagnostic_tags=("event_impact",),
             target_metrics=("paid_amount",),
-            requested_dimensions=(),
+            dimension_ids=(),
             baselines=(),
             context_sources=("external_event",),
-            claim_intents=(),
+            analysis_axis_ids=("business_context",),
+            required_outcomes=(),
+            claim_types=(),
         )
         with self.assertRaisesRegex(ValueError, "diagnostic_question_family_incompatible"):
             resolve_analysis_obligations(
@@ -367,10 +412,12 @@ class AnalysisObligationsTest(unittest.TestCase):
             ),
             diagnostic_tags=("event_impact",),
             target_metrics=("paid_amount",),
-            requested_dimensions=(),
+            dimension_ids=(),
             baselines=(),
             context_sources=("external_event",),
-            claim_intents=(),
+            analysis_axis_ids=("business_context",),
+            required_outcomes=(),
+            claim_types=(),
         )
         with self.assertRaisesRegex(ValueError, "diagnostic_question_family_incompatible"):
             resolve_analysis_obligations(
@@ -387,10 +434,21 @@ class AnalysisObligationsTest(unittest.TestCase):
                 ),
                 diagnostic_tags=("event_impact",),
                 target_metrics=("paid_amount",),
-                requested_dimensions=(),
+                dimension_ids=(),
                 baselines=("previous_day",),
                 context_sources=("external_event",),
-                claim_intents=(),
+                analysis_axis_ids=(
+                    "change_validation",
+                    "formula_tree",
+                    "business_context",
+                    "data_quality",
+                ),
+                required_outcomes=(
+                    "direction_and_magnitude",
+                    "ranked_drivers",
+                    "evidence_boundaries",
+                ),
+                claim_types=(),
             ),
             RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
         )
@@ -426,10 +484,12 @@ class AnalysisObligationsTest(unittest.TestCase):
                 ),
                 diagnostic_tags=("factor_topk",),
                 target_metrics=("paid_amount",),
-                requested_dimensions=("channel",),
+                dimension_ids=("channel",),
                 baselines=(),
                 context_sources=(),
-                claim_intents=("contract_coverage_and_trust_boundary",),
+                analysis_axis_ids=("dimension_localization", "data_quality"),
+                required_outcomes=("evidence_boundaries",),
+                claim_types=("contract_coverage_and_trust_boundary",),
             ),
             RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH),
         )
@@ -482,10 +542,21 @@ class AnalysisObligationsTest(unittest.TestCase):
                     "evidence_quality",
                 ),
                 target_metrics=("paid_amount",),
-                requested_dimensions=("channel",),
+                dimension_ids=("channel",),
                 baselines=(),
                 context_sources=("internal_operation_event",),
-                claim_intents=(
+                analysis_axis_ids=(
+                    "formula_tree",
+                    "dimension_localization",
+                    "business_context",
+                    "data_quality",
+                ),
+                required_outcomes=(
+                    "ranked_drivers",
+                    "quantified_contributions",
+                    "evidence_boundaries",
+                ),
+                claim_types=(
                     "formula_component_contribution",
                     "external_shock_candidate_or_anomaly",
                     "contract_coverage_and_trust_boundary",

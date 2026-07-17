@@ -29,6 +29,7 @@ KNOWN_DEGRADATION_ACTIONS = (
 
 _DEGRADABLE_REQUIRED_SLOT_MATCH_FAILURES = frozenset(
     {
+        "query_execution_failed",
         "primary_provenance_mismatch",
         "completeness_not_accepted",
         "primary_report_not_ready",
@@ -47,6 +48,7 @@ _DEGRADABLE_REQUIRED_SLOT_MATCH_FAILURES = frozenset(
 )
 _REQUIRED_SLOT_MATCH_FAILURES_WITH_DETAILS = frozenset(
     {
+        "query_execution_failed",
         "required_fields_missing",
         "required_windows_missing",
     }
@@ -148,6 +150,16 @@ def degraded_binding_projection_is_authorized(
             ):
                 return False
             continue
+        optional_slot_id = _declared_slot_for_match_failure(
+            reason,
+            optional_slot_ids,
+        )
+        if optional_slot_id:
+            if not degradation_action_is_non_blocking(
+                degradation_policy.get("incomplete_input")
+            ):
+                return False
+            continue
         slot_id = _declared_required_slot_for_match_failure(
             reason,
             required_slot_ids,
@@ -167,6 +179,13 @@ def _declared_required_slot_for_match_failure(
     reason: str,
     required_slot_ids: set[str],
 ) -> str:
+    return _declared_slot_for_match_failure(reason, required_slot_ids)
+
+
+def _declared_slot_for_match_failure(
+    reason: str,
+    slot_ids: set[str],
+) -> str:
     failure_type, separator, payload = reason.partition(":")
     if (
         not separator
@@ -174,11 +193,11 @@ def _declared_required_slot_for_match_failure(
     ):
         return ""
     if failure_type not in _REQUIRED_SLOT_MATCH_FAILURES_WITH_DETAILS:
-        return payload if payload in required_slot_ids else ""
+        return payload if payload in slot_ids else ""
     return next(
         (
             slot_id
-            for slot_id in sorted(required_slot_ids, key=len, reverse=True)
+            for slot_id in sorted(slot_ids, key=len, reverse=True)
             if payload.startswith(f"{slot_id}:")
         ),
         "",

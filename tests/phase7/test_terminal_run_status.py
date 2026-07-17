@@ -21,7 +21,6 @@ from tests.phase7.test_agent_core_bridge import (
     _queryless_runtime_records_for_request,
     fake_workflow,
 )
-from tests.phase7.test_clarification_resume_authority import _seed_memory_store
 
 
 def test_run_status_value_validator_defines_closed_vocabulary() -> None:
@@ -44,17 +43,13 @@ def test_run_status_value_validator_defines_closed_vocabulary() -> None:
 def test_inmemory_completed_run_authority_cannot_be_downgraded(
     attempted_status: str,
 ) -> None:
-    store, _ = _seed_memory_store()
-    material_authority = deepcopy(
-        store.runs["run-source"]["request"]["material_authority"]
-    )
-    store.runs["run-source"]["status"] = "running_workflow"
-    store.finalize_completed_material_authority(
-        run_id="run-source",
+    store = InMemoryConversationStore()
+    store.upsert_run(
+        "run-source",
         thread_id="thread-1",
         topic_id="topic-1",
+        status="completed",
         request={"question": "source question"},
-        material_authority=material_authority,
     )
     completed_run = deepcopy(store.runs["run-source"])
     completed_events = store.audit_events
@@ -255,83 +250,6 @@ class _RunStatusConnection:
         self.rollbacks += 1
 
 
-class _ClarificationDispatchConnection:
-    def __init__(self, *, dispatch_owner_id: str):
-        self.run = {
-            "run_id": "run-resumed",
-            "thread_id": "thread-1",
-            "status": "queued",
-            "request": {},
-        }
-        self.dispatch = {
-            "source_run_id": "run-source",
-            "resumed_run_id": "run-resumed",
-            "thread_id": "thread-1",
-            "dispatch_state": "leased",
-            "dispatch_owner_id": dispatch_owner_id,
-        }
-        self._pending_run = None
-        self._pending_dispatch = None
-        self.audit_events = []
-        self._pending_audits = []
-        self.commits = 0
-        self.rollbacks = 0
-
-    def execute(self, statement, params=None):
-        params = dict(params or {})
-        run = self._pending_run or self.run
-        dispatch = self._pending_dispatch or self.dispatch
-        if "clarification_dispatch_owner_lock" in statement:
-            if (
-                dispatch["source_run_id"] != params["source_run_id"]
-                or dispatch["resumed_run_id"] != params["resumed_run_id"]
-            ):
-                return _Cursor()
-            return _Cursor(({
-                **deepcopy(dispatch),
-                "status": run["status"],
-                "request": json.dumps(run["request"]),
-            },))
-        if "clarification_dispatch_run_claim_cas" in statement:
-            if run["status"] != "queued":
-                return _Cursor()
-            self._pending_run = {**run, "status": "running"}
-            return _Cursor(({"status": "running"},))
-        if "clarification_dispatch_owner_consume_cas" in statement:
-            if (
-                dispatch["dispatch_state"] != "leased"
-                or dispatch["dispatch_owner_id"]
-                != params["dispatch_owner_id"]
-            ):
-                return _Cursor()
-            self._pending_dispatch = {
-                **dispatch,
-                "dispatch_state": "dispatched",
-            }
-            return _Cursor(({"dispatch_state": "dispatched"},))
-        if "INSERT INTO waje_runtime.audit_events" in statement:
-            self._pending_audits.append(deepcopy(params))
-            return _Cursor()
-        raise AssertionError(statement)
-
-    def commit(self):
-        if self._pending_run is not None:
-            self.run = self._pending_run
-        if self._pending_dispatch is not None:
-            self.dispatch = self._pending_dispatch
-        self.audit_events.extend(self._pending_audits)
-        self._pending_run = None
-        self._pending_dispatch = None
-        self._pending_audits = []
-        self.commits += 1
-
-    def rollback(self):
-        self._pending_run = None
-        self._pending_dispatch = None
-        self._pending_audits = []
-        self.rollbacks += 1
-
-
 class _RunDispatchOwnershipConnection:
     def __init__(
         self,
@@ -358,7 +276,6 @@ class _RunDispatchOwnershipConnection:
             "request_digest": "a" * 64,
             "request_payload": {
                 "message": "检查昨天付费金额",
-                "runtimePermissionScope": "analyst",
             },
             "run_id": "run-dispatch",
             "thread_id": "thread-dispatch",
@@ -676,7 +593,7 @@ def test_stale_dispatch_owner_cannot_finalize_failure():
 
 
 def test_owned_dispatch_completion_finalizer_terminalizes_same_owner():
-    from tests.phase7.test_clarification_resume_authority import (
+    from tests.phase7.test_material_authority import (
         _CompletedFinalizationConnection,
         _signed_material_authority,
         _source_contract,
@@ -784,7 +701,6 @@ def test_recovery_driver_starts_committed_pending_dispatch_without_client_retry(
         "request_identity": "request-crash-window",
         "request_payload": {
             "message": "检查昨天付费金额",
-            "runtimePermissionScope": "analyst",
         },
         "dispatch_owner_id": "recovery-owner-1",
         "lease_epoch": 1,
@@ -846,7 +762,6 @@ def test_postgres_recovery_leases_pending_dispatch_with_db_epoch_fence():
     assert lease["producer_kind"] == "thread_message"
     assert lease["request_payload"] == {
         "message": "检查昨天付费金额",
-        "runtimePermissionScope": "analyst",
     }
     assert lease["dispatch_owner_id"].startswith("recovery-dispatch-")
     assert lease["lease_epoch"] == 5
@@ -922,7 +837,6 @@ def test_recovery_driver_owner_terminalizes_worker_start_failure():
         "request_payload": {
             "artifactId": "artifact-1",
             "message": "继续分析",
-            "runtimePermissionScope": "analyst",
         },
         "dispatch_owner_id": "recovery-owner-2",
         "lease_epoch": 2,
@@ -979,7 +893,6 @@ def test_recovery_driver_continues_batch_after_terminal_owner_then_throw():
             "request_identity": f"request-{run_id}",
             "request_payload": {
                 "message": "检查昨天付费金额",
-                "runtimePermissionScope": "analyst",
             },
             "dispatch_owner_id": f"owner-{run_id}",
             "lease_epoch": index,
@@ -1029,7 +942,6 @@ def test_recovery_driver_continues_batch_after_terminal_owner_then_throw():
     (
         "producer_kind",
         "payload",
-        "expected_role",
         "expected_message",
         "expected_clarification",
     ),
@@ -1038,9 +950,7 @@ def test_recovery_driver_continues_batch_after_terminal_owner_then_throw():
             "thread_message",
             {
                 "message": "检查昨天付费金额",
-                "runtimePermissionScope": "viewer",
             },
-            "business_reader",
             "检查昨天付费金额",
             None,
         ),
@@ -1049,28 +959,30 @@ def test_recovery_driver_continues_batch_after_terminal_owner_then_throw():
             {
                 "artifactId": "artifact-1",
                 "message": "继续分析",
-                "runtimePermissionScope": "admin",
             },
-            "data_owner_admin",
             "继续分析",
             None,
         ),
         (
             "clarification_resume",
             {
-                "runId": "run-source",
+                "sourceRunId": "run-source",
+                "resolutionId": "resolution-recovery",
+                "attemptRunId": "run-recovery",
                 "answer": "按推荐继续",
                 "selectedOptionId": "recommended",
                 "source": "user",
-                "runtimePermissionScope": "analyst",
+                "retryAttempt": False,
             },
-            "analyst",
             "按推荐继续",
             {
-                "runId": "run-source",
+                "sourceRunId": "run-source",
+                "resolutionId": "resolution-recovery",
+                "attemptRunId": "run-recovery",
                 "answer": "按推荐继续",
                 "selectedOptionId": "recommended",
                 "source": "user",
+                "retryAttempt": False,
             },
         ),
     ],
@@ -1078,7 +990,6 @@ def test_recovery_driver_continues_batch_after_terminal_owner_then_throw():
 def test_recovery_runner_rehydrates_every_dispatch_producer(
     producer_kind,
     payload,
-    expected_role,
     expected_message,
     expected_clarification,
 ):
@@ -1100,7 +1011,7 @@ def test_recovery_runner_rehydrates_every_dispatch_producer(
         "scope_ref": (
             "thread-recovery"
             if producer_kind == "thread_message"
-            else payload.get("artifactId") or payload.get("runId")
+            else payload.get("artifactId") or payload.get("resolutionId")
         ),
         "request_identity": "request-recovery",
         "request_payload": payload,
@@ -1118,57 +1029,12 @@ def test_recovery_runner_rehydrates_every_dispatch_producer(
         "thread_id": "thread-recovery",
         "run_id": "run-recovery",
         "user_message": expected_message,
-        "role": expected_role,
-        "runtime_permission_scope": payload["runtimePermissionScope"],
         "clarification": expected_clarification,
         "run_dispatch": {
             "dispatch_owner_id": "recovery-owner-3",
             "lease_epoch": 3,
         },
     }]
-
-
-def test_postgres_clarification_dispatch_owner_is_single_use_before_workflow() -> None:
-    connection = _ClarificationDispatchConnection(
-        dispatch_owner_id="owner-after-expiry",
-    )
-    store = PostgresConversationStore(connection)
-
-    with pytest.raises(
-        EvidenceIntegrityError,
-        match="^clarification_dispatch_claim_rejected$",
-    ):
-        store.claim_clarification_dispatch(
-            source_run_id="run-source",
-            resumed_run_id="run-resumed",
-            thread_id="thread-1",
-            dispatch_owner_id="owner-before-expiry",
-        )
-
-    assert connection.run["status"] == "queued"
-    claimed = store.claim_clarification_dispatch(
-        source_run_id="run-source",
-        resumed_run_id="run-resumed",
-        thread_id="thread-1",
-        dispatch_owner_id="owner-after-expiry",
-    )
-    assert claimed["status"] == "running"
-    assert connection.run["status"] == "running"
-    assert connection.dispatch["dispatch_state"] == "dispatched"
-
-    with pytest.raises(
-        EvidenceIntegrityError,
-        match="^clarification_dispatch_claim_rejected$",
-    ):
-        store.claim_clarification_dispatch(
-            source_run_id="run-source",
-            resumed_run_id="run-resumed",
-            thread_id="thread-1",
-            dispatch_owner_id="owner-after-expiry",
-        )
-
-    assert connection.run["status"] == "running"
-    assert len(connection.audit_events) == 1
 
 
 @pytest.mark.parametrize(
@@ -1503,6 +1369,22 @@ def test_postgres_gateway_created_queued_row_enters_agent_core_lifecycle() -> No
     assert transitioned_statuses == ["running", "failed"]
     assert connection.status == "failed"
     assert len(connection.audit_events) == 2
+
+
+def test_agent_core_rejects_user_outside_thread_owner_before_run_start() -> None:
+    store = InMemoryConversationStore()
+    store.create_thread("thread-personal", owner_id="user-1")
+
+    with pytest.raises(EvidenceIntegrityError, match="^thread_owner_mismatch$"):
+        ConversationAgentCore(store).run_message(
+            thread_id="thread-personal",
+            run_id="run-owner-mismatch",
+            user_message="检查昨天付费金额",
+            user_id="user-2",
+        )
+
+    assert store.get_thread("thread-personal").owner_id == "user-1"
+    assert store.get_run_state("run-owner-mismatch") is None
 
 
 def test_python_startup_ack_failure_terminalizes_claimed_running_run() -> None:
@@ -2100,100 +1982,6 @@ def test_legal_status_transition_rejects_existing_owner_drift(
 
     assert _run_state(backend, authority) == before
     assert _run_audit_count(backend, authority) == before_audits
-
-
-class _CommitThenRaiseStore(InMemoryConversationStore):
-    def __init__(self, finalizer_error: Exception):
-        super().__init__()
-        self.finalizer_error = finalizer_error
-
-    def finalize_completed_material_authority(self, **kwargs):
-        super().finalize_completed_material_authority(**kwargs)
-        raise self.finalizer_error
-
-
-@pytest.mark.parametrize(
-    "finalizer_error",
-    (
-        RuntimeError("client failed after committed completion"),
-        EvidenceIntegrityError("completed_followup_authority_record_conflict"),
-    ),
-)
-def test_agent_core_recovers_committed_completion_before_classifying_finalizer_error(
-    finalizer_error: Exception,
-) -> None:
-    def workflow(request):
-        result = fake_workflow(request)
-        records = _queryless_runtime_records_for_request(request)
-        return _completed_runtime_workflow_result(
-            request,
-            answer_package=result.answer_package,
-            records=records,
-            artifact_path="",
-        )
-
-    store = _CommitThenRaiseStore(finalizer_error)
-    result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
-        thread_id="thread-commit-then-error",
-        run_id="run-commit-then-error",
-        user_message="当前付费金额的数据边界是什么？",
-    )
-
-    assert result["status"] == "completed"
-    assert store.runs["run-commit-then-error"]["status"] == "completed"
-    authority = store.resolve_completed_material_authority(
-        source_run_id="run-commit-then-error",
-        thread_id="thread-commit-then-error",
-        topic_id=result["topic_id"],
-    )
-    assert authority["source_run_id"] == "run-commit-then-error"
-    assert not any(
-        event["event_type"]
-        == "completed_material_authority_finalization_failed"
-        for event in store.audit_events
-    )
-
-
-def test_agent_core_preserves_conflicting_committed_material_completion() -> None:
-    class ConflictingCommitThenRaiseStore(InMemoryConversationStore):
-        def finalize_completed_material_authority(self, **kwargs):
-            super().finalize_completed_material_authority(**kwargs)
-            self.runs[kwargs["run_id"]]["request"]["material_authority"] = {
-                "conflicting": "durable completion"
-            }
-            raise RuntimeError("completion_acknowledgement_lost")
-
-    def workflow(request):
-        result = fake_workflow(request)
-        records = _queryless_runtime_records_for_request(request)
-        return _completed_runtime_workflow_result(
-            request,
-            answer_package=result.answer_package,
-            records=records,
-            artifact_path="",
-        )
-
-    store = ConflictingCommitThenRaiseStore()
-    result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
-        thread_id="thread-material-completion-conflict",
-        run_id="run-material-completion-conflict",
-        user_message="当前付费金额的数据边界是什么？",
-    )
-
-    assert result["status"] == "failed"
-    assert result["failure_reason"] == (
-        "completed_material_authority_finalization_failed"
-    )
-    assert result["durable_run_status"] == "completed"
-    assert store.runs["run-material-completion-conflict"]["status"] == "completed"
-    conflict_events = [
-        event
-        for event in store.audit_events
-        if event["event_type"]
-        == "completed_material_authority_finalization_failed"
-    ]
-    assert len(conflict_events) == 1
-    assert conflict_events[0]["payload"]["durable_run_status"] == "completed"
 
 
 def test_agent_core_keeps_real_nonterminal_finalizer_failure_failed() -> None:

@@ -644,9 +644,16 @@ def _match_exact_slot_with_validation_dependencies(
         return None, ""
     if result.query_contract_ref != query_ref or report.query_contract_ref != query_ref:
         return None, f"primary_provenance_mismatch:{slot.slot_id}"
+    if result.execution_status != "succeeded":
+        failure_reason = str(
+            result.failure_reason or result.execution_status or "unknown"
+        )
+        return (
+            None,
+            f"query_execution_failed:{slot.slot_id}:{failure_reason}",
+        )
     if (
-        result.execution_status != "succeeded"
-        or report.result_ref != result.result_ref
+        report.result_ref != result.result_ref
         or report.report_ref != result.completeness_report_ref
         or not result.result_ref
         or not result.completeness_report_ref

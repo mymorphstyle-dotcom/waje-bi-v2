@@ -116,7 +116,6 @@ def raw_paid_snapshot(watermark="2026-07-04", snapshot_ref="snapshot:paid:1"):
             "user_id",
         ),
         "contract:paid@1",
-        ("analyst",),
         "2026-07-05T00:00:00Z",
         "active",
     )
@@ -313,7 +312,6 @@ def baseline_contract(
             required_windows,
         ),
         completeness_assertions=ASSERTIONS,
-        permission_scope="analyst",
         workload_class="interactive_aggregate",
         contract_signature=f"signature:{query_id}",
         query_parameters=dict(query_parameters or {}),
@@ -690,7 +688,6 @@ class QueryCompletenessTest(unittest.TestCase):
                 "complete_context_rows",
             ),
             completeness_assertions=("required_windows_complete",),
-            permission_scope="analyst",
             workload_class="interactive_aggregate",
             contract_signature="",
         )
@@ -1095,22 +1092,6 @@ class QueryCompletenessTest(unittest.TestCase):
                 report = validate_query_result(contract, result, paid_snapshot())
                 self.assertEqual(report.completeness_status, "invalid")
                 self.assertIn(reason, report.failure_reasons)
-
-    def test_snapshot_permission_scope_mismatch_is_invalid(self):
-        contract = baseline_contract()
-        snapshot = replace(paid_snapshot(), permission_scopes=("business_reader",))
-
-        report = validate_query_result(
-            contract,
-            successful_result(contract, rows=complete_rows()),
-            snapshot,
-        )
-
-        self.assertEqual(report.completeness_status, "invalid")
-        self.assertIn(
-            "snapshot_permission_scope_mismatch:analyst:business_reader",
-            report.failure_reasons,
-        )
 
     def test_physical_revision_without_verified_release_is_invalid(self):
         contract = baseline_contract()
@@ -2080,7 +2061,6 @@ class QueryCompletenessTest(unittest.TestCase):
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             ),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
             release_resolver=release_resolver,
         )
         dimension_contract = next(
@@ -2432,7 +2412,7 @@ class QueryCompletenessTest(unittest.TestCase):
         report = repair_report(
             contract,
             "transient_clickhouse:connection_error",
-            "permission_blocked:channel",
+            "contract_gap:channel",
         )
 
         decision = plan_query_repair(
@@ -2476,12 +2456,11 @@ class QueryCompletenessTest(unittest.TestCase):
         self.assertEqual(fresh.action, "recompile")
         self.assertEqual(fresh.report_ref, report.report_ref)
 
-    def test_contract_source_permission_and_sample_gaps_do_not_retry_same_query(self):
+    def test_contract_source_and_sample_gaps_do_not_retry_same_query(self):
         contract = baseline_contract()
         for reason in (
             "contract_gap:metric:paid_amount",
             "source_unbound:market_dashboard",
-            "permission_blocked:channel",
             "insufficient_sample:channel:A",
         ):
             with self.subTest(reason=reason):

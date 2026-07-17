@@ -158,10 +158,6 @@ class AnalysisAssetsTest(unittest.TestCase):
                     }
                 }
             }, "reuse_signature_mismatch:resolved_windows"),
-            "permission": (
-                {"permission_scope": "viewer"},
-                "reuse_signature_mismatch:permission_scope",
-            ),
             "schema": (
                 {"schema_fingerprint": "schema:v2"},
                 "reuse_signature_mismatch:schema_fingerprint",
@@ -306,7 +302,6 @@ class AnalysisAssetsTest(unittest.TestCase):
             time_window="2026-06-01..2026-06-02",
             windows={"target": "2026-06-02"},
             baselines=("previous_day",),
-            permission_scope="analyst",
             snapshot_version="2026H1",
             required_dimensions=("channel",),
             required_fields=tuple(contract["required_fields"]),
@@ -705,7 +700,6 @@ class AnalysisAssetsTest(unittest.TestCase):
             {
                 "run_id": "run-assets-build",
                 "snapshot_id": "2026H1",
-                "permission_scope": "analyst",
                 "admin_audit": {
                     "compiler_runtime_plan": {
                         "target_metric": "paid_amount",
@@ -796,7 +790,6 @@ class AnalysisAssetsTest(unittest.TestCase):
         self.assertEqual(dimension_scan["query_ref"], "hash-channel-scan")
         self.assertEqual(tuple(dimension_scan["dimensions"]), ("channel",))
         self.assertEqual(dimension_scan["snapshot_version"], "2026H1")
-        self.assertEqual(dimension_scan["permission_scope"], "analyst")
         self.assertIn("created_at", dimension_scan)
         self.assertIn("expires_at", dimension_scan)
         self.assertEqual(dimension_scan["result_refs"], ["hash-channel-scan"])
@@ -820,7 +813,6 @@ class AnalysisAssetsTest(unittest.TestCase):
             {
                 "run_id": "run-assets-missing-rows",
                 "snapshot_id": "2026H1",
-                "permission_scope": "analyst",
                 "admin_audit": {
                     "compiler_runtime_plan": {
                         "target_metric": "paid_amount",
@@ -1060,7 +1052,6 @@ class AnalysisAssetsTest(unittest.TestCase):
                     "run_id": request["run_id"],
                     "status": "draft",
                     "snapshot_id": "2026H1",
-                    "permission_scope": "analyst",
                     "sections": [
                         {
                             "section_id": "summary",
@@ -1105,7 +1096,6 @@ class AnalysisAssetsTest(unittest.TestCase):
             thread_id="thread-agent-assets",
             run_id="run-agent-assets",
             user_message="Q2 比 Q1 付费金额为什么变了？",
-            role="analyst",
         )
 
         self.assertEqual(result["status"], "failed")

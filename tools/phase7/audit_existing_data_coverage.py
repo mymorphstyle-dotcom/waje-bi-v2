@@ -67,7 +67,6 @@ def run_audit(args: argparse.Namespace, *, store: Any) -> dict[str, Any]:
             snapshot_records=snapshots,
             release_resolver=store,
             as_of=as_of,
-            permission_scope=args.permission_scope,
         )
     except Exception as exc:
         raise CoverageCLIError(
@@ -98,7 +97,6 @@ def main(
 ) -> int:
     parser = SafeArgumentParser(description="Audit current runtime data coverage")
     parser.add_argument("--as-of", required=True)
-    parser.add_argument("--permission-scope", required=True)
     parser.add_argument("--out", required=True)
     store = None
     result = None

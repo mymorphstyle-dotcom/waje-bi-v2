@@ -15,7 +15,6 @@ DATA_STATES = %w[
   static_assumption
   source_unbound
   missing_contract
-  permission_limited
   unsupported_grain
   out_of_scope_for_now
 ].freeze
@@ -25,7 +24,6 @@ BUSINESS_STATES = %w[
   candidate_mechanism
   contextual_evidence
   insufficient
-  permission_limited
   unsupported_grain
   out_of_scope
 ].freeze

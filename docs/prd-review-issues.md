@@ -103,7 +103,7 @@ Reference after backfill: `docs/prd.md` section 19.
 
 Permissions, audit, snapshots, rerun, performance, deployment, and observability are stated as product effects. They still lack pass/fail gates.
 
-Expected fix: add minimal launch gates, such as permission-blocked claim behavior, rerun comparability requirement, audit trace completeness, budget skip recording, slow-run visibility, and degraded-run observability.
+Expected fix: add minimal launch gates, such as fixed restricted-output behavior, source-access gaps, rerun comparability requirement, audit trace completeness, budget skip recording, slow-run visibility, and degraded-run observability.
 
 ### P1-4: Question tool UX needs result handling for the escape option
 
@@ -115,15 +115,15 @@ The PRD includes the "tell the agent to do differently" option, but it does not 
 
 Expected fix: add a short flow: user override enters targeted repair or intent rebinding, compiler validates the changed graph, rejected instructions produce business-facing explanation, and accepted changes record mutation reason.
 
-### P1-5: Artifact persistence and sharing permissions are absent from the PRD
+### P1-5: Artifact persistence, ownership, and customer-safe sharing are absent from the PRD
 
 Status: backfilled in `docs/prd.md` section 17.
 
 Reference after backfill: `docs/prd.md` section 17.
 
-Prior product decisions include reusable/shareable analysis artifacts and permission-filtered artifact access. The PRD currently focuses on live threads and answers.
+Current product decisions include reusable/shareable analysis artifacts, owner-bound personal history, and one fixed customer-safe artifact projection. The PRD currently focuses on live threads and answers.
 
-Expected fix: decide whether artifacts are baseline scope. If yes, add artifact requirements: saved answer, visualization plan, process summary, evidence boundaries, permission-filtered read view, export constraints, and continue-investigation entry point.
+Expected fix: decide whether artifacts are baseline scope. If yes, add artifact requirements: saved answer, visualization plan, process summary, evidence boundaries, owner-bound read view, fixed customer-safe export, and continue-investigation entry point.
 
 ### P1-6: Eval failure attribution is not included in the PRD body
 

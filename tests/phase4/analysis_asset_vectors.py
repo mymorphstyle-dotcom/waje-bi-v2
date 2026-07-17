@@ -104,7 +104,6 @@ def verified_dimension_scan_asset(
         source_field=str(reviewed_dimension["source_field"]),
         allowed_grains=tuple(reviewed_dimension["allowed_grains"]),
         null_bucket=str(reviewed_dimension.get("null_bucket") or "Unknown"),
-        permission_scope="analyst",
     )
     total_query_ref = f"{query_ref}:total"
     total_contract = QueryContract(
@@ -132,7 +131,6 @@ def verified_dimension_scan_asset(
             ),
         ),
         completeness_assertions=ASSERTIONS,
-        permission_scope="analyst",
         workload_class="interactive_aggregate",
         contract_signature="",
         query_role_ref=f"query-role:{total_query_ref}",
@@ -167,7 +165,6 @@ def verified_dimension_scan_asset(
             ),
         ),
         completeness_assertions=ASSERTIONS,
-        permission_scope="analyst",
         workload_class="interactive_aggregate",
         contract_signature="",
         query_role_ref=f"query-role:{query_ref}",
@@ -195,7 +192,6 @@ def verified_dimension_scan_asset(
         schema_fingerprint=schema_fingerprint or "test-vector-schema-v1",
         schema_fields=("business_date_lagos", "paid_amount_ngn", "channel"),
         contract_ref="source:paid@1",
-        permission_scopes=("analyst",),
         loaded_at="2026-07-09T00:00:00+00:00",
         status="active",
         logical_snapshot_id="paid-order-success-test-vector",
@@ -473,7 +469,6 @@ def verified_dimension_scan_asset(
             if window.role in {"target", "baseline"}
         },
         baselines=("previous_day",),
-        permission_scope="analyst",
         snapshot_version="2026H1",
         dimensions=("channel",),
         required_fields=contract.result_shape.required_fields,

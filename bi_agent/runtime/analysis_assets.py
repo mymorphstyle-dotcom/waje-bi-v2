@@ -38,7 +38,6 @@ CONTEXT_ONLY_EVIDENCE_TYPES = frozenset(
         "contextual_evidence",
         "insufficient",
         "insufficient_evidence",
-        "permission_limited",
         "data_gap",
     )
 )
@@ -260,7 +259,6 @@ def _dimension_scan_asset(
         time_window=plan.get("time_window"),
         windows=plan.get("windows"),
         baselines=plan.get("baselines"),
-        permission_scope=answer_package.get("permission_scope"),
         snapshot_version=answer_package.get("snapshot_id") or answer_package.get("snapshot"),
         dimensions=dimensions,
         required_fields=_required_fields(plan),
@@ -352,7 +350,6 @@ def _dimension_scan_asset(
         "created_at": created_at,
         "expires_at": expires_at,
         "snapshot_version": str(answer_package.get("snapshot_id") or answer_package.get("snapshot") or ""),
-        "permission_scope": str(answer_package.get("permission_scope") or answer_package.get("visibility") or ""),
         "result_refs": result_refs,
         "rows_refs": reuse_contract.get("rows_refs", ()),
         "completeness_report_refs": reuse_contract.get(
@@ -522,7 +519,6 @@ def build_dimension_scan_reuse_contract(
     time_window: Any,
     windows: Any,
     baselines: Any,
-    permission_scope: Any,
     snapshot_version: Any,
     dimensions: Sequence[str],
     required_fields: Sequence[str],
@@ -613,7 +609,6 @@ def build_dimension_scan_reuse_contract(
         "time_window": str(time_window or ""),
         "windows": _mapping_jsonable(windows),
         "baselines": list(_string_list(baselines)),
-        "permission_scope": str(permission_scope or ""),
         "snapshot_version": str(snapshot_version or ""),
         "dimensions": [str(item) for item in dimensions if item],
         "required_fields": [str(item) for item in required_fields if item],
@@ -686,7 +681,6 @@ def reusable_dimension_scan_inputs(
     time_window: str,
     windows: Mapping[str, Any] | None,
     baselines: Sequence[str],
-    permission_scope: str,
     snapshot_version: str,
     required_dimensions: Sequence[str],
     required_fields: Sequence[str],
@@ -719,7 +713,6 @@ def reusable_dimension_scan_inputs(
         time_window=time_window,
         windows=windows,
         baselines=baselines,
-        permission_scope=permission_scope,
         snapshot_version=snapshot_version,
         dimensions=required_dimensions,
         required_fields=required_fields,
@@ -938,7 +931,6 @@ def evaluate_dimension_scan_reuse(
         return context_only(content_reason)
 
     required_exact_fields = (
-        "permission_scope",
         "snapshot_version",
         "scope",
         "target_metric",
@@ -1617,7 +1609,7 @@ def _asset_identity_payload(asset: Mapping[str, Any]) -> dict[str, Any]:
             "asset_type": asset_type,
             "dimensions": list(asset_dimensions(asset)),
         }
-        for key in ("query_ref", "query_intent", "snapshot_version", "permission_scope"):
+        for key in ("query_ref", "query_intent", "snapshot_version"):
             value = asset.get(key)
             if value:
                 payload[key] = value

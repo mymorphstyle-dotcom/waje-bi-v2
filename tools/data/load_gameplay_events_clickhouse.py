@@ -47,7 +47,6 @@ RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@1"
 GAMEPLAY_CONTRACT_REF = "contracts/sources/gameplay.source.yaml@0.1"
 EXTERNAL_CONTRACT_REF = "contracts/sources/external-events.source.yaml@0.1"
 INTERNAL_CONTRACT_REF = "contracts/sources/internal-operation-events.source.yaml@0.1"
-PERMISSION_SCOPES = ("analyst",)
 
 GAMEPLAY_TABLE = "gameplay_daily"
 GAMEPLAY_CHANNEL_TABLE = "gameplay_channel_daily"
@@ -453,7 +452,6 @@ def build_source_snapshot_payloads(manifest: SourceLoadManifest) -> tuple[dict[s
                 "schema_fingerprint": part.schema_fingerprint,
                 "schema_fields": list(part.schema_fields),
                 "contract_ref": manifest.contract_ref,
-                "permission_scopes": list(PERMISSION_SCOPES),
                 "loaded_at": _snapshot_available_at(part.watermark),
                 "status": part.status,
                 "snapshot_id": manifest.snapshot_id,

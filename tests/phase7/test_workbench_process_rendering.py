@@ -18,6 +18,7 @@ class WorkbenchProcessRenderingTest(unittest.TestCase):
         self.assertIn('"question_tool"', canvas)
         self.assertIn('"reduce_evidence"', canvas)
         self.assertIn("等待用户确认", canvas)
+        self.assertIn("固定敏感输出、源访问安全和覆盖范围", canvas)
 
 
 if __name__ == "__main__":

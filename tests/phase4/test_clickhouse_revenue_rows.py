@@ -278,18 +278,13 @@ class ClickHouseRevenueRowsTest(unittest.TestCase):
         )
         self.assertEqual(client.calls, [])
 
-    def test_executor_returns_blocked_envelopes_for_contract_boundaries(self):
+    def test_executor_returns_blocked_envelope_for_tampered_contract(self):
         dataset_snapshot = snapshot()
         cases = (
             (
                 replace(contract(), contract_signature="tampered"),
                 dataset_snapshot,
                 "query_contract_signature_mismatch",
-            ),
-            (
-                contract(),
-                replace(dataset_snapshot, permission_scopes=("business_reader",)),
-                "dataset_snapshot_permission_denied",
             ),
         )
         for query_contract, selected_snapshot, reason in cases:

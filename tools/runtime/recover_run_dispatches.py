@@ -7,13 +7,9 @@ from typing import Any
 
 from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.postgres_store import PostgresConversationStore
-from bi_agent.runtime.permission_roles import PRODUCT_ROLE_PERMISSION_SCOPES
 
 
 DispatchRunner = Callable[[Mapping[str, Any]], Mapping[str, Any]]
-PRODUCT_ROLE_BY_PERMISSION_SCOPE = {
-    scope: role for role, scope in PRODUCT_ROLE_PERMISSION_SCOPES.items()
-}
 
 
 def run_agent_core_dispatch(dispatch: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -29,6 +25,7 @@ def run_agent_core_dispatch(dispatch: Mapping[str, Any]) -> Mapping[str, Any]:
             "thread_message",
             "artifact_continue",
             "clarification_resume",
+            "clarification_retry",
         }
         or not isinstance(lease_epoch, int)
         or isinstance(lease_epoch, bool)
@@ -36,29 +33,15 @@ def run_agent_core_dispatch(dispatch: Mapping[str, Any]) -> Mapping[str, Any]:
         or not isinstance(payload, Mapping)
     ):
         raise ValueError("run_dispatch_recovery_payload_invalid")
-    permission_scope = _required_string(payload, "runtimePermissionScope")
-    role = PRODUCT_ROLE_BY_PERMISSION_SCOPE.get(permission_scope)
-    if role is None:
-        raise ValueError("run_dispatch_recovery_permission_scope_invalid")
     clarification: dict[str, Any] | None = None
-    if producer_kind == "clarification_resume":
-        source_run_id = _required_string(payload, "runId")
-        if source_run_id != scope_ref:
-            raise ValueError("run_dispatch_recovery_scope_mismatch")
-        answer = _required_string(payload, "answer")
-        source = _required_string(payload, "source")
-        selected_option_id = payload.get("selectedOptionId")
-        if selected_option_id is not None and not isinstance(
-            selected_option_id, str
-        ):
-            raise ValueError("run_dispatch_recovery_payload_invalid")
-        user_message = answer
-        clarification = {
-            "runId": source_run_id,
-            "answer": answer,
-            "selectedOptionId": selected_option_id,
-            "source": source,
-        }
+    if producer_kind in {"clarification_resume", "clarification_retry"}:
+        clarification = _clarification_attempt_payload(
+            payload,
+            producer_kind=producer_kind,
+            run_id=run_id,
+            scope_ref=scope_ref,
+        )
+        user_message = clarification["answer"]
     else:
         user_message = _required_string(payload, "message")
         if producer_kind == "thread_message" and scope_ref != thread_id:
@@ -74,8 +57,6 @@ def run_agent_core_dispatch(dispatch: Mapping[str, Any]) -> Mapping[str, Any]:
             thread_id=thread_id,
             run_id=run_id,
             user_message=user_message,
-            role=role,
-            runtime_permission_scope=permission_scope,
             clarification=clarification,
             run_dispatch={
                 "dispatch_owner_id": owner_id,
@@ -209,6 +190,68 @@ def _required_string(values: Mapping[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("run_dispatch_recovery_payload_invalid")
     return value.strip()
+
+
+def _clarification_attempt_payload(
+    payload: Mapping[str, Any],
+    *,
+    producer_kind: str,
+    run_id: str,
+    scope_ref: str,
+) -> dict[str, Any]:
+    retry_attempt = producer_kind == "clarification_retry"
+    expected_keys = {
+        "sourceRunId",
+        "resolutionId",
+        "attemptRunId",
+        "answer",
+        "selectedOptionId",
+        "source",
+        "retryAttempt",
+        *({"previousAttemptRunId"} if retry_attempt else set()),
+    }
+    if set(payload) != expected_keys:
+        raise ValueError("run_dispatch_recovery_payload_invalid")
+    source_run_id = _required_string(payload, "sourceRunId")
+    resolution_id = _required_string(payload, "resolutionId")
+    attempt_run_id = _required_string(payload, "attemptRunId")
+    answer = _required_string(payload, "answer")
+    source = _required_string(payload, "source")
+    selected_option_id = payload.get("selectedOptionId")
+    if (
+        resolution_id != scope_ref
+        or attempt_run_id != run_id
+        or source != "user"
+        or payload.get("retryAttempt") is not retry_attempt
+        or (
+            selected_option_id is not None
+            and (
+                not isinstance(selected_option_id, str)
+                or not selected_option_id.strip()
+            )
+        )
+    ):
+        raise ValueError("run_dispatch_recovery_scope_mismatch")
+    if retry_attempt:
+        previous_attempt_run_id = _required_string(
+            payload,
+            "previousAttemptRunId",
+        )
+        if previous_attempt_run_id == attempt_run_id:
+            raise ValueError("run_dispatch_recovery_scope_mismatch")
+    return {
+        "sourceRunId": source_run_id,
+        "resolutionId": resolution_id,
+        "attemptRunId": attempt_run_id,
+        "answer": answer,
+        "selectedOptionId": (
+            selected_option_id.strip()
+            if isinstance(selected_option_id, str)
+            else None
+        ),
+        "source": source,
+        "retryAttempt": retry_attempt,
+    }
 
 
 if __name__ == "__main__":

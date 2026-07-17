@@ -587,6 +587,28 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
             compiled.runtime_plan["baselines"],
         )
 
+    def test_multi_baseline_diagnostic_does_not_choose_rolling_verifier(self):
+        compiled = compile_graph(
+            question_family="paid_amount_change_explanation",
+            target_metric="paid_amount",
+            pattern_family="custom_baseline",
+            requested_nodes=("compare_periods", "driver_decomposition"),
+            question_families=("paid_amount_change_explanation",),
+            question_text="按季度比较付费金额变化。",
+            bound_context={
+                "analysis_requirements": {
+                    "baselines": ["previous_day"],
+                    "diagnostic_tags": ["multi_baseline"],
+                }
+            },
+        )
+
+        self.assertIn("compare_periods", compiled.mutations.accepted_graph)
+        self.assertNotIn(
+            "rolling_window_compare",
+            compiled.mutations.accepted_graph,
+        )
+
     def test_compiler_uses_bound_runtime_context_before_question_text_fallback(self):
         compiled = compile_graph(
             question_family="custom_baseline_comparison",
@@ -643,7 +665,6 @@ class RecipeRegistryAndCompilerTest(unittest.TestCase):
                 "time_window": "2026-07-08",
                 "windows": {"target": "2026-07-08", "baseline": "2026-07-07"},
                 "baselines": ("previous_day",),
-                "permission_scope": "analyst",
                 "snapshot_version": "2026H1",
                 "contract_versions": {"runtime": "contract-v1"},
                 "schema_fingerprint": "schema-v1",

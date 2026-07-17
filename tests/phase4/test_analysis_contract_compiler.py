@@ -2,10 +2,6 @@ from dataclasses import replace
 from datetime import datetime
 import unittest
 
-from bi_agent.conversation.clarification_authority import (
-    build_execution_material,
-    build_material_authority,
-)
 from bi_agent.runtime.analysis_contract_compiler import (
     compile_analysis_contract as _compile_analysis_contract,
 )
@@ -30,83 +26,6 @@ from bi_agent.runtime.dataset_catalog import (
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
 
-def clarification_material_authority(
-    *,
-    source_run_id,
-    thread_id,
-    topic_id,
-    question_family="revenue_health_review",
-    target_metric="paid_amount",
-    requested_components=(),
-    requested_dimensions=(),
-    baselines=(),
-    context_sources=(),
-    claim_intents=(),
-    scope=None,
-    diagnostic_tags=(),
-    analysis_contract=None,
-    query_contracts=(),
-    capability_execution_plans=(),
-):
-    registry = RuntimeContractRegistry.from_path(
-        "contracts/runtime/clickhouse-analysis-bindings.yaml"
-    )
-    runtime_material = (
-        build_execution_material(
-            proposal={
-                "question_families": [question_family],
-                "target_metrics": [target_metric],
-                "requested_components": list(requested_components),
-                "requested_dimensions": list(requested_dimensions),
-                "baselines": list(baselines),
-                "requested_context_sources": list(context_sources),
-                "claim_intents": list(claim_intents),
-                "scope": scope,
-            },
-            accepted_graph=analysis_contract.capability_requirements,
-            as_of=analysis_contract.as_of,
-            permission_scope=analysis_contract.permission_scope,
-            run_mode="production",
-            runtime_contract_version=registry.contract_version,
-            runtime_registry_digest=registry.source_payload_digest,
-            analysis_contract=analysis_contract,
-            query_contracts=query_contracts,
-            capability_execution_plans=capability_execution_plans,
-        )
-        if analysis_contract is not None
-        else None
-    )
-    return build_material_authority(
-        source_run_id=source_run_id,
-        thread_id=thread_id,
-        topic_id=topic_id,
-        original_intent={
-            "question_family": question_family,
-            "question_families": [question_family],
-            "primary_question_family": question_family,
-            "secondary_question_families": [],
-            "target_metric": target_metric,
-            "baseline_candidates": list(baselines),
-            "context_sources": list(context_sources),
-            "claim_intents": list(claim_intents),
-            "requested_dimensions": list(requested_dimensions),
-            "requested_components": list(requested_components),
-            "scope": scope,
-        },
-        material_slots={
-            "target_metrics": [target_metric],
-            "requested_components": list(requested_components),
-            "requested_dimensions": list(requested_dimensions),
-            "baselines": list(baselines),
-            "context_sources": list(context_sources),
-            "claim_intents": list(claim_intents),
-            "diagnostic_tags": list(diagnostic_tags),
-            "scope": scope,
-        },
-        runtime_material=runtime_material,
-    )
-
-
 def snapshot(dataset_id, table, watermark):
     return DatasetSnapshot(
         f"snapshot:{dataset_id}:1", dataset_id, table, watermark, f"schema:{dataset_id}",
@@ -127,7 +46,7 @@ def snapshot(dataset_id, table, watermark):
             "支付状态",
             "支付发起时间",
         ),
-        f"contract:{dataset_id}@1", ("analyst",), "2026-06-03T00:00:00+00:00", "active",
+        f"contract:{dataset_id}@1", "2026-06-03T00:00:00+00:00", "active",
     )
 
 
@@ -258,7 +177,6 @@ def _market_dashboard_snapshots():
         "watermark": "2026-06-02",
         "schema_fingerprint": "schema1234567890abcdef",
         "contract_ref": "contract:market-dashboard@1",
-        "permission_scopes": ("analyst",),
         "loaded_at": "2026-06-03T00:00:00+00:00",
         "status": "active",
         "logical_snapshot_id": "dashboard-logical",
@@ -325,7 +243,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 as_of=datetime.fromisoformat(
                     "2026-06-03T12:00:00+01:00"
                 ),
-                permission_scope="analyst",
             )
 
     def test_queryless_reducer_inherits_exact_upstream_claim_gaps(self):
@@ -348,7 +265,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog(()),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         inherited = {
@@ -391,14 +307,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "external_event",
                 "comparative_change",
             ),
-            (
-                "gameplay_activity_context",
-                {
-                    "metric_dataset_overrides": {"player_bet_amount": "gameplay"},
-                },
-                "gameplay",
-                "candidate_mechanism",
-            ),
         )
         for capability_id, proposal, dataset_id, unrelated_claim in cases:
             with self.subTest(capability_id=capability_id):
@@ -413,7 +321,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     catalog=DatasetCatalog(()),
                     registry=registry,
                     as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                    permission_scope="analyst",
                 )
 
                 gap = next(
@@ -441,7 +348,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             ),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertFalse(outcome.query_contracts)
@@ -455,7 +361,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "contracts/runtime/clickhouse-analysis-bindings.yaml"
         )
 
-        def current_snapshot(dataset_id, *, scopes=("analyst",)):
+        def current_snapshot(dataset_id):
             contract = registry.dataset(dataset_id)
             return DatasetSnapshot(
                 snapshot_ref=f"snapshot:{dataset_id}:source-isolation",
@@ -468,7 +374,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     or snapshot(dataset_id, dataset_id, "2026-06-02").schema_fields
                 ),
                 contract_ref=str(contract.get("contract_ref") or f"contract:{dataset_id}@1"),
-                permission_scopes=scopes,
                 loaded_at="2026-06-03T00:00:00+00:00",
                 status="active",
                 evidence_state=(
@@ -541,7 +446,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "question_families": ["paid_amount_change_explanation"],
             "target_metrics": ["active_users"],
             "requested_components": ["paid_amount"],
-            "requested_dimensions": ["gameplay"],
+            "requested_dimensions": [],
             "requested_context_sources": ["external_event"],
             "metric_dataset_overrides": {
                 "active_users": "market_dashboard",
@@ -551,14 +456,11 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "first_paid_users": "paid_order_success",
                 "paid_frequency": "paid_order_success",
                 "avg_order_amount": "paid_order_success",
-                "player_bet_amount": "gameplay",
             },
-            "dimension_dataset_overrides": {"gameplay": "gameplay"},
             "baselines": ["previous_day"],
             "claim_intents": [
                 "comparative_change",
                 "formula_component_contribution",
-                "observed_activity",
                 "candidate_mechanism",
             ],
             "target_semantic": "2026-06-02",
@@ -566,13 +468,11 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         capabilities = (
             "driver_decomposition",
             "market_health_compare",
-            "gameplay_activity_context",
             "event_evidence",
         )
         available = {
             "paid_order_success": current_snapshot("paid_order_success"),
             "market_dashboard": current_snapshot("market_dashboard"),
-            "gameplay": current_snapshot("gameplay"),
             "external_event": current_snapshot("external_event"),
         }
         cases = (
@@ -582,21 +482,9 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 ("formula_component_contribution",),
                 {
                     "daily_metric_baselines",
-                    "gameplay_activity_probe",
                     "event_context_probe",
                 },
                 {"component_driver_scan"},
-            ),
-            (
-                "gameplay",
-                "gameplay_activity_context",
-                ("observed_activity", "comparative_change"),
-                {
-                    "daily_metric_baselines",
-                    "component_driver_scan",
-                    "event_context_probe",
-                },
-                {"gameplay_activity_probe"},
             ),
             (
                 "external_event",
@@ -605,7 +493,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 {
                     "daily_metric_baselines",
                     "component_driver_scan",
-                    "gameplay_activity_probe",
                 },
                 {"event_context_probe"},
             ),
@@ -622,7 +509,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     catalog=catalog,
                     registry=registry,
                     as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                    permission_scope="analyst",
                     release_resolver=resolver,
                 )
                 intents = {item.query_intent for item in outcome.query_contracts}
@@ -644,41 +530,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 self.assertEqual(gap.affected_capabilities, (affected_capability,))
                 self.assertEqual(gap.affected_claim_types, affected_claim)
 
-        restricted = {
-            **available,
-            "gameplay": current_snapshot("gameplay", scopes=("admin",)),
-        }
-        catalog, resolver = authorized_catalog(*restricted.values())
-        outcome = compile_analysis_contract(
-            run_id="run-source-isolation-permission",
-            proposal=proposal,
-            accepted_capabilities=capabilities,
-            catalog=catalog,
-            registry=registry,
-            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
-            release_resolver=resolver,
-        )
-        intents = {item.query_intent for item in outcome.query_contracts}
-        self.assertTrue(
-            {"component_driver_scan", "daily_metric_baselines", "event_context_probe"}
-            <= intents,
-            intents,
-        )
-        self.assertNotIn("gameplay_activity_probe", intents)
-        permission_gap = next(
-            item for item in outcome.analysis_contract.contract_gaps
-            if item.dataset_id == "gameplay" and item.gap_type == "permission_blocked"
-        )
-        self.assertEqual(
-            permission_gap.affected_capabilities,
-            ("gameplay_activity_context",),
-        )
-        self.assertEqual(
-            permission_gap.affected_claim_types,
-            ("observed_activity", "comparative_change"),
-        )
-
     def test_canonical_paid_release_fixture_threads_one_authority_resolver(self):
         paid = snapshot("paid_order_success", "paid", "2026-07-04")
 
@@ -691,7 +542,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         selected = catalog.resolve(
             "paid_order_success",
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
         self.assertEqual(selected.snapshot_ref, paid.snapshot_ref)
 
@@ -731,7 +581,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 catalog=DatasetCatalog(()),
                 registry=registry,
                 as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                permission_scope="analyst",
             )
             unsupported = tuple(
                 gap
@@ -805,7 +654,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     catalog=released_catalog(dashboard, channel),
                     registry=registry,
                     as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                    permission_scope="analyst",
                 )
                 queries = {item.query_contract_id: item for item in outcome.query_contracts}
                 plans = {item.capability_id: item for item in outcome.capability_plans}
@@ -849,7 +697,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "paid_amount",
             ),
             "contract:market-dashboard@1",
-            ("analyst",),
             "2026-06-03T00:00:00Z",
             "active",
             logical_snapshot_id="dashboard-logical",
@@ -873,7 +720,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             ),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertEqual(outcome.analysis_contract.dataset_requirements, ("market_dashboard",))
@@ -892,7 +738,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "market_dashboard_daily__schema1234567890", "2026-06-02",
             "schema1234567890abcdef",
             ("snapshot_id", "load_revision", "business_date", "game", "paid_users"),
-            "contract:market-dashboard@1", ("analyst",),
+            "contract:market-dashboard@1",
             "2026-06-03T00:00:00Z", "active",
             logical_snapshot_id="dashboard-logical",
             load_revision="dashboard-load:sha256:verified",
@@ -909,7 +755,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             ),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertFalse(outcome.query_contracts)
@@ -924,7 +769,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "market_dashboard_channel_daily__schema1234567890", "2026-06-02",
             "schema1234567890abcdef",
             ("snapshot_id", "load_revision", "business_date", "game", "channel", "paid_amount"),
-            "contract:market-dashboard@1", ("analyst",),
+            "contract:market-dashboard@1",
             "2026-06-03T00:00:00Z", "active", evidence_state="context_only",
             reconciliation_status="mismatch", reconciliation_ref="reconciliation:mismatch",
             logical_snapshot_id="dashboard-logical", load_revision="dashboard-load:sha256:verified",
@@ -945,7 +790,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             ),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertEqual(len(outcome.query_contracts), 1)
@@ -968,7 +812,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     "contracts/runtime/clickhouse-analysis-bindings.yaml"
                 ),
                 as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                permission_scope="analyst",
             )
 
     def test_unreviewed_context_snapshot_blocks_quality_and_strong_paths(self):
@@ -980,7 +823,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "schema1234567890abcdef",
             ("snapshot_id", "load_revision", "business_date", "game", "channel", "paid_amount"),
             "contract:market-dashboard@1",
-            ("analyst",),
             "2026-06-03T00:00:00Z",
             "active",
             evidence_state="context_only",
@@ -1009,7 +851,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             ),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertFalse(outcome.query_contracts)
@@ -1039,7 +880,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         overall = DatasetSnapshot(
             "snapshot:overall:verified", "market_dashboard",
             "market_dashboard_daily__schema1234567890", "2026-06-02",
-            "schema1234567890abcdef", fields, "contract:dashboard@1", ("analyst",),
+            "schema1234567890abcdef", fields, "contract:dashboard@1",
             "2026-06-03T00:00:00Z", "active", reconciliation_status="mismatch",
             reconciliation_ref="reconciliation:mismatch", logical_snapshot_id="dashboard-logical",
             load_revision="dashboard-load:sha256:verified",
@@ -1048,7 +889,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "snapshot:channel:verified", "market_dashboard_channel",
             "market_dashboard_channel_daily__schema1234567890", "2026-06-02",
             "schema1234567890abcdef", (*fields[:4], "channel", *fields[4:]),
-            "contract:dashboard@1", ("analyst",), "2026-06-03T00:00:00Z", "active",
+            "contract:dashboard@1", "2026-06-03T00:00:00Z", "active",
             evidence_state="context_only", reconciliation_status="mismatch",
             reconciliation_ref="reconciliation:mismatch", logical_snapshot_id="dashboard-logical",
             load_revision="dashboard-load:sha256:verified",
@@ -1070,7 +911,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             ),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertEqual(
@@ -1092,7 +932,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "schema:market-dashboard:1",
             ("business_date", "load_revision", "paid_amount"),
             "contract:market-dashboard@1",
-            ("analyst",),
             "2026-06-03T00:00:00Z",
             "active",
             logical_snapshot_id="market-dashboard:20260602",
@@ -1112,7 +951,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             ),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertEqual(outcome.analysis_contract.dataset_requirements, ())
@@ -1150,7 +988,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalog,
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
             release_resolver=resolver,
         )
 
@@ -1178,7 +1015,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "schema:market-dashboard-channel:1",
             ("business_date", "load_revision", "paid_amount", "channel"),
             "contract:market-dashboard-channel@1",
-            ("analyst",),
             "2026-06-03T00:00:00Z",
             "active",
             reconciliation_status="matched",
@@ -1206,7 +1042,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             ),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertEqual(
@@ -1322,7 +1157,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalogs,
             registry=RuntimeContractRegistry(payload),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
         drifted = compile_analysis_contract(
             run_id="run-capability-signature-drifted",
@@ -1334,7 +1168,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalogs,
             registry=RuntimeContractRegistry(changed),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertNotEqual(
@@ -1363,7 +1196,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             ),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         dimension_queries = tuple(
@@ -1450,7 +1282,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             ),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         joint = next(
@@ -1480,7 +1311,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             ),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         query = outcome.query_contracts[0]
@@ -1529,7 +1359,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((paid,)),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
         bindings, gaps = _bind_metrics(
             ("paid_amount",),
@@ -1551,7 +1380,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             metric_bindings=bindings,
             dimension_bindings=(),
             registry=registry,
-            permission_scope="analyst",
         )
 
         high_value_queries = tuple(
@@ -1593,7 +1421,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalog,
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
             release_resolver=resolver,
         )
 
@@ -1653,7 +1480,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalog,
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
             release_resolver=resolver,
         )
 
@@ -1727,7 +1553,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog(()),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         gap = next(
@@ -1761,7 +1586,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalog,
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
             release_resolver=resolver,
         )
 
@@ -1807,7 +1631,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalog,
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
             release_resolver=resolver,
         )
 
@@ -1874,7 +1697,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalog,
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
             release_resolver=resolver,
         )
 
@@ -1923,7 +1745,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalog,
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
             release_resolver=resolver,
         )
 
@@ -2001,7 +1822,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalog,
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
             release_resolver=resolver,
         )
 
@@ -2060,7 +1880,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalog,
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
             release_resolver=resolver,
         )
 
@@ -2090,41 +1909,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 for gap in gaps
             )
         )
-        blocked_channel = replace(channel, permission_scopes=("admin",))
-        blocked_catalog, blocked_resolver, blocked_release = (
-            canonical_release_catalog(dashboard, blocked_channel)
-        )
-        blocked = compile_analysis_contract(
-            run_id="run-all-required-route-permission",
-            proposal=proposal,
-            accepted_capabilities=("source_reconciliation",),
-            catalog=blocked_catalog,
-            registry=registry,
-            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
-            release_resolver=blocked_resolver,
-        )
-        permission_gap = next(
-            gap
-            for gap in blocked.analysis_contract.contract_gaps
-            if gap.dataset_id == "market_dashboard_channel"
-            and gap.gap_type == "permission_blocked"
-        )
-        self.assertIn(
-            "source_reconciliation",
-            permission_gap.affected_capabilities,
-        )
-        blocked_queries = {
-            query.dataset_snapshot_refs[0]
-            for query in blocked.query_contracts
-            if query.query_intent == "source_reconciliation_probe"
-        }
-        blocked_by_dataset = {item.dataset_id: item for item in blocked_release}
-        self.assertEqual(
-            blocked_queries,
-            {blocked_by_dataset["market_dashboard"].snapshot_ref},
-        )
-
     def test_explicit_claim_outside_capability_ceiling_is_rejected(self):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         outcome = compile_analysis_contract(
@@ -2138,7 +1922,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((snapshot("paid_order_success", "paid", "2026-07-04"),)),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertEqual(outcome.analysis_contract.claim_intents, ("unbound_claim_intent",))
@@ -2173,7 +1956,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "schema:no-date",
             ("paid_amount_ngn",),
             "contract:paid@1",
-            ("analyst",),
             "2026-06-03T00:00:00Z",
             "active",
         )
@@ -2184,7 +1966,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((missing_date,)),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertIn(
@@ -2266,7 +2047,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "schema:no-amount",
             ("business_date_lagos",),
             "contract:paid@1",
-            ("analyst",),
             "2026-06-03T00:00:00Z",
             "active",
         )
@@ -2277,7 +2057,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((missing_metric,)),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertIn(
@@ -2297,7 +2076,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "schema:no-channel",
             ("business_date_lagos", "paid_amount_ngn"),
             "contract:paid@1",
-            ("analyst",),
             "2026-06-03T00:00:00Z",
             "active",
         )
@@ -2312,7 +2090,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((missing_dimension,)),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertIn(
@@ -2337,7 +2114,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 catalog=catalog or DatasetCatalog((snapshot("paid_order_success", "paid", "2026-07-04"),)),
                 registry=selected_registry or registry,
                 as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                permission_scope="analyst",
             )
 
         first = compile_one("run-signature-a").query_contracts[0]
@@ -2354,7 +2130,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "schema:other",
             snapshot("paid_order_success", "paid", "2026-07-04").schema_fields,
             "contract:paid@1",
-            ("analyst",),
             "2026-06-03T00:00:00Z",
             "active",
         )
@@ -2498,7 +2273,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((snapshot("paid_order_success", "paid", "2026-07-04"),)),
             registry=RuntimeContractRegistry(payload),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertEqual(len(outcome.query_contracts), 2)
@@ -2532,7 +2306,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((snapshot("paid_order_success", "paid", "2026-07-04"),)),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         gap = next(
@@ -2555,7 +2328,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((snapshot("paid_order_success", "paid", "2026-07-04"),)),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         gap = next(
@@ -2581,7 +2353,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             ),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertFalse(outcome.query_contracts)
@@ -2609,7 +2380,14 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         )
         self.assertTrue(
             _capability_reviews_dataset(
-                "gameplay_activity_context", "gameplay", registry
+                "cross_source_association", "gameplay", registry
+            )
+        )
+        self.assertTrue(
+            _capability_reviews_dataset(
+                "cross_source_panel_association",
+                "gameplay_channel",
+                registry,
             )
         )
         self.assertFalse(
@@ -2627,7 +2405,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog(()),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         gap = next(
@@ -2654,7 +2431,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog(()),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         gap = next(
@@ -2737,7 +2513,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog(()),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         gap = next(
@@ -2952,7 +2727,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             ),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertEqual(
@@ -3002,7 +2776,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     catalog=DatasetCatalog(()),
                     registry=registry,
                     as_of=as_of,
-                    permission_scope="analyst",
                 ).analysis_contract
                 ids_by_ref = {
                     binding.contract_ref: binding.metric_id
@@ -3011,1003 +2784,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 self.assertEqual(
                     tuple(ids_by_ref[ref] for ref in contract.target_metric_refs),
                     target_metrics,
-                )
-
-    def test_compiler_rejects_reordered_signed_multi_target_authority(self):
-        registry = RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
-        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
-        prior = _compile_analysis_contract(
-            run_id="run-reordered-target-source",
-            proposal={
-                "question_families": ["revenue_health_review"],
-                "target_metrics": ["paid_amount", "paid_users"],
-                "metric_dataset_overrides": {
-                    "paid_amount": "paid_order_success",
-                    "paid_users": "paid_order_success",
-                },
-            },
-            accepted_capabilities=("outlier_contribution",),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=as_of,
-            permission_scope="analyst",
-        )
-        choice = {
-            "choice_id": "omit-reordered-target-path",
-            "action_kind": "omit_unavailable_context",
-            "source_run_id": "run-reordered-target-source",
-            "affected_capabilities": ["outlier_contribution"],
-        }
-        outcome_body = {
-            "source_run_id": "run-reordered-target-source",
-            "thread_id": "thread-reordered-target",
-            "topic_id": "topic-reordered-target",
-            "choice": choice,
-        }
-        outcome = {
-            "outcome_ref": "clarification-outcome:"
-            + stable_contract_signature(outcome_body),
-            **outcome_body,
-        }
-        outcome["outcome_signature"] = stable_contract_signature(outcome)
-        authority = {
-            "source_run_id": "run-reordered-target-source",
-            "thread_id": "thread-reordered-target",
-            "topic_id": "topic-reordered-target",
-            "analysis_contract": prior.analysis_contract.to_dict(),
-            "analysis_contract_signature": analysis_contract_signature(
-                prior.analysis_contract
-            ),
-            "material_authority": clarification_material_authority(
-                source_run_id="run-reordered-target-source",
-                thread_id="thread-reordered-target",
-                topic_id="topic-reordered-target",
-                target_metric="paid_users",
-                analysis_contract=prior.analysis_contract,
-                query_contracts=prior.query_contracts,
-                capability_execution_plans=prior.capability_plans,
-            ),
-            "clarification_outcome": outcome,
-        }
-        reordered_material = authority["material_authority"]
-        reordered_material["intent_material"]["target_metrics"] = [
-            "paid_users",
-            "paid_amount",
-        ]
-        reordered_material["route_material_slots"]["target_metrics"] = [
-            "paid_users",
-            "paid_amount",
-        ]
-        body = {
-            key: value
-            for key, value in reordered_material.items()
-            if key != "material_authority_signature"
-        }
-        reordered_material["material_authority_signature"] = (
-            stable_contract_signature(body)
-        )
-
-        with self.assertRaisesRegex(
-            ValueError,
-            "terminal_resume_proposal_target_metrics_mismatch",
-        ):
-            _compile_analysis_contract(
-                run_id="run-reordered-target-resumed",
-                proposal={
-                    "question_families": ["revenue_health_review"],
-                    "target_metrics": ["paid_amount", "paid_users"],
-                    "accepted_degradation_choice": choice,
-                    "accepted_terminal_gap_authority": authority,
-                    "resume_thread_id": "thread-reordered-target",
-                    "resume_topic_id": "topic-reordered-target",
-                },
-                accepted_capabilities=(),
-                catalog=DatasetCatalog(()),
-                registry=registry,
-                as_of=as_of,
-                permission_scope="analyst",
-            )
-
-    def test_compiler_rejects_independently_signed_resume_overlap_mismatch(self):
-        registry = RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
-        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
-        prior = _compile_analysis_contract(
-            run_id="run-overlap-mismatch-source",
-            proposal={
-                "question_families": ["revenue_health_review"],
-                "target_metrics": ["paid_amount"],
-                "claim_intents": ["comparative_change"],
-                "scope": "full_sample",
-            },
-            accepted_capabilities=("outlier_contribution",),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=as_of,
-            permission_scope="analyst",
-        )
-        choice = {
-            "choice_id": "omit-overlap-mismatch-path",
-            "action_kind": "omit_unavailable_context",
-            "source_run_id": "run-overlap-mismatch-source",
-            "affected_capabilities": ["outlier_contribution"],
-        }
-        outcome_body = {
-            "source_run_id": "run-overlap-mismatch-source",
-            "thread_id": "thread-overlap-mismatch",
-            "topic_id": "topic-overlap-mismatch",
-            "choice": choice,
-        }
-        outcome = {
-            "outcome_ref": "clarification-outcome:"
-            + stable_contract_signature(outcome_body),
-            **outcome_body,
-        }
-        outcome["outcome_signature"] = stable_contract_signature(outcome)
-        cases = {
-            "question_families": {
-                "question_family": "segment_or_factor_attribution",
-                "expected": "terminal_resume_proposal_question_families_mismatch",
-            },
-            "target_metrics": {
-                "target_metric": "active_users",
-                "expected": "terminal_resume_proposal_target_metrics_mismatch",
-            },
-            "route_target_metrics": {
-                "expected": "material_authority_contract_target_metrics_mismatch",
-            },
-            "scope": {
-                "scope": "custom_segment",
-                "expected": "material_authority_contract_scope_mismatch",
-            },
-        }
-
-        for axis, changes in cases.items():
-            with self.subTest(axis=axis):
-                material_authority = clarification_material_authority(
-                    source_run_id="run-overlap-mismatch-source",
-                    thread_id="thread-overlap-mismatch",
-                    topic_id="topic-overlap-mismatch",
-                    question_family=changes.get(
-                        "question_family", "revenue_health_review"
-                    ),
-                    target_metric=changes.get(
-                        "target_metric", "paid_amount"
-                    ),
-                    claim_intents=("comparative_change",),
-                    scope=changes.get("scope", "full_sample"),
-                    analysis_contract=prior.analysis_contract,
-                    query_contracts=prior.query_contracts,
-                    capability_execution_plans=prior.capability_plans,
-                )
-                if axis == "route_target_metrics":
-                    material_authority["route_material_slots"][
-                        "target_metrics"
-                    ] = ["active_users"]
-                    body = {
-                        key: value
-                        for key, value in material_authority.items()
-                        if key != "material_authority_signature"
-                    }
-                    material_authority["material_authority_signature"] = (
-                        stable_contract_signature(body)
-                    )
-                authority = {
-                    "source_run_id": "run-overlap-mismatch-source",
-                    "thread_id": "thread-overlap-mismatch",
-                    "topic_id": "topic-overlap-mismatch",
-                    "analysis_contract": prior.analysis_contract.to_dict(),
-                    "analysis_contract_signature": analysis_contract_signature(
-                        prior.analysis_contract
-                    ),
-                    "material_authority": material_authority,
-                    "clarification_outcome": outcome,
-                }
-                with self.assertRaisesRegex(ValueError, changes["expected"]):
-                    _compile_analysis_contract(
-                        run_id=f"run-overlap-mismatch-resumed-{axis}",
-                        proposal={
-                            "question_families": ["revenue_health_review"],
-                            "target_metrics": ["paid_amount"],
-                            "accepted_degradation_choice": choice,
-                            "accepted_terminal_gap_authority": authority,
-                            "resume_thread_id": "thread-overlap-mismatch",
-                            "resume_topic_id": "topic-overlap-mismatch",
-                        },
-                        accepted_capabilities=(),
-                        catalog=DatasetCatalog(()),
-                        registry=registry,
-                        as_of=as_of,
-                        permission_scope="analyst",
-                    )
-
-    def test_compiler_rejects_current_terminal_resume_proposal_drift(self):
-        registry = RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
-        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
-        prior = _compile_analysis_contract(
-            run_id="run-current-proposal-source",
-            proposal={
-                "question_families": ["revenue_health_review"],
-                "target_metrics": ["paid_amount"],
-                "claim_intents": ["comparative_change"],
-                "scope": "full_sample",
-            },
-            accepted_capabilities=("outlier_contribution",),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=as_of,
-            permission_scope="analyst",
-        )
-        choice = {
-            "choice_id": "omit-current-proposal-path",
-            "action_kind": "omit_unavailable_context",
-            "source_run_id": "run-current-proposal-source",
-            "affected_capabilities": ["outlier_contribution"],
-        }
-        outcome_body = {
-            "source_run_id": "run-current-proposal-source",
-            "thread_id": "thread-current-proposal",
-            "topic_id": "topic-current-proposal",
-            "choice": choice,
-        }
-        outcome = {
-            "outcome_ref": "clarification-outcome:"
-            + stable_contract_signature(outcome_body),
-            **outcome_body,
-        }
-        outcome["outcome_signature"] = stable_contract_signature(outcome)
-        authority = {
-            "source_run_id": "run-current-proposal-source",
-            "thread_id": "thread-current-proposal",
-            "topic_id": "topic-current-proposal",
-            "analysis_contract": prior.analysis_contract.to_dict(),
-            "analysis_contract_signature": analysis_contract_signature(
-                prior.analysis_contract
-            ),
-            "material_authority": clarification_material_authority(
-                source_run_id="run-current-proposal-source",
-                thread_id="thread-current-proposal",
-                topic_id="topic-current-proposal",
-                question_family="revenue_health_review",
-                target_metric="paid_amount",
-                claim_intents=("comparative_change",),
-                scope="full_sample",
-                analysis_contract=prior.analysis_contract,
-                query_contracts=prior.query_contracts,
-                capability_execution_plans=prior.capability_plans,
-            ),
-            "clarification_outcome": outcome,
-        }
-        cases = {
-            "question_families": {
-                "question_families": ["segment_or_factor_attribution"]
-            },
-            "target_metrics": {"target_metrics": ["active_users"]},
-            "scope": {"scope": "custom_segment"},
-        }
-
-        for axis, drift in cases.items():
-            with self.subTest(axis=axis):
-                proposal = {
-                    "question_families": ["revenue_health_review"],
-                    "target_metrics": ["paid_amount"],
-                    "scope": "full_sample",
-                    "accepted_degradation_choice": choice,
-                    "accepted_terminal_gap_authority": authority,
-                    "resume_thread_id": "thread-current-proposal",
-                    "resume_topic_id": "topic-current-proposal",
-                    **drift,
-                }
-                with self.assertRaisesRegex(
-                    ValueError,
-                    f"terminal_resume_proposal_{axis}_mismatch",
-                ):
-                    _compile_analysis_contract(
-                        run_id=f"run-current-proposal-resumed-{axis}",
-                        proposal=proposal,
-                        accepted_capabilities=(),
-                        catalog=DatasetCatalog(()),
-                        registry=registry,
-                        as_of=as_of,
-                        permission_scope="analyst",
-                    )
-
-        for sequence_kind, question_families, target_metrics in (
-            ("string", "revenue_health_review", "paid_amount"),
-            ("list", ["revenue_health_review"], ["paid_amount"]),
-            ("tuple", ("revenue_health_review",), ("paid_amount",)),
-        ):
-            with self.subTest(sequence_kind=sequence_kind):
-                _compile_analysis_contract(
-                    run_id=f"run-current-proposal-resumed-{sequence_kind}",
-                    proposal={
-                        "question_families": question_families,
-                        "target_metrics": target_metrics,
-                        "scope": "full_sample",
-                        "accepted_degradation_choice": choice,
-                        "accepted_terminal_gap_authority": authority,
-                        "resume_thread_id": "thread-current-proposal",
-                        "resume_topic_id": "topic-current-proposal",
-                    },
-                    accepted_capabilities=(),
-                    catalog=DatasetCatalog(()),
-                    registry=registry,
-                    as_of=as_of,
-                    permission_scope="analyst",
-                )
-
-    def test_resumed_degradation_partitions_implicit_claims_before_persistence(self):
-        from bi_agent.runtime.runtime_persistence import (
-            validate_analysis_runtime_records,
-        )
-
-        registry = RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
-        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
-        prior = _compile_analysis_contract(
-            run_id="run-implicit-claim-partition-source",
-            proposal={
-                "question_families": ["revenue_health_review"],
-                "target_metrics": ["paid_amount"],
-                "claim_intents": ["comparative_change"],
-            },
-            accepted_capabilities=(
-                "pattern_scan",
-                "outlier_contribution",
-            ),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=as_of,
-            permission_scope="analyst",
-        )
-        choice = {
-            "choice_id": "omit-unavailable-outlier-contribution",
-            "action_kind": "omit_unavailable_context",
-            "source_run_id": "run-implicit-claim-partition-source",
-            "affected_capabilities": ["outlier_contribution"],
-        }
-        outcome_body = {
-            "source_run_id": "run-implicit-claim-partition-source",
-            "thread_id": "thread-implicit-claim-partition",
-            "topic_id": "topic-implicit-claim-partition",
-            "choice": choice,
-        }
-        clarification_outcome = {
-            "outcome_ref": "clarification-outcome:"
-            + stable_contract_signature(outcome_body),
-            **outcome_body,
-        }
-        clarification_outcome["outcome_signature"] = stable_contract_signature(
-            clarification_outcome
-        )
-        authority = {
-            "source_run_id": "run-implicit-claim-partition-source",
-            "thread_id": "thread-implicit-claim-partition",
-            "topic_id": "topic-implicit-claim-partition",
-            "analysis_contract": prior.analysis_contract.to_dict(),
-            "analysis_contract_signature": analysis_contract_signature(
-                prior.analysis_contract
-            ),
-            "material_authority": clarification_material_authority(
-                source_run_id="run-implicit-claim-partition-source",
-                thread_id="thread-implicit-claim-partition",
-                topic_id="topic-implicit-claim-partition",
-                claim_intents=("comparative_change",),
-                analysis_contract=prior.analysis_contract,
-                query_contracts=prior.query_contracts,
-                capability_execution_plans=prior.capability_plans,
-            ),
-            "clarification_outcome": clarification_outcome,
-        }
-        resume_proposal = {
-            "question_families": ["revenue_health_review"],
-            "target_metrics": ["paid_amount"],
-            "accepted_degradation_choice": choice,
-            "accepted_terminal_gap_authority": authority,
-            "resume_thread_id": "thread-implicit-claim-partition",
-            "resume_topic_id": "topic-implicit-claim-partition",
-        }
-        resumed = _compile_analysis_contract(
-            run_id="run-implicit-claim-partition-resumed",
-            proposal=resume_proposal,
-            accepted_capabilities=("pattern_scan",),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=as_of,
-            permission_scope="analyst",
-        )
-        claims = resumed.analysis_contract.claim_intents
-
-        with self.subTest(boundary="omitted_capability_does_not_expand"):
-            self.assertNotIn(
-                "external_shock_candidate_or_anomaly",
-                claims,
-            )
-        with self.subTest(boundary="ready_sibling_claim_is_not_promoted"):
-            self.assertNotIn("recurring_pattern_existence", claims)
-        with self.subTest(boundary="signed_supported_claim_is_preserved"):
-            self.assertEqual(claims, ("comparative_change",))
-        with self.subTest(boundary="explicit_claim_change_is_rejected"):
-            with self.assertRaisesRegex(
-                ValueError,
-                "terminal_resume_proposal_claim_intents_mismatch",
-            ):
-                _compile_analysis_contract(
-                    run_id="run-explicit-claim-partition-resumed",
-                    proposal={
-                        **resume_proposal,
-                        "claim_intents": [
-                            "external_shock_candidate_or_anomaly"
-                        ],
-                    },
-                    accepted_capabilities=("pattern_scan",),
-                    catalog=DatasetCatalog(()),
-                    registry=registry,
-                    as_of=as_of,
-                    permission_scope="analyst",
-                )
-        with self.subTest(boundary="no_accepted_gap_keeps_full_inference"):
-            unpartitioned = _compile_analysis_contract(
-                run_id="run-implicit-claim-no-terminal-gap",
-                proposal={"target_metrics": ["paid_amount"]},
-                accepted_capabilities=("outlier_contribution",),
-                catalog=DatasetCatalog(()),
-                registry=registry,
-                as_of=as_of,
-                permission_scope="analyst",
-            )
-            self.assertEqual(
-                unpartitioned.analysis_contract.claim_intents,
-                (
-                    "external_shock_candidate_or_anomaly",
-                    "comparative_change",
-                ),
-            )
-        with self.subTest(boundary="persistence_hard_boundary_accepts_contract"):
-            contract_payload = resumed.analysis_contract.to_dict()
-            contract_payload["contract_signature"] = analysis_contract_signature(
-                resumed.analysis_contract
-            )
-            validated = validate_analysis_runtime_records(
-                run_id="run-implicit-claim-partition-resumed",
-                analysis_contract=contract_payload,
-                query_contracts=(),
-                query_execution_records=(),
-                rows_records=(),
-                snapshot_records=(),
-                completeness_records=(),
-                capability_binding_records=(),
-                evidence_manifests=(),
-                context_manifests=(),
-                trusted_provenance_records=(),
-                verified_claims=(),
-                claim_links=(),
-                repair_attempts=(),
-            )
-            self.assertEqual(
-                tuple(validated["analysis_contract"]["claim_intents"]),
-                claims,
-            )
-
-    def test_resumed_degradation_does_not_promote_prior_unsupported_gap_claim(self):
-        registry = RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
-        as_of = datetime.fromisoformat("2026-06-03T12:00:00+01:00")
-        prior = _compile_analysis_contract(
-            run_id="run-unsupported-gap-claim-source",
-            proposal={
-                "question_families": ["revenue_health_review"],
-                "target_metrics": ["paid_amount"],
-                "claim_intents": ["causal_effect"],
-            },
-            accepted_capabilities=("pattern_scan", "outlier_contribution"),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=as_of,
-            permission_scope="analyst",
-        )
-        self.assertEqual(
-            prior.analysis_contract.claim_intents,
-            ("unbound_claim_intent",),
-        )
-        prior_unsupported_gap = next(
-            gap
-            for gap in prior.analysis_contract.contract_gaps
-            if gap.gap_id == "claim_intent:causal_effect:unsupported"
-        )
-        self.assertEqual(
-            prior_unsupported_gap.affected_claim_types,
-            ("causal_effect",),
-        )
-
-        choice = {
-            "choice_id": "omit-unavailable-outlier-claim-path",
-            "action_kind": "omit_unavailable_context",
-            "source_run_id": "run-unsupported-gap-claim-source",
-            "affected_capabilities": ["outlier_contribution"],
-        }
-        outcome_body = {
-            "source_run_id": "run-unsupported-gap-claim-source",
-            "thread_id": "thread-unsupported-gap-claim",
-            "topic_id": "topic-unsupported-gap-claim",
-            "choice": choice,
-        }
-        clarification_outcome = {
-            "outcome_ref": "clarification-outcome:"
-            + stable_contract_signature(outcome_body),
-            **outcome_body,
-        }
-        clarification_outcome["outcome_signature"] = stable_contract_signature(
-            clarification_outcome
-        )
-        authority = {
-            "source_run_id": "run-unsupported-gap-claim-source",
-            "thread_id": "thread-unsupported-gap-claim",
-            "topic_id": "topic-unsupported-gap-claim",
-            "analysis_contract": prior.analysis_contract.to_dict(),
-            "analysis_contract_signature": analysis_contract_signature(
-                prior.analysis_contract
-            ),
-            "material_authority": clarification_material_authority(
-                source_run_id="run-unsupported-gap-claim-source",
-                thread_id="thread-unsupported-gap-claim",
-                topic_id="topic-unsupported-gap-claim",
-                claim_intents=("causal_effect",),
-                analysis_contract=prior.analysis_contract,
-                query_contracts=prior.query_contracts,
-                capability_execution_plans=prior.capability_plans,
-            ),
-            "clarification_outcome": clarification_outcome,
-        }
-        resumed = _compile_analysis_contract(
-            run_id="run-unsupported-gap-claim-resumed",
-            proposal={
-                "question_families": ["revenue_health_review"],
-                "target_metrics": ["paid_amount"],
-                "accepted_degradation_choice": choice,
-                "accepted_terminal_gap_authority": authority,
-                "resume_thread_id": "thread-unsupported-gap-claim",
-                "resume_topic_id": "topic-unsupported-gap-claim",
-            },
-            accepted_capabilities=("pattern_scan",),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=as_of,
-            permission_scope="analyst",
-        )
-
-        self.assertEqual(
-            resumed.analysis_contract.claim_intents,
-            ("unbound_claim_intent",),
-        )
-        resumed_unsupported_gap = next(
-            gap
-            for gap in resumed.analysis_contract.contract_gaps
-            if gap.gap_id == "claim_intent:causal_effect:unsupported"
-        )
-        self.assertEqual(
-            resumed_unsupported_gap.affected_claim_types,
-            ("causal_effect",),
-        )
-        self.assertNotIn(
-            "claim_intents:unbound",
-            {gap.gap_id for gap in resumed.analysis_contract.contract_gaps},
-        )
-
-        noncanonical_witnesses = {
-            "dataset_id": {"dataset_id": "forged_dataset"},
-            "owner": {"owner": "forged_owner"},
-            "repair_options": {"repair_options": ("forged_repair",)},
-            "requires_clarification": {"requires_clarification": False},
-            "diagnostic_context": {
-                "diagnostic_context": {"forged": True},
-            },
-        }
-        for drift, changes in noncanonical_witnesses.items():
-            with self.subTest(noncanonical_unsupported_gap_field=drift):
-                forged_contract = replace(
-                    prior.analysis_contract,
-                    contract_gaps=tuple(
-                        replace(gap, **changes)
-                        if gap.gap_id
-                        == "claim_intent:causal_effect:unsupported"
-                        else gap
-                        for gap in prior.analysis_contract.contract_gaps
-                    ),
-                )
-                forged_authority = {
-                    **authority,
-                    "analysis_contract": forged_contract.to_dict(),
-                    "analysis_contract_signature": analysis_contract_signature(
-                        forged_contract
-                    ),
-                }
-                forged_resume = _compile_analysis_contract(
-                    run_id=f"run-unsupported-gap-claim-forged-{drift}",
-                    proposal={
-                        "question_families": ["revenue_health_review"],
-                        "target_metrics": ["paid_amount"],
-                        "accepted_degradation_choice": choice,
-                        "accepted_terminal_gap_authority": forged_authority,
-                        "resume_thread_id": "thread-unsupported-gap-claim",
-                        "resume_topic_id": "topic-unsupported-gap-claim",
-                    },
-                    accepted_capabilities=("pattern_scan",),
-                    catalog=DatasetCatalog(()),
-                    registry=registry,
-                    as_of=as_of,
-                    permission_scope="analyst",
-                )
-                self.assertEqual(
-                    forged_resume.analysis_contract.claim_intents,
-                    ("unbound_claim_intent",),
-                )
-
-    def test_resumed_degradation_carries_exact_terminal_gaps_for_omitted_capabilities(self):
-        registry = RuntimeContractRegistry.from_path(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
-        prior = compile_analysis_contract(
-            run_id="run-terminal-gap-source",
-            proposal={
-                "question_families": ["revenue_health_review"],
-                "target_metrics": ["paid_amount"],
-                "requested_components": ["paid_users", "payer_arppu"],
-                "claim_intents": [
-                    "formula_component_contribution",
-                    "contract_coverage_and_trust_boundary",
-                ],
-            },
-            accepted_capabilities=(
-                "formula_decompose",
-                "data_quality_profile",
-                "answer_verify",
-            ),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
-        )
-        choice = {
-            "choice_id": "omit-unavailable-diagnostics",
-            "action_kind": "omit_unavailable_context",
-            "source_run_id": "run-terminal-gap-source",
-            "affected_capabilities": [
-                "formula_decompose",
-                "data_quality_profile",
-            ],
-        }
-
-        source_contract = replace(
-            prior.analysis_contract,
-            contract_gaps=tuple(
-                replace(
-                    gap,
-                    affected_capabilities=(
-                        *gap.affected_capabilities,
-                        "answer_verify",
-                    ),
-                )
-                if set(gap.affected_capabilities).intersection(
-                    choice["affected_capabilities"]
-                )
-                else gap
-                for gap in prior.analysis_contract.contract_gaps
-            ),
-        )
-
-        outcome_body = {
-            "source_run_id": "run-terminal-gap-source",
-            "thread_id": "thread-terminal-gap",
-            "topic_id": "topic-terminal-gap",
-            "choice": choice,
-        }
-        outcome_payload = {
-            "outcome_ref": "clarification-outcome:"
-            + stable_contract_signature(outcome_body),
-            **outcome_body,
-        }
-        outcome_payload["outcome_signature"] = stable_contract_signature(
-            outcome_payload
-        )
-        authority = {
-            "source_run_id": "run-terminal-gap-source",
-            "thread_id": "thread-terminal-gap",
-            "topic_id": "topic-terminal-gap",
-            "analysis_contract": source_contract.to_dict(),
-            "analysis_contract_signature": analysis_contract_signature(
-                source_contract
-            ),
-            "material_authority": clarification_material_authority(
-                source_run_id="run-terminal-gap-source",
-                thread_id="thread-terminal-gap",
-                topic_id="topic-terminal-gap",
-                requested_components=("paid_users", "payer_arppu"),
-                claim_intents=(
-                    "formula_component_contribution",
-                    "contract_coverage_and_trust_boundary",
-                ),
-                analysis_contract=source_contract,
-            ),
-            "clarification_outcome": outcome_payload,
-        }
-
-        resumed = compile_analysis_contract(
-            run_id="run-terminal-gap-resumed",
-            proposal={
-                "question_families": ["revenue_health_review"],
-                "target_metrics": ["paid_amount"],
-                "accepted_degradation_choice": choice,
-                "accepted_terminal_gap_authority": authority,
-                "resume_thread_id": "thread-terminal-gap",
-                "resume_topic_id": "topic-terminal-gap",
-            },
-            accepted_capabilities=("answer_verify",),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
-        )
-
-        carried = tuple(
-            gap for gap in resumed.analysis_contract.contract_gaps
-            if gap.gap_id.startswith("capability:formula_decompose:")
-            or gap.gap_id.startswith("capability:data_quality_profile:")
-        )
-        self.assertTrue(carried)
-        self.assertTrue(
-            any(
-                gap.gap_id.startswith("capability:formula_decompose:")
-                for gap in carried
-            )
-        )
-        self.assertTrue(
-            any(
-                gap.gap_id.startswith("capability:data_quality_profile:")
-                for gap in carried
-            )
-        )
-        paid_gap = next(
-            gap
-            for gap in resumed.analysis_contract.contract_gaps
-            if gap.gap_id == "dataset:paid_order_success:source_unbound"
-        )
-        self.assertIn("data_quality_profile", paid_gap.affected_capabilities)
-        self.assertIn("formula_decompose", paid_gap.affected_capabilities)
-        for gap in carried:
-            with self.subTest(gap_id=gap.gap_id):
-                expected_capability = (
-                    "formula_decompose"
-                    if gap.gap_id.startswith("capability:formula_decompose:")
-                    else "data_quality_profile"
-                )
-                self.assertEqual(
-                    gap.affected_capabilities,
-                    (expected_capability, "analysis_contract"),
-                )
-                self.assertTrue(
-                    set(gap.affected_capabilities).issubset(
-                        set(choice["affected_capabilities"])
-                        | {"analysis_contract"}
-                    )
-                )
-                self.assertNotIn("answer_verify", gap.affected_capabilities)
-                self.assertTrue(
-                    set(gap.affected_claim_types).issubset(
-                        set(
-                            registry.capability_inputs(expected_capability).get(
-                                "supported_claim_types", ()
-                            )
-                        )
-                    )
-                )
-        self.assertEqual(
-            set(resumed.analysis_contract.capability_requirements),
-            {"answer_verify", "formula_decompose", "data_quality_profile"},
-        )
-        self.assertEqual(
-            resumed.analysis_contract.clarification_outcome_ref,
-            outcome_payload["outcome_ref"],
-        )
-        boundary_only = compile_analysis_contract(
-            run_id="run-terminal-gap-boundary-only",
-            proposal={
-                "question_families": ["revenue_health_review"],
-                "target_metrics": ["paid_amount"],
-                "accepted_degradation_choice": choice,
-                "accepted_terminal_gap_authority": authority,
-                "resume_thread_id": "thread-terminal-gap",
-                "resume_topic_id": "topic-terminal-gap",
-            },
-            accepted_capabilities=("answer_verify",),
-            catalog=DatasetCatalog(()),
-            registry=registry,
-            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
-        )
-        self.assertIn(
-            "paid_order_success",
-            boundary_only.analysis_contract.dataset_requirements,
-        )
-
-        with self.assertRaisesRegex(
-            ValueError,
-            "terminal_resume_runtime_accepted_graph_mismatch",
-        ):
-            compile_analysis_contract(
-                run_id="run-terminal-gap-no-ready-capability",
-                proposal={
-                    "question_families": ["revenue_health_review"],
-                    "target_metrics": ["paid_amount"],
-                    "accepted_degradation_choice": choice,
-                    "accepted_terminal_gap_authority": authority,
-                    "resume_thread_id": "thread-terminal-gap",
-                    "resume_topic_id": "topic-terminal-gap",
-                },
-                accepted_capabilities=(),
-                catalog=DatasetCatalog(()),
-                registry=registry,
-                as_of=datetime.fromisoformat(
-                    "2026-06-03T12:00:00+01:00"
-                ),
-                permission_scope="analyst",
-            )
-        carried_ids = {gap.gap_id for gap in carried}
-
-        invalid_authorities = (
-            (
-                {**authority, "source_run_id": "run-stale"},
-                "material_authority_owner_mismatch",
-            ),
-            ({**authority, "thread_id": "thread-other"}, "owner_mismatch"),
-            (
-                {**authority, "analysis_contract_signature": "sha256:tampered"},
-                "contract_signature_invalid",
-            ),
-            (
-                {
-                    **authority,
-                    "clarification_outcome": {
-                        **outcome_payload,
-                        "outcome_signature": "sha256:tampered",
-                    },
-                },
-                "outcome_signature_invalid",
-            ),
-            (
-                {
-                    **authority,
-                    "clarification_outcome": {
-                        **outcome_payload,
-                        "choice": {**choice, "choice_id": "different"},
-                    },
-                },
-                "outcome_signature_invalid",
-            ),
-            (
-                {
-                    **authority,
-                    "clarification_outcome": (
-                        lambda forged: {
-                            **forged,
-                            "outcome_signature": stable_contract_signature(
-                                forged
-                            ),
-                        }
-                    )({
-                        **{
-                            key: value
-                            for key, value in outcome_payload.items()
-                            if key != "outcome_signature"
-                        },
-                        "outcome_ref": "clarification-outcome:forged",
-                    }),
-                },
-                "outcome_ref_invalid",
-            ),
-        )
-        for invalid_authority, reason in invalid_authorities:
-            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
-                compile_analysis_contract(
-                    run_id="run-terminal-gap-invalid-authority",
-                    proposal={
-                        "question_families": ["revenue_health_review"],
-                        "target_metrics": ["paid_amount"],
-                        "accepted_degradation_choice": choice,
-                        "accepted_terminal_gap_authority": invalid_authority,
-                        "resume_thread_id": "thread-terminal-gap",
-                        "resume_topic_id": "topic-terminal-gap",
-                    },
-                    accepted_capabilities=("answer_verify",),
-                    catalog=DatasetCatalog(()),
-                    registry=registry,
-                    as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                    permission_scope="analyst",
-                )
-
-        for missing_owner_field in ("resume_thread_id", "resume_topic_id"):
-            with self.subTest(missing_owner_field=missing_owner_field), self.assertRaisesRegex(
-                ValueError, "owner_mismatch"
-            ):
-                owner_proposal = {
-                    "target_metrics": ["paid_amount"],
-                    "accepted_degradation_choice": choice,
-                    "accepted_terminal_gap_authority": authority,
-                    "resume_thread_id": "thread-terminal-gap",
-                    "resume_topic_id": "topic-terminal-gap",
-                }
-                owner_proposal.pop(missing_owner_field)
-                compile_analysis_contract(
-                    run_id="run-terminal-gap-owner-missing",
-                    proposal=owner_proposal,
-                    accepted_capabilities=("answer_verify",),
-                    catalog=DatasetCatalog(()),
-                    registry=registry,
-                    as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                    permission_scope="analyst",
-                )
-
-        for malformed in (
-            "formula_decompose",
-            [],
-            ["formula_decompose", 7],
-            {"x": 1},
-        ):
-            with self.subTest(malformed=malformed), self.assertRaisesRegex(
-                ValueError, "terminal_resume_runtime_accepted_graph_mismatch"
-            ):
-                compile_analysis_contract(
-                    run_id="run-terminal-gap-malformed-mapping",
-                    proposal={
-                        "target_metrics": ["paid_amount"],
-                        "accepted_degradation_choice": {
-                            **choice,
-                            "affected_capabilities": malformed,
-                        },
-                        "accepted_terminal_gap_authority": authority,
-                        "resume_thread_id": "thread-terminal-gap",
-                        "resume_topic_id": "topic-terminal-gap",
-                    },
-                    accepted_capabilities=("answer_verify",),
-                    catalog=DatasetCatalog(()),
-                    registry=registry,
-                    as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                    permission_scope="analyst",
-                )
-
-        for ignored_choice in ({**choice, "action_kind": "wait_for_source"},):
-            with self.subTest(ignored_choice=ignored_choice):
-                rejected = compile_analysis_contract(
-                    run_id="run-terminal-gap-rejected",
-                    proposal={
-                        "target_metrics": ["paid_amount"],
-                        "accepted_degradation_choice": ignored_choice,
-                        "accepted_terminal_gap_authority": authority,
-                    },
-                    accepted_capabilities=("answer_verify",),
-                    catalog=DatasetCatalog(()),
-                    registry=registry,
-                    as_of=datetime.fromisoformat(
-                        "2026-06-03T12:00:00+01:00"
-                    ),
-                    permission_scope="analyst",
-                )
-                self.assertEqual(
-                    rejected.analysis_contract.clarification_outcome_ref,
-                    "",
-                )
-                self.assertTrue(
-                    carried_ids.isdisjoint(
-                        gap.gap_id
-                        for gap in rejected.analysis_contract.contract_gaps
-                    )
                 )
 
     def test_future_snapshot_is_typed_unavailable_as_of_not_source_unbound(self):
@@ -4020,7 +2796,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "schema:future",
             snapshot("paid_order_success", "paid", "2026-07-04").schema_fields,
             "contract:paid@1",
-            ("admin",),
             "2026-06-04T00:00:00Z",
             "active",
         )
@@ -4108,7 +2883,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((*market_release, *event_release), release_resolver=resolver),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
             release_resolver=resolver,
         )
 
@@ -4131,39 +2905,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         self.assertEqual(gap.affected_capabilities, ("event_evidence",))
         self.assertTrue(gap.requires_clarification)
 
-    def test_eligible_permission_mismatch_is_permission_blocked(self):
-        registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
-        eligible = DatasetSnapshot(
-            "snapshot:paid:eligible",
-            "paid_order_success",
-            "paid",
-            "2026-07-04",
-            "schema:eligible",
-            snapshot("paid_order_success", "paid", "2026-07-04").schema_fields,
-            "contract:paid@1",
-            ("admin",),
-            "2026-06-03T00:00:00Z",
-            "active",
-        )
-        outcome = self._compile_compare_with_catalog(DatasetCatalog((eligible,)))
-
-        self.assertIn(
-            "dataset:paid_order_success:permission_blocked",
-            {gap.gap_id for gap in outcome.analysis_contract.contract_gaps},
-        )
-
-        future = replace(
-            eligible,
-            snapshot_ref="snapshot:paid:future-admin",
-            loaded_at="2026-06-04T00:00:00Z",
-        )
-        mixed = self._compile_compare_with_catalog(
-            DatasetCatalog((eligible, future))
-        )
-        gap_types = {gap.gap_type for gap in mixed.analysis_contract.contract_gaps}
-        self.assertIn("permission_blocked", gap_types)
-        self.assertNotIn("dataset_snapshot_unavailable_as_of", gap_types)
-
     def _assert_window_contract_gap(self, *, proposal, expected_gap_id):
         registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
         merged = {
@@ -4178,7 +2919,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((snapshot("paid_order_success", "paid", "2026-07-04"),)),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         gap = next(
@@ -4192,13 +2932,12 @@ class AnalysisContractCompilerTest(unittest.TestCase):
 
     def _compile_compare_with_catalog(self, catalog):
         return compile_analysis_contract(
-            run_id="run-permission-classification",
+            run_id="run-source-availability-classification",
             proposal={"target_metrics": ["paid_amount"], "claim_intents": ["comparative_change"]},
             accepted_capabilities=("compare_periods",),
             catalog=catalog,
             registry=RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml"),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
     def _compile_compare_with_registry(self, registry):
@@ -4214,7 +2953,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             ),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
     def test_daily_query_shape_preserves_observation_grain(self):
@@ -4231,7 +2969,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((snapshot("paid_order_success", "paid", "2026-07-04"),)),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         shape = outcome.query_contracts[0].result_shape
@@ -4257,30 +2994,295 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             with self.subTest(capability_id=capability_id):
                 self.assertTrue(registry.capability_inputs(capability_id))
 
-    def test_required_window_contract_gap_and_plan_scope_are_explicit(self):
-        registry = RuntimeContractRegistry.from_path("contracts/runtime/clickhouse-analysis-bindings.yaml")
+    def test_auxiliary_context_window_is_resolved_and_queried_without_clarification(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
         outcome = compile_analysis_contract(
-            run_id="run-window-input",
+            run_id="run-auxiliary-time-context",
             proposal={
                 "question_families": ["paid_amount_change_explanation"],
                 "target_metrics": ["paid_amount"],
+                "target_semantic": "2026-06-01",
                 "baselines": ["previous_day"],
-                "claim_intents": ["comparative_change"],
+                "context_window_specs": [
+                    {
+                        "capability_id": "rolling_window_compare",
+                        "relation": "trailing_complete_periods",
+                        "unit": "day",
+                        "count": 7,
+                    }
+                ],
+                "claim_intents": ["comparative_change", "baseline_stability"],
+                "capability_roles": {
+                    "rolling_window_compare": {
+                        "analysis_role": "auxiliary",
+                        "sources": ["analysis_axis:time_context:auxiliary"],
+                    }
+                },
             },
             accepted_capabilities=("rolling_window_compare",),
-            catalog=DatasetCatalog((snapshot("paid_order_success", "paid", "2026-07-04"),)),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
             registry=registry,
-            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
+            as_of=datetime.fromisoformat("2026-07-17T01:56:11+00:00"),
         )
 
-        self.assertIn(
-            "capability:rolling_window_compare:required_window:rolling_7_day_baseline:unbound",
-            {gap.gap_id for gap in outcome.analysis_contract.contract_gaps},
+        windows = {
+            window.window_id: window
+            for window in outcome.analysis_contract.resolved_windows
+        }
+        context_window_id = next(
+            window_id
+            for window_id, window in windows.items()
+            if window.role == "reference"
+        )
+        self.assertEqual(tuple(windows)[:2], ("target_day", "previous_day"))
+        self.assertEqual(
+            (
+                windows[context_window_id].start_inclusive,
+                windows[context_window_id].end_exclusive,
+            ),
+            ("2026-05-25", "2026-06-01"),
         )
         self.assertEqual(
-            outcome.capability_plans[0].required_input_slots[0].required_window_ids,
-            ("target_day", "rolling_7_day_baseline"),
+            windows[context_window_id].capability_refs,
+            ("rolling_window_compare",),
+        )
+        self.assertFalse(
+            any(
+                gap.requires_clarification
+                for gap in outcome.analysis_contract.contract_gaps
+                if "rolling_window_compare" in gap.affected_capabilities
+            )
+        )
+        rolling_query = next(
+            query
+            for query in outcome.query_contracts
+            if query.query_intent == "daily_metric_baselines"
+        )
+        self.assertEqual(
+            rolling_query.window_refs,
+            ("target_day", "previous_day", context_window_id),
+        )
+
+    def test_auxiliary_context_window_is_scoped_to_its_own_capability_queries(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        capabilities = (
+            "compare_periods",
+            "driver_decomposition",
+            "rolling_window_compare",
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-auxiliary-window-isolation",
+            proposal={
+                "question_families": ["paid_amount_change_explanation"],
+                "target_metrics": ["paid_amount"],
+                "target_semantic": "2026-06-01",
+                "baselines": ["previous_day"],
+                "context_window_specs": [
+                    {
+                        "capability_id": "rolling_window_compare",
+                        "relation": "trailing_complete_periods",
+                        "unit": "day",
+                        "count": 7,
+                    }
+                ],
+                "claim_intents": [
+                    "comparative_change",
+                    "formula_component_contribution",
+                    "baseline_stability",
+                ],
+                "capability_roles": {
+                    "compare_periods": {
+                        "analysis_role": "required",
+                        "sources": [
+                            "question_family_required:paid_amount_change_explanation"
+                        ],
+                    },
+                    "driver_decomposition": {
+                        "analysis_role": "required",
+                        "sources": [
+                            "question_family_required:paid_amount_change_explanation"
+                        ],
+                    },
+                    "rolling_window_compare": {
+                        "analysis_role": "auxiliary",
+                        "sources": ["analysis_axis:time_context:auxiliary"],
+                    },
+                },
+            },
+            accepted_capabilities=capabilities,
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-07-17T01:56:11+00:00"),
+        )
+
+        queries_by_ref = {
+            query.query_contract_id: query for query in outcome.query_contracts
+        }
+        plans = {plan.capability_id: plan for plan in outcome.capability_plans}
+
+        def owned_window_sets(capability_id):
+            return {
+                queries_by_ref[query_ref].window_refs
+                for slot in plans[capability_id].required_input_slots
+                for query_ref in slot.query_contract_refs
+            }
+
+        primary_windows = {("target_day", "previous_day")}
+        self.assertEqual(owned_window_sets("compare_periods"), primary_windows)
+        self.assertEqual(
+            owned_window_sets("driver_decomposition"),
+            primary_windows,
+        )
+        rolling_windows = next(iter(owned_window_sets("rolling_window_compare")))
+        self.assertEqual(rolling_windows[:2], ("target_day", "previous_day"))
+        self.assertEqual(len(rolling_windows), 3)
+        self.assertIn("__7_day", rolling_windows[2])
+
+    def test_selected_auxiliary_context_capability_without_spec_is_unavailable(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-context-window-spec-unbound",
+            proposal={
+                "question_families": ["paid_amount_change_explanation"],
+                "target_metrics": ["paid_amount"],
+                "target_semantic": "2026-06-01",
+                "baselines": ["previous_day"],
+                "claim_intents": ["comparative_change", "baseline_stability"],
+                "capability_roles": {
+                    "compare_periods": {
+                        "analysis_role": "required",
+                        "sources": ["question_family_required"],
+                    },
+                    "rolling_window_compare": {
+                        "analysis_role": "auxiliary",
+                        "sources": ["analysis_axis:time_context:auxiliary"],
+                    },
+                },
+            },
+            accepted_capabilities=("compare_periods", "rolling_window_compare"),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-07-17T01:56:11+00:00"),
+        )
+
+        plans = {plan.capability_id: plan for plan in outcome.capability_plans}
+        self.assertTrue(
+            plans["compare_periods"].required_input_slots[0].query_contract_refs
+        )
+        self.assertFalse(
+            plans["rolling_window_compare"].required_input_slots[0].query_contract_refs
+        )
+        gap = next(
+            gap
+            for gap in outcome.analysis_contract.contract_gaps
+            if gap.gap_id
+            == "capability:rolling_window_compare:context_window_spec:unbound"
+        )
+        self.assertEqual(gap.affected_claim_types, ("baseline_stability",))
+        self.assertFalse(gap.requires_clarification)
+        self.assertEqual(gap.diagnostic_context["publication_status"], "unavailable")
+        self.assertEqual(
+            {query.window_refs for query in outcome.query_contracts},
+            {("target_day", "previous_day")},
+        )
+
+    def test_explicit_required_primary_baseline_satisfies_context_policy(self):
+        payload = load_contract(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        payload["capability_inputs"]["rolling_window_compare"][
+            "required_windows"
+        ] = ["previous_day"]
+        registry = RuntimeContractRegistry(payload)
+        outcome = compile_analysis_contract(
+            run_id="run-context-primary-baseline-contract",
+            proposal={
+                "question_families": ["paid_amount_change_explanation"],
+                "target_metrics": ["paid_amount"],
+                "target_semantic": "2026-06-01",
+                "baselines": ["previous_day"],
+                "claim_intents": ["baseline_stability"],
+                "capability_roles": {
+                    "rolling_window_compare": {
+                        "analysis_role": "auxiliary",
+                        "sources": ["explicit_primary_baseline_contract"],
+                    }
+                },
+            },
+            accepted_capabilities=("rolling_window_compare",),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-07-17T01:56:11+00:00"),
+        )
+
+        self.assertTrue(outcome.query_contracts)
+        self.assertEqual(
+            outcome.query_contracts[0].window_refs,
+            ("target_day", "previous_day"),
+        )
+        self.assertFalse(
+            any(
+                "context_window_spec" in gap.gap_id
+                for gap in outcome.analysis_contract.contract_gaps
+            )
+        )
+
+    def test_quarter_context_spec_compiles_without_daily_rolling_window(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        outcome = compile_analysis_contract(
+            run_id="run-quarter-context",
+            proposal={
+                "question_families": ["pattern_explanation"],
+                "target_metrics": ["paid_amount"],
+                "target_semantic": "2026-06-01",
+                "baselines": ["previous_day"],
+                "context_window_specs": [
+                    {
+                        "capability_id": "compare_period_phases",
+                        "relation": "trailing_complete_periods",
+                        "unit": "quarter",
+                        "count": 1,
+                    }
+                ],
+                "claim_intents": ["recurring_pattern_existence"],
+            },
+            accepted_capabilities=("compare_period_phases",),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=registry,
+            as_of=datetime.fromisoformat("2026-07-17T01:56:11+00:00"),
+        )
+
+        context = next(
+            window
+            for window in outcome.analysis_contract.resolved_windows
+            if window.role == "reference"
+        )
+        self.assertEqual(
+            (context.start_inclusive, context.end_exclusive),
+            ("2026-01-01", "2026-04-01"),
+        )
+        self.assertEqual(context.capability_refs, ("compare_period_phases",))
+        self.assertNotIn(
+            "rolling_7_day_baseline",
+            {window.window_id for window in outcome.analysis_contract.resolved_windows},
         )
 
     def test_required_context_source_absence_is_a_typed_capability_gap(self):
@@ -4296,7 +3298,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog(()),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         gap_ids = {gap.gap_id for gap in outcome.analysis_contract.contract_gaps}
@@ -4318,7 +3319,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((snapshot("paid_order_success", "paid", "2026-07-04"),)),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         gap_ids = {gap.gap_id for gap in outcome.analysis_contract.contract_gaps}
@@ -4352,7 +3352,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             ),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         gap = next(
@@ -4368,6 +3367,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "analysis_role": "auxiliary",
                 "degradation_action": "omit_path",
                 "role_sources": ["diagnostic_candidate"],
+                "publication_status": "unavailable",
             },
         )
 
@@ -4395,7 +3395,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             ),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         gap = next(
@@ -4443,7 +3442,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((snapshot("paid_order_success", "paid", "2026-07-04"),)),
             registry=RuntimeContractRegistry(payload),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         query_by_ref = {query.query_contract_id: query for query in outcome.query_contracts}
@@ -4504,7 +3502,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((snapshot("paid_order_success", "paid", "2026-07-04"),)),
             registry=RuntimeContractRegistry(payload),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertEqual(len(outcome.query_contracts), 1)
@@ -4554,7 +3551,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=catalog,
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         self.assertEqual(outcome.analysis_contract.resolved_windows[0].label, "2026-06-02")
@@ -4587,7 +3583,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 catalog=catalog,
                 registry=registry,
                 as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                permission_scope="analyst",
             )
 
         previous_first = compile_with(
@@ -4637,7 +3632,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 catalog=catalog,
                 registry=registry,
                 as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                permission_scope="analyst",
             )
 
         canonical = compile_with("full_sample")
@@ -4665,7 +3659,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog(()),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
         self.assertIn("source_unbound", {gap.gap_type for gap in outcome.analysis_contract.contract_gaps})
 
@@ -4683,7 +3676,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog((snapshot("paid_order_success", "paid_success", "2026-07-04"),)),
             registry=registry,
             as_of=datetime.fromisoformat("2026-07-10T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         window_gap = next(
@@ -4707,7 +3699,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             catalog=DatasetCatalog(()),
             registry=registry,
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            permission_scope="analyst",
         )
 
         claim_gap = next(
