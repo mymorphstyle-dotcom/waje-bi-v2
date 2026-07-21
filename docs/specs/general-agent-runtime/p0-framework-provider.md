@@ -2,9 +2,9 @@
 
 ## 状态与范围
 
-本阶段已经建立可运行、可测试的 Agents SDK adapter boundary。它只覆盖单个应用轮次内
-的模型与短 function tool 循环，没有切换 Conversation 入口，也没有建立
-`ThreadItemLedger`、`PostgresAgentSession` 或 `AgentTurnRuntime`。
+本阶段已经建立可运行、可测试的 Agents SDK adapter boundary。连续对话、Session 和
+应用轮次持久化边界已经进入下一份 P0 合同，见
+[`p0-conversation-state-authority.md`](./p0-conversation-state-authority.md)。
 
 现有 LangGraph 单权威工作流继续由 `run_bi_analysis`、`continue_bi_analysis` 等后续 BI
 工具封装承接。本阶段没有改变 IntentRevision、PlanRevision、SQL 安全、数据合同、证据、

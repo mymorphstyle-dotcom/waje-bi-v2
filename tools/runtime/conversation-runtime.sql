@@ -6,9 +6,52 @@ CREATE TABLE IF NOT EXISTS waje_runtime.investigation_threads (
   current_topic_id text,
   pending_clarification_topic_id text,
   pending_clarification_id text NOT NULL DEFAULT '',
+  state_version bigint NOT NULL DEFAULT 0 CHECK (state_version >= 0),
+  active_task_id text,
+  active_topic_ref text,
+  pending_action_ref text,
+  latest_item_sequence bigint NOT NULL DEFAULT 0
+    CHECK (latest_item_sequence >= 0),
+  customer_state text NOT NULL DEFAULT 'idle'
+    CHECK (customer_state IN (
+      'idle',
+      'working',
+      'needs_input',
+      'completed',
+      'completed_with_limits',
+      'failed'
+    )),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE waje_runtime.investigation_threads
+  ADD COLUMN IF NOT EXISTS state_version bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS active_task_id text,
+  ADD COLUMN IF NOT EXISTS active_topic_ref text,
+  ADD COLUMN IF NOT EXISTS pending_action_ref text,
+  ADD COLUMN IF NOT EXISTS latest_item_sequence bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS customer_state text NOT NULL DEFAULT 'idle';
+
+ALTER TABLE waje_runtime.investigation_threads
+  DROP CONSTRAINT IF EXISTS investigation_threads_state_version_check,
+  DROP CONSTRAINT IF EXISTS investigation_threads_latest_item_sequence_check,
+  DROP CONSTRAINT IF EXISTS investigation_threads_customer_state_check;
+
+ALTER TABLE waje_runtime.investigation_threads
+  ADD CONSTRAINT investigation_threads_state_version_check
+    CHECK (state_version >= 0) NOT VALID,
+  ADD CONSTRAINT investigation_threads_latest_item_sequence_check
+    CHECK (latest_item_sequence >= 0) NOT VALID,
+  ADD CONSTRAINT investigation_threads_customer_state_check
+    CHECK (customer_state IN (
+      'idle',
+      'working',
+      'needs_input',
+      'completed',
+      'completed_with_limits',
+      'failed'
+    )) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS waje_runtime.conversation_topics (
   topic_id text PRIMARY KEY,
@@ -37,8 +80,117 @@ CREATE TABLE IF NOT EXISTS waje_runtime.conversation_messages (
   turn_id text REFERENCES waje_runtime.conversation_turns(turn_id) ON DELETE SET NULL,
   role text NOT NULL,
   text text NOT NULL,
+  item_sequence bigint,
+  item_type text NOT NULL DEFAULT 'message',
+  operation_key text,
+  item_digest text NOT NULL DEFAULT '',
+  customer_visible boolean NOT NULL DEFAULT true,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE waje_runtime.conversation_messages
+  ADD COLUMN IF NOT EXISTS item_sequence bigint,
+  ADD COLUMN IF NOT EXISTS item_type text NOT NULL DEFAULT 'message',
+  ADD COLUMN IF NOT EXISTS operation_key text,
+  ADD COLUMN IF NOT EXISTS item_digest text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS customer_visible boolean NOT NULL DEFAULT true,
+  ADD COLUMN IF NOT EXISTS payload jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+WITH sequenced AS (
+  SELECT message_id,
+         row_number() OVER (
+           PARTITION BY thread_id ORDER BY created_at, message_id
+         ) AS item_sequence
+  FROM waje_runtime.conversation_messages
+  WHERE item_sequence IS NULL
+)
+UPDATE waje_runtime.conversation_messages message
+SET item_sequence = sequenced.item_sequence
+FROM sequenced
+WHERE message.message_id = sequenced.message_id;
+
+UPDATE waje_runtime.investigation_threads thread
+SET latest_item_sequence = GREATEST(
+      thread.latest_item_sequence,
+      COALESCE(items.latest_item_sequence, 0)
+    ),
+    active_topic_ref = COALESCE(thread.active_topic_ref, thread.current_topic_id)
+FROM (
+  SELECT thread_id, max(item_sequence) AS latest_item_sequence
+  FROM waje_runtime.conversation_messages
+  GROUP BY thread_id
+) items
+WHERE thread.thread_id = items.thread_id;
+
+ALTER TABLE waje_runtime.conversation_messages
+  ALTER COLUMN item_sequence SET NOT NULL;
+
+ALTER TABLE waje_runtime.conversation_messages
+  DROP CONSTRAINT IF EXISTS conversation_messages_item_type_check,
+  DROP CONSTRAINT IF EXISTS conversation_messages_item_digest_check,
+  DROP CONSTRAINT IF EXISTS conversation_messages_payload_check;
+
+ALTER TABLE waje_runtime.conversation_messages
+  ADD CONSTRAINT conversation_messages_item_type_check CHECK (
+    item_type IN (
+      'message',
+      'user_message',
+      'assistant_message',
+      'progress',
+      'tool_call',
+      'tool_result',
+      'clarification',
+      'approval_request',
+      'approval_decision',
+      'artifact_reference',
+      'task_terminal'
+    )
+  ) NOT VALID,
+  ADD CONSTRAINT conversation_messages_item_digest_check CHECK (
+    item_digest = '' OR length(item_digest) = 64
+  ) NOT VALID,
+  ADD CONSTRAINT conversation_messages_payload_check CHECK (
+    jsonb_typeof(payload) = 'object'
+  ) NOT VALID;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_messages_thread_sequence
+  ON waje_runtime.conversation_messages(thread_id, item_sequence);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_messages_operation_key
+  ON waje_runtime.conversation_messages(thread_id, operation_key)
+  WHERE operation_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_conversation_messages_thread_recent
+  ON waje_runtime.conversation_messages(thread_id, item_sequence DESC);
+
+CREATE OR REPLACE FUNCTION waje_runtime.allocate_thread_item_sequence()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.item_sequence IS NULL THEN
+    UPDATE waje_runtime.investigation_threads
+    SET latest_item_sequence = latest_item_sequence + 1,
+        state_version = state_version + 1,
+        updated_at = now()
+    WHERE thread_id = NEW.thread_id
+    RETURNING latest_item_sequence INTO NEW.item_sequence;
+
+    IF NEW.item_sequence IS NULL THEN
+      RAISE EXCEPTION 'thread_item_thread_missing';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS conversation_messages_allocate_sequence
+  ON waje_runtime.conversation_messages;
+CREATE TRIGGER conversation_messages_allocate_sequence
+  BEFORE INSERT ON waje_runtime.conversation_messages
+  FOR EACH ROW
+  EXECUTE FUNCTION waje_runtime.allocate_thread_item_sequence();
 
 CREATE TABLE IF NOT EXISTS waje_runtime.analysis_runs (
   run_id text PRIMARY KEY,
@@ -2779,7 +2931,7 @@ CREATE INDEX IF NOT EXISTS idx_delivery_attempts_outbox
 
 INSERT INTO waje_runtime.schema_migrations(migration_id, migration_digest)
 VALUES (
-  'single-authority-workflow.v9',
-  '76216d3271244e452531bf563b5c3fa1344dcb499c04a78000452259d00817b1'
+  'single-authority-workflow.v10',
+  'e76e7f0b4ca549e1457ab41eed767b178533d195e65424c79a7cd9ee5b1c8044'
 )
 ON CONFLICT (migration_id) DO NOTHING;

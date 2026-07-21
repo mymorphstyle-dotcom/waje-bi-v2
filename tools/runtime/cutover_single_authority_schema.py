@@ -15,19 +15,21 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "tools/runtime/conversation-runtime.sql"
 SINGLE_AUTHORITY_MARKER = "-- Current single-authority workflow slice."
-SINGLE_AUTHORITY_MIGRATION_ID = "single-authority-workflow.v9"
+SINGLE_AUTHORITY_MIGRATION_ID = "single-authority-workflow.v10"
 SINGLE_AUTHORITY_MIGRATION_DIGEST = (
-    "76216d3271244e452531bf563b5c3fa1344dcb499c04a78000452259d00817b1"
+    "e76e7f0b4ca549e1457ab41eed767b178533d195e65424c79a7cd9ee5b1c8044"
 )
 SOURCE_MIGRATION_ID = "single-authority-workflow.v7"
 SOURCE_MIGRATION_DIGEST = (
     "b735fa8fb3d888a3d12be7f335711956e37ba4fc344d294bfbee59a92ac5e3cf"
 )
-IN_PLACE_SOURCE_MIGRATION_ID = "single-authority-workflow.v8"
+IN_PLACE_SOURCE_MIGRATION_ID = "single-authority-workflow.v9"
 IN_PLACE_SOURCE_MIGRATION_DIGEST = (
-    "560a6914379640e3c8a1b2ffab80d873e30ec38ecbac5fe89ec90c547d25e552"
+    "76216d3271244e452531bf563b5c3fa1344dcb499c04a78000452259d00817b1"
 )
 IN_PLACE_BACKFILL_PREDICATES = {
+    "conversation_messages": "item_sequence IS NULL",
+    "investigation_threads": "latest_item_sequence = 0",
     "dataset_snapshots": "logical_snapshot_id = '' OR load_revision = ''",
     "query_execution_authority": "run_id IS NULL",
     "query_completeness_reports": "run_id IS NULL",
@@ -35,6 +37,9 @@ IN_PLACE_BACKFILL_PREDICATES = {
     "analysis_runs": "run_attempt_id IS NULL OR run_attempt_id = ''",
     "decision_records": "run_attempt_id IS NULL OR run_attempt_id = ''",
 }
+IN_PLACE_METADATA_BACKFILLS = frozenset(
+    {"conversation_messages", "investigation_threads"}
+)
 OBSOLETE_TABLES = (
     "analysis_runtime_publications",
     "analysis_assets",
@@ -676,6 +681,8 @@ def _validate_in_place_backfills_are_noop(connection: Any) -> None:
             or "--" in predicate
         ):
             raise SchemaCutoverError("in_place_backfill_contract_invalid")
+        if table in IN_PLACE_METADATA_BACKFILLS:
+            continue
         count = int(
             connection.execute(
                 f"SELECT count(*) FROM waje_runtime.{table} WHERE {predicate}"

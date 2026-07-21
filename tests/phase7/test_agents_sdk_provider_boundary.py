@@ -11,10 +11,12 @@ from agents.tracing import get_trace_provider
 from pydantic import BaseModel, ConfigDict
 import pytest
 
+from bi_agent.runtime.agent_context import AgentContextAssembler, InMemoryArtifactIndex
 from bi_agent.runtime.agent_sdk_contracts import (
     WajeAgentRunRequest,
     WajeAgentTool,
 )
+from bi_agent.runtime.agent_turn_runtime import AgentTurnRequest, AgentTurnRuntime
 from bi_agent.runtime.agents_sdk_adapter import WajeAgentsSdkAdapter
 from bi_agent.runtime.agents_sdk_trace import (
     InMemoryAgentTraceSink,
@@ -30,6 +32,7 @@ from bi_agent.runtime.mainland_model_provider import (
     ProviderCapabilityError,
 )
 from bi_agent.runtime.provider_capability_probe import ProviderCapabilityProbe
+from bi_agent.runtime.thread_item_ledger import InMemoryThreadItemLedger
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -174,9 +177,7 @@ def _text_stream(text: str) -> httpx.Response:
                 "object": "chat.completion.chunk",
                 "created": 1,
                 "model": "mainland-model",
-                "choices": [
-                    {"index": 0, "delta": {}, "finish_reason": "stop"}
-                ],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             },
         ]
     )
@@ -216,9 +217,7 @@ def _tool_stream(
             "object": "chat.completion.chunk",
             "created": 1,
             "model": "mainland-model",
-            "choices": [
-                {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
-            ],
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
         }
     )
     return _stream_response(chunks)
@@ -270,9 +269,7 @@ def test_direct_response_uses_only_explicit_chat_completions_without_openai_key(
     assert result.model_turns == 1
     assert "model" not in result.__dict__
     assert [request.url.path for request in requests] == ["/v1/chat/completions"]
-    assert {request.url.host for request in requests} == {
-        "model.provider.example.cn"
-    }
+    assert {request.url.host for request in requests} == {"model.provider.example.cn"}
     payload = json.loads(requests[0].content)
     assert "previous_response_id" not in payload
     assert "conversation_id" not in payload
@@ -293,9 +290,9 @@ def test_direct_response_uses_only_explicit_chat_completions_without_openai_key(
         record["waje_trace_metadata"]["provider"] == "test-mainland"
         for record in sink.records
     )
-    processors = get_trace_provider().__dict__["_multi_processor"].__dict__[
-        "_processors"
-    ]
+    processors = (
+        get_trace_provider().__dict__["_multi_processor"].__dict__["_processors"]
+    )
     assert len(processors) == 1
     assert isinstance(processors[0], WajeTraceProcessor)
 
@@ -454,6 +451,97 @@ def test_runner_completes_multi_round_tool_loop_with_stable_typed_arguments() ->
     ] == ["call_increment_1", "call_increment_1", "call_increment_2"]
 
 
+def test_agent_turn_runtime_uses_real_sdk_session_for_multi_tool_loop_without_openai_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    responses = iter(
+        (
+            _chat_response(
+                tool_name="increment",
+                arguments='{"value": 1}',
+                call_id="call_runtime_increment_1",
+            ),
+            _chat_response(
+                tool_name="increment",
+                arguments='{"value": 2}',
+                call_id="call_runtime_increment_2",
+            ),
+            _chat_response(
+                content=json.dumps(
+                    {
+                        "answerMarkdown": "连续计算结果为 3。",
+                        "materialRefs": [],
+                        "limitationRefs": [],
+                    },
+                    ensure_ascii=False,
+                )
+            ),
+        )
+    )
+    requests: list[httpx.Request] = []
+    tool_inputs: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return next(responses)
+
+    def increment(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        tool_inputs.append(dict(arguments))
+        return {"value": arguments["value"] + 1}
+
+    provider, adapter, sink = _adapter(handler)
+    ledger = InMemoryThreadItemLedger()
+    ledger.create_thread("thread-runtime-sdk")
+    runtime = AgentTurnRuntime(
+        ledger=ledger,
+        context_assembler=AgentContextAssembler(
+            ledger=ledger,
+            artifact_index=InMemoryArtifactIndex(),
+        ),
+        adapter=adapter,
+    )
+    try:
+        result = asyncio.run(
+            runtime.run(
+                AgentTurnRequest(
+                    thread_id="thread-runtime-sdk",
+                    run_id="run-runtime-sdk",
+                    operation_id="operation-runtime-sdk",
+                    user_item_id="message-runtime-sdk",
+                    user_message="从 1 连续加两次。",
+                    expected_state_version=0,
+                    instructions="按需使用工具后回答。",
+                    tools=(
+                        WajeAgentTool(
+                            name="increment",
+                            description="Increment one integer.",
+                            input_model=_NumberInput,
+                            handler=increment,
+                        ),
+                    ),
+                    max_turns=5,
+                )
+            )
+        )
+    finally:
+        asyncio.run(provider.close())
+
+    assert result.status == "completed"
+    assert result.assistant_item.text == "连续计算结果为 3。"
+    assert tool_inputs == [{"value": 1}, {"value": 2}]
+    assert len(requests) == 3
+    assert [
+        item.item_type
+        for item in ledger.list_items("thread-runtime-sdk")
+        if item.item_type in {"tool_call", "tool_result"}
+    ] == ["tool_call", "tool_result", "tool_call", "tool_result"]
+    assert sink.records
+    assert all(
+        record.get("schema_version") == "waje-agent-trace.v1" for record in sink.records
+    )
+
+
 def test_runner_returns_waje_mapping_for_strongly_typed_final_output() -> None:
     requests: list[dict[str, Any]] = []
 
@@ -520,9 +608,7 @@ def test_streaming_projects_text_and_tool_deltas_without_reasoning_content() -> 
                             name="increment",
                             description="Increment one integer.",
                             input_model=_NumberInput,
-                            handler=lambda arguments: {
-                                "value": arguments["value"] + 1
-                            },
+                            handler=lambda arguments: {"value": arguments["value"] + 1},
                         ),
                     ),
                 )
@@ -602,9 +688,7 @@ def test_provider_maps_authentication_failure_to_waje_typed_error() -> None:
         "code": "invalid_api_key",
         "type": "authentication_error",
     }
-    assert "private provider error" not in json.dumps(
-        captured.value.provider_error
-    )
+    assert "private provider error" not in json.dumps(captured.value.provider_error)
 
 
 def test_provider_retry_is_centralized_in_explicit_openai_compatible_client() -> None:
@@ -691,16 +775,13 @@ def test_capability_probe_covers_required_live_contract_and_declared_limits() ->
     assert report.max_output_tokens == 8_192
     assert report.thinking is True
     assert all(request["max_tokens"] == 512 for request in requests)
-    assert all(
-        request["thinking"] == {"type": "enabled"} for request in requests
-    )
+    assert all(request["thinking"] == {"type": "enabled"} for request in requests)
     structured_request = next(
         request
         for request in requests
         if "WAJE_STRUCTURED_PROBE_OK"
         in "\n".join(
-            str(message.get("content") or "")
-            for message in request["messages"]
+            str(message.get("content") or "") for message in request["messages"]
         )
     )
     assert structured_request["response_format"] == {"type": "json_object"}
@@ -754,7 +835,9 @@ def test_provider_configuration_forbids_defaults_openai_endpoint_and_missing_cap
         )
 
 
-def test_deepseek_factory_resolves_explicit_v4_model_settings_for_current_config() -> None:
+def test_deepseek_factory_resolves_explicit_v4_model_settings_for_current_config() -> (
+    None
+):
     config = MainlandProviderConfig.deepseek_from_env(
         {
             "WAJE_LLM_PROVIDER": "current-deepseek-adapter",

@@ -11,6 +11,7 @@
 
 - [General Agent Runtime target architecture](./specs/general-agent-runtime/target-architecture.md)
 - [General Agent Runtime P0 framework and provider](./specs/general-agent-runtime/p0-framework-provider.md)
+- [General Agent Runtime P0 conversation and state authority](./specs/general-agent-runtime/p0-conversation-state-authority.md)
 - [Accepted single-authority workflow](./adr/2026-07-17-single-authority-agent-workflow.md)
 - [Retired Phase 4 workflow reference](./phase-4-agent-workflow-reference.md)
 - [Architecture decision index](./adr/README.md)

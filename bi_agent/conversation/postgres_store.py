@@ -70,6 +70,9 @@ class PostgresConversationStore:
 
         self.connection = connection
         self.attempt_journal = PostgresDurableCallJournal(connection)
+        from bi_agent.runtime.thread_item_ledger import PostgresThreadItemLedger
+
+        self.thread_item_ledger = PostgresThreadItemLedger(connection)
         self._actor_id = "system"
         self._active_run_dispatches: dict[str, tuple[str, str, int]] = {}
         self._run_dispatch_heartbeat_stops: dict[str, threading.Event] = {}

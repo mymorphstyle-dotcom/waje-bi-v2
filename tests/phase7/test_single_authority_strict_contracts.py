@@ -202,7 +202,6 @@ def test_agent_core_projects_only_authority_runtime_fields() -> None:
         "topic_selection": {"source_run_id": "conversation-only"},
         "artifact_root": "conversation-only",
         "analysis_context": {"conversation": "only"},
-        "prior_topic_material_context": {"conversation": "only"},
     }
 
     projected = _workflow_authority_request(request)

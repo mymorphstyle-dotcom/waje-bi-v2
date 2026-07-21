@@ -12,6 +12,45 @@ ToolHandler = Callable[
 ]
 
 
+class WajeAgentSession(Protocol):
+    """SDK-neutral persistent history adapter accepted by the SDK boundary."""
+
+    session_id: str
+
+    async def get_items(self, limit: int | None = None) -> list[dict[str, Any]]: ...
+
+    async def add_items(self, items: list[dict[str, Any]]) -> None: ...
+
+    async def pop_item(self) -> dict[str, Any] | None: ...
+
+    async def clear_session(self) -> None: ...
+
+
+class WajeAgentEventSink(Protocol):
+    async def record_tool_call(
+        self,
+        *,
+        tool_name: str,
+        call_id: str,
+        arguments: Mapping[str, Any],
+    ) -> None: ...
+
+    async def record_tool_result(
+        self,
+        *,
+        tool_name: str,
+        call_id: str,
+        result: Any,
+        succeeded: bool,
+    ) -> None: ...
+
+
+class AgentSessionError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 @dataclass(frozen=True)
 class WajeAgentTool:
     """WAJE-owned function tool contract exposed to the SDK adapter."""
@@ -45,6 +84,8 @@ class WajeAgentRunRequest:
     output_type: type[BaseModel] | None = None
     max_turns: int = 10
     trace_metadata: Mapping[str, Any] = field(default_factory=dict)
+    session: WajeAgentSession | None = None
+    event_sink: WajeAgentEventSink | None = None
 
     def __post_init__(self) -> None:
         for value, code in (

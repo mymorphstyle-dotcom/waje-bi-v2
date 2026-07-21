@@ -237,7 +237,6 @@ class ConversationRuntime:
             decision_source=orchestration["decision_source"],
             business_summary=orchestration["business_summary"],
         )
-        prior_topic_material_context: dict[str, Any] = {}
         manifest = self._context_manifest(
             manifest_id=_stable_conversation_ref(
                 "context", run_attempt_id, command_digest
@@ -286,7 +285,6 @@ class ConversationRuntime:
                 user_message=user_message,
                 context_manifest=manifest.to_dict(),
                 analysis_context=dict(analysis_context or {}),
-                prior_topic_material_context=prior_topic_material_context,
             )
         else:
             interaction_response = InteractionResponse(

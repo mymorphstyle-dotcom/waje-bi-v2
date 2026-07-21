@@ -483,7 +483,6 @@ def _validate_route_projection(
             "analysis_context": canonical_value(
                 command_payload.get("analysis_context") or {}
             ),
-            "prior_topic_material_context": {},
         }
         expected_interaction = None
     if canonical_value(run_request) != canonical_value(expected_run) or canonical_value(

@@ -450,10 +450,12 @@ export async function loadCustomerAnalysisSnapshot(input: {
     const [messagesResult, publicationHistoryResult, runResult, versionResult] = await Promise.all([
       pool().query(
         `
-        SELECT message_id, role, text, created_at
+        SELECT message_id, role, text, item_sequence, created_at
         FROM waje_runtime.conversation_messages
-        WHERE thread_id = $1 AND role IN ('user', 'assistant')
-        ORDER BY created_at, message_id
+        WHERE thread_id = $1
+          AND role IN ('user', 'assistant')
+          AND customer_visible = true
+        ORDER BY item_sequence
         `,
         [thread.id],
       ),
@@ -1041,10 +1043,41 @@ export async function claimRunDispatchRequest(
           request: {},
         };
       }
+      const operationKey = `user:${normalized.requestIdentity}`;
+      const itemPayload = canonicalGatewayRecord({
+        sdk_item: { role: "user", content: normalized.text },
+        sdk_replay: true,
+        run_id: run.id,
+      });
+      const itemDigest = gatewayValueDigest({
+        item_id: messageId,
+        item_type: "user_message",
+        role: "user",
+        text: normalized.text,
+        operation_key: operationKey,
+        customer_visible: true,
+        payload: itemPayload,
+        turn_id: null,
+      });
       await client.query(
-        `INSERT INTO waje_runtime.conversation_messages(message_id, thread_id, role, text)
-         VALUES ($1, $2, 'user', $3)`,
-        [messageId, normalized.threadId, normalized.text],
+        `INSERT INTO waje_runtime.conversation_messages(
+           message_id, thread_id, role, text, item_type, operation_key,
+           item_digest, customer_visible, payload
+         ) VALUES ($1, $2, 'user', $3, 'user_message', $4, $5, true, $6::jsonb)`,
+        [
+          messageId,
+          normalized.threadId,
+          normalized.text,
+          operationKey,
+          itemDigest,
+          JSON.stringify(itemPayload),
+        ],
+      );
+      await client.query(
+        `UPDATE waje_runtime.investigation_threads
+         SET active_task_id = $2, customer_state = 'working', updated_at = now()
+         WHERE thread_id = $1`,
+        [normalized.threadId, run.id],
       );
       await client.query(
         `

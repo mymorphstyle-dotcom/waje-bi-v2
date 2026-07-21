@@ -10,6 +10,7 @@ from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, UserError
 from pydantic import BaseModel, ValidationError
 
 from bi_agent.runtime.agent_sdk_contracts import (
+    AgentSessionError,
     AgentSdkAdapterError,
     AgentTraceSink,
     WajeAgentRunRequest,
@@ -47,8 +48,13 @@ class WajeAgentsSdkAdapter:
                 run_config=run_config,
                 previous_response_id=None,
                 conversation_id=None,
-                session=None,
+                session=request.session,
             )
+        except AgentSessionError as exc:
+            raise AgentSdkAdapterError(
+                "agent_session_persistence_failed",
+                retryability="retryable",
+            ) from exc
         except LLMProviderError:
             raise
         except MaxTurnsExceeded as exc:
@@ -81,7 +87,7 @@ class WajeAgentsSdkAdapter:
             run_config=run_config,
             previous_response_id=None,
             conversation_id=None,
-            session=None,
+            session=request.session,
         )
         projected_events: list[WajeAgentStreamEvent] = []
         try:
@@ -89,6 +95,11 @@ class WajeAgentsSdkAdapter:
                 projected = _project_stream_event(event)
                 if projected is not None:
                     projected_events.append(projected)
+        except AgentSessionError as exc:
+            raise AgentSdkAdapterError(
+                "agent_session_persistence_failed",
+                retryability="retryable",
+            ) from exc
         except LLMProviderError:
             raise
         except MaxTurnsExceeded as exc:
@@ -107,7 +118,9 @@ class WajeAgentsSdkAdapter:
         )
 
     def _build_sdk_run(self, request: WajeAgentRunRequest) -> tuple[Any, RunConfig]:
-        tools = [_to_sdk_tool(tool) for tool in request.tools]
+        tools = [
+            _to_sdk_tool(tool, event_sink=request.event_sink) for tool in request.tools
+        ]
         model_name = self._provider.config.model
         settings = self._provider.sdk_model_settings(
             structured_output=request.output_type is not None,
@@ -154,15 +167,48 @@ class WajeAgentsSdkAdapter:
         return agent, run_config
 
 
-def _to_sdk_tool(tool: WajeAgentTool) -> FunctionTool:
-    async def invoke(_context: Any, arguments_json: str) -> Any:
+def _to_sdk_tool(tool: WajeAgentTool, *, event_sink: Any = None) -> FunctionTool:
+    async def invoke(context: Any, arguments_json: str) -> Any:
         try:
             parsed = tool.input_model.model_validate_json(arguments_json)
         except ValidationError as exc:
             raise AgentSdkAdapterError("agent_tool_arguments_invalid") from exc
-        value = tool.handler(parsed.model_dump(mode="json"))
-        if inspect.isawaitable(value):
-            value = await value
+        arguments = parsed.model_dump(mode="json")
+        call_id = str(getattr(context, "tool_call_id", "") or "")
+        if not call_id:
+            raise AgentSdkAdapterError("agent_tool_call_id_missing")
+        if event_sink is not None:
+            await event_sink.record_tool_call(
+                tool_name=tool.name,
+                call_id=call_id,
+                arguments=arguments,
+            )
+        try:
+            value = tool.handler(arguments)
+            if inspect.isawaitable(value):
+                value = await value
+        except Exception as exc:
+            if event_sink is not None:
+                await event_sink.record_tool_result(
+                    tool_name=tool.name,
+                    call_id=call_id,
+                    result={"error_type": type(exc).__name__},
+                    succeeded=False,
+                )
+            raise
+        if event_sink is not None:
+            await event_sink.record_tool_result(
+                tool_name=tool.name,
+                call_id=call_id,
+                result=(
+                    value.model_dump(mode="json")
+                    if isinstance(value, BaseModel)
+                    else dict(value)
+                    if isinstance(value, Mapping)
+                    else value
+                ),
+                succeeded=True,
+            )
         if isinstance(value, BaseModel):
             return value.model_dump(mode="json")
         if isinstance(value, Mapping):

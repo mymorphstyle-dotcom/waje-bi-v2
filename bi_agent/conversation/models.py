@@ -253,14 +253,9 @@ class ConversationRunRequest:
     user_message: str
     context_manifest: Mapping[str, Any]
     analysis_context: Mapping[str, Any] = field(default_factory=dict)
-    prior_topic_material_context: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["prior_topic_material_context"] = canonical_value(
-            self.prior_topic_material_context
-        )
-        return data
+        return asdict(self)
 
 
 @dataclass(frozen=True)
